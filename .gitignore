@@ -30,3 +30,11 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### Gradle / Desktop ###
+desktop/build/
+desktop/.gradle/
+desktop/.kotlin/
+desktop/out/
+**/local.properties
+
