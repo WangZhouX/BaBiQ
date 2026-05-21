@@ -1,0 +1,10 @@
+spring:
+  application:
+    name: BaBiQ-Server
+
+server:
+  port: 8080
+
+logging:
+  level:
+    com.wzx.babiq.server: DEBUG
