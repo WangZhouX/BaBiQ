@@ -33,7 +33,7 @@
                              │  JSON-RPC 2.0 over WebSocket
 ┌────────────────────────────┼────────────────────────────────────┐
 │                            ▼                                    │
-│              Spring Boot Agent Server (Java 25)                 │
+│              Spring Boot Agent Server (Java 21 LTS)             │
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │              JsonRpcWebSocketHandler                     │   │
 │  │      (路由 request/notification, 维护连接生命周期)         │   │
@@ -90,10 +90,10 @@ BaBiQ/
 │   ├── PROTOCOL.md               # JSON-RPC 协议详细规范 (后续补)
 │   └── ROADMAP.md                # 学习路线 (后续补)
 │
-├── backend/                      # Spring Boot Agent Server (Java 25)
+├── backend/                      # Spring Boot Agent Server (Java 21 LTS)
 │   ├── pom.xml
 │   ├── mvnw / mvnw.cmd
-│   └── src/main/java/com/wzx/babiq/
+│   └── src/main/java/com/wzx/babiq/server/
 │       ├── BaBiQApplication.java
 │       ├── api/
 │       │   ├── JsonRpcWebSocketHandler.java
@@ -438,7 +438,7 @@ turn/start
 
 | 组件 | 选型 | 用途 |
 | --- | --- | --- |
-| 语言 | Java 25 | 主语言 |
+| 语言 | Java 21 LTS | 主语言 |
 | 框架 | Spring Boot 3.5.14 | Web/IoC/AutoConfig |
 | AI 框架 | Spring AI Alibaba 1.1.2.x + Spring AI(OpenAI 兼容) | ChatClient/Tool 抽象 |
 | 模型 | **多 Provider 可配置(DashScope / DeepSeek / OpenAI 兼容中转 / Ollama 本地)** | LLM 调用 |
@@ -640,8 +640,8 @@ public ChatClient resolve(String providerId) {
 
 | 组件 | 选型 | 用途 |
 | --- | --- | --- |
-| 语言 | Kotlin 2.0+ | 主语言 |
-| UI 框架 | Compose Multiplatform 1.6+ | 桌面 UI |
+| 语言 | Kotlin 2.3.21 | 主语言 |
+| UI 框架 | Compose Multiplatform 1.11.0 | 桌面 UI |
 | HTTP/WS 客户端 | Ktor Client 2.3+ | 后端通信 |
 | 序列化 | kotlinx.serialization 1.7+ | JSON |
 | 构建 | Gradle (Kotlin DSL) | 构建工具 |
@@ -713,7 +713,7 @@ public ChatClient resolve(String providerId) {
 
 | 风险 | 影响 | 缓解 |
 | --- | --- | --- |
-| Java 25 + Spring Boot 3.5 兼容 | 编译/运行问题 | 必要时降级到 JDK 21 LTS |
+| Java 25 + Spring Boot 3.5 兼容 | 编译/运行问题 | 直接固定 JDK 21 LTS |
 | Compose Desktop 生态较新 | 资料少,踩坑多 | 多看 JetBrains 官方 sample |
 | Spring AI Alibaba 版本迭代快 | API 可能变动 | 锁定 1.1.2.x,升级前看 changelog |
 | WebSocket 流式 token 切包 | UI 卡顿/乱码 | 客户端做 buffer 拼接,服务端按 token 边界发 |
