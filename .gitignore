@@ -37,4 +37,6 @@ desktop/.gradle/
 desktop/.kotlin/
 desktop/out/
 **/local.properties
+# 机器特定 Gradle 配置(JDK 路径、代理等),不进仓库;参考 desktop/gradle.properties.local.example
+desktop/gradle.properties.local
 

@@ -1,0 +1,35 @@
+# 本地机器特定 Gradle 配置 — 示例文件
+#
+# 用途: 把 JDK 路径之类的"机器特定"配置从仓库 gradle.properties 里剥离,
+#       避免把你本机的绝对路径 commit 到 git。
+#
+# === 使用方式(三选一,从简到繁) ===
+#
+# 【方式 A:写到用户级 Gradle properties(推荐,Gradle 官方机制)】
+#   把下面的有效行复制到:
+#     Windows: C:\Users\<你的用户名>\.gradle\gradle.properties
+#     macOS/Linux: ~/.gradle/gradle.properties
+#   Gradle 会自动合并到所有项目。
+#
+# 【方式 B:用环境变量 JAVA_HOME 启动项目(README 已示范)】
+#   不需要任何 properties 文件,执行前临时设环境变量:
+#     $env:JAVA_HOME='C:\Users\<你的用户名>\scoop\apps\openjdk21\current'
+#   适合一次性使用。
+#
+# 【方式 C:复制本文件为 gradle.properties.local(在 .gitignore 中,不进仓库)】
+#   注意:Gradle 不会自动加载 .local 文件,需要你或团队约定一个加载机制
+#         (例如在 settings.gradle.kts 中显式 load,本项目暂未做)。
+#         若选此方式,需自行在 settings.gradle.kts 顶部添加加载逻辑。
+#   ⚠️ 仅作占位,真正生效请用方式 A 或 B。
+
+# === 配置项示例 ===
+
+# 1) JDK 21 路径(必填,Spring Boot 3.5.x + Compose Multiplatform 1.11 都要求 21+)
+org.gradle.java.home=C:/Users/<your-user>/scoop/apps/openjdk21/current
+
+# 2) 代理(可选,中国大陆下载 Maven Central / Google Maven 通常需要)
+#    若 desktop/gradle.properties 里已配置 jvmargs 代理,这里可不重复
+# systemProp.http.proxyHost=127.0.0.1
+# systemProp.http.proxyPort=7890
+# systemProp.https.proxyHost=127.0.0.1
+# systemProp.https.proxyPort=7890
