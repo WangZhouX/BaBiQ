@@ -9,7 +9,7 @@
 | Backend 构建 | Maven（含 `backend/mvnw`） |
 | Desktop JDK | Java 21 |
 | Desktop | Kotlin 2.3.21 + Compose Multiplatform 1.11.0 |
-| Desktop 构建 | Gradle 8.13 wrapper |
+| Desktop 构建 | Gradle 9.3.0 wrapper |
 
 ## 项目结构
 

@@ -855,7 +855,7 @@ P1-0 算完成的硬标准(任一项不达成都需回到对应 Task 修复):
 - [x] `backend/pom.xml` 的 `<java.version>` 是 **21**(不是 25)
 - [x] `cd desktop && .\gradlew.bat assemble` 成功
 - [x] `cd desktop && .\gradlew.bat run` 弹窗显示 `BaBiQ Desktop — P1-0 skeleton OK ✅`
-- [x] `desktop/gradle/wrapper/gradle-wrapper.properties` 指向 **gradle-8.13**
+- [x] `desktop/gradle/wrapper/gradle-wrapper.properties` 指向 **gradle-8.13**(P1-0 时;后续 post-P1-0 升级到 9.3.0,见文末"事后说明")
 - [x] 后端 package:`com.wzx.babiq.server`
 - [x] 桌面端 package:`com.wzx.babiq.desktop`
 - [x] git 历史保留(`git log --follow backend/pom.xml` 能看到旧 `pom.xml` 的历史)
@@ -867,6 +867,35 @@ P1-0 算完成的硬标准(任一项不达成都需回到对应 Task 修复):
 ## 完成后下一步
 
 P1-0 完成后:
+
+---
+
+## 📝 事后说明(post-P1-0,2026-05-21)
+
+P1-0 落地后发现两个 hindsight 问题,已在 master 后续 commit 修复:
+
+### 1. Gradle 8.13 不支持 JDK 25 作为 daemon JVM
+- **现象**: 用户机器系统默认 JDK 是 25.0.2(scoop 默认),跑 `.\gradlew.bat run` 抛 `25.0.2` 异常
+- **根因**: Gradle 8.x 系列 daemon JVM 兼容 JDK 17-24,**不含 25**;Gradle 9.1.0 起才支持 JDK 25 daemon
+- **修复**: wrapper 升级到 **Gradle 9.3.0**(Kotlin 2.3.21 declared 支持的最高版本 + 含 JDK 25 daemon 支持)
+- **当时为什么选了 8.13**: 见 plan v2 Tech Stack —— 我误以为 9.x 太新不稳,实际上 9.1+ 已经是必需的
+
+### 2. 机器特定路径写到了仓库 gradle.properties
+- **现象**: `desktop/gradle.properties` 包含本机 JDK 绝对路径 + 代理设置
+- **修复**:
+  - 机器路径挪到 **用户级** `~/.gradle/gradle.properties`(Gradle 官方机制,跨项目共享,不进仓库)
+  - 仓库新增 `desktop/gradle.properties.local.example` 作为团队模板
+  - `.gitignore` 排除真实 `.local` 文件
+- **重要陷阱**: 用户级 properties 里如果路径含中文(如 `C:\Users\王校长\...`),**必须用 Unicode escape** (`王校长`),否则 Gradle 按 ISO-8859-1 解析会失败
+
+### 当前实际版本矩阵(覆盖 plan 顶部的"v3")
+- Java 21 LTS(backend)+ Java 21 toolchain(desktop,可同时支持 25)
+- Spring Boot 3.5.14
+- Kotlin 2.3.21
+- Compose Multiplatform 1.11.0
+- **Gradle 9.3.0**(原 plan 写的 8.13 已不适用)
+
+
 1. 跑 **superpowers:verification-before-completion** 跨步验收
 2. 让我为 **P1-1(协议层)** 写详细 plan(预计 12-15 步,引入 spring-boot-starter-websocket 与 Spring AI Alibaba 1.1.2.x BOM)
 3. 在 `feat/p1-1-protocol` 分支上推进
