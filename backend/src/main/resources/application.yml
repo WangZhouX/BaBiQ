@@ -8,3 +8,10 @@ server:
 logging:
   level:
     com.wzx.babiq.server: DEBUG
+
+babiq:
+  ws:
+    path: /ws/agent
+    allowed-origins: "*"
+  protocol:
+    mock-agent-text: "hello from babiq"
