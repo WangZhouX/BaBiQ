@@ -70,6 +70,17 @@ class ChatClientFactoryTest {
     }
 
     @Test
+    @DisplayName("resolveChatModel 返回原始 ChatModel，不包 memory advisor")
+    void resolveChatModel_should_return_raw_chat_model() {
+        ChatClientFactory factory = newFactory(properties(), List.of(fakeFactory(ProviderType.DASHSCOPE)));
+
+        ChatModel chatModel = factory.resolveChatModel("dashscope-default");
+
+        assertThat(chatModel).isNotNull();
+        assertThat(((EchoChatModel) chatModel).providerId()).isEqualTo("dashscope-default");
+    }
+
+    @Test
     @DisplayName("resolve 未知 provider id 抛出清晰错误")
     void resolve_should_reject_unknown_provider_id() {
         ChatClientFactory factory = newFactory(properties(), List.of(fakeFactory(ProviderType.DASHSCOPE)));

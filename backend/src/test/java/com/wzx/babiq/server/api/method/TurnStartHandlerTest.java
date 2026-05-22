@@ -1,6 +1,7 @@
 package com.wzx.babiq.server.api.method;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wzx.babiq.server.agent.TurnExecutor;
 import com.wzx.babiq.server.conversation.ConversationService;
 import com.wzx.babiq.server.conversation.Thread;
 import org.junit.jupiter.api.Test;
@@ -8,49 +9,46 @@ import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
 import java.lang.reflect.Proxy;
-import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
+/**
+ * TurnStartHandler 测试。
+ *
+ * <p>P1-3a 起 handler 只负责创建 turn、发 turn/started、提交 TurnExecutor。</p>
+ */
 class TurnStartHandlerTest {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Test
-    void handle_should_return_turn_id_and_emit_full_mock_stream() throws Exception {
+    void handle_should_return_turn_id_emit_started_and_submit_executor() throws Exception {
         ConversationService conversationService = new ConversationService();
-        Thread thread = conversationService.createThread(".");
-        List<String> payloads = new CopyOnWriteArrayList<>();
+        Thread thread = conversationService.createThread("F:/wwwxxxx/BaBiQ");
+        TurnExecutor executor = mock(TurnExecutor.class);
+        List<String> payloads = new ArrayList<>();
         WebSocketSession session = recordingSession(payloads);
-        TurnStartHandler handler = new TurnStartHandler(conversationService, objectMapper, "hello from babiq");
+        TurnStartHandler handler = new TurnStartHandler(conversationService, objectMapper, executor);
 
         Object responsePayload = handler.handle(
                 objectMapper.valueToTree(Map.of(
                         "threadId", thread.id(),
+                        "providerId", "dashscope-default",
                         "input", Map.of("type", "text", "text", "ping"))),
                 session);
 
         Map<?, ?> responseMap = (Map<?, ?>) responsePayload;
         assertThat(responseMap.get("turnId")).asString().startsWith("turn_");
-        await().atMost(Duration.ofSeconds(2))
-                .untilAsserted(() -> assertThat(payloads).hasSizeGreaterThanOrEqualTo(4));
-
+        assertThat(payloads).hasSize(1);
         assertThat(payloads.get(0)).contains("\"method\":\"turn/started\"");
-        assertThat(payloads.get(1))
-                .contains("\"method\":\"item/added\"")
-                .contains("\"type\":\"userMessage\"")
-                .contains("\"text\":\"ping\"");
-        assertThat(payloads.get(2))
-                .contains("\"method\":\"item/added\"")
-                .contains("\"type\":\"agentMessage\"")
-                .contains("hello from babiq");
-        assertThat(payloads.get(3))
-                .contains("\"method\":\"turn/completed\"")
-                .contains("\"status\":\"completed\"");
+        verify(executor).submit(any(), eq("ping"), eq("dashscope-default"), eq("F:/wwwxxxx/BaBiQ"), any());
     }
 
     private WebSocketSession recordingSession(List<String> payloads) {
@@ -59,8 +57,7 @@ class TurnStartHandlerTest {
                 new Class<?>[]{WebSocketSession.class},
                 (proxy, method, args) -> {
                     if ("sendMessage".equals(method.getName())) {
-                        TextMessage message = (TextMessage) args[0];
-                        payloads.add(message.getPayload());
+                        payloads.add(((TextMessage) args[0]).getPayload());
                         return null;
                     }
                     if ("getId".equals(method.getName())) {

@@ -1,0 +1,77 @@
+package com.wzx.babiq.server.tool;
+
+import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.method.MethodToolCallbackProvider;
+import org.springframework.stereotype.Component;
+
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+
+/**
+ * 工具注册表。
+ *
+ * <p>只负责发现、命名和导出 ToolCallback，不做沙箱判断，不做结果截断。</p>
+ */
+@Component
+public class ToolRegistry {
+
+    private final Map<String, Tool> toolsByName;
+    private final ToolCallback[] callbacks;
+
+    /**
+     * 构造工具注册表。
+     *
+     * @param tools Spring 容器中所有工具实现
+     */
+    public ToolRegistry(List<Tool> tools) {
+        List<Tool> safeTools = tools == null ? List.of() : List.copyOf(tools);
+        this.toolsByName = indexTools(safeTools);
+        this.callbacks = MethodToolCallbackProvider.builder()
+                .toolObjects(safeTools.toArray())
+                .build()
+                .getToolCallbacks();
+    }
+
+    /**
+     * 按名称获取工具。
+     *
+     * @param name 工具名
+     * @return 对应工具
+     */
+    public Optional<Tool> get(String name) {
+        return Optional.ofNullable(toolsByName.get(name));
+    }
+
+    /**
+     * 返回全部工具名。
+     *
+     * @return 工具名列表
+     */
+    public List<String> names() {
+        return List.copyOf(toolsByName.keySet());
+    }
+
+    /**
+     * 导出全部 ToolCallback。
+     *
+     * @return 工具回调数组
+     */
+    public ToolCallback[] allCallbacks() {
+        return Arrays.copyOf(callbacks, callbacks.length);
+    }
+
+    private Map<String, Tool> indexTools(List<Tool> tools) {
+        Map<String, Tool> indexed = new LinkedHashMap<>();
+        for (Tool tool : tools) {
+            Tool previous = indexed.put(tool.name(), tool);
+            if (previous != null) {
+                throw new IllegalStateException("Duplicate tool name: " + tool.name());
+            }
+        }
+        return Collections.unmodifiableMap(indexed);
+    }
+}

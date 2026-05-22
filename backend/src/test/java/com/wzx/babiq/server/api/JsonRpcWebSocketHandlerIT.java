@@ -2,10 +2,14 @@ package com.wzx.babiq.server.api;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wzx.babiq.server.agent.TurnExecutor;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Primary;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.client.standard.StandardWebSocketClient;
@@ -17,6 +21,10 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
 /**
  * /ws/agent 端到端协议集成测试。
@@ -34,8 +42,21 @@ class JsonRpcWebSocketHandlerIT {
     @Autowired
     private ObjectMapper objectMapper;
 
+    @Autowired
+    private TurnExecutor turnExecutor;
+
+    @TestConfiguration
+    static class MockConfig {
+
+        @Bean
+        @Primary
+        TurnExecutor turnExecutor() {
+            return mock(TurnExecutor.class);
+        }
+    }
+
     @Test
-    void websocket_should_complete_thread_create_and_mock_turn_flow() throws Exception {
+    void websocket_should_complete_thread_create_and_submit_turn() throws Exception {
         List<String> receivedPayloads = new CopyOnWriteArrayList<>();
         WebSocketSession session = connect(receivedPayloads);
 
@@ -54,7 +75,7 @@ class JsonRpcWebSocketHandlerIT {
                         + "\"input\":{\"type\":\"text\",\"text\":\"ping\"}}}"));
 
         await().atMost(Duration.ofSeconds(3))
-                .untilAsserted(() -> assertThat(receivedPayloads).hasSizeGreaterThanOrEqualTo(6));
+                .untilAsserted(() -> assertThat(receivedPayloads).hasSizeGreaterThanOrEqualTo(3));
         session.close();
 
         String allPayloads = String.join("\n", receivedPayloads);
@@ -62,12 +83,8 @@ class JsonRpcWebSocketHandlerIT {
                 .contains("\"id\":2")
                 .contains("\"turnId\":\"turn_")
                 .contains("\"method\":\"turn/started\"")
-                .contains("\"type\":\"userMessage\"")
-                .contains("\"text\":\"ping\"")
-                .contains("\"type\":\"agentMessage\"")
-                .contains("hello from babiq")
-                .contains("\"method\":\"turn/completed\"")
-                .contains("\"status\":\"completed\"");
+                .doesNotContain("hello from babiq");
+        verify(turnExecutor).submit(any(), eq("ping"), eq(null), eq("."), any());
     }
 
     @Test

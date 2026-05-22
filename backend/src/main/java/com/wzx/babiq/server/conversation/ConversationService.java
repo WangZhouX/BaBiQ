@@ -1,5 +1,8 @@
 package com.wzx.babiq.server.conversation;
 
+import com.wzx.babiq.server.conversation.items.CommandExecutionItem;
+import com.wzx.babiq.server.conversation.items.FileChangeItem;
+import com.wzx.babiq.server.conversation.items.ReasoningItem;
 import org.springframework.stereotype.Service;
 
 import java.util.Map;
@@ -71,6 +74,50 @@ public class ConversationService {
      */
     public Optional<Turn> findTurn(String turnId) {
         return Optional.ofNullable(turns.get(turnId));
+    }
+
+    /**
+     * 构造命令执行 item。
+     *
+     * <p>本方法只负责统一 item id 和 type，不直接写 WebSocket；真正发包仍由
+     * {@link ItemEmitter#emitItemAdded(com.wzx.babiq.server.conversation.items.ThreadItem)}
+     * 完成，避免生命周期服务和协议输出耦合。</p>
+     *
+     * @param command 命令文本
+     * @param status 命令状态
+     * @param exitCode 退出码，可为 null
+     * @param stdout 标准输出，可为 null
+     * @param stderr 标准错误，可为 null
+     * @param durationMs 执行耗时，可为 null
+     * @return commandExecution item
+     */
+    public CommandExecutionItem emitCommandExecution(
+            String command, String status, Integer exitCode, String stdout, String stderr, Long durationMs) {
+        return new CommandExecutionItem(newId("it_"), "commandExecution",
+                command, status, exitCode, stdout, stderr, durationMs);
+    }
+
+    /**
+     * 构造文件变更 item。
+     *
+     * @param action 文件动作，例如 read/write/patch
+     * @param path 文件路径
+     * @param status 动作状态，例如 completed/denied
+     * @param contentPreview 内容预览或拒绝原因
+     * @return fileChange item
+     */
+    public FileChangeItem emitFileChange(String action, String path, String status, String contentPreview) {
+        return new FileChangeItem(newId("it_"), "fileChange", action, path, status, contentPreview);
+    }
+
+    /**
+     * 构造可展示推理摘要 item。
+     *
+     * @param text 推理摘要文本
+     * @return reasoning item
+     */
+    public ReasoningItem emitReasoning(String text) {
+        return new ReasoningItem(newId("it_"), "reasoning", text);
     }
 
     private String newId(String prefix) {

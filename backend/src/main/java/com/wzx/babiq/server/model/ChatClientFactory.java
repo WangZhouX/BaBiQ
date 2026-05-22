@@ -61,6 +61,25 @@ public class ChatClientFactory {
     }
 
     /**
+     * 按 providerId 解析原始 ChatModel，不附加 memory advisor。
+     *
+     * <p>ReactAgent 自己会接管 ReAct 循环和记忆检查点，P1-3a 需要的是未包装的模型对象。</p>
+     *
+     * @param providerId provider 唯一标识；传入 null 时使用当前 active provider
+     * @return 原始 ChatModel
+     */
+    public ChatModel resolveChatModel(String providerId) {
+        String effectiveProviderId = providerId == null ? registry.active().id() : providerId;
+        ModelProviderConfig providerConfig = registry.get(effectiveProviderId);
+        ProviderFactory providerFactory = factoriesByType.get(providerConfig.type());
+        if (providerFactory == null) {
+            throw new IllegalStateException("没有注册 ProviderFactory,type=" + providerConfig.type()
+                    + ",providerId=" + effectiveProviderId);
+        }
+        return providerFactory.build(providerConfig);
+    }
+
+    /**
      * 返回当前激活 provider 的 ChatClient。
      *
      * @return active-provider 对应的 ChatClient
@@ -70,14 +89,7 @@ public class ChatClientFactory {
     }
 
     private ChatClient buildClient(String providerId) {
-        ModelProviderConfig providerConfig = registry.get(providerId);
-        ProviderFactory providerFactory = factoriesByType.get(providerConfig.type());
-        if (providerFactory == null) {
-            throw new IllegalStateException("没有注册 ProviderFactory,type=" + providerConfig.type()
-                    + ",providerId=" + providerId);
-        }
-
-        ChatModel chatModel = providerFactory.build(providerConfig);
+        ChatModel chatModel = resolveChatModel(providerId);
         ChatMemory chatMemory = MessageWindowChatMemory.builder()
                 .maxMessages(maxMessages)
                 .build();

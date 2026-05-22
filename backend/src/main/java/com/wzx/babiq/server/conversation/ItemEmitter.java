@@ -82,6 +82,36 @@ public class ItemEmitter {
     }
 
     /**
+     * 发射命令执行 item。
+     *
+     * @param item 命令执行 item
+     * @throws IOException WebSocket 写入失败时抛出
+     */
+    public void emitCommandExecution(ThreadItem item) throws IOException {
+        emitItemAdded(item);
+    }
+
+    /**
+     * 发射文件变更 item。
+     *
+     * @param item 文件变更 item
+     * @throws IOException WebSocket 写入失败时抛出
+     */
+    public void emitFileChange(ThreadItem item) throws IOException {
+        emitItemAdded(item);
+    }
+
+    /**
+     * 发射推理摘要 item。
+     *
+     * @param item 推理摘要 item
+     * @throws IOException WebSocket 写入失败时抛出
+     */
+    public void emitReasoning(ThreadItem item) throws IOException {
+        emitItemAdded(item);
+    }
+
+    /**
      * 发射 turn/completed 通知。
      *
      * @param status 协议层完成状态,例如 completed / interrupted / canceled

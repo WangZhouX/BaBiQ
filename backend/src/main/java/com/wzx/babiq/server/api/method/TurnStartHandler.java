@@ -2,55 +2,51 @@ package com.wzx.babiq.server.api.method;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wzx.babiq.server.agent.TurnExecutor;
 import com.wzx.babiq.server.api.JsonRpcMethodHandler;
 import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
 import com.wzx.babiq.server.api.error.JsonRpcException;
 import com.wzx.babiq.server.conversation.ConversationService;
 import com.wzx.babiq.server.conversation.ItemEmitter;
+import com.wzx.babiq.server.conversation.Thread;
 import com.wzx.babiq.server.conversation.Turn;
-import com.wzx.babiq.server.conversation.items.AgentMessageItem;
-import com.wzx.babiq.server.conversation.items.UserMessageItem;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.WebSocketSession;
 
 import java.util.Map;
-import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 
 /**
  * turn/start 方法处理器。
  *
- * <p>P1-1 的核心路径:创建 Turn、同步返回 turnId,随后异步发出一段 mock item
- * 流。这里刻意不接真实 LLM,只验证 WebSocket + JSON-RPC + item 协议是否贯通。</p>
+ * <p>P1-3a 起该 handler 不再发 mock item 流，而是创建 Turn、同步返回 turnId，
+ * 再把真实 AgentLoop 提交给 TurnExecutor 异步执行。它存在的原因是协议线程不能被
+ * 模型调用或 HITL 中断阻塞。</p>
  */
 @Component
 public class TurnStartHandler implements JsonRpcMethodHandler {
 
     private static final Logger log = LoggerFactory.getLogger(TurnStartHandler.class);
 
-    private static final int ITEM_ID_RANDOM_LENGTH = 8;
-
     private final ConversationService conversationService;
     private final ObjectMapper objectMapper;
-    private final String mockAgentText;
+    private final TurnExecutor turnExecutor;
 
     /**
      * 创建 turn/start handler。
      *
      * @param conversationService 对话生命周期服务
      * @param objectMapper JSON 序列化器
-     * @param mockAgentText P1-1 mock Agent 文本
+     * @param turnExecutor Agent 异步执行器
      */
     public TurnStartHandler(
             ConversationService conversationService,
             ObjectMapper objectMapper,
-            @Value("${babiq.protocol.mock-agent-text:hello from babiq}") String mockAgentText) {
+            TurnExecutor turnExecutor) {
         this.conversationService = conversationService;
         this.objectMapper = objectMapper;
-        this.mockAgentText = mockAgentText;
+        this.turnExecutor = turnExecutor;
     }
 
     /**
@@ -64,64 +60,43 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
     }
 
     /**
-     * 创建 Turn 并异步发出 P1-1 mock 事件流。
+     * 创建 turn 并提交真实 AgentLoop。
      *
-     * @param params 必须包含 threadId 和 input.text
-     * @param session 当前 WebSocket 会话,用于异步 notification
+     * @param params 必须包含 threadId 与 input.text，可选 providerId
+     * @param session 当前 WebSocket 会话
      * @return 包含 turnId 的响应对象
-     * @throws JsonRpcException 参数缺失或 threadId 不存在时抛出
      */
     @Override
     public Object handle(JsonNode params, WebSocketSession session) {
         String threadId = requiredText(params, "threadId");
         String userText = requiredInputText(params);
-
-        Turn turn;
-        try {
-            turn = conversationService.startTurn(threadId);
-        } catch (IllegalArgumentException exception) {
-            throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, exception.getMessage());
-        }
+        String providerId = optionalText(params, "providerId");
+        Thread thread = conversationService.findThread(threadId)
+                .orElseThrow(() -> new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS,
+                        "threadId=" + threadId + " 不存在，无法创建 Turn"));
+        Turn turn = conversationService.startTurn(threadId);
         turn.start();
 
-        ItemEmitter itemEmitter = new ItemEmitter(session, objectMapper, threadId, turn.id());
-        // P1-1 只跑极短 mock 流,暂用默认异步执行器;P1-2 接真实模型时再替换专用 Executor。
-        CompletableFuture.runAsync(() -> runMockStream(itemEmitter, turn, userText));
-        return Map.of("turnId", turn.id());
-    }
-
-    private void runMockStream(ItemEmitter itemEmitter, Turn turn, String userText) {
+        ItemEmitter emitter = new ItemEmitter(session, objectMapper, threadId, turn.id());
         try {
-            itemEmitter.emitTurnStarted();
-            itemEmitter.emitItemAdded(UserMessageItem.of(newItemId(), userText));
-            itemEmitter.emitItemAdded(AgentMessageItem.full(newItemId(), mockAgentText));
-            turn.complete();
-            itemEmitter.emitTurnCompleted("completed");
+            emitter.emitTurnStarted();
         } catch (Exception exception) {
-            log.error("P1-1 mock item 流执行失败: turnId={}", turn.id(), exception);
-            markTurnFailedIfPossible(turn, exception);
-            emitTurnFailedIfPossible(itemEmitter, turn, exception);
+            log.warn("发送 turn/started 失败 turnId={}", turn.id(), exception);
         }
-    }
-
-    private void markTurnFailedIfPossible(Turn turn, Exception exception) {
-        if (turn.status().isTerminal()) {
-            return;
-        }
-        turn.fail(exception.getMessage());
-    }
-
-    private void emitTurnFailedIfPossible(ItemEmitter itemEmitter, Turn turn, Exception exception) {
-        try {
-            itemEmitter.emitTurnFailed(exception.getMessage());
-        } catch (Exception sendException) {
-            log.error("发送 turn/failed 也失败: turnId={}", turn.id(), sendException);
-        }
+        turnExecutor.submit(turn, userText, providerId, thread.cwd(), emitter);
+        return Map.of("turnId", turn.id());
     }
 
     private String requiredText(JsonNode params, String fieldName) {
         if (params == null || !params.hasNonNull(fieldName) || params.get(fieldName).asText().isBlank()) {
             throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "缺少必填字段: " + fieldName);
+        }
+        return params.get(fieldName).asText();
+    }
+
+    private String optionalText(JsonNode params, String fieldName) {
+        if (params == null || !params.hasNonNull(fieldName) || params.get(fieldName).asText().isBlank()) {
+            return null;
         }
         return params.get(fieldName).asText();
     }
@@ -132,10 +107,5 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
             throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "缺少必填字段: input.text");
         }
         return textNode.asText();
-    }
-
-    private String newItemId() {
-        String randomPart = UUID.randomUUID().toString().replace("-", "").substring(0, ITEM_ID_RANDOM_LENGTH);
-        return "it_" + randomPart;
     }
 }
