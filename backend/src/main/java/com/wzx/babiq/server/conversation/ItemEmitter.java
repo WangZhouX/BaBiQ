@@ -1,6 +1,7 @@
 package com.wzx.babiq.server.conversation;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wzx.babiq.server.agent.ApprovalRequestPayload;
 import com.wzx.babiq.server.api.JsonRpcMessage;
 import com.wzx.babiq.server.conversation.items.ThreadItem;
 import org.springframework.web.socket.TextMessage;
@@ -102,6 +103,16 @@ public class ItemEmitter {
         Map<String, Object> params = baseParams();
         params.put("reason", reason);
         sendNotification("turn/failed", params);
+    }
+
+    /**
+     * 发射审批请求通知。
+     *
+     * @param payload 审批请求载荷
+     * @throws IOException WebSocket 写入失败时抛出
+     */
+    public void emitApprovalRequest(ApprovalRequestPayload payload) throws IOException {
+        sendNotification("approval/request", payload);
     }
 
     private Map<String, Object> paramsWithItem(ThreadItem item) {
