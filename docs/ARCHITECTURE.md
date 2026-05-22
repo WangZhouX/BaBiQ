@@ -833,32 +833,50 @@ public ChatClient resolve(String providerId) {
 
 **比喻**: 窗口是杯子的容量,工程是倒水策略,Memory 是其中"管理已经倒进去的水"这一环。
 
-### 14.2 双层记忆模型(对标 Codex / Claude Code,用 Spring AI Alibaba 实现)
+### 14.2 三层记忆模型(对标 Codex / Claude Code,用 Spring AI Alibaba 实现)
+
+> 完整 Memory = **短期(滑窗)** + **长期(KV)** + **语义(向量)** 三层叠加。
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│  长期记忆 (Long-term Memory) — Spring AI Alibaba `Store`  │
-│  - 跨 Thread / 跨会话的用户偏好、知识、经验               │
-│  - 由 LLM 通过 saveMemory / getMemory 工具主动读写         │
-│  - namespace + key + value(可选向量化)                  │
-│  - 对标 Codex 的 `POST /memories/summarize` 后产出物       │
-│  - 实现: MemoryStore(内存) / RedisStore / 自定义          │
-└──────────────────────────────────────────────────────────┘
-         ↕(LLM 在每个 Turn 可主动召回)
-┌──────────────────────────────────────────────────────────┐
-│  短期记忆 (Short-term Memory) — Spring AI 标准 `ChatMemory` │
-│  - 同一 Thread 内对话历史                                  │
-│  - MessageWindowChatMemory: 滑动窗口,保留最近 N 条          │
-│  - + ChatMemoryRepository: 持久化(JDBC / Redis)            │
-│  - + SummarizationHook: 接近上限时 LLM 自动摘要(策略 3)   │
-│  - 对标 Codex 的 ResponseItem 数组 + `/compaction`         │
-└──────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  第 3 层 语义记忆 (Semantic) — VectorStore + RAG ⭐           │
+│  - 跨 Thread / 跨项目的任意内容向量化召回                      │
+│  - 实现: VectorStoreChatMemoryAdvisor(对话向量化召回)         │
+│         + QuestionAnswerAdvisor(知识库 RAG)                  │
+│  - VectorStore: SimpleVectorStore / Chroma / Milvus / Redis  │
+│  - 关键: 滑窗丢弃 / 摘要压缩前,先写入 VectorStore(双保险)    │
+│  - 详见 §20 RAG 与语义记忆                                    │
+└──────────────────────────────────────────────────────────────┘
+         ↕(LLM 通过 search_codebase / search_history 工具召回)
+┌──────────────────────────────────────────────────────────────┐
+│  第 2 层 长期记忆 (Long-term Explicit) — Spring AI Alibaba `Store` │
+│  - 跨 Thread / 跨会话的用户偏好、知识、经验                    │
+│  - 由 LLM 通过 saveMemory / getMemory 工具主动读写             │
+│  - namespace + key + value 精确匹配                            │
+│  - 对标 Codex 的 `POST /memories/summarize` 后产出物            │
+│  - 实现: MemoryStore(内存) / RedisStore / 自定义               │
+└──────────────────────────────────────────────────────────────┘
+         ↕
+┌──────────────────────────────────────────────────────────────┐
+│  第 1 层 短期记忆 (Short-term) — Spring AI 标准 `ChatMemory`   │
+│  - 同一 Thread 内对话历史                                       │
+│  - MessageWindowChatMemory: 滑动窗口,保留最近 N 条              │
+│  - + ChatMemoryRepository: 持久化(JDBC / Redis)               │
+│  - + SummarizationHook: 接近上限时 LLM 自动摘要(策略 3)       │
+│  - 对标 Codex 的 ResponseItem 数组 + `/compaction`              │
+└──────────────────────────────────────────────────────────────┘
          ↓ 注入到 Prompt
-┌──────────────────────────────────────────────────────────┐
-│  Model Context Window (qwen-plus 1M / qwen-max 256K / ...) │
-│  + 由 ModelMetadata 自动识别上限                            │
-└──────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  Model Context Window (qwen-plus 1M / qwen-max 256K / ...)    │
+│  + 由 ModelMetadata 自动识别上限                                │
+└──────────────────────────────────────────────────────────────┘
 ```
+
+| 层 | 召回方式 | 时效 | 容量 |
+|---|---|---|---|
+| 短期 | 时间顺序(最近) | 同 Thread | 受滑窗 N 限制 |
+| 长期 | 精确匹配(key) | 跨 Thread | 受存储后端限制 |
+| **语义(§20)** | **语义相似度(向量距离)** | **跨 Thread / 跨项目** | **海量(VectorStore)** |
 
 ### 14.3 上下文工程的 5 大支柱(Spring AI Alibaba 提供的组件)
 
@@ -1861,4 +1879,183 @@ ReactAgent babiqMain = ReactAgent.builder()
 - [Google A2A 原始发布(2025-04)](https://developers.googleblog.com/en/a2a-a-new-era-of-agent-interoperability/)
 - [Agent2Agent 协议升级(2026)](https://cloud.google.com/blog/products/ai-machine-learning/agent2agent-protocol-is-getting-an-upgrade)
 - [IBM: 什么是 Agent2Agent 协议](https://www.ibm.com/think/topics/agent2agent-protocol)
+
+---
+
+## 20. RAG 与语义记忆
+
+> RAG 不是"Memory 旁边的朋友",它**就是 Memory 系统的第三层 — 语义记忆**(详见 §14.2 三层模型)。
+> 本章详细讲 Spring AI Alibaba 的 RAG 体系、BaBiQ 落地场景、"压缩+RAG 双保险"策略。
+
+### 20.1 RAG 在 BaBiQ 中的定位
+
+| 维度 | 短期(§14) | 长期(§14) | **语义(本章)** |
+|---|---|---|---|
+| 实现 | `MessageWindowChatMemory` | `Store` | `VectorStore` + Embedding |
+| 召回 | 时间顺序 | 精确 key 匹配 | **语义相似度** |
+| 容量 | N 条(20-50) | 受 KV 存储限制 | **海量(GB 级)** |
+| 适用 | 当前对话 | 用户偏好 / 显式知识 | **大文档 / 大代码库 / 过去对话语义查找** |
+
+### 20.2 Spring AI Alibaba RAG 体系全景
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│            DocumentReader (各种格式 → Document)              │
+│       PDF / HTML / Markdown / Code / Text / JSON 等          │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│              EmbeddingModel (text → vector)                  │
+│   text-embedding-v4 (DashScope) / OpenAI / 本地 BGE 等       │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│                  VectorStore (存储 + 索引)                    │
+│   SimpleVectorStore (内存)/Chroma/Milvus/Redis/Elasticsearch  │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+              ┌────────────┼─────────────┐
+              ▼            ▼             ▼
+   ┌────────────────┐ ┌──────────────┐ ┌──────────────────┐
+   │ QuestionAnswer │ │ VectorStore  │ │  Retrieval       │
+   │ Advisor        │ │ ChatMemory   │ │  Augmentation    │
+   │ (知识库 RAG)   │ │ Advisor      │ │  Advisor         │
+   │                │ │ (对话语义召回)│ │  (模块化 pipeline)│
+   └────────────────┘ └──────────────┘ └──────────────────┘
+```
+
+### 20.3 三种 Advisor 对比
+
+| Advisor | 用途 | 数据源 | 注入方式 |
+|---|---|---|---|
+| **`QuestionAnswerAdvisor`** | **知识库 RAG**(传统) | 外部文档(PDF/MD/HTML) | 查询前自动 search → 拼到 prompt |
+| **`VectorStoreChatMemoryAdvisor`** | **对话语义召回** | 历史对话 | 查询前 search 过去消息 → 注入上下文 |
+| **`RetrievalAugmentationAdvisor`** | **模块化复杂 RAG** | 任意 | 可组合 Query Transformer / Re-ranker |
+
+**关键**: 这三个 Advisor 可以**同时**挂到同一个 ChatClient:
+
+```java
+ChatClient.builder(chatModel)
+    .defaultAdvisors(
+        new MessageChatMemoryAdvisor(shortTermMemory),          // §14 短期
+        new VectorStoreChatMemoryAdvisor(conversationVecStore), // 语义对话召回
+        new QuestionAnswerAdvisor(knowledgeBaseVecStore)        // 知识库 RAG
+    )
+    .build();
+```
+
+### 20.4 BaBiQ 应用的 6 个 RAG 场景
+
+| # | 场景 | 用什么 | 阶段 |
+|:-:|---|---|:-:|
+| 1 | **代码库语义搜索**(大项目不能全塞 context) | Agentic RAG: `search_codebase` 工具 + 代码 VectorStore | P3 |
+| 2 | **"上次帮我改的那个 X 文件"**(超出滑窗的对话回忆) | `VectorStoreChatMemoryAdvisor` | P2 |
+| 3 | **项目文档/PRD/README 索引** | `DocumentReader` + `QuestionAnswerAdvisor` | P3 |
+| 4 | **用户经验沉淀**(纠正过的错误不再犯) | 自动写入 VectorStore + 语义召回 | P3+ |
+| 5 | **跨项目类似代码查找** | 跨 Thread 的 VectorStoreChatMemoryAdvisor | P4 |
+| 6 | **Agentic RAG**(LLM 主动调 `search_*` 工具) | `FunctionToolCallback` 包装 RAG 查询 | P3 |
+
+### 20.5 ⭐ Agentic RAG — Code Agent 的核心机制
+
+```java
+ToolCallback searchCodebase = FunctionToolCallback.builder("search_codebase",
+    (Function<SearchReq, SearchResp>) req -> {
+        List<Document> docs = codebaseVectorStore.similaritySearch(
+            SearchRequest.query(req.query()).topK(5));
+        return new SearchResp(docs.stream()
+            .map(d -> new Hit(
+                d.getMetadata().get("file").toString(),
+                d.getMetadata().get("line").toString(),
+                d.getText()))
+            .toList());
+    })
+    .description("按语义在当前项目代码库中搜索,返回 5 个最相关代码片段(含文件路径+行号)")
+    .build();
+
+ReactAgent codeAgent = ReactAgent.builder()
+    .tools(readFileTool, writeFileTool, searchCodebase, ...)  // ← RAG 当工具
+    .build();
+```
+
+→ **这就是 Claude Code / Codex / Cursor 处理大代码库的核心**。RAG 不是"硬塞 context",而是"LLM 决定何时查"。
+
+### 20.6 ⭐ "压缩 + RAG" 双保险策略
+
+§14.5 讲 SummarizationHook 自动摘要,**但摘要必然有损**。组合 RAG 后:
+
+```
+旧对话(50 条 → 接近 context 上限)
+       │
+       ├──→ [SummarizationHook] ──→ 摘要(1 条 SystemMessage)──→ 进 Context Window
+       │
+       └──→ [自动写入 VectorStore] ──→ 原文向量化存储 ──→ 未来语义召回
+```
+
+**结果**:
+- ✅ Context 不爆(摘要节省空间)
+- ✅ 信息不丢(VectorStore 保留全部细节)
+- ✅ 未来某条消息提到"上次说的 X"时,VectorStoreChatMemoryAdvisor 能召回回来
+
+这是 **生产级 Memory 设计的标准做法**(Mem0 等平台都这么干)。
+
+### 20.7 VectorStore 选型矩阵
+
+| VectorStore | 部署难度 | 容量 | BaBiQ 阶段 |
+|---|---|---|:-:|
+| **SimpleVectorStore**(内存) | 0 | 小 | **P2 起步** |
+| **Chroma**(嵌入式) | 低 | 中 | P3 |
+| **Milvus**(独立服务) | 中 | 大 | P3+ |
+| **Redis RediSearch** | 低(已有 Redis 时) | 中 | P3+ |
+| **Elasticsearch / OpenSearch** | 中 | 大 + 全文混检 | P4+ |
+| **DashScope 向量库** | 低(云原生) | 大 | P3+(国内场景) |
+
+### 20.8 EmbeddingModel 选型
+
+| 模型 | 维度 | 适用 | 备注 |
+|---|---|---|---|
+| **text-embedding-v4**(DashScope) | 1024 | 中英文混合 | BaBiQ 默认 |
+| OpenAI text-embedding-3-small | 1536 | 英文为主 | 国外项目 |
+| BGE-large-zh-v1.5 | 1024 | 中文 | 本地部署 |
+| Voyage-3 | 1024 | 代码场景强 | 代码索引推荐 |
+
+### 20.9 BaBiQ P1-P4 RAG 路线
+
+| 阶段 | RAG 做什么 |
+|:-:|---|
+| **P1** | ❌ 不做 RAG(单 ReactAgent + 滑窗 ChatMemory 够用) |
+| **P2** | `SimpleVectorStore`(内存)+ `VectorStoreChatMemoryAdvisor`(对话语义召回);**SummarizationHook 压缩时自动写 VectorStore**(双保险) |
+| **P3** | + `search_codebase` Agentic RAG 工具 + Chroma/Milvus 持久化 + 项目文档索引 |
+| **P4+** | + 用户经验沉淀(跨项目)+ 多模态检索(图片向量)+ A2A 暴露 RAG 能力(企业知识库 Agent) |
+
+### 20.10 关键设计决策
+
+| 决策 | 选择 | 原因 |
+|---|---|---|
+| RAG 引入时机 | **P2** 起(对话语义召回)→ **P3** Agentic RAG 工具 | qwen-plus 1M 够,但语义召回有独特价值 |
+| Embedding 模型 | **text-embedding-v4**(DashScope) | 中英文混合;BaBiQ 默认 provider 一致 |
+| VectorStore | **P2: SimpleVectorStore / P3+: Chroma 或 Milvus** | YAGNI |
+| 双保险开关 | **默认开**(压缩自动写 VectorStore) | 防摘要丢信息 |
+| Agentic RAG vs 硬性 RAG | **优先 Agentic**(LLM 决定何时查) | 上下文更干净;不查不浪费 token |
+| 跨 Thread 召回粒度 | P3 默认开,可配置 | 学习项目数据少,跨 Thread 反而有用 |
+
+### 20.11 与其他设计的集成
+
+| 章节 | 集成点 |
+|---|---|
+| §14 三层 Memory | RAG = 第 3 层语义记忆 |
+| §14.5 会话压缩 | 压缩前先写 VectorStore(双保险) |
+| §15 Hook | `VectorStoreWriteHook(AFTER_TOOL)` 自动把 fileChange/commandExecution 写入向量库 |
+| §17 HITL | RAG 命中过多时触发审批("找到 100 个相关文件,要全部读吗?") |
+| §18 Multi-Agent | 专门的 `code_search_agent` 用 RAG 做语义搜索 |
+| §19 A2A | P4+ 暴露 RAG 能力给外部 Agent(企业知识库 Agent) |
+
+### 20.12 参考资料
+
+- [Spring AI Alibaba RAG 文档](https://java2ai.com/integration/rag/retrieval-augmented-generation)
+- [QuestionAnswerAdvisor](https://java2ai.com/integration/rag/retrieval-augmented-generation)
+- [VectorStoreChatMemoryAdvisor](https://java2ai.com/blog/spring-ai-100-ga-released)
+- [Spring AI Alibaba RAG + Ollama 实战](https://java2ai.com/blog/spring-ai-alibaba-rag-ollama)
+- [DashScope text-embedding-v4 文档](https://help.aliyun.com/zh/model-studio/developer-reference/text-embedding-quick-start)
 
