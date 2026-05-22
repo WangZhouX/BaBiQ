@@ -22,6 +22,6 @@ public record ApprovalRequestPayload(
         @JsonProperty(required = true) String itemId,
         @JsonProperty(required = true) String toolName,
         @JsonProperty(required = true) String arguments,
-        String description
+        @JsonProperty(required = true) String description
 ) {
 }
