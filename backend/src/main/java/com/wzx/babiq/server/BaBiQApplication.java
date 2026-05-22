@@ -2,6 +2,7 @@ package com.wzx.babiq.server;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 
 /**
  * BaBiQ 后端服务启动入口。
@@ -10,6 +11,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * 都放在各自包内,避免启动入口承载业务逻辑。</p>
  */
 @SpringBootApplication
+@ConfigurationPropertiesScan("com.wzx.babiq.server")
 public class BaBiQApplication {
 
     /**
