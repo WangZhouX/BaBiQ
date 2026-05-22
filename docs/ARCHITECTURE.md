@@ -621,11 +621,12 @@ babiq:
 ### 8.3 后端实现(关键类)
 
 ```
-backend/src/main/java/com/wzx/babiq/model/
+backend/src/main/java/com/wzx/babiq/server/model/
 ├── ModelProviderRegistry.java      # 维护所有 provider 实例,按 id 查找
 ├── ModelProviderConfig.java        # provider 配置实体(对应 yaml 节点)
 ├── ChatClientFactory.java          # 按 providerId 返回 ChatClient
 ├── ProviderType.java               # enum: DASHSCOPE / OPENAI_COMPATIBLE
+├── ModelMetadata.java              # 内置主流模型 context window 映射
 └── provider/
     ├── DashScopeProviderFactory.java
     ├── OpenAiCompatibleProviderFactory.java
@@ -635,36 +636,16 @@ backend/src/main/java/com/wzx/babiq/model/
 `ChatClientFactory` 的核心逻辑(伪代码):
 ```java
 public ChatClient resolve(String providerId) {
-    ModelProviderConfig cfg = registry.get(providerId);
-
-    return switch (cfg.getType()) {
-        case DASHSCOPE -> {
-            // 用 Spring AI Alibaba 原生 starter
-            DashScopeChatModel model = DashScopeChatModel.builder()
-                .api(DashScopeApi.builder().apiKey(cfg.getApiKey()).build())
-                .defaultOptions(DashScopeChatOptions.builder()
-                    .model(cfg.getModel())
-                    .temperature(cfg.getOptions().getTemperature())
-                    .build())
-                .build();
-            yield ChatClient.builder(model).build();
-        }
-        case OPENAI_COMPATIBLE -> {
-            // 用 Spring AI OpenAiApi.mutate() 自定义 baseUrl
-            OpenAiApi api = baseOpenAiApi.mutate()
-                .baseUrl(cfg.getBaseUrl())
-                .apiKey(cfg.getApiKey())
-                .build();
-            OpenAiChatModel model = baseOpenAiChatModel.mutate()
-                .openAiApi(api)
-                .defaultOptions(OpenAiChatOptions.builder()
-                    .model(cfg.getModel())
-                    .temperature(cfg.getOptions().getTemperature())
-                    .build())
-                .build();
-            yield ChatClient.builder(model).build();
-        }
-    };
+    return clientCache.computeIfAbsent(providerId, id -> {
+        ModelProviderConfig cfg = registry.get(id);
+        ChatModel model = factoriesByType.get(cfg.type()).build(cfg);
+        ChatMemory memory = MessageWindowChatMemory.builder()
+            .maxMessages(20)
+            .build();
+        return ChatClient.builder(model)
+            .defaultAdvisors(MessageChatMemoryAdvisor.builder(memory).build())
+            .build();
+    });
 }
 ```
 
