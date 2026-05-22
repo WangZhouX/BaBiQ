@@ -2363,3 +2363,192 @@ public class CostFeedbackHook extends AgentHook {
 - [OpenTelemetry Java](https://opentelemetry.io/docs/languages/java/)
 - [阿里云 ARMS Java Agent](https://help.aliyun.com/document_detail/63797.html)
 
+---
+
+## 23. 多模态与媒体处理 (Multimodality)
+
+> Spring AI 用统一的 **`Media`** 抽象处理图/音/视频/文档输入,输出端有专门的 **TTS / Transcription** API。
+> **非多模态模型有 4 种兜底**,最优雅的是 **Agent-as-Tool 包装 vision 专家**(对标 Claude Code Task 模式)。
+> P1 不做多模态,P2 起渐进式上线。
+
+### 23.1 多模态全景
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ 输入端:统一 Media 抽象                                    │
+│   ┌────────────────────────────────────────────────┐    │
+│   │ UserMessage.builder().text("...").media(...)   │    │
+│   └────────────────────────────────────────────────┘    │
+│   支持: IMAGE_PNG / IMAGE_JPEG / IMAGE_WEBP             │
+│         VIDEO_MP4 / DOC_PDF / DOC_DOCX                  │
+│         AUDIO_MP3 / AUDIO_WAV                           │
+│   数据源: ClassPathResource / URL / byte[] / base64     │
+└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│ 输出端:三个独立 API                                       │
+│   - ChatModel              文本(默认)                  │
+│   - DashScopeAudioSpeech   TTS(cosyvoice-v1/v2)        │
+│   - DashScopeAudioTrans    Transcription(qwen-audio)    │
+└─────────────────────────────────────────────────────────┘
+```
+
+### 23.2 Media 抽象 — 代码示例
+
+#### 图片输入
+
+```java
+UserMessage msg = UserMessage.builder()
+    .text("这张设计图有几个组件?")
+    .media(Media.builder()
+        .mimeType(MimeTypeUtils.IMAGE_JPEG)
+        .data(new URL("https://..."))   // 或 ClassPathResource / byte[]
+        .build())
+    .build();
+
+ChatResponse resp = chatModel.call(new Prompt(msg,
+    DashScopeChatOptions.builder().model("qwen-vl-plus").build()));
+```
+
+#### TTS 输出
+
+```java
+TextToSpeechPrompt prompt = new TextToSpeechPrompt(
+    "本轮花了 ¥0.03,总耗时 8.2 秒",
+    DashScopeAudioSpeechOptions.builder()
+        .model("cosyvoice-v1")
+        .voice("longhua")
+        .responseFormat(ResponseFormat.MP3)
+        .speed(1.0)
+        .build());
+
+TextToSpeechResponse audio = ttsModel.call(prompt);
+// audio.getResult().getOutput() → MP3 bytes,推给桌面端播放
+```
+
+### 23.3 模型能力矩阵(2026-05)
+
+| 模型 | 视觉 | 语音入 | 语音出 | 视频 | 文档 | BaBiQ 用途 |
+|---|:-:|:-:|:-:|:-:|:-:|---|
+| **qwen-vl-plus / qwen-vl-max** | ✅ | ❌ | ❌ | ❌ | ❌ | 图片识别(BaBiQ 默认视觉) |
+| **qwen-audio-turbo** | ❌ | ✅ | ❌ | ❌ | ❌ | 语音转文字 |
+| **cosyvoice-v1/v2** | ❌ | ❌ | ✅ | ❌ | ❌ | TTS 朗读 |
+| **gpt-4o / gpt-4.1 / gpt-5** | ✅ | ✅ | ✅ | ❌ | ❌ | 全能 |
+| **claude-opus-4-7** | ✅ | ❌ | ❌ | ❌ | ✅ | 图+PDF |
+| **qwen-plus / deepseek / llama3** | ❌ | ❌ | ❌ | ❌ | ❌ | **纯文本** ⚠️ |
+| **llava (Ollama)** | ✅ | ❌ | ❌ | ❌ | ❌ | 本地图片 |
+
+### 23.4 非多模态模型 — 4 种兜底方案
+
+#### 方案 A:模型自动路由(P2 BaBiQ 主选)
+检测到图片输入,后端自动切到 vision provider,用户无感:
+```java
+public ChatClient resolveForRequest(UserMessage msg) {
+    boolean hasImage = msg.getMedia().stream()
+        .anyMatch(m -> m.getMimeType().toString().startsWith("image/"));
+    if (hasImage && !currentProvider.supportsVision()) {
+        return chatClientForProvider("qwen-vl-plus");   // 自动切
+    }
+    return defaultChatClient;
+}
+```
+
+#### 方案 B:Multi-Agent 路由(LlmRoutingAgent)
+LlmRoutingAgent 看到图就转给 visionAgent。
+
+#### 方案 C:OCR 兜底(图 → 文字 → 主模型)
+本地 PaddleOCR 或 DashScope OCR API,**省成本 10× 但丢视觉信息**。
+
+#### 方案 D ⭐ Agent-as-Tool 包装(P3 优化,对标 Claude Code Task)
+```java
+ReactAgent visionExpert = ReactAgent.builder()
+    .name("vision_expert")
+    .model(qwenVlPlusModel)
+    .build();
+
+ToolCallback askVision = FunctionToolCallback.builder("describe_image",
+    (Function<ImageQ, String>) q -> visionExpert.invoke(q.text(), q.image())
+        .map(s -> s.value("output", "").toString()).orElse(""))
+    .description("把图片相关问题委派给视觉专家")
+    .build();
+
+ReactAgent mainAgent = ReactAgent.builder()
+    .model(qwenPlusModel)        // 主 agent 还是便宜文本模型
+    .tools(askVision, ...)        // 视觉作为工具
+    .build();
+```
+→ **方案 D 最优雅**:主上下文不被图片污染。
+
+### 23.5 BaBiQ 5 个典型多模态场景
+
+| 场景 | 实现 | 阶段 |
+|---|---|:-:|
+| 📸 **截图理解**("这个报错怎么解") | 截图快捷键 → IMAGE_PNG → vision 模型 | P3 |
+| 🖼️ **设计图分析**("这有几个按钮") | 拖拽 → IMAGE_JPEG → vision 模型 | P3 |
+| 🎤 **语音输入**(按住说话) | 录音 → qwen-audio-turbo → 文字 | P3+ |
+| 🔊 **语音输出**(朗读结果) | 文字 → cosyvoice-v1 → 桌面端播 MP3 | P3+ |
+| 📄 **PDF/文档拖拽** | claude DOC_PDF / 或先文本提取 | P4+ |
+
+### 23.6 协议层对应 — `parts` 字段(D28 已预留)
+
+我们 D28 协议命名预留的 `parts` 字段正好对接 Spring AI 的 `Media`:
+
+```json
+{
+  "type": "userMessage",
+  "parts": [
+    {"type": "text",  "content": "这个报错怎么解?"},
+    {"type": "image", "mimeType": "image/png", "data": "base64..."},
+    {"type": "audio", "mimeType": "audio/mp3", "url": "file://..."}
+  ]
+}
+```
+
+**桌面端实现要点**:
+- Kotlin Compose `onExternalDrop()` 监听拖拽
+- 文件类型分流(image/audio/pdf)
+- base64 编码后塞进 parts 数组
+- WebSocket(D1 内层协议)推给 backend
+- backend 把 parts 拆出来,转成 Spring AI `Media` 对象
+
+### 23.7 BaBiQ P1-P4+ 多模态路线
+
+| 阶段 | 做什么 |
+|:-:|---|
+| **P1** | ❌ 不做多模态,纯文本 |
+| **P2** | + 协议层 `userMessage.parts[]` 支持 image + **方案 A 模型自动路由**(检测图就切 qwen-vl-plus)|
+| **P3** | + **方案 D Vision-as-Tool**(Agent-as-Tool 包装视觉专家)+ 桌面端拖拽图片 + 全局截图快捷键 |
+| **P3+** | + 语音输入(Transcription qwen-audio-turbo)+ 语音输出(TTS cosyvoice-v1)+ OCR 兜底(方案 C 省成本) |
+| **P4+** | + PDF/Word 文档输入(claude DOC_PDF / 或 PDFBox 文本提取)+ 视频(如果模型支持) |
+
+### 23.8 关键设计决策
+
+| 决策 | 选择 | 原因 |
+|---|---|---|
+| 非多模态时如何处理图片 | **P2: 方案 A**(自动路由),**P3: 方案 D**(Agent-as-Tool) | A 用户透明,D 主上下文最干净 |
+| 视觉默认模型 | **qwen-vl-plus** | 中英文图片识别强;`spring-ai-alibaba-starter-dashscope` 原生 |
+| 语音输入默认 | **qwen-audio-turbo** | 中文友好,API 现成 |
+| 语音输出默认 | **cosyvoice-v1** + voice=longhua | 多 voice 可选,SSML 支持 |
+| OCR 选型 | **本地 PaddleOCR**(开源 + 免费 + 中文好)| 不依赖网络;OCR 适合方案 C 兜底 |
+| 截图触发 | 桌面端**全局快捷键**(Cmd+Shift+S 类似)| 对标 Codex / Cursor 操作习惯 |
+| 协议字段 | **`parts[]`**(D28 已预留,A2A 标准)| 与 Codex `parts` / A2A `parts` 一致 |
+| 引入时机 | P3 才上,P1-P2 不做 | YAGNI;桌面 UX 优化优先 |
+
+### 23.9 桌面端 UX 设计要点(P3 实现时记得)
+
+| UX 点 | 说明 |
+|---|---|
+| 拖拽提示 | 拖入图/音/PDF 时桌面端边缘高亮 + "释放以发送" |
+| 多 part 预览 | 输入框上方显示已附加的图/音缩略图,可单独删除 |
+| Provider 切换提示 | 自动切到 vision 时,顶部状态栏短暂闪 "已切换到 qwen-vl-plus" |
+| 语音录制反馈 | 按住按钮录音 + 实时波形 + 自动 transcribe 后填入文本框 |
+| TTS 播放控件 | agent 回复带 🔊 图标可点播放,可配置"自动朗读" |
+
+### 23.10 参考资料
+
+- [Spring AI Multimodality 文档](https://java2ai.com/integration/multimodals/multimodality)
+- [DashScope qwen-vl-plus 多模态](https://java2ai.com/integration/chatmodels/dashScope)
+- [DashScope TTS (cosyvoice)](https://java2ai.com/integration/multimodals/audio/speech/dashscope-speech)
+- [DashScope Transcription (qwen-audio)](https://java2ai.com/integration/multimodals/audio/transcriptions/dashscope-transcriptions)
+- [Bedrock Converse 多模态(视频/PDF)](https://java2ai.com/integration/chatmodels/more/bedrock-converse)
+- [PaddleOCR 开源 OCR](https://github.com/PaddlePaddle/PaddleOCR)
+
