@@ -1974,18 +1974,17 @@ Expected:
 - 所有测试通过
 - `babiq-server-0.0.1-SNAPSHOT.jar` 存在
 
-- [ ] **Step 10.3: tag + log**
+- [ ] **Step 10.3: 终态 commit + log**
 
 ```powershell
 git add -A
 git status
 # 若有未提交内容:
 git commit -m "docs(p1-2): 同步 ARCHITECTURE 与 master plan M2 验收"
-git tag p1-2-providers
 git log --oneline -15
 ```
 
-Expected: 看到 P1-2 期间约 9-10 个 commit,tag `p1-2-providers` 已打。
+Expected: 看到 P1-2 期间约 9-10 个 commit。**不要 push,不要打 tag**(由用户自行决定)。
 
 ---
 
@@ -2003,8 +2002,8 @@ P1-2 算完成的硬标准(任一项不达成都需回到对应 Task 修复):
 - [x] ⭐ `ModelMetadata.contextWindowOf("qwen-plus") == 1_000_000`;未知模型回退 32_768(D20)
 - [x] ⭐ **多 Turn 跨轮记忆生效**:Step 9.5 同 threadId 第 2 轮 reply 包含第 1 轮 用户提到的"小明" + "芒果";不同 threadId 隔离
 - [x] `ProviderTestControllerIntegrationTest` 跑通
-- [x] `git tag p1-2-providers` 已打
 - [x] `cd backend && .\mvnw.cmd clean package` 成功
+- [x] **不要 push,不要打 tag**(由用户自行决定 push 时机)
 
 ---
 

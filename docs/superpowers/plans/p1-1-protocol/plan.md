@@ -2241,19 +2241,18 @@ cd ..
 
 Expected: `BUILD SUCCESS`,所有 unit + IT 测试通过。
 
-- [ ] **Step 13.3: 终态 commit + tag**
+- [ ] **Step 13.3: 终态 commit**
 
 ```powershell
 git add -A
 git status
 git commit -m "docs(p1-1): 同步 ARCHITECTURE 协议层文件清单(若有 diff)" --allow-empty
-git tag p1-1-protocol
 git log --oneline -20
 ```
 
 Expected:
 - 看到 P1-1 期间约 10-12 个 commit
-- `git tag` 包含 `p1-1-protocol`
+- **不要 push,不要打 tag**(由用户自己决定)
 
 ---
 
@@ -2296,8 +2295,8 @@ Expected:
 - [ ] 端口固定 `8080`
 
 ### Git
-- [ ] 分支 `feat/p1-1-protocol` 上有 10-12 个原子 commit,中文 commit message(范例:`feat(p1-1): 实现 JsonRpcWebSocketHandler 基础框架`)
-- [ ] `git tag p1-1-protocol` 已创建
+- [ ] 主分支 master 上有 10-12 个原子 commit,中文 commit message(范例:`feat(p1-1): 实现 JsonRpcWebSocketHandler 基础框架`)
+- [ ] **不要 push,不要打 tag**(由用户自行决定 push 时机)
 - [ ] 工作树 clean(`git status` 输出 `nothing to commit`)
 
 ---
