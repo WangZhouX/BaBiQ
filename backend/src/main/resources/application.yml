@@ -1,6 +1,24 @@
 spring:
   application:
     name: BaBiQ-Server
+  ai:
+    model:
+      chat: none
+      embedding: none
+      image: none
+      audio:
+        speech: none
+        transcription: none
+      moderation: none
+      rerank: none
+      video: none
+    dashscope:
+      enabled: false
+      chat:
+        enabled: false
+    openai:
+      chat:
+        enabled: false
 
 server:
   port: 8080
@@ -10,6 +28,34 @@ logging:
     com.wzx.babiq.server: DEBUG
 
 babiq:
+  active-provider: dashscope-default
+  providers:
+    - id: dashscope-default
+      name: "通义千问 (DashScope)"
+      type: DASHSCOPE
+      api-key: ${AI_DASHSCOPE_API_KEY:}
+      model: qwen-plus
+    - id: deepseek-official
+      name: "DeepSeek (官方)"
+      type: OPENAI_COMPATIBLE
+      base-url: https://api.deepseek.com
+      api-key: ${DEEPSEEK_API_KEY:}
+      model: deepseek-chat
+    - id: oneapi-relay
+      name: "我的中转 (OneAPI)"
+      type: OPENAI_COMPATIBLE
+      base-url: ${ONEAPI_BASE_URL:https://my-relay.example.com/v1}
+      api-key: ${ONEAPI_KEY:placeholder}
+      model: ${ONEAPI_MODEL:gpt-4o}
+    - id: ollama-local
+      name: "本地 Llama3"
+      type: OPENAI_COMPATIBLE
+      base-url: http://localhost:11434/v1
+      api-key: ollama
+      model: llama3:8b
+  memory:
+    short-term:
+      max-messages: 20
   ws:
     path: /ws/agent
     allowed-origins: "*"
