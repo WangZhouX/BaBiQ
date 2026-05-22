@@ -35,7 +35,7 @@ public class AgentLoop {
     public void invoke(Turn turn, String userText, String providerId, String cwd, ItemEmitter emitter) {
         try {
             emitter.emitItemAdded(UserMessageItem.of(AgentLoopSupport.newItemId(), userText));
-            ReactAgent agent = strategy.buildAgent(providerId, cwd);
+            ReactAgent agent = strategy.buildAgent(providerId, cwd, emitter);
             Optional<NodeOutput> output = agent.invokeAndGetOutput(userText, strategy.buildConfig(turn.threadId()));
             handleOutput(turn, emitter, output);
         } catch (Exception exception) {
@@ -45,7 +45,7 @@ public class AgentLoop {
 
     public void invokeResume(Turn turn, InterruptionMetadata feedback, String cwd, ItemEmitter emitter) {
         try {
-            ReactAgent agent = strategy.buildAgent(null, cwd);
+            ReactAgent agent = strategy.buildAgent(null, cwd, emitter);
             Optional<NodeOutput> output = agent.invokeAndGetOutput(java.util.Map.of(),
                     strategy.buildResumeConfig(turn.threadId(), feedback));
             handleOutput(turn, emitter, output);

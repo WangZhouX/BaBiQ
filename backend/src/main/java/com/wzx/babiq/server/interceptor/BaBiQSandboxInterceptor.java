@@ -7,9 +7,14 @@ import com.alibaba.cloud.ai.graph.agent.interceptor.ToolInterceptor;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wzx.babiq.server.agent.AgentLoopProperties;
+import com.wzx.babiq.server.conversation.ConversationService;
+import com.wzx.babiq.server.conversation.ItemEmitter;
+import com.wzx.babiq.server.conversation.items.FileChangeItem;
 import com.wzx.babiq.server.sandbox.PathGuard;
 import com.wzx.babiq.server.sandbox.SandboxMode;
 import com.wzx.babiq.server.sandbox.SandboxViolationException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.nio.file.Path;
@@ -33,18 +38,25 @@ public final class BaBiQSandboxInterceptor extends ToolInterceptor {
     /** ReActStrategy 放入 toolContext 的额外 writable roots key。 */
     public static final String CONTEXT_WRITABLE_ROOTS = "babiq.writableRoots";
 
+    /** ReActStrategy 放入 toolContext 的当前 ItemEmitter key。 */
+    public static final String CONTEXT_ITEM_EMITTER = "babiq.itemEmitter";
+
+    private static final Logger log = LoggerFactory.getLogger(BaBiQSandboxInterceptor.class);
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final Set<String> WRITE_TOOLS = Set.of("write_file", "exec_shell", "apply_patch");
 
     private final AgentLoopProperties properties;
+    private final ConversationService conversationService;
 
     /**
      * 创建沙箱拦截器。
      *
      * @param properties Agent Loop 配置，提供沙箱模式和额外可写根
+     * @param conversationService 负责构造协议 item 的内存服务
      */
-    public BaBiQSandboxInterceptor(AgentLoopProperties properties) {
+    public BaBiQSandboxInterceptor(AgentLoopProperties properties, ConversationService conversationService) {
         this.properties = properties;
+        this.conversationService = conversationService;
     }
 
     /**
@@ -67,6 +79,7 @@ public final class BaBiQSandboxInterceptor extends ToolInterceptor {
     public ToolCallResponse interceptToolCall(ToolCallRequest request, ToolCallHandler handler) {
         String rejection = checkOrReject(request.getToolName(), request.getArguments(), request.getContext());
         if (rejection != null) {
+            emitDeniedFileChangeIfNeeded(request, rejection);
             return ToolCallResponse.error(request.getToolName(), request.getToolCallId(), rejection);
         }
         return handler.call(request);
@@ -121,18 +134,6 @@ public final class BaBiQSandboxInterceptor extends ToolInterceptor {
         return extractPathArgument(arguments);
     }
 
-    private String extractPathArgument(String arguments) {
-        if (arguments == null || arguments.isBlank()) {
-            return null;
-        }
-        try {
-            JsonNode pathNode = OBJECT_MAPPER.readTree(arguments).get("path");
-            return pathNode == null || pathNode.isNull() ? null : pathNode.asText();
-        } catch (Exception ignored) {
-            return null;
-        }
-    }
-
     @SuppressWarnings("unchecked")
     private List<Path> writableRoots(java.util.Map<String, Object> context) {
         List<Path> roots = new ArrayList<>();
@@ -150,5 +151,63 @@ public final class BaBiQSandboxInterceptor extends ToolInterceptor {
         }
         roots.addAll(properties.writableRoots());
         return List.copyOf(roots);
+    }
+
+    /**
+     * 当写类工具被沙箱拒绝时，同步构造一个 fileChange denied item，供协议层回写。
+     *
+     * <p>这条回写是为了满足 P1-3a 的可见性要求：拒绝不是只回一个 ToolCallResponse.error，
+     * 还要让前端能在 item 流里看到具体拒绝结果。</p>
+     */
+    private void emitDeniedFileChangeIfNeeded(ToolCallRequest request, String rejection) {
+        if (!"write_file".equals(request.getToolName())) {
+            return;
+        }
+        ItemEmitter emitter = itemEmitter(request.getContext());
+        if (emitter == null) {
+            return;
+        }
+        String path = extractPathArgument(request.getArguments());
+        if (path == null || path.isBlank()) {
+            return;
+        }
+        FileChangeItem denied = conversationService.emitFileChange("write", path, "denied", rejection);
+        try {
+            emitter.emitFileChange(denied);
+        } catch (Exception exception) {
+            log.warn("发送 denied fileChange 失败,toolCallId={},path={}", request.getToolCallId(), path, exception);
+        }
+    }
+
+    /**
+     * 从工具上下文中取出当前 ItemEmitter。
+     *
+     * @param context SAA toolContext
+     * @return 当前会话发射器,取不到时返回 null
+     */
+    private ItemEmitter itemEmitter(java.util.Map<String, Object> context) {
+        Object candidate = context == null ? null : context.get(CONTEXT_ITEM_EMITTER);
+        if (candidate instanceof ItemEmitter emitter) {
+            return emitter;
+        }
+        return null;
+    }
+
+    /**
+     * 解析写类工具的 path 参数。
+     *
+     * @param arguments 工具 JSON 参数
+     * @return path 字段;缺失或 JSON 非法时返回 null
+     */
+    private String extractPathArgument(String arguments) {
+        if (arguments == null || arguments.isBlank()) {
+            return null;
+        }
+        try {
+            JsonNode pathNode = OBJECT_MAPPER.readTree(arguments).get("path");
+            return pathNode == null || pathNode.isNull() ? null : pathNode.asText();
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 }

@@ -2,16 +2,25 @@ package com.wzx.babiq.server.interceptor;
 
 import com.wzx.babiq.server.agent.AgentLoopProperties;
 import com.wzx.babiq.server.approval.ApprovalPolicy;
+import com.wzx.babiq.server.conversation.ConversationService;
+import com.wzx.babiq.server.conversation.ItemEmitter;
+import com.wzx.babiq.server.conversation.items.FileChangeItem;
+import com.wzx.babiq.server.conversation.items.ThreadItem;
 import com.wzx.babiq.server.sandbox.SandboxMode;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
 
 /**
  * BaBiQSandboxInterceptor 单元测试。
@@ -20,6 +29,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  * ToolInterceptor 层被统一拦住。</p>
  */
 class BaBiQSandboxInterceptorTest {
+
+    private final List<ThreadItem> emitted = new ArrayList<>();
+
+    @BeforeEach
+    void setUp() {
+        emitted.clear();
+    }
 
     @Test
     void read_tools_bypass_sandbox() {
@@ -39,6 +55,29 @@ class BaBiQSandboxInterceptorTest {
                 context);
 
         assertThat(rejection).contains("read-only");
+    }
+
+    @Test
+    void read_only_write_emits_file_change_denied(@TempDir Path root) throws Exception {
+        BaBiQSandboxInterceptor interceptor = newInterceptor(SandboxMode.READ_ONLY);
+        ItemEmitter emitter = capturingEmitter();
+        Map<String, Object> context = Map.of(
+                BaBiQSandboxInterceptor.CONTEXT_CWD, root.toString(),
+                BaBiQSandboxInterceptor.CONTEXT_ITEM_EMITTER, emitter);
+        String arguments = "{\"path\":\"" + root.resolve("a.txt").toString().replace("\\", "\\\\") + "\"}";
+        var request = new com.alibaba.cloud.ai.graph.agent.interceptor.ToolCallRequest(
+                "write_file", arguments, "call_1", context);
+
+        interceptor.interceptToolCall(request, ignored -> {
+            throw new AssertionError("沙箱拒绝时不应继续调用真实工具");
+        });
+
+        assertThat(emitted).hasSize(1);
+        assertThat(emitted.get(0)).isInstanceOf(FileChangeItem.class);
+        FileChangeItem item = (FileChangeItem) emitted.get(0);
+        assertThat(item.status()).isEqualTo("denied");
+        assertThat(item.path()).endsWith("a.txt");
+        assertThat(item.contentPreview()).contains("read-only");
     }
 
     @Test
@@ -86,6 +125,15 @@ class BaBiQSandboxInterceptorTest {
                 mode,
                 List.of(),
                 new AgentLoopProperties.Tools(new AgentLoopProperties.Output(4000)));
-        return new BaBiQSandboxInterceptor(properties);
+        return new BaBiQSandboxInterceptor(properties, new ConversationService());
+    }
+
+    private ItemEmitter capturingEmitter() throws Exception {
+        ItemEmitter emitter = mock(ItemEmitter.class);
+        doAnswer(invocation -> {
+            emitted.add(invocation.getArgument(0));
+            return null;
+        }).when(emitter).emitFileChange(any(FileChangeItem.class));
+        return emitter;
     }
 }

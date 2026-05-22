@@ -38,7 +38,7 @@ class AgentLoopTest {
         List<ThreadItem> emitted = new ArrayList<>();
         ItemEmitter emitter = capturingEmitter(emitted);
 
-        when(strategy.buildAgent("provider-a", ".")).thenReturn(agent);
+        when(strategy.buildAgent("provider-a", ".", emitter)).thenReturn(agent);
         when(strategy.buildConfig("thr_1")).thenCallRealMethod();
         when(agent.invokeAndGetOutput(any(String.class), any())).thenReturn(Optional.of(output));
         when(strategy.extractAssistantMessage(output)).thenReturn(new AssistantMessage("done"));
@@ -58,7 +58,7 @@ class AgentLoopTest {
         turn.start();
         ItemEmitter emitter = mock(ItemEmitter.class);
 
-        when(strategy.buildAgent(null, ".")).thenReturn(agent);
+        when(strategy.buildAgent(null, ".", emitter)).thenReturn(agent);
         when(strategy.buildConfig("thr_1")).thenCallRealMethod();
         when(agent.invokeAndGetOutput(any(String.class), any())).thenThrow(new RuntimeException("model down"));
 

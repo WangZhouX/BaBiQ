@@ -20,6 +20,7 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.stereotype.Component;
 
+import java.util.LinkedHashMap;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -69,14 +70,16 @@ public class ReActStrategy {
      *
      * @param providerId provider id，传 null 时使用 active provider
      * @param cwd 本轮 thread 工作目录
+     * @param emitter 当前 turn 的协议 item 发射器
      * @return 已装配工具、Hook、Interceptor 和 MemorySaver 的 ReactAgent
      */
-    public ReactAgent buildAgent(String providerId, String cwd) {
+    public ReactAgent buildAgent(String providerId, String cwd, ItemEmitter emitter) {
         ChatModel chatModel = chatClientFactory.resolveChatModel(providerId);
         ToolCallback[] callbacks = toolRegistry.allCallbacks();
-        Map<String, Object> toolContext = Map.of(
-                BaBiQSandboxInterceptor.CONTEXT_CWD, cwd,
-                BaBiQSandboxInterceptor.CONTEXT_WRITABLE_ROOTS, stringify(properties.writableRoots()));
+        Map<String, Object> toolContext = new LinkedHashMap<>();
+        toolContext.put(BaBiQSandboxInterceptor.CONTEXT_CWD, cwd);
+        toolContext.put(BaBiQSandboxInterceptor.CONTEXT_WRITABLE_ROOTS, stringify(properties.writableRoots()));
+        toolContext.put(BaBiQSandboxInterceptor.CONTEXT_ITEM_EMITTER, emitter);
 
         // D23：写类工具声明式触发 SAA 原生 HumanInTheLoopHook，不手写阻塞审批状态机。
         HumanInTheLoopHook hitlHook = HumanInTheLoopHook.builder()
