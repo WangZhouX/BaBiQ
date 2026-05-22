@@ -1,0 +1,14 @@
+<configuration>
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>{"ts":"%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}","level":"%level","logger":"%logger{32}","thread":"%thread","msg":"%replace(%msg){'&quot;','\\&quot;'}"}%n</pattern>
+        </encoder>
+    </appender>
+
+    <logger name="com.wzx.babiq.server" level="DEBUG"/>
+    <logger name="org.springframework.web.socket" level="INFO"/>
+
+    <root level="INFO">
+        <appender-ref ref="STDOUT"/>
+    </root>
+</configuration>
