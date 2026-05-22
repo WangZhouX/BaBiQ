@@ -40,3 +40,8 @@ desktop/out/
 # 机器特定 Gradle 配置(JDK 路径、代理等),不进仓库;参考 desktop/gradle.properties.local.example
 desktop/gradle.properties.local
 
+### OMC 编排层 ###
+# OMC 多 agent 编排层运行时状态(本地工作区缓存,不入仓库)
+.omc/
+backend/.omc/
+
