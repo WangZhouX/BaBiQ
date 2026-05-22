@@ -88,6 +88,24 @@ class JsonRpcWebSocketHandlerIT {
                 .contains("Method not found: no/such");
     }
 
+    @Test
+    void websocket_should_return_invalid_params_error_code() throws Exception {
+        List<String> receivedPayloads = new CopyOnWriteArrayList<>();
+        WebSocketSession session = connect(receivedPayloads);
+
+        session.sendMessage(new TextMessage(
+                "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"thread/create\",\"params\":{}}"));
+
+        await().atMost(Duration.ofSeconds(3))
+                .untilAsserted(() -> assertThat(receivedPayloads).hasSize(1));
+        session.close();
+
+        assertThat(receivedPayloads.get(0))
+                .contains("\"id\":8")
+                .contains("\"code\":-32602")
+                .contains("缺少必填字段: cwd");
+    }
+
     private WebSocketSession connect(List<String> receivedPayloads) throws Exception {
         StandardWebSocketClient client = new StandardWebSocketClient();
         String uri = "ws://localhost:" + port + "/ws/agent";

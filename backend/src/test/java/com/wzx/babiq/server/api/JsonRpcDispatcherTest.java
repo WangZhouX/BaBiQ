@@ -4,8 +4,14 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
 import com.wzx.babiq.server.api.error.JsonRpcException;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.socket.WebSocketSession;
+
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
 
 import java.util.List;
 import java.util.Map;
@@ -15,6 +21,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 class JsonRpcDispatcherTest {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private final Logger dispatcherLogger = (Logger) LoggerFactory.getLogger(JsonRpcDispatcher.class);
+    private Level previousDispatcherLevel;
+
+    @BeforeEach
+    void remember_dispatcher_log_level() {
+        previousDispatcherLevel = dispatcherLogger.getLevel();
+    }
+
+    @AfterEach
+    void restore_dispatcher_log_level() {
+        dispatcherLogger.setLevel(previousDispatcherLevel);
+    }
 
     @Test
     void method_not_found_should_return_minus32601() {
@@ -76,6 +94,7 @@ class JsonRpcDispatcherTest {
 
     @Test
     void unexpected_handler_exception_should_return_minus32000() {
+        dispatcherLogger.setLevel(Level.OFF);
         JsonRpcMethodHandler handler = new JsonRpcMethodHandler() {
             @Override
             public String method() {

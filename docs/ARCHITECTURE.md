@@ -172,13 +172,26 @@ BaBiQ/
 │       ├── BaBiQApplication.java
 │       ├── api/
 │       │   ├── JsonRpcWebSocketHandler.java
-│       │   ├── JsonRpcRequest.java
-│       │   ├── JsonRpcResponse.java
-│       │   └── JsonRpcNotification.java
+│       │   ├── JsonRpcMessage.java       # JSON-RPC 2.0 sealed 报文族
+│       │   ├── JsonRpcDispatcher.java    # method → handler 路由
+│       │   ├── JsonRpcMethodHandler.java
+│       │   ├── error/
+│       │   │   ├── JsonRpcErrorCode.java
+│       │   │   └── JsonRpcException.java
+│       │   └── method/
+│       │       ├── ThreadCreateHandler.java
+│       │       ├── TurnStartHandler.java
+│       │       ├── TurnCancelHandler.java
+│       │       ├── TurnInterruptHandler.java
+│       │       ├── ApprovalRespondHandler.java
+│       │       ├── ProvidersListHandler.java
+│       │       └── ProvidersSetActiveHandler.java
 │       ├── conversation/
 │       │   ├── ConversationService.java
+│       │   ├── ItemEmitter.java
 │       │   ├── Thread.java
 │       │   ├── Turn.java
+│       │   ├── TurnStatus.java
 │       │   └── items/                   # 12 种 Item 实现
 │       │       ├── ThreadItem.java       # 抽象基类 (sealed)
 │       │       ├── UserMessageItem.java
@@ -215,6 +228,7 @@ BaBiQ/
 │       │   ├── SandboxMode.java          # read-only/workspace-write/danger
 │       │   └── PathGuard.java
 │       └── config/
+│           ├── WebSocketConfig.java
 │           └── BaBiQProperties.java
 │
 └── desktop/                      # Compose Multiplatform Desktop (Kotlin)
@@ -2751,4 +2765,3 @@ history.add(new ToolResponseMessage(spotlighted));
 - [Spring AI Alibaba PIIDetectionHook](https://java2ai.com/docs/frameworks/agent-framework/tutorials/hooks)
 - [MDPI: Prompt Injection Comprehensive Review (Jan 2026)](https://www.mdpi.com/2078-2489/17/1/54)
 - [MITRE ATLAS 威胁框架](https://atlas.mitre.org)
-

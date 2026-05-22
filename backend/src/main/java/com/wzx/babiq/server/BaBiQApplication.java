@@ -3,11 +3,22 @@ package com.wzx.babiq.server;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
+/**
+ * BaBiQ 后端服务启动入口。
+ *
+ * <p>该类只负责启动 Spring Boot 应用上下文,协议、对话和 provider 等业务能力
+ * 都放在各自包内,避免启动入口承载业务逻辑。</p>
+ */
 @SpringBootApplication
 public class BaBiQApplication {
 
-	public static void main(String[] args) {
-		SpringApplication.run(BaBiQApplication.class, args);
-	}
+    /**
+     * 启动 BaBiQ 后端服务。
+     *
+     * @param args JVM 启动参数
+     */
+    public static void main(String[] args) {
+        SpringApplication.run(BaBiQApplication.class, args);
+    }
 
 }
