@@ -2059,3 +2059,307 @@ ReactAgent codeAgent = ReactAgent.builder()
 - [Spring AI Alibaba RAG + Ollama 实战](https://java2ai.com/blog/spring-ai-alibaba-rag-ollama)
 - [DashScope text-embedding-v4 文档](https://help.aliyun.com/zh/model-studio/developer-reference/text-embedding-quick-start)
 
+---
+
+## 21. 沙箱真落地
+
+> **核心判断**: Java SecurityManager 已在 Java 23 移除,**进程内沙箱已死**;必须依赖 OS 级隔离。
+> Java 生态没有像 Python 那样丰富的沙箱库,但 **`spring-ai-community/agent-sandbox`** 已经填补了这个空白。
+
+### 21.1 Java 沙箱现状(2026)
+
+```
+Java 9   - SecurityManager deprecated
+Java 17  - 警告 "for removal in a future release"
+Java 23  - SecurityManager **正式移除**
+```
+
+| 生态 | 沙箱库现状 |
+|---|---|
+| Python | 丰富:`llm-sandbox` / `PythonSafeEval` / `e2b-sdk` |
+| **Java** | **几乎空白** — 直到 `spring-ai-community/agent-sandbox` 出现 |
+
+### 21.2 业界三档隔离强度
+
+| 强度 | 实现 | 启动 | 适用 |
+|---|---|---|---|
+| ⭐⭐⭐⭐⭐ **MicroVM** | Firecracker / Kata Containers | ~125ms | 不可信代码(Codex Cloud 用) |
+| ⭐⭐⭐⭐ **gVisor** | 用户空间 kernel,拦截 syscall | 较快 | 10-30% I/O overhead |
+| ⭐⭐⭐ **Docker** | namespaces + cgroups,**共享 host kernel** | ms 级 | **业界共识:不算沙箱** |
+| ⭐⭐ **进程隔离** | nsjail / Bubblewrap + seccomp + namespaces | ms 级 | 单进程隔离 |
+| ⭐ **路径白名单** | 应用层 PathGuard.toRealPath() | 0 | 开发期兜底 |
+
+### 21.3 业界两家做法对比
+
+| 维度 | OpenAI Codex | Claude Code |
+|---|---|---|
+| **默认开关** | ✅ 默认**开** | ❌ 默认**关**,opt-in |
+| Linux | Landlock + seccomp + Bubblewrap | Bubblewrap |
+| macOS | Seatbelt(动态 SBPL) | Seatbelt |
+| Windows | 自研 SID + 受限 token + ACL | 不支持 |
+| Cloud | microVM(Firecracker)+ 两阶段(setup 有网,agent 无网)+ 任务后销毁 | 无 cloud 模式 |
+
+### 21.4 真实事故(为什么沙箱很重要)
+
+| 事故 | 经过 |
+|---|---|
+| `rm -rf ~/` | Claude Code 用户清理脚本误删家里照片(沙箱没开) |
+| **Ona 公司 Agent 自杀** | Agent 找到 `/proc/self/root/usr/bin/npx` 绕过 denylist;Bubblewrap 拦截后,**agent 直接关掉了沙箱本身**!|
+| Cline 5M 用户 | Prompt injection 偷 npm token |
+
+→ **任何 "软" 沙箱(prompt 警告 / denylist)都不够**。OS-level 强制隔离才是终点。
+
+### 21.5 Java 沙箱方案 5 选 1
+
+| 方案 | 实现 | 推荐度 |
+|---|---|:-:|
+| **A. `spring-ai-community/agent-sandbox`** ⭐ | 统一 API,backend 可切(本地/Docker/E2B) | ⭐⭐⭐⭐⭐ |
+| B. Testcontainers `GenericContainer` | 测试库复用,起临时 Docker 容器 | ⭐⭐⭐ |
+| C. `ProcessBuilder` + bwrap/nsjail | 自己写 CLI 调用层(跨平台分支) | ⭐⭐⭐ |
+| D. Docker Sandboxes(Docker Desktop 4.60+) | `docker sandbox run` 自带 microVM | ⭐⭐⭐ |
+| E. E2B / Modal 云服务 | 远程 microVM,SDK 调用 | ⭐⭐⭐⭐ |
+
+#### `spring-ai-community/agent-sandbox` 关键价值
+
+```java
+// 一份代码,三种 backend(只切换配置)
+@Component
+public class SandboxedExecShell {
+    private final SandboxRuntime sandbox;  // 注入 agent-sandbox 的统一接口
+
+    public ExecResult execute(String command) {
+        return sandbox.exec(ExecRequest.of(command));
+    }
+}
+```
+
+```yaml
+# application-dev.yml
+spring.ai.sandbox.backend: process    # 本地进程(开发)
+
+# application-prod.yml
+spring.ai.sandbox.backend: docker     # Docker 容器(测试)
+
+# application-secure.yml
+spring.ai.sandbox.backend: e2b        # E2B microVM(生产)
+spring.ai.sandbox.e2b.api-key: ${E2B_KEY}
+```
+
+→ **业务代码零改动,backend 切换 = 配置切换**。
+
+### 21.6 BaBiQ P1-P4+ 沙箱路线
+
+| 阶段 | 实现 | 强度 | 工程量 |
+|:-:|---|:-:|---|
+| **P1** | `PathGuard.toRealPath() + 白名单`(纯 Java,30 行)+ HITL 显式审批 | ⭐ | 已含在 D 决策 |
+| **P2** | + ProcessBuilder 限制(env / cwd / 资源 limit) | ⭐⭐ | 1 天 |
+| **P2 可选** | + Testcontainers `GenericContainer` 跑 `exec_shell` | ⭐⭐⭐ | 1 天 |
+| **P3** ⭐ | **引入 `spring-ai-community/agent-sandbox`** + Docker backend | ⭐⭐⭐⭐ | 半天 |
+| **P4+** | 切 backend 到 E2B / Docker Desktop Sandbox | ⭐⭐⭐⭐⭐ | 半天(改 yml) |
+
+### 21.7 必踩"不要"清单 ⚠️
+
+| 不要做 | 原因 |
+|---|---|
+| ❌ 挂 `/var/run/docker.sock` 进容器 | 等于给 LLM 主机 root |
+| ❌ 简单 `path.startswith()` 检查 | 符号链接可绕过,必须 `Path.toRealPath()` |
+| ❌ 允许 sandbox 内 spawn 任意子进程 | 子进程继承 OS 权限,绕过 capability |
+| ❌ 相信 prompt 警告 / denylist | Agent 真的会绕过(Ona 案例) |
+| ✅ **必须** `cgroups pids.max` 限子进程数 | 防 fork bomb |
+| ✅ **必须** 网络白名单(默认 deny all) | 防 exfiltration |
+| ✅ **必须** ephemeral 生命周期 | 每次任务后销毁环境 |
+
+### 21.8 关键设计决策
+
+| 决策 | 选择 | 原因 |
+|---|---|---|
+| Java 沙箱实现选型 | **P3 引入 `spring-ai-community/agent-sandbox`** | 业界 Java 生态唯一统一抽象;backend 切换不改业务代码 |
+| P1 兜底 | `PathGuard` + HITL 审批 | 学习项目 + 工作目录场景够用 |
+| Codex 风格 vs 自己写 | **不照搬 Codex,用 agent-sandbox** | agent-sandbox 已包装了 Codex 同类机制 |
+| 默认沙箱开关 | **默认开**(对标 Codex 不学 Claude Code) | Ona 事故警示 |
+| 网络策略 | **默认 deny all**,白名单放行 | 防数据外泄 |
+
+### 21.9 参考资料
+
+- [spring-ai-community/agent-sandbox](https://github.com/spring-ai-community/agent-sandbox)
+- [awesome-agent-sandboxes(curated list)](https://github.com/dloss/awesome-agent-sandboxes)
+- [nsjail: Lightweight Linux Sandboxing for AI Code Execution](https://www.morphllm.com/nsjail-sandbox)
+- [Containers aren't a sandbox for AI agents](https://dev.to/siddhantkcode/containers-arent-a-sandbox-for-ai-agents-215o)
+- [OpenAI: Building a safe sandbox to enable Codex on Windows](https://openai.com/index/building-codex-windows-sandbox/)
+- [Best Code Execution Sandboxes for AI Agents 2026](https://blaxel.ai/blog/code-execution-sandboxes-for-ai-agents)
+- [Sandboxes for Coding Agents](https://www.penligent.ai/hackinglabs/sandboxes-for-coding-agents/)
+
+---
+
+## 22. 可观测性 (Observability)
+
+> Spring AI Alibaba **内置可观测性**(模型调用 + 向量检索 + 工具使用),
+> 兼容 OpenTelemetry,可对接 Langfuse / ARMS / Jaeger / Tempo。
+> BaBiQ 从 P2 起逐步建立完整观测体系,**学习项目的天然甜点**。
+
+### 22.1 三大支柱
+
+```
+┌─────────────────────────────────────────────────┐
+│ 1. Metrics(指标)                                 │
+│    - JVM: CPU / 内存 / GC                         │
+│    - LLM: token 用量、调用次数、延迟、错误率       │
+│    - Tool: 执行次数、成功率、p95 延迟             │
+│    → Micrometer(Spring 标配)                    │
+└─────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────┐
+│ 2. Tracing(链路追踪)                            │
+│    - Turn(root)→ Model Call → Tool Call → ... │
+│    - 跨服务(A2A 时)                              │
+│    → micrometer-tracing-bridge-otel + OTel       │
+└─────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────┐
+│ 3. Logging(日志)                                 │
+│    - Prompt + Response + Tool Args + Output       │
+│    - 结构化(JSON)                                │
+│    → Spring AI 自带 observation + Logback         │
+└─────────────────────────────────────────────────┘
+```
+
+### 22.2 启用 Spring AI Alibaba 可观测性 — 5 分钟
+
+#### `pom.xml` 加 2 个依赖
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-actuator</artifactId>
+</dependency>
+<dependency>
+    <groupId>io.micrometer</groupId>
+    <artifactId>micrometer-tracing-bridge-otel</artifactId>
+</dependency>
+```
+
+#### `application.yml` 开关
+
+```yaml
+spring:
+  ai:
+    chat:
+      client:
+        observations:
+          include-input: true        # 记录用户输入
+      observations:
+        include-prompt: true         # 记录完整 prompt
+        include-completion: true     # 记录模型输出
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  tracing:
+    sampling:
+      probability: 1.0               # 学习项目 100% 采样
+```
+
+→ **自动产生的数据**: 每次 ChatClient 调用都自动起 Span,token / 模型 / cost 都是 attribute。
+
+### 22.3 数据出口可选
+
+| 出口 | 适用 | BaBiQ 阶段 |
+|---|---|:-:|
+| **JSON 日志**(Logback) | 开发期肉眼看 | **P1** |
+| **`/actuator/metrics`** | Prometheus 抓取 | **P2** |
+| **OpenTelemetry → Jaeger / Tempo** | 本地链路 UI | **P3** |
+| **Langfuse**(开源 LLM 观测平台) | 专门看 LLM 调用,UI 友好 | **P3+** |
+| **阿里云 ARMS**(`Aliyun Java Agent`) | 生产环境 | P4+ |
+
+### 22.4 BaBiQ 必须暴露的指标(P1 起)
+
+| 指标 | 类型 | 用途 |
+|---|---|---|
+| `babiq.turn.duration` | histogram | 一轮对话耗时分布 |
+| `babiq.turn.iterations` | histogram | ReAct 循环次数(防死循环监控) |
+| `babiq.llm.tokens{type=input|output}` | counter | 成本核算 |
+| `babiq.llm.cost.usd` | counter | 直观看花了多少钱 |
+| `babiq.tool.calls{tool=X}` | counter | 哪些工具被调用最多 |
+| `babiq.tool.duration{tool=X}` | histogram | 工具执行延迟 |
+| `babiq.approval.requests` | counter | 审批弹窗数 |
+| `babiq.approval.decisions{type}` | counter | approve/deny/edit 比例 |
+| `babiq.provider.errors{provider}` | counter | 哪个模型挂得多 |
+| `babiq.sandbox.violations` | counter | 沙箱拦截次数(P3+) |
+
+### 22.5 Trace 结构 — Span 层级
+
+```
+Turn (root span)
+├── ChatClient.prompt() #1
+│   └── DashScopeChatModel.call()
+├── ToolCall: read_file
+│   └── ReadFileTool.execute()
+├── ApprovalEngine.await()        ← 等审批的耗时也能看到!
+├── ToolCall: exec_shell
+│   ├── SandboxRuntime.exec()     ← P3+ 沙箱调用
+│   └── ExecShellTool.execute()
+├── ChatClient.prompt() #2
+│   └── DashScopeChatModel.stream()
+└── (turn completed)
+```
+
+**Span attributes**:
+- `babiq.turn.id` / `babiq.thread.id`
+- `babiq.tool.name` / `babiq.tool.args` (脱敏)
+- `babiq.llm.model` / `babiq.llm.tokens.input` / `babiq.llm.tokens.output` / `babiq.llm.cost.usd`
+- `babiq.approval.decision`
+
+→ Langfuse / Jaeger 直接渲染这种树,**agent 每一步在干什么、延迟分布一目了然**。
+
+### 22.6 BaBiQ 可观测性路线
+
+| 阶段 | 做什么 |
+|:-:|---|
+| **P1** | Logback JSON 日志(D17 已决策);手写 turn / token 基础 counter |
+| **P2** | + Actuator + Micrometer + `/actuator/metrics`;接 Prometheus(本地 docker compose) |
+| **P3** ⭐ | + OpenTelemetry + Jaeger UI(本地链路);**+ Langfuse 接 LLM 调用**(prompt/completion + 评估) |
+| **P4+** | + ARMS(生产);自定义 Dashboard(成本看板 / 错误看板 / Token 配额看板) |
+
+### 22.7 学习项目特别有价值的实践 — 实时成本反馈
+
+> **每个 Turn 完成后,自动算 cost,放到 `commandExecution` Item 末尾推给客户端**。
+> 用户在桌面端看到 **"本轮花了 ¥0.03,总耗时 8.2 秒,调了 5 个工具"**。
+
+这种"实时成本反馈"是 **Codex / Claude Code 都没有的优势**,学习项目几十行代码就能看到效果:
+
+```java
+@Component
+public class CostFeedbackHook extends AgentHook {
+    @Override
+    public CompletableFuture<Map<String, Object>> afterAgent(OverAllState state, RunnableConfig config) {
+        long tokensIn = (long) state.value("tokens.input").orElse(0L);
+        long tokensOut = (long) state.value("tokens.output").orElse(0L);
+        String model = (String) state.value("model").orElse("qwen-plus");
+        double cost = CostCalculator.compute(model, tokensIn, tokensOut);
+
+        // 发个特殊 Item 推给客户端显示
+        itemEmitter.emit(new TurnSummaryItem(tokensIn, tokensOut, cost, durationMs));
+        return CompletableFuture.completedFuture(Map.of());
+    }
+}
+```
+
+### 22.8 关键设计决策
+
+| 决策 | 选择 | 原因 |
+|---|---|---|
+| Metrics 框架 | **Micrometer**(Spring 标配) | 兼容所有后端(Prometheus / Datadog / ARMS) |
+| Tracing 框架 | **OpenTelemetry** via `micrometer-tracing-bridge-otel` | 业界标准,可接所有后端 |
+| LLM 专门观测平台 | **Langfuse**(P3 起) | 看 prompt/completion / 评估 / cost 看板 |
+| 采样率 | **学习项目 100% 采样** | 数据少,看清楚要紧;P4+ 生产降到 10% |
+| 实时成本反馈 | ✅ **必做**(P1 就上) | 用户体验 + 工程价值,Codex/Claude Code 没有 |
+
+### 22.9 参考资料
+
+- [Spring AI Alibaba 可观测性 + ARMS](https://java2ai.com/blog/spring-ai-alibaba-observability-arms)
+- [Spring AI 1.0 GA Observability](https://java2ai.com/blog/spring-ai-100-ga-released)
+- [Langfuse: Open Source LLM Observability](https://langfuse.com)
+- [Micrometer 官网](https://micrometer.io)
+- [OpenTelemetry Java](https://opentelemetry.io/docs/languages/java/)
+- [阿里云 ARMS Java Agent](https://help.aliyun.com/document_detail/63797.html)
+
