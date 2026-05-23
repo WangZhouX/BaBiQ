@@ -12,6 +12,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.nio.file.InvalidPathException
+import java.nio.file.Path
 
 /**
  * 重连退避策略是一个很小的策略对象。
@@ -185,6 +187,51 @@ class ChatController(
 		}
 	}
 
+	fun selectWorkspace(cwd: String) {
+		val selected = normalizeWorkspace(cwd)
+		if (selected == null) {
+			_state.update {
+				it.copy(
+					lastError = "工作目录无效: $cwd",
+					bannerMessage = "工作目录无效: $cwd",
+				)
+			}
+			return
+		}
+		val current = state.value
+		if (current.turnState in setOf(TurnState.Sending, TurnState.Running, TurnState.WaitingApproval)) {
+			_state.update {
+				it.copy(
+					lastError = "当前 turn 仍在运行，结束后才能切换工作目录",
+					bannerMessage = "当前 turn 仍在运行，结束后才能切换工作目录",
+				)
+			}
+			return
+		}
+		if (selected == current.workspace.cwd) {
+			return
+		}
+
+		_state.update {
+			it.copy(
+				workspace = it.workspace.copy(
+					projectName = projectNameFrom(selected),
+					cwd = selected,
+				),
+				// 后端 Thread 与 cwd 绑定，切换目录后必须从新 Thread 开始，避免 UI 历史和后端上下文错位。
+				currentThreadId = null,
+				currentTurnId = null,
+				turnState = TurnState.Idle,
+				messages = emptyList(),
+				runtimeEvents = emptyList(),
+				latestSummary = null,
+				pendingApproval = null,
+				lastError = null,
+				bannerMessage = "已切换工作目录: $selected",
+			)
+		}
+	}
+
 	fun showScreen(screen: Screen) {
 		_state.update { it.copy(screen = screen) }
 	}
@@ -295,4 +342,15 @@ class ChatController(
 			label = model?.label ?: provider.label,
 		)
 	}
+
+	private fun normalizeWorkspace(cwd: String): String? =
+		try {
+			cwd.trim().takeIf { it.isNotBlank() }
+				?.let { Path.of(it).toAbsolutePath().normalize().toString() }
+		} catch (_: InvalidPathException) {
+			null
+		}
+
+	private fun projectNameFrom(cwd: String): String =
+		Path.of(cwd).fileName?.toString()?.ifBlank { null } ?: cwd
 }

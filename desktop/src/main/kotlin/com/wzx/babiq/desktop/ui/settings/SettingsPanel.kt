@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
@@ -18,10 +19,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.wzx.babiq.desktop.state.AppState
+import com.wzx.babiq.desktop.ui.common.chooseWorkspaceDirectory
 import com.wzx.babiq.desktop.ui.theme.BaBiQColors
 
 @Composable
-fun SettingsPanel(state: AppState) {
+fun SettingsPanel(
+	state: AppState,
+	onSelectWorkspace: (String) -> Unit,
+) {
 	Column(
 		modifier = Modifier.fillMaxSize().padding(34.dp),
 		verticalArrangement = Arrangement.spacedBy(18.dp),
@@ -32,6 +37,14 @@ fun SettingsPanel(state: AppState) {
 			Text("路径: ${state.workspace.cwd}")
 			Text("模式: ${state.workspace.mode}")
 			Text("权限: ${state.workspace.permission}")
+			Button(
+				enabled = state.canSwitchWorkspace,
+				onClick = {
+					chooseWorkspaceDirectory(state.workspace.cwd)?.let(onSelectWorkspace)
+				},
+			) {
+				Text("选择工作目录")
+			}
 		}
 		SettingsCard("Provider 只读信息") {
 			if (state.providerState.providers.isEmpty()) {

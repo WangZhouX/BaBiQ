@@ -20,6 +20,7 @@ fun ChatScreen(
 	state: AppState,
 	onSend: (String) -> Unit,
 	onRetryConnection: () -> Unit,
+	onSelectWorkspace: (String) -> Unit,
 	onSelectProvider: (String, String?) -> Unit,
 	onToggleRuntime: () -> Unit,
 ) {
@@ -39,6 +40,7 @@ fun ChatScreen(
 		Composer(
 			state = state,
 			onSend = onSend,
+			onSelectWorkspace = onSelectWorkspace,
 			onSelectProvider = onSelectProvider,
 		)
 	}

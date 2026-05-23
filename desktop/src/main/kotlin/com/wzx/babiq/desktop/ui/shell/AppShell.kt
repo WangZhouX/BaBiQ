@@ -21,6 +21,7 @@ fun AppShell(
 	onSend: (String) -> Unit,
 	onRetryConnection: () -> Unit,
 	onSelectScreen: (Screen) -> Unit,
+	onSelectWorkspace: (String) -> Unit,
 	onSelectProvider: (String, String?) -> Unit,
 	onToggleRuntime: () -> Unit,
 ) {
@@ -39,11 +40,15 @@ fun AppShell(
 					state = state,
 					onSend = onSend,
 					onRetryConnection = onRetryConnection,
+					onSelectWorkspace = onSelectWorkspace,
 					onSelectProvider = onSelectProvider,
 					onToggleRuntime = onToggleRuntime,
 				)
 
-				Screen.Settings -> SettingsPanel(state = state)
+				Screen.Settings -> SettingsPanel(
+					state = state,
+					onSelectWorkspace = onSelectWorkspace,
+				)
 			}
 		}
 		if (state.runtimeExpanded) {

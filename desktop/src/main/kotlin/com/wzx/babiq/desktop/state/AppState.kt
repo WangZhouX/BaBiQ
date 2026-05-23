@@ -34,6 +34,13 @@ data class AppState(
 			turnState !in setOf(TurnState.Sending, TurnState.Running, TurnState.WaitingApproval)
 
 	/**
+	 * 工作目录是下一轮任务的执行边界；只要没有正在运行或等待审批的 turn，就允许提前切换。
+	 * 它不依赖 WebSocket 连接状态，这样用户可以先选好目录，再启动或重连后端。
+	 */
+	val canSwitchWorkspace: Boolean
+		get() = turnState !in setOf(TurnState.Sending, TurnState.Running, TurnState.WaitingApproval)
+
+	/**
 	 * 审批提交必须同时满足“后端已连接”和“确实有待审批请求”。
 	 * 如果断线，按钮会禁用，用户不会误以为审批已经送达。
 	 */

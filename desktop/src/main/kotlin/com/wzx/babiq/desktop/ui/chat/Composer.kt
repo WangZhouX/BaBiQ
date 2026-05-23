@@ -33,6 +33,7 @@ import com.wzx.babiq.desktop.ui.theme.BaBiQColors
 fun Composer(
 	state: AppState,
 	onSend: (String) -> Unit,
+	onSelectWorkspace: (String) -> Unit,
 	onSelectProvider: (String, String?) -> Unit,
 ) {
 	var text by remember(state.draft) { mutableStateOf(state.draft) }
@@ -69,7 +70,11 @@ fun Composer(
 				modifier = Modifier.fillMaxWidth(),
 				horizontalArrangement = Arrangement.SpaceBetween,
 			) {
-				ComposerContextBar(state = state, onSelectProvider = onSelectProvider)
+				ComposerContextBar(
+					state = state,
+					onSelectWorkspace = onSelectWorkspace,
+					onSelectProvider = onSelectProvider,
+				)
 				Button(
 					enabled = state.canSend && text.isNotBlank(),
 					onClick = {

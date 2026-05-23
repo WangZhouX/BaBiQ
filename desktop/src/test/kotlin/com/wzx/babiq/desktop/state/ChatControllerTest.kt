@@ -32,6 +32,48 @@ class ChatControllerTest {
 	}
 
 	@Test
+	fun `selectWorkspace 切换工作目录后下一轮使用新 cwd 创建 thread`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(
+			gateway,
+			backgroundScope,
+			initialState = AppState(
+				connectionState = ConnectionState.Connected,
+				currentThreadId = "old-thread",
+				currentTurnId = "old-turn",
+				messages = listOf(ChatMessage.User("old-user", "旧目录里的消息")),
+			),
+		)
+
+		controller.selectWorkspace("D:\\Projects\\Other")
+		controller.sendMessage("分析新目录")
+
+		assertEquals("Other", controller.state.value.workspace.projectName)
+		assertEquals("D:\\Projects\\Other", controller.state.value.workspace.cwd)
+		assertEquals(listOf("createThread:D:\\Projects\\Other", "startTurn:thread-1:分析新目录:null"), gateway.calls)
+		assertFalse(controller.state.value.messages.any { it.id == "old-user" })
+	}
+
+	@Test
+	fun `selectWorkspace 运行中的 turn 不允许切换工作目录`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(
+			gateway,
+			backgroundScope,
+			initialState = AppState(
+				connectionState = ConnectionState.Connected,
+				turnState = TurnState.Running,
+				workspace = WorkspaceContext(cwd = "E:\\BaBiQ"),
+			),
+		)
+
+		controller.selectWorkspace("D:\\Projects\\Other")
+
+		assertEquals("E:\\BaBiQ", controller.state.value.workspace.cwd)
+		assertEquals("当前 turn 仍在运行，结束后才能切换工作目录", controller.state.value.lastError)
+	}
+
+	@Test
 	fun `running 状态禁止重复发送`() = runTest {
 		val gateway = FakeGateway()
 		val controller = ChatController(gateway, backgroundScope)
