@@ -28,7 +28,8 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
         @JsonSubTypes.Type(value = WebSearchItem.class, name = "webSearch"),
         @JsonSubTypes.Type(value = ImageViewItem.class, name = "imageView"),
         @JsonSubTypes.Type(value = ReviewModeItem.class, name = "reviewMode"),
-        @JsonSubTypes.Type(value = ContextCompactionItem.class, name = "contextCompaction")
+        @JsonSubTypes.Type(value = ContextCompactionItem.class, name = "contextCompaction"),
+        @JsonSubTypes.Type(value = TurnSummaryItem.class, name = "turnSummary")
 })
 public sealed interface ThreadItem permits
         UserMessageItem,
@@ -42,7 +43,8 @@ public sealed interface ThreadItem permits
         WebSearchItem,
         ImageViewItem,
         ReviewModeItem,
-        ContextCompactionItem {
+        ContextCompactionItem,
+        TurnSummaryItem {
 
     /**
      * 返回 item 标识。

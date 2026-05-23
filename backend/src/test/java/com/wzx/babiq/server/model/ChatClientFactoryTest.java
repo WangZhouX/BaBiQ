@@ -81,6 +81,15 @@ class ChatClientFactoryTest {
     }
 
     @Test
+    @DisplayName("resolveModelName 返回实际 provider 模型名")
+    void resolveModelName_should_return_configured_model_name() {
+        ChatClientFactory factory = newFactory(properties(), List.of(fakeFactory(ProviderType.DASHSCOPE)));
+
+        assertThat(factory.resolveModelName(null)).isEqualTo("qwen-plus");
+        assertThat(factory.resolveModelName("dashscope-default")).isEqualTo("qwen-plus");
+    }
+
+    @Test
     @DisplayName("resolve 未知 provider id 抛出清晰错误")
     void resolve_should_reject_unknown_provider_id() {
         ChatClientFactory factory = newFactory(properties(), List.of(fakeFactory(ProviderType.DASHSCOPE)));

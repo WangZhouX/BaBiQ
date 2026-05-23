@@ -52,4 +52,24 @@ class ThreadItemJsonTest {
                 .contains("\"id\":\"it_12\"")
                 .contains("\"type\":\"contextCompaction\"");
     }
+
+    @Test
+    void turn_summary_should_serialize_metrics_and_deserialize_by_type_tag() throws Exception {
+        ThreadItem item = new TurnSummaryItem(
+                "it_13", "turnSummary", "completed", "qwen-plus",
+                100L, 50L, 150L, 2, new java.math.BigDecimal("0.0014"), 1200L);
+
+        String json = objectMapper.writeValueAsString(item);
+        ThreadItem restored = objectMapper.readValue(json, ThreadItem.class);
+
+        assertThat(json)
+                .contains("\"type\":\"turnSummary\"")
+                .contains("\"status\":\"completed\"")
+                .contains("\"model\":\"qwen-plus\"")
+                .contains("\"totalTokens\":150")
+                .contains("\"toolCalls\":2")
+                .contains("\"estimatedCostUsd\":0.0014")
+                .contains("\"durationMs\":1200");
+        assertThat(restored).isInstanceOf(TurnSummaryItem.class);
+    }
 }

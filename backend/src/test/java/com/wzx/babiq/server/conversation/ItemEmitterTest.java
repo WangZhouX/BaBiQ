@@ -3,11 +3,13 @@ package com.wzx.babiq.server.conversation;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wzx.babiq.server.agent.ApprovalRequestPayload;
+import com.wzx.babiq.server.conversation.items.TurnSummaryItem;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
 import java.lang.reflect.Proxy;
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -51,6 +53,22 @@ class ItemEmitterTest {
         assertThat(params.get("toolName").asText()).isEqualTo("write_file");
         assertThat(params.get("arguments").asText()).isEqualTo("{\"path\":\"a.txt\"}");
         assertThat(params.get("description").asText()).isEqualTo("需要审批");
+    }
+
+    @Test
+    void emitTurnSummary_should_send_item_added_notification() throws Exception {
+        List<String> payloads = new ArrayList<>();
+        WebSocketSession session = recordingSession(payloads);
+        ItemEmitter emitter = new ItemEmitter(session, objectMapper, "thr_1", "turn_1");
+
+        emitter.emitTurnSummary(new TurnSummaryItem(
+                "it_13", "turnSummary", "completed", "qwen-plus",
+                100L, 50L, 150L, 2, new BigDecimal("0.0014"), 1200L));
+
+        JsonNode root = objectMapper.readTree(payloads.get(0));
+        assertThat(root.get("method").asText()).isEqualTo("item/added");
+        assertThat(root.at("/params/item/type").asText()).isEqualTo("turnSummary");
+        assertThat(root.at("/params/item/model").asText()).isEqualTo("qwen-plus");
     }
 
     private WebSocketSession recordingSession(List<String> payloads) {

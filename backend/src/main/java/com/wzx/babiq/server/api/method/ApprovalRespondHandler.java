@@ -12,6 +12,7 @@ import com.wzx.babiq.server.conversation.ConversationService;
 import com.wzx.babiq.server.conversation.ItemEmitter;
 import com.wzx.babiq.server.conversation.Thread;
 import com.wzx.babiq.server.conversation.Turn;
+import com.wzx.babiq.server.observability.BaBiQMetrics;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.WebSocketSession;
 
@@ -31,6 +32,7 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
     private final ConversationService conversationService;
     private final ObjectMapper objectMapper;
     private final TurnExecutor turnExecutor;
+    private final BaBiQMetrics metrics;
 
     /**
      * 创建 approval/respond handler。
@@ -39,15 +41,18 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
      * @param conversationService 对话生命周期服务
      * @param objectMapper JSON 序列化器
      * @param turnExecutor Agent 异步执行器
+     * @param metrics P1 可观测指标聚合器
      */
     public ApprovalRespondHandler(PendingApprovals pendingApprovals,
                                   ConversationService conversationService,
                                   ObjectMapper objectMapper,
-                                  TurnExecutor turnExecutor) {
+                                  TurnExecutor turnExecutor,
+                                  BaBiQMetrics metrics) {
         this.pendingApprovals = pendingApprovals;
         this.conversationService = conversationService;
         this.objectMapper = objectMapper;
         this.turnExecutor = turnExecutor;
+        this.metrics = metrics;
     }
 
     /**
@@ -84,7 +89,9 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
                 .orElseThrow(() -> new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "thread 不存在: " + threadId));
         turn.resume();
         ItemEmitter emitter = new ItemEmitter(session, objectMapper, threadId, turnId);
-        turnExecutor.submitResume(turn, buildFeedback(original, decision, editedArgs), thread.cwd(), emitter);
+        InterruptionMetadata feedback = buildFeedback(original, decision, editedArgs);
+        metrics.recordApprovalDecision(canonicalDecision(decision));
+        turnExecutor.submitResume(turn, feedback, thread.cwd(), emitter);
         return Map.of("delivered", true);
     }
 
@@ -120,6 +127,15 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
                     .result(InterruptionMetadata.ToolFeedback.FeedbackResult.EDITED)
                     .arguments(editedArgs == null ? feedback.getArguments() : editedArgs)
                     .build();
+            default -> throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "未知审批决策: " + decision);
+        };
+    }
+
+    private String canonicalDecision(String decision) {
+        return switch (decision.toLowerCase()) {
+            case "approve", "approved" -> "approved";
+            case "deny", "denied", "reject", "rejected" -> "denied";
+            case "edit", "edited" -> "edited";
             default -> throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "未知审批决策: " + decision);
         };
     }

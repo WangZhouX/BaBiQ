@@ -3,8 +3,10 @@ package com.wzx.babiq.server.conversation;
 import com.wzx.babiq.server.conversation.items.CommandExecutionItem;
 import com.wzx.babiq.server.conversation.items.FileChangeItem;
 import com.wzx.babiq.server.conversation.items.ReasoningItem;
+import com.wzx.babiq.server.conversation.items.TurnSummaryItem;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -118,6 +120,31 @@ public class ConversationService {
      */
     public ReasoningItem emitReasoning(String text) {
         return new ReasoningItem(newId("it_"), "reasoning", text);
+    }
+
+    /**
+     * 构造 turn 摘要 item。
+     *
+     * @param status 本轮结束状态
+     * @param model 实际使用的模型名
+     * @param promptTokens prompt token 数
+     * @param completionTokens completion token 数
+     * @param totalTokens 总 token 数
+     * @param toolCalls 工具调用次数
+     * @param estimatedCostUsd 估算美元成本
+     * @param durationMs 本轮耗时毫秒
+     * @return turnSummary item
+     */
+    public TurnSummaryItem emitTurnSummary(String status,
+                                           String model,
+                                           long promptTokens,
+                                           long completionTokens,
+                                           long totalTokens,
+                                           int toolCalls,
+                                           BigDecimal estimatedCostUsd,
+                                           long durationMs) {
+        return new TurnSummaryItem(newId("it_"), "turnSummary", status, model,
+                promptTokens, completionTokens, totalTokens, toolCalls, estimatedCostUsd, durationMs);
     }
 
     private String newId(String prefix) {

@@ -112,6 +112,16 @@ public class ItemEmitter {
     }
 
     /**
+     * 发射单轮执行摘要 item。
+     *
+     * @param item turnSummary item
+     * @throws IOException WebSocket 写入失败时抛出
+     */
+    public void emitTurnSummary(ThreadItem item) throws IOException {
+        emitItemAdded(item);
+    }
+
+    /**
      * 发射 turn/completed 通知。
      *
      * @param status 协议层完成状态,例如 completed / interrupted / canceled

@@ -1,6 +1,12 @@
 package com.wzx.babiq.server.hook;
 
+import com.alibaba.cloud.ai.graph.OverAllState;
+import com.alibaba.cloud.ai.graph.RunnableConfig;
+import com.wzx.babiq.server.observability.TurnObservationContext;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.chat.metadata.DefaultUsage;
+
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -49,5 +55,22 @@ class BaBiQTokenUsageHookTest {
 
         assertThatThrownBy(() -> hook.record(-1, 0))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void afterModel_should_forward_usage_to_turn_observation_context() {
+        BaBiQTokenUsageHook hook = new BaBiQTokenUsageHook();
+        TurnObservationContext context = TurnObservationContext.start(
+                "thr_1", "turn_1", "provider-a", "qwen-plus");
+        OverAllState state = new OverAllState(Map.of("usage", new DefaultUsage(100, 50)));
+        RunnableConfig config = RunnableConfig.builder()
+                .threadId("thr_1")
+                .addMetadata(TurnObservationContext.METADATA_KEY, context)
+                .build();
+
+        hook.afterModel(state, config).join();
+
+        assertThat(context.promptTokens()).isEqualTo(100L);
+        assertThat(context.completionTokens()).isEqualTo(50L);
     }
 }

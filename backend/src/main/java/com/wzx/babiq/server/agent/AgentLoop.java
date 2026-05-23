@@ -7,10 +7,15 @@ import com.wzx.babiq.server.conversation.ItemEmitter;
 import com.wzx.babiq.server.conversation.Turn;
 import com.wzx.babiq.server.conversation.items.AgentMessageItem;
 import com.wzx.babiq.server.conversation.items.UserMessageItem;
+import com.wzx.babiq.server.observability.TurnObservationContext;
+import com.wzx.babiq.server.observability.TurnObservationRegistry;
+import com.wzx.babiq.server.observability.TurnSummaryEmitter;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.stereotype.Component;
 
 import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Agent Loop 主流程，负责发 user item、调用 ReactAgent、处理完成或 HITL 中断。
@@ -18,43 +23,61 @@ import java.util.Optional;
 @Component
 public class AgentLoop {
 
+    private static final Logger log = LoggerFactory.getLogger(AgentLoop.class);
+
     private final ReActStrategy strategy;
     private final PendingApprovals pendingApprovals;
+    private final TurnSummaryEmitter summaryEmitter;
+    private final TurnObservationRegistry observationRegistry;
 
     /**
      * 创建 AgentLoop。
      *
      * @param strategy ReAct 装配策略
      * @param pendingApprovals HITL 待审批缓存
+     * @param summaryEmitter turn 摘要发射器
+     * @param observationRegistry 跨中断恢复的观测上下文缓存
      */
-    public AgentLoop(ReActStrategy strategy, PendingApprovals pendingApprovals) {
+    public AgentLoop(ReActStrategy strategy,
+                     PendingApprovals pendingApprovals,
+                     TurnSummaryEmitter summaryEmitter,
+                     TurnObservationRegistry observationRegistry) {
         this.strategy = strategy;
         this.pendingApprovals = pendingApprovals;
+        this.summaryEmitter = summaryEmitter;
+        this.observationRegistry = observationRegistry;
     }
 
     public void invoke(Turn turn, String userText, String providerId, String cwd, ItemEmitter emitter) {
+        TurnObservationContext context = observationRegistry.start(
+                turn.threadId(), turn.id(), providerId, strategy.resolveModelName(providerId));
         try {
             emitter.emitItemAdded(UserMessageItem.of(AgentLoopSupport.newItemId(), userText));
-            ReactAgent agent = strategy.buildAgent(providerId, cwd, emitter);
-            Optional<NodeOutput> output = agent.invokeAndGetOutput(userText, strategy.buildConfig(turn.threadId()));
-            handleOutput(turn, emitter, output);
+            ReactAgent agent = strategy.buildAgent(providerId, cwd, emitter, context);
+            Optional<NodeOutput> output = agent.invokeAndGetOutput(userText, strategy.buildConfig(turn.threadId(), context));
+            handleOutput(turn, emitter, output, context);
         } catch (Exception exception) {
-            AgentLoopSupport.fail(org.slf4j.LoggerFactory.getLogger(AgentLoop.class), turn, emitter, exception);
+            AgentLoopSupport.fail(log, turn, emitter, exception, summaryEmitter, context, observationRegistry);
         }
     }
 
     public void invokeResume(Turn turn, InterruptionMetadata feedback, String cwd, ItemEmitter emitter) {
+        TurnObservationContext context = observationRegistry.getOrStart(
+                turn.threadId(), turn.id(), null, strategy.resolveModelName(null));
         try {
-            ReactAgent agent = strategy.buildAgent(null, cwd, emitter);
+            ReactAgent agent = strategy.buildAgent(null, cwd, emitter, context);
             Optional<NodeOutput> output = agent.invokeAndGetOutput(java.util.Map.of(),
-                    strategy.buildResumeConfig(turn.threadId(), feedback));
-            handleOutput(turn, emitter, output);
+                    strategy.buildResumeConfig(turn.threadId(), feedback, context));
+            handleOutput(turn, emitter, output, context);
         } catch (Exception exception) {
-            AgentLoopSupport.fail(org.slf4j.LoggerFactory.getLogger(AgentLoop.class), turn, emitter, exception);
+            AgentLoopSupport.fail(log, turn, emitter, exception, summaryEmitter, context, observationRegistry);
         }
     }
 
-    private void handleOutput(Turn turn, ItemEmitter emitter, Optional<NodeOutput> output) throws Exception {
+    private void handleOutput(Turn turn,
+                              ItemEmitter emitter,
+                              Optional<NodeOutput> output,
+                              TurnObservationContext context) throws Exception {
         NodeOutput node = output.orElseThrow(() -> new IllegalStateException("ReactAgent 返回空输出"));
         if (node instanceof InterruptionMetadata metadata) {
             pendingApprovals.put(turn.threadId(), metadata);
@@ -64,6 +87,8 @@ public class AgentLoop {
         }
         AssistantMessage assistantMessage = strategy.extractAssistantMessage(node);
         emitter.emitItemAdded(AgentMessageItem.full(AgentLoopSupport.newItemId(), assistantMessage.getText()));
+        summaryEmitter.emit(context, emitter, "completed");
+        observationRegistry.remove(turn.id());
         turn.complete();
         emitter.emitTurnCompleted("completed");
     }

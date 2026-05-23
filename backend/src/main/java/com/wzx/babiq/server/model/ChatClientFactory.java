@@ -80,6 +80,17 @@ public class ChatClientFactory {
     }
 
     /**
+     * 解析 provider 对应的模型名。
+     *
+     * @param providerId provider 唯一标识；传入 null 时使用当前 active provider
+     * @return 配置中的模型名
+     */
+    public String resolveModelName(String providerId) {
+        String effectiveProviderId = providerId == null ? registry.active().id() : providerId;
+        return registry.get(effectiveProviderId).model();
+    }
+
+    /**
      * 返回当前激活 provider 的 ChatClient。
      *
      * @return active-provider 对应的 ChatClient

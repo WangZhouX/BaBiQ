@@ -9,6 +9,7 @@ import com.wzx.babiq.server.conversation.ConversationService;
 import com.wzx.babiq.server.conversation.Thread;
 import com.wzx.babiq.server.conversation.Turn;
 import com.wzx.babiq.server.conversation.TurnStatus;
+import com.wzx.babiq.server.observability.BaBiQMetrics;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
@@ -38,8 +39,9 @@ class ApprovalRespondHandlerTest {
         PendingApprovals pendingApprovals = new PendingApprovals();
         pendingApprovals.put(thread.id(), metadata());
         TurnExecutor executor = mock(TurnExecutor.class);
+        BaBiQMetrics metrics = new BaBiQMetrics();
         ApprovalRespondHandler handler = new ApprovalRespondHandler(
-                pendingApprovals, conversationService, objectMapper, executor);
+                pendingApprovals, conversationService, objectMapper, executor, metrics);
 
         Object payload = handler.handle(objectMapper.valueToTree(Map.of(
                 "threadId", thread.id(),
@@ -48,13 +50,15 @@ class ApprovalRespondHandlerTest {
 
         assertThat(((Map<?, ?>) payload).get("delivered")).isEqualTo(true);
         assertThat(turn.status()).isEqualTo(TurnStatus.RUNNING);
+        assertThat(metrics.snapshot().approvalDecisionsByDecision()).containsEntry("approved", 1L);
         verify(executor).submitResume(eq(turn), any(InterruptionMetadata.class), eq("."), any());
     }
 
     @Test
     void build_feedback_maps_edit_to_edited_arguments() {
         ApprovalRespondHandler handler = new ApprovalRespondHandler(
-                new PendingApprovals(), new ConversationService(), objectMapper, mock(TurnExecutor.class));
+                new PendingApprovals(), new ConversationService(), objectMapper, mock(TurnExecutor.class),
+                new BaBiQMetrics());
 
         InterruptionMetadata feedback = handler.buildFeedback(metadata(), "edit", "{\"path\":\"b.txt\"}");
 

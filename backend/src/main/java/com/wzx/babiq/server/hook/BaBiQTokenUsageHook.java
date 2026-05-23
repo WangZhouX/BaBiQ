@@ -5,6 +5,7 @@ import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.agent.hook.HookPosition;
 import com.alibaba.cloud.ai.graph.agent.hook.HookPositions;
 import com.alibaba.cloud.ai.graph.agent.hook.ModelHook;
+import com.wzx.babiq.server.observability.TurnObservationContext;
 import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.stereotype.Component;
 
@@ -48,6 +49,7 @@ public final class BaBiQTokenUsageHook extends ModelHook {
         for (Object value : state.data().values()) {
             if (value instanceof Usage usage) {
                 record(usage);
+                recordContextUsage(config, usage);
                 break;
             }
         }
@@ -117,6 +119,15 @@ public final class BaBiQTokenUsageHook extends ModelHook {
 
     private long safeToken(Integer value) {
         return value == null ? 0L : value.longValue();
+    }
+
+    private void recordContextUsage(RunnableConfig config, Usage usage) {
+        config.metadata(TurnObservationContext.METADATA_KEY)
+                .filter(TurnObservationContext.class::isInstance)
+                .map(TurnObservationContext.class::cast)
+                .ifPresent(context -> context.recordTokens(
+                        safeToken(usage.getPromptTokens()),
+                        safeToken(usage.getCompletionTokens())));
     }
 
     /**

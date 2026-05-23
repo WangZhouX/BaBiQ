@@ -14,7 +14,9 @@ import com.wzx.babiq.server.conversation.Turn;
 import com.wzx.babiq.server.hook.BaBiQTokenUsageHook;
 import com.wzx.babiq.server.interceptor.BaBiQSandboxInterceptor;
 import com.wzx.babiq.server.interceptor.SpotlightingToolInterceptor;
+import com.wzx.babiq.server.interceptor.ToolObservationInterceptor;
 import com.wzx.babiq.server.model.ChatClientFactory;
+import com.wzx.babiq.server.observability.TurnObservationContext;
 import com.wzx.babiq.server.security.SystemPromptSecurityRule;
 import com.wzx.babiq.server.tool.ToolRegistry;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -43,6 +45,7 @@ public class ReActStrategy {
     private final ToolRegistry toolRegistry;
     private final AgentLoopProperties properties;
     private final BaBiQSandboxInterceptor sandboxInterceptor;
+    private final ToolObservationInterceptor toolObservationInterceptor;
     private final SpotlightingToolInterceptor spotlightingInterceptor;
     private final BaBiQTokenUsageHook tokenUsageHook;
     private final MemorySaver memorySaver = new MemorySaver();
@@ -54,6 +57,7 @@ public class ReActStrategy {
      * @param toolRegistry 工具注册表
      * @param properties Agent Loop 配置
      * @param sandboxInterceptor D31 沙箱拦截器
+     * @param toolObservationInterceptor 工具调用观测拦截器
      * @param spotlightingInterceptor 工具结果不可信数据标注拦截器
      * @param tokenUsageHook token 累计 Hook
      */
@@ -61,12 +65,14 @@ public class ReActStrategy {
                          ToolRegistry toolRegistry,
                          AgentLoopProperties properties,
                          BaBiQSandboxInterceptor sandboxInterceptor,
+                         ToolObservationInterceptor toolObservationInterceptor,
                          SpotlightingToolInterceptor spotlightingInterceptor,
                          BaBiQTokenUsageHook tokenUsageHook) {
         this.chatClientFactory = chatClientFactory;
         this.toolRegistry = toolRegistry;
         this.properties = properties;
         this.sandboxInterceptor = sandboxInterceptor;
+        this.toolObservationInterceptor = toolObservationInterceptor;
         this.spotlightingInterceptor = spotlightingInterceptor;
         this.tokenUsageHook = tokenUsageHook;
     }
@@ -77,15 +83,17 @@ public class ReActStrategy {
      * @param providerId provider id，传 null 时使用 active provider
      * @param cwd 本轮 thread 工作目录
      * @param emitter 当前 turn 的协议 item 发射器
+     * @param context 当前 turn 的观测上下文
      * @return 已装配工具、Hook、Interceptor 和 MemorySaver 的 ReactAgent
      */
-    public ReactAgent buildAgent(String providerId, String cwd, ItemEmitter emitter) {
+    public ReactAgent buildAgent(String providerId, String cwd, ItemEmitter emitter, TurnObservationContext context) {
         ChatModel chatModel = chatClientFactory.resolveChatModel(providerId);
         ToolCallback[] callbacks = toolRegistry.allCallbacks();
         Map<String, Object> toolContext = new LinkedHashMap<>();
         toolContext.put(BaBiQSandboxInterceptor.CONTEXT_CWD, cwd);
         toolContext.put(BaBiQSandboxInterceptor.CONTEXT_WRITABLE_ROOTS, stringify(properties.writableRoots()));
         toolContext.put(BaBiQSandboxInterceptor.CONTEXT_ITEM_EMITTER, emitter);
+        toolContext.put(TurnObservationContext.METADATA_KEY, context);
 
         // D23：写类工具声明式触发 SAA 原生 HumanInTheLoopHook，不手写阻塞审批状态机。
         HumanInTheLoopHook hitlHook = HumanInTheLoopHook.builder()
@@ -111,9 +119,13 @@ public class ReActStrategy {
                 .tools(callbacks)
                 .toolContext(toolContext)
                 .hooks(hitlHook, limitHook, tokenUsageHook)
-                .interceptors(sandboxInterceptor, spotlightingInterceptor, evictionInterceptor)
+                .interceptors(sandboxInterceptor, toolObservationInterceptor, spotlightingInterceptor, evictionInterceptor)
                 .saver(memorySaver)
                 .build();
+    }
+
+    public String resolveModelName(String providerId) {
+        return chatClientFactory.resolveModelName(providerId);
     }
 
     /**
@@ -122,8 +134,11 @@ public class ReActStrategy {
      * @param threadId 业务线程 id
      * @return SAA RunnableConfig
      */
-    public RunnableConfig buildConfig(String threadId) {
-        return RunnableConfig.builder().threadId(threadId).build();
+    public RunnableConfig buildConfig(String threadId, TurnObservationContext context) {
+        return RunnableConfig.builder()
+                .threadId(threadId)
+                .addMetadata(TurnObservationContext.METADATA_KEY, context)
+                .build();
     }
 
     /**
@@ -133,9 +148,12 @@ public class ReActStrategy {
      * @param metadata 用户审批后的反馈元数据
      * @return 带 human feedback 和 resume 标记的 RunnableConfig
      */
-    public RunnableConfig buildResumeConfig(String threadId, InterruptionMetadata metadata) {
+    public RunnableConfig buildResumeConfig(String threadId,
+                                            InterruptionMetadata metadata,
+                                            TurnObservationContext context) {
         return RunnableConfig.builder()
                 .threadId(threadId)
+                .addMetadata(TurnObservationContext.METADATA_KEY, context)
                 .addHumanFeedback(metadata)
                 .resume()
                 .build();

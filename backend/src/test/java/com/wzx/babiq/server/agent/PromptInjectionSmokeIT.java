@@ -52,6 +52,8 @@ class PromptInjectionSmokeIT {
     void setUpMockModel() {
         Mockito.when(chatClientFactory.resolveChatModel("pi-provider"))
                 .thenReturn(new CapturingToolCallingChatModel(secondPrompt, readPath));
+        Mockito.when(chatClientFactory.resolveModelName("pi-provider"))
+                .thenReturn("mock-react");
     }
 
     @Test
@@ -67,6 +69,7 @@ class PromptInjectionSmokeIT {
                 capturingEmitter(emittedItems));
 
         assertThat(turn.status()).isEqualTo(TurnStatus.COMPLETED);
+        assertThat(emittedItems).extracting(ThreadItem::type).contains("turnSummary");
         assertThat(secondPrompt.get())
                 .contains("<untrusted-data source=\"tool:read_file\"")
                 .contains("path=\"")
@@ -80,6 +83,10 @@ class PromptInjectionSmokeIT {
             emittedItems.add(invocation.getArgument(0));
             return null;
         }).when(emitter).emitItemAdded(any(ThreadItem.class));
+        Mockito.doAnswer(invocation -> {
+            emittedItems.add(invocation.getArgument(0));
+            return null;
+        }).when(emitter).emitTurnSummary(any(ThreadItem.class));
         return emitter;
     }
 

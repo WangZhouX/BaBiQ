@@ -55,6 +55,8 @@ class EndToEndIT {
     void setUpMockModel() {
         Mockito.when(chatClientFactory.resolveChatModel("e2e-provider"))
                 .thenReturn(new ToolCallingChatModel());
+        Mockito.when(chatClientFactory.resolveModelName("e2e-provider"))
+                .thenReturn("mock-react");
     }
 
     @Test
@@ -68,8 +70,8 @@ class EndToEndIT {
 
         assertThat(turn.status()).isEqualTo(TurnStatus.COMPLETED);
         assertThat(emittedItems).extracting(ThreadItem::type)
-                .contains("userMessage", "agentMessage");
-        assertThat(emittedItems.get(emittedItems.size() - 1).type()).isEqualTo("agentMessage");
+                .contains("userMessage", "agentMessage", "turnSummary");
+        assertThat(emittedItems.get(emittedItems.size() - 1).type()).isEqualTo("turnSummary");
     }
 
     private ItemEmitter capturingEmitter(List<ThreadItem> emittedItems) throws Exception {
@@ -78,6 +80,10 @@ class EndToEndIT {
             emittedItems.add(invocation.getArgument(0));
             return null;
         }).when(emitter).emitItemAdded(any(ThreadItem.class));
+        Mockito.doAnswer(invocation -> {
+            emittedItems.add(invocation.getArgument(0));
+            return null;
+        }).when(emitter).emitTurnSummary(any(ThreadItem.class));
         return emitter;
     }
 

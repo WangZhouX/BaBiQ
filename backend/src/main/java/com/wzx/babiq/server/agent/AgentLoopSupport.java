@@ -2,6 +2,9 @@ package com.wzx.babiq.server.agent;
 
 import com.wzx.babiq.server.conversation.ItemEmitter;
 import com.wzx.babiq.server.conversation.Turn;
+import com.wzx.babiq.server.observability.TurnObservationContext;
+import com.wzx.babiq.server.observability.TurnObservationRegistry;
+import com.wzx.babiq.server.observability.TurnSummaryEmitter;
 import org.slf4j.Logger;
 
 import java.util.UUID;
@@ -34,14 +37,25 @@ final class AgentLoopSupport {
      * @param turn 当前 turn
      * @param emitter 当前 WebSocket 发射器
      * @param exception 失败异常
+     * @param summaryEmitter turn 摘要发射器
+     * @param context 当前 turn 观测上下文
+     * @param observationRegistry 观测上下文缓存
      */
-    static void fail(Logger logger, Turn turn, ItemEmitter emitter, Exception exception) {
+    static void fail(Logger logger,
+                     Turn turn,
+                     ItemEmitter emitter,
+                     Exception exception,
+                     TurnSummaryEmitter summaryEmitter,
+                     TurnObservationContext context,
+                     TurnObservationRegistry observationRegistry) {
         logger.error("AgentLoop 执行失败 turnId={}", turn.id(), exception);
         if (isInterrupted(exception) || Thread.currentThread().isInterrupted()) {
             try {
                 if (!turn.status().isTerminal()) {
                     turn.cancel();
                 }
+                emitSummary(logger, turn, emitter, summaryEmitter, context, "interrupted");
+                observationRegistry.remove(turn.id());
                 emitter.emitTurnCompleted("interrupted");
             } catch (Exception sendException) {
                 logger.error("发送 turn/completed(interrupted) 失败 turnId={}", turn.id(), sendException);
@@ -52,9 +66,24 @@ final class AgentLoopSupport {
             turn.fail(exception.getMessage());
         }
         try {
+            emitSummary(logger, turn, emitter, summaryEmitter, context, "failed");
+            observationRegistry.remove(turn.id());
             emitter.emitTurnFailed(exception.getMessage());
         } catch (Exception sendException) {
             logger.error("发送 turn/failed 失败 turnId={}", turn.id(), sendException);
+        }
+    }
+
+    private static void emitSummary(Logger logger,
+                                    Turn turn,
+                                    ItemEmitter emitter,
+                                    TurnSummaryEmitter summaryEmitter,
+                                    TurnObservationContext context,
+                                    String status) {
+        try {
+            summaryEmitter.emit(context, emitter, status);
+        } catch (Exception exception) {
+            logger.warn("发送 turnSummary 失败 turnId={},status={}", turn.id(), status, exception);
         }
     }
 

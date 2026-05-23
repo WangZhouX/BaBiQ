@@ -3,7 +3,10 @@ package com.wzx.babiq.server.conversation;
 import com.wzx.babiq.server.conversation.items.CommandExecutionItem;
 import com.wzx.babiq.server.conversation.items.FileChangeItem;
 import com.wzx.babiq.server.conversation.items.ReasoningItem;
+import com.wzx.babiq.server.conversation.items.TurnSummaryItem;
 import org.junit.jupiter.api.Test;
+
+import java.math.BigDecimal;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -72,5 +75,22 @@ class ConversationServiceTest {
         assertThat(fileItem.status()).isEqualTo("denied");
         assertThat(reasoningItem.type()).isEqualTo("reasoning");
         assertThat(reasoningItem.text()).contains("README");
+    }
+
+    @Test
+    void emit_turn_summary_should_create_protocol_item_with_usage_cost_and_duration() {
+        ConversationService conversationService = new ConversationService();
+
+        TurnSummaryItem item = conversationService.emitTurnSummary(
+                "completed", "qwen-plus", 100L, 50L, 150L, 2, new BigDecimal("0.0014"), 1200L);
+
+        assertThat(item.id()).startsWith("it_");
+        assertThat(item.type()).isEqualTo("turnSummary");
+        assertThat(item.status()).isEqualTo("completed");
+        assertThat(item.model()).isEqualTo("qwen-plus");
+        assertThat(item.totalTokens()).isEqualTo(150L);
+        assertThat(item.toolCalls()).isEqualTo(2);
+        assertThat(item.estimatedCostUsd()).isEqualByComparingTo("0.0014");
+        assertThat(item.durationMs()).isEqualTo(1200L);
     }
 }
