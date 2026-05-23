@@ -44,12 +44,15 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
 
 **当前检查点（截至 2026-05-23）：**
 
-- P1-3a Agent Loop 内核已实现。
-- P1-3a 缺失的自动化验收证据已补齐。
-- P1-3b 详细计划和交接文档已写好：
-  - `docs/superpowers/plans/p1-3b-security-observability/plan.md`
-  - `docs/superpowers/plans/p1-3b-security-observability/codex-handoff.md`
-- **下一步**：等待用户确认 P1-3b 计划；确认前不开始实现 P1-3b 代码，确认后严格按该 plan 执行。
+- P1-3a Agent Loop 内核已实现，自动化验收证据已补齐。
+- P1-3b 安全 + 可观测已实现，`clean verify` 全绿（143 单测 + 8 IT，0 失败）：
+  - 工具输出 `<untrusted-data>` Spotlighting。
+  - System prompt 安全规则，防 indirect prompt injection。
+  - `PromptInjectionSmokeIT` 通过。
+  - `TurnSummaryItem` 协议 item、配置化成本估算、结构化 turn JSON 日志。
+  - P1 内存级 counters：turn、tokens、tool calls、approval decisions。
+  - 计划与交接文档：`docs/superpowers/plans/p1-3b-security-observability/`
+- **下一步**：进入 P1-4 Compose Desktop UI；开始实现前必须先写详细 P1-4 plan 并等用户确认。
 
 如果仓库状态已发生变化，不要盲信本检查点；必须重新核对代码、文档、测试和 `git status`。
 
@@ -67,7 +70,7 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
 - `HumanInTheLoopHook`、`MemorySaver`、`approval/respond`、`turn/interrupt`。
 - `BaBiQTokenUsageHook` 只做 token 累计，供后续成本反馈使用。
 
-**P1-3b 范围（计划已写，待实现）：**
+**P1-3b 范围（已完成）：**
 
 - 用 `<untrusted-data ...>` 包装工具输出，做 Spotlighting。
 - 加入系统提示词安全规则，防 indirect prompt injection。
@@ -77,9 +80,11 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
 - 增加 P1 内存级基础 counter：turn duration、llm tokens、tool calls、approval decisions。
 - **不引入**：Actuator、Prometheus、桌面 UI、Lakera Guard、Dual LLM、OWASP 大数据集回归。
 
-**P1-4 范围（P1-3b 完成并验收后才进入）：**
+**P1-4 范围（当前阶段，P1-3b 已验收）：**
 
-- Compose Desktop UI。
+- Compose Desktop UI：ChatScreen、ApprovalDialog、ProviderSelector、成本反馈条。
+- 消费后端已发出的 `turnSummary`、`approval/request`、`item/added` 等协议事件。
+- 开始实现前必须先写详细 plan，明确 UI 组件、状态管理和协议模型映射。
 
 ---
 
@@ -122,16 +127,17 @@ cd backend
 - `AgentLoopTest` 通过。
 - `EndToEndIT` 必须在 `clean verify` 的 failsafe 阶段执行并通过。
 
-**P1-3b 实现后的自动化硬验收证据：**
+**P1-3b 自动化硬验收证据（已通过，回归不能破）：**
 
 - `SpotlighterTest` 和 `SystemPromptSecurityRuleTest` 通过。
 - `SpotlightingToolInterceptorTest` 通过，证明所有工具输出进入模型历史前被 `<untrusted-data>` 包裹。
-- `PromptInjectionSmokeIT` 通过，且禁止 `@Disabled` 占位。
-- `TurnSummaryItemJsonTest` 通过，证明 `turnSummary` 是合法 `ThreadItem`。
+- `ToolObservationInterceptorTest` 通过，证明工具调用进入 turn context 和 metrics。
+- `PromptInjectionSmokeIT` 通过，且无 `@Disabled` 占位。
+- `ThreadItemJsonTest` 通过（含 `turn_summary_should_serialize_metrics_and_deserialize_by_type_tag`），证明 `turnSummary` 是合法 `ThreadItem`。
 - `CostCalculatorTest`、`TurnObservationContextTest`、`BaBiQMetricsTest` 通过。
-- `TurnSummaryEmitterTest` 和 `StructuredTurnLoggerTest` 通过。
-- `AgentLoopTurnSummaryTest` 通过，证明 `turnSummary` 在 `turn/completed` 前发出。
-- `clean verify` 全绿，且 P1-3a 的 approval、sandbox、EndToEndIT 回归不坏。
+- `TurnSummaryEmitterTest` 通过，覆盖 `TurnSummaryEmitter` 和 `StructuredTurnLogger` 单行 JSON。
+- `AgentLoopTest` 和 `EndToEndIT` 通过，证明 completed / failed 收尾会触发摘要发送。
+- `clean verify` 全绿（143 单测 + 8 IT），P1-3a 的 approval、sandbox、EndToEndIT 回归不坏。
 
 桌面端改动需要在 `desktop/` 下运行对应 Gradle 命令；涉及 UI 时要做实际视觉验证。
 
@@ -179,4 +185,4 @@ cd backend
 - 剩余缺口必须直接说明。
 - 如果下一步是新阶段，要说明详细 plan 是否已经存在。
 
-对于本仓库，只有在 P1-3b plan 已存在、代码已实现、`clean verify` 和阶段专属烟测都通过后，才可以说 P1-3b 完成。
+对于本仓库，只有在当前阶段 plan 已存在、代码已实现、`clean verify` 和阶段专属烟测都通过后，才可以说该阶段完成。
