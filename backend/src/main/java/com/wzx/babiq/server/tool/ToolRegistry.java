@@ -30,6 +30,7 @@ public class ToolRegistry {
     public ToolRegistry(List<Tool> tools) {
         List<Tool> safeTools = tools == null ? List.of() : List.copyOf(tools);
         this.toolsByName = indexTools(safeTools);
+        // Spring AI 的 MethodToolCallbackProvider 会扫描 @Tool 注解方法并生成模型可调用的 ToolCallback。
         this.callbacks = MethodToolCallbackProvider.builder()
                 .toolObjects(safeTools.toArray())
                 .build()
@@ -61,9 +62,13 @@ public class ToolRegistry {
      * @return 工具回调数组
      */
     public ToolCallback[] allCallbacks() {
+        // 返回数组副本，避免外部调用者修改内部 callbacks。
         return Arrays.copyOf(callbacks, callbacks.length);
     }
 
+    /**
+     * 建立工具名索引，并在启动期发现重复工具名。
+     */
     private Map<String, Tool> indexTools(List<Tool> tools) {
         Map<String, Tool> indexed = new LinkedHashMap<>();
         for (Tool tool : tools) {

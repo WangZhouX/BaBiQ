@@ -22,6 +22,11 @@ import com.wzx.babiq.desktop.state.AppState
 import com.wzx.babiq.desktop.ui.common.chooseWorkspaceDirectory
 import com.wzx.babiq.desktop.ui.theme.BaBiQColors
 
+/**
+ * 设置页。
+ *
+ * P1-4 只做只读 Provider 信息和工作目录选择，不做 API Key 编辑或 Provider 新增删除。
+ */
 @Composable
 fun SettingsPanel(
 	state: AppState,
@@ -40,6 +45,7 @@ fun SettingsPanel(
 			Button(
 				enabled = state.canSwitchWorkspace,
 				onClick = {
+					// 设置页和输入框上下文条共用同一个目录选择器，保证行为一致。
 					chooseWorkspaceDirectory(state.workspace.cwd)?.let(onSelectWorkspace)
 				},
 			) {
@@ -50,6 +56,7 @@ fun SettingsPanel(
 			if (state.providerState.providers.isEmpty()) {
 				Text("当前没有可选择的后端 Provider，请检查后端配置。", color = BaBiQColors.Muted)
 			} else {
+				// Provider 配置来源是后端 application.yml，P1-4 只展示，不在桌面端写回。
 				state.providerState.providers.forEach { provider ->
 					Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
 						Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -71,6 +78,9 @@ fun SettingsPanel(
 	}
 }
 
+/**
+ * 设置页里的基础卡片容器。
+ */
 @Composable
 private fun SettingsCard(
 	title: String,

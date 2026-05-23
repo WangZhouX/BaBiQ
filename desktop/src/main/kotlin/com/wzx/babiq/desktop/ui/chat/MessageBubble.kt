@@ -21,6 +21,11 @@ import com.wzx.babiq.desktop.state.ChatMessage
 import com.wzx.babiq.desktop.ui.runtime.TurnSummaryBar
 import com.wzx.babiq.desktop.ui.theme.BaBiQColors
 
+/**
+ * 单条聊天消息的渲染入口。
+ *
+ * TurnSummary 有专门的成本条；其它消息统一渲染为左右对齐的气泡。
+ */
 @Composable
 fun MessageBubble(message: ChatMessage) {
 	when (message) {
@@ -44,6 +49,7 @@ fun MessageBubble(message: ChatMessage) {
 	}
 }
 
+/** 根据消息类型选择气泡背景色。 */
 private fun backgroundFor(message: ChatMessage): Color =
 	when (message) {
 		is ChatMessage.User -> Color(0xFFE4ECF7)
@@ -51,6 +57,7 @@ private fun backgroundFor(message: ChatMessage): Color =
 		else -> BaBiQColors.Panel
 	}
 
+/** 根据消息类型选择气泡标题。 */
 private fun titleFor(message: ChatMessage): String =
 	when (message) {
 		is ChatMessage.User -> "你"
@@ -60,6 +67,7 @@ private fun titleFor(message: ChatMessage): String =
 		is ChatMessage.TurnSummary -> "摘要"
 	}
 
+/** 根据消息类型选择气泡正文。 */
 private fun bodyFor(message: ChatMessage): String =
 	when (message) {
 		is ChatMessage.User -> message.text
@@ -69,6 +77,7 @@ private fun bodyFor(message: ChatMessage): String =
 		is ChatMessage.TurnSummary -> ""
 	}
 
+/** 工具和文件变更使用等宽字体，便于阅读命令、路径和输出。 */
 @Composable
 private fun bodyStyleFor(message: ChatMessage) =
 	if (message is ChatMessage.Tool || message is ChatMessage.FileChange) {

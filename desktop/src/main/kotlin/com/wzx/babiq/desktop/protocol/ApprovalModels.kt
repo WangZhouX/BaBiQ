@@ -2,6 +2,16 @@ package com.wzx.babiq.desktop.protocol
 
 import kotlinx.serialization.Serializable
 
+/**
+ * 后端发起工具审批时推给桌面端的 payload。
+ *
+ * @property threadId 审批所属会话。
+ * @property turnId 审批所属轮次。
+ * @property itemId 审批 item id，主要用于 UI 展示和后续扩展定位。
+ * @property toolName 触发审批的工具名。
+ * @property arguments 工具参数 JSON 字符串，P1 先直接展示给用户确认。
+ * @property description 后端生成的风险说明或执行说明。
+ */
 @Serializable
 data class ApprovalRequestPayload(
 	val threadId: String,
@@ -12,6 +22,12 @@ data class ApprovalRequestPayload(
 	val description: String,
 )
 
+/**
+ * 桌面端提交审批结果时发送给后端的参数。
+ *
+ * @property decision `approve`、`deny` 或 `edit`。
+ * @property editedArgs 只有 decision 为 `edit` 时才携带修改后的工具参数。
+ */
 @Serializable
 data class ApprovalRespondParams(
 	val threadId: String,

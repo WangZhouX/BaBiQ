@@ -15,6 +15,11 @@ import com.wzx.babiq.desktop.ui.runtime.RuntimeDetailsPanel
 import com.wzx.babiq.desktop.ui.settings.SettingsPanel
 import com.wzx.babiq.desktop.ui.theme.BaBiQColors
 
+/**
+ * 应用外壳布局。
+ *
+ * 左侧固定 Sidebar，中间按 screen 切换主内容，右侧运行详情按需展开。
+ */
 @Composable
 fun AppShell(
 	state: AppState,
@@ -34,6 +39,7 @@ fun AppShell(
 			state = state,
 			onSelectScreen = onSelectScreen,
 		)
+		// 中间区域占满剩余空间，Chat 和 Settings 互斥显示。
 		Box(modifier = Modifier.weight(1f)) {
 			when (state.screen) {
 				Screen.Chat -> ChatScreen(
@@ -51,6 +57,7 @@ fun AppShell(
 				)
 			}
 		}
+		// RuntimeDetailsPanel 是辅助面板，收起后不占布局宽度。
 		if (state.runtimeExpanded) {
 			RuntimeDetailsPanel(
 				state = state,

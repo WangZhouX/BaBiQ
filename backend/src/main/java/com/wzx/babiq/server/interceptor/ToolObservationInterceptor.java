@@ -16,6 +16,9 @@ public class ToolObservationInterceptor extends ToolInterceptor {
 
     private final BaBiQMetrics metrics;
 
+    /**
+     * 创建工具观测拦截器。
+     */
     public ToolObservationInterceptor(BaBiQMetrics metrics) {
         this.metrics = metrics;
     }
@@ -27,17 +30,23 @@ public class ToolObservationInterceptor extends ToolInterceptor {
 
     @Override
     public ToolCallResponse interceptToolCall(ToolCallRequest request, ToolCallHandler handler) {
+        // 先记录再执行，确保工具即使失败也计入调用次数。
         record(request);
         return handler.call(request);
     }
 
+    /**
+     * 同时记录本轮上下文指标和全局内存指标。
+     */
     private void record(ToolCallRequest request) {
         Object candidate = request.getContext() == null
                 ? null
                 : request.getContext().get(TurnObservationContext.METADATA_KEY);
         if (candidate instanceof TurnObservationContext context) {
+            // TurnObservationContext 用于本轮 turnSummary。
             context.recordToolCall(request.getToolName());
         }
+        // BaBiQMetrics 用于 P1 内存指标快照，P2 可接 Micrometer/Actuator。
         metrics.recordToolCall(request.getToolName());
     }
 }

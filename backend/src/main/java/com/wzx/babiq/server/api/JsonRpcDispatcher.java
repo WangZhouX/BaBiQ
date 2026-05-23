@@ -68,6 +68,7 @@ public class JsonRpcDispatcher {
             JsonRpcMethodHandler handler) {
         long startedNanos = System.nanoTime();
         try {
+            // request.params 在 record 里是 Object，这里统一转为 JsonNode，方便各 handler 做字段校验。
             JsonNode params = request.params() == null
                     ? objectMapper.nullNode()
                     : objectMapper.valueToTree(request.params());
@@ -86,6 +87,7 @@ public class JsonRpcDispatcher {
                     responsePayload == null ? "null" : responsePayload.getClass().getSimpleName());
             return JsonRpcMessage.Response.ok(request.id(), responsePayload);
         } catch (JsonRpcException jsonRpcException) {
+            // JsonRpcException 是预期内的协议/业务错误，按它携带的标准 JSON-RPC 错误码返回。
             log.warn("JSON-RPC method 参数/业务错误: requestId={}, method={}, code={}, message={}, elapsedMs={}",
                     request.id(),
                     request.method(),
@@ -98,6 +100,7 @@ public class JsonRpcDispatcher {
                     jsonRpcException.getMessage(),
                     jsonRpcException.errorData());
         } catch (Exception exception) {
+            // 未预期异常统一映射为 SERVER_ERROR，避免把 Java 栈细节泄露给桌面端协议。
             log.error("JSON-RPC method 执行失败: requestId={}, method={}, handler={}, elapsedMs={}",
                     request.id(),
                     request.method(),
@@ -112,9 +115,13 @@ public class JsonRpcDispatcher {
         }
     }
 
+    /**
+     * 将 Spring 注入的 handler 列表整理为 method -> handler 映射。
+     */
     private Map<String, JsonRpcMethodHandler> indexHandlers(List<JsonRpcMethodHandler> allHandlers) {
         Map<String, JsonRpcMethodHandler> indexedHandlers = new LinkedHashMap<>();
         for (JsonRpcMethodHandler handler : allHandlers) {
+            // putIfAbsent 能在注册阶段直接发现重复 method，避免运行时路由到随机 handler。
             JsonRpcMethodHandler previousHandler = indexedHandlers.putIfAbsent(handler.method(), handler);
             if (previousHandler != null) {
                 throw new IllegalStateException("JSON-RPC method 重复注册: " + handler.method());

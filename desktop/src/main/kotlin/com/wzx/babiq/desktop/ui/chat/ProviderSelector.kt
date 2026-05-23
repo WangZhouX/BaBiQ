@@ -19,11 +19,17 @@ import com.wzx.babiq.desktop.state.ProviderState
 import com.wzx.babiq.desktop.ui.common.BadgeTone
 import com.wzx.babiq.desktop.ui.common.StatusBadge
 
+/**
+ * Provider/Model 下拉选择器。
+ *
+ * UI 展示的是模型标签；真正生效逻辑在 Controller 中调用后端 `model/providers/set-active`。
+ */
 @Composable
 fun ProviderSelector(
 	providerState: ProviderState,
 	onSelectProvider: (String, String?) -> Unit,
 ) {
+	// expanded 是纯 UI 状态，只控制下拉菜单开关，不进入 AppState。
 	var expanded by remember { mutableStateOf(false) }
 	Column {
 		StatusBadge(
@@ -39,6 +45,7 @@ fun ProviderSelector(
 		) {
 			providerState.providers.forEach { provider ->
 				if (provider.models.isEmpty()) {
+					// 某些 provider 可能暂时不返回模型列表，这时仍允许按 provider 粒度选择。
 					DropdownMenuItem(
 						text = { Text(provider.label) },
 						onClick = {
@@ -48,6 +55,7 @@ fun ProviderSelector(
 					)
 				} else {
 					provider.models.forEach { model ->
+						// provider + model 组合显示，避免不同供应商下模型同名时看不清来源。
 						DropdownMenuItem(
 							text = {
 								Row {

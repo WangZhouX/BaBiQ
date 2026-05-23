@@ -25,6 +25,7 @@ public final class PathGuard {
     public PathGuard(List<Path> writableRoots) {
         List<Path> normalizedRoots = new ArrayList<>();
         for (Path writableRoot : writableRoots == null ? List.<Path>of() : writableRoots) {
+            // 白名单根目录也必须标准化，否则符号链接根目录会让 startsWith 判断失真。
             normalizedRoots.add(normalizeRoot(writableRoot));
         }
         this.writableRoots = List.copyOf(normalizedRoots);
@@ -59,8 +60,10 @@ public final class PathGuard {
             throw new SandboxViolationException("Path is blank");
         }
 
+        // 先做语法层面的绝对路径和 normalize，消掉普通的 "." / ".." 片段。
         Path absolute = Paths.get(rawPath).toAbsolutePath().normalize();
         Path probe = absolute;
+        // 写入新文件时目标文件可能还不存在，所以向上找最近一个真实存在的父路径。
         while (probe != null && !Files.exists(probe, LinkOption.NOFOLLOW_LINKS)) {
             probe = probe.getParent();
         }
@@ -69,10 +72,12 @@ public final class PathGuard {
         }
 
         try {
+            // 对存在的部分解析真实路径，挡住符号链接逃逸。
             Path realProbe = probe.toRealPath();
             if (probe.equals(absolute)) {
                 return realProbe;
             }
+            // 不存在的尾部路径拼回真实父路径后面，得到最终候选路径。
             Path remaining = probe.relativize(absolute);
             return realProbe.resolve(remaining).normalize();
         } catch (IOException exception) {
@@ -80,6 +85,9 @@ public final class PathGuard {
         }
     }
 
+    /**
+     * 判断候选路径是否落在任意白名单根目录下。
+     */
     private boolean isUnderAnyRoot(Path candidate) {
         if (writableRoots.isEmpty()) {
             throw new SandboxViolationException("No writable roots configured");
@@ -92,6 +100,9 @@ public final class PathGuard {
         return false;
     }
 
+    /**
+     * 标准化一个可写根目录。
+     */
     private Path normalizeRoot(Path root) {
         if (root == null) {
             throw new SandboxViolationException("Writable root is blank");

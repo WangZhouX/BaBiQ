@@ -24,6 +24,11 @@ import androidx.compose.ui.unit.dp
 import com.wzx.babiq.desktop.state.AppState
 import com.wzx.babiq.desktop.ui.theme.BaBiQColors
 
+/**
+ * 右侧运行详情面板。
+ *
+ * 它展示和聊天主区同一份状态：当前 turn 状态、最近成本摘要、工具/未知协议事件等。
+ */
 @Composable
 fun RuntimeDetailsPanel(
 	state: AppState,
@@ -42,6 +47,7 @@ fun RuntimeDetailsPanel(
 			Text("运行详情", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold))
 			TextButton(onClick = onClose) { Text("收起") }
 		}
+		// 成本摘要在这里作为详情复用；聊天流里的 TurnSummaryBar 仍然是主展示位置。
 		state.latestSummary?.let { TurnSummaryBar(it) }
 		DetailCard("当前状态", "${state.turnState} / ${state.connectionState}")
 		state.runtimeEvents.forEach { event ->
@@ -53,6 +59,9 @@ fun RuntimeDetailsPanel(
 	}
 }
 
+/**
+ * 详情面板中的单个信息块。
+ */
 @Composable
 private fun DetailCard(title: String, detail: String) {
 	Card(

@@ -21,6 +21,12 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.wzx.babiq.desktop.state.PendingApproval
 
+/**
+ * 工具审批弹窗。
+ *
+ * 后端通过 `approval/request` 暂停 turn 后，桌面端把参数展示给用户；用户选择 approve/deny/edit 后，
+ * Controller 会调用 `approval/respond` 让后端继续或终止执行。
+ */
 @Composable
 fun ApprovalDialog(
 	approval: PendingApproval?,
@@ -28,9 +34,12 @@ fun ApprovalDialog(
 	onDismiss: () -> Unit,
 	onDecision: (String, String?) -> Unit,
 ) {
+	// 没有待审批请求时不渲染弹窗，这是 Compose 里最直接的条件 UI 写法。
 	if (approval == null) {
 		return
 	}
+
+	// editedArgs 是用户可编辑的参数副本，不直接修改 pendingApproval，避免状态源被 UI 临时输入污染。
 	var editedArgs by remember { mutableStateOf(approval.arguments) }
 	LaunchedEffect(approval.itemId) {
 		// 同一个弹窗组件会被 Compose 复用；itemId 变化时重置编辑框，避免上一次审批参数残留。
@@ -65,6 +74,7 @@ fun ApprovalDialog(
 			}
 		},
 		confirmButton = {
+			// 批准和修改后批准都会让后端恢复 turn，只是 edit 会携带用户修改后的参数。
 			Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
 				Button(enabled = canSubmit, onClick = { onDecision("approve", null) }) {
 					Text("批准")
@@ -75,6 +85,7 @@ fun ApprovalDialog(
 			}
 		},
 		dismissButton = {
+			// P1-4 后端只承诺 approve/deny/edit；Always 先禁用，避免 UI 暗示不存在的协议语义。
 			Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
 				TextButton(enabled = canSubmit, onClick = { onDecision("deny", null) }) {
 					Text("拒绝")

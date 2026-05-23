@@ -79,6 +79,7 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
         Long requestId = null;
         String method = "<parse-failed>";
         try {
+            // 第一层只解析 JSON-RPC envelope，不在这里处理具体业务 method。
             JsonRpcMessage.Request request = objectMapper.readValue(payload, JsonRpcMessage.Request.class);
             requestId = request.id();
             method = request.method();
@@ -89,6 +90,7 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
                     payload.getBytes(StandardCharsets.UTF_8).length,
                     JsonRpcLogSupport.paramsSummary(objectMapper.valueToTree(request.params())));
             if (!isValidEnvelope(request)) {
+                // envelope 不合法时不进入 dispatcher，直接返回 INVALID_REQUEST。
                 log.warn("JSON-RPC envelope 非法: sessionId={}, requestId={}, method={}, payload={}",
                         session.getId(), requestId, method, JsonRpcLogSupport.preview(payload));
                 return JsonRpcMessage.ErrorResponse.of(
@@ -97,6 +99,7 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
                         "Invalid JSON-RPC envelope",
                         null);
             }
+            // 具体 method 分发和业务异常映射交给 JsonRpcDispatcher。
             JsonRpcMessage response = dispatcher.dispatch(request, session);
             log.info("JSON-RPC 请求完成: sessionId={}, requestId={}, method={}, response={}, elapsedMs={}",
                     session.getId(),
@@ -106,6 +109,7 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
                     JsonRpcLogSupport.elapsedMillis(startedNanos));
             return response;
         } catch (JsonProcessingException exception) {
+            // JSON 根本解析不了时，按照 JSON-RPC 2.0 返回 parse error，id 必须为 null。
             log.warn("JSON-RPC 解析失败: sessionId={}, payloadBytes={}, error={}, payloadPreview={}",
                     session.getId(),
                     payload.getBytes(StandardCharsets.UTF_8).length,
@@ -117,6 +121,7 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
                     "Parse error: " + exception.getOriginalMessage(),
                     null);
         } catch (Exception exception) {
+            // 兜底保护 WebSocket handler，任何异常都不能把连接线程直接打穿。
             log.error("WebSocket 请求处理失败: sessionId={}, requestId={}, method={}, elapsedMs={}",
                     session.getId(), requestId, method, JsonRpcLogSupport.elapsedMillis(startedNanos), exception);
             return JsonRpcMessage.ErrorResponse.of(
@@ -127,6 +132,9 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
+    /**
+     * 校验 JSON-RPC 2.0 envelope 的最小必填字段。
+     */
     private boolean isValidEnvelope(JsonRpcMessage.Request request) {
         return "2.0".equals(request.jsonrpc())
                 && request.id() != null
@@ -134,6 +142,9 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
                 && !request.method().isBlank();
     }
 
+    /**
+     * 向客户端写回同步 response。
+     */
     private void sendResponse(WebSocketSession session, JsonRpcMessage response) {
         try {
             String payload = objectMapper.writeValueAsString(response);
@@ -146,6 +157,9 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
+    /**
+     * 生成用于日志的响应摘要，避免把完整 result 大对象打进控制台。
+     */
     private String responseSummary(JsonRpcMessage response) {
         if (response instanceof JsonRpcMessage.Response success) {
             Object result = success.result();

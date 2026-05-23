@@ -89,6 +89,9 @@ public class ReActStrategy {
     public ReactAgent buildAgent(String providerId, String cwd, ItemEmitter emitter, TurnObservationContext context) {
         ChatModel chatModel = chatClientFactory.resolveChatModel(providerId);
         ToolCallback[] callbacks = toolRegistry.allCallbacks();
+
+        // toolContext 是 SAA 在工具调用和拦截器之间传递上下文的 Map。
+        // BaBiQ 把 cwd、额外可写根、emitter 和观测上下文都放进去，避免工具自己依赖全局状态。
         Map<String, Object> toolContext = new LinkedHashMap<>();
         toolContext.put(BaBiQSandboxInterceptor.CONTEXT_CWD, cwd);
         toolContext.put(BaBiQSandboxInterceptor.CONTEXT_WRITABLE_ROOTS, stringify(properties.writableRoots()));
@@ -111,6 +114,7 @@ public class ReActStrategy {
                 .excludeTool("apply_patch")
                 .build();
 
+        // tokenUsageHook 是按 turn 累计的，构建新 agent 前必须清空上一轮残留。
         tokenUsageHook.reset();
         return ReactAgent.builder()
                 .name("babiq_agent")
@@ -124,6 +128,9 @@ public class ReActStrategy {
                 .build();
     }
 
+    /**
+     * 解析本轮会使用的模型名称，主要供日志和 TurnSummary 展示。
+     */
     public String resolveModelName(String providerId) {
         return chatClientFactory.resolveModelName(providerId);
     }
@@ -167,6 +174,7 @@ public class ReActStrategy {
      */
     public AssistantMessage extractAssistantMessage(NodeOutput node) {
         List<?> messages = node.state().value("messages", List.of());
+        // SAA state 里 messages 是顺序列表，最后一条 AssistantMessage 才是本轮最终可见回答。
         for (int index = messages.size() - 1; index >= 0; index--) {
             Object message = messages.get(index);
             if (message instanceof AssistantMessage assistantMessage) {
@@ -186,6 +194,7 @@ public class ReActStrategy {
      */
     public void emitApprovalRequests(Turn turn, ItemEmitter emitter, InterruptionMetadata metadata) throws Exception {
         for (InterruptionMetadata.ToolFeedback feedback : metadata.toolFeedbacks()) {
+            // P1 阶段按一个 toolFeedback 生成一个 approval/request，后续如果 SAA 返回 batch 再扩展 UI。
             ApprovalRequestPayload payload = new ApprovalRequestPayload(
                     turn.threadId(),
                     turn.id(),
@@ -197,6 +206,9 @@ public class ReActStrategy {
         }
     }
 
+    /**
+     * 把配置里的 Path 列表转换为字符串列表，便于放入 SAA toolContext。
+     */
     private List<String> stringify(List<Path> roots) {
         List<String> paths = new ArrayList<>();
         for (Path root : roots) {

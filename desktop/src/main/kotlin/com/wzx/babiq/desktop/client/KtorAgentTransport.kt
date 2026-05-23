@@ -29,16 +29,25 @@ class KtorAgentTransport(
 	private val config: DesktopConfig = DesktopConfig(),
 	private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
 ) : AgentTransport {
+	// Ktor HttpClient 是重量级对象，放在 transport 生命周期里复用。
 	private val client = HttpClient(CIO) {
 		install(WebSockets) {
+			// P1 桌面端需要能感知断线，ping 可以让长时间空闲连接更早暴露问题。
 			pingIntervalMillis = 20_000
 		}
 	}
+
+	// extraBufferCapacity 允许网络协程短时间快于 UI 消费，避免直接挂起在 WebSocket 读取循环里。
 	private val _incoming = MutableSharedFlow<String>(extraBufferCapacity = 128)
+
+	// 当前活跃 WebSocket session；重连时会先关闭旧 session 再创建新 session。
 	private var session: WebSocketSession? = null
 
 	override val incoming: Flow<String> = _incoming
 
+	/**
+	 * 建立 WebSocket 连接，并启动一个后台协程持续读取文本帧。
+	 */
 	override suspend fun connect() {
 		session?.close()
 		session = client.webSocketSession(
@@ -59,11 +68,17 @@ class KtorAgentTransport(
 		}
 	}
 
+	/**
+	 * 发送一个 JSON-RPC 文本帧；如果还没连接，直接抛错交给 Controller 展示。
+	 */
 	override suspend fun send(text: String) {
 		val activeSession = session ?: error("尚未连接后端 WebSocket")
 		activeSession.send(text)
 	}
 
+	/**
+	 * 关闭 transport，释放协程和 Ktor client。
+	 */
 	override fun close() {
 		scope.cancel()
 		client.close()

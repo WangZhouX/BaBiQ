@@ -160,12 +160,18 @@ public class ItemEmitter {
         sendNotification("approval/request", payload);
     }
 
+    /**
+     * 在基础 thread/turn 参数上追加 item 字段。
+     */
     private Map<String, Object> paramsWithItem(ThreadItem item) {
         Map<String, Object> params = baseParams();
         params.put("item", item);
         return params;
     }
 
+    /**
+     * 所有 turn/item notification 都共享的基础参数。
+     */
     private Map<String, Object> baseParams() {
         Map<String, Object> params = new LinkedHashMap<>();
         params.put("threadId", threadId);
@@ -173,6 +179,9 @@ public class ItemEmitter {
         return params;
     }
 
+    /**
+     * 序列化并发送 JSON-RPC notification。
+     */
     private void sendNotification(String method, Object params) throws IOException {
         JsonRpcMessage.Notification notification = JsonRpcMessage.Notification.of(method, params);
         String payload = objectMapper.writeValueAsString(notification);

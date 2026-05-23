@@ -11,6 +11,12 @@ import com.wzx.babiq.desktop.ui.common.BadgeTone
 import com.wzx.babiq.desktop.ui.common.StatusBadge
 import com.wzx.babiq.desktop.ui.common.chooseWorkspaceDirectory
 
+/**
+ * 输入框上下文条。
+ *
+ * 它展示本轮任务将使用的执行边界：工作目录、模式、分支、worktree、权限和模型。
+ * P1-4 中只有目录和模型是真实可切换能力，其余先作为上下文展示。
+ */
 @Composable
 fun ComposerContextBar(
 	state: AppState,
@@ -26,6 +32,7 @@ fun ComposerContextBar(
 		StatusBadge(
 			text = "目录 ${state.workspace.projectName}",
 			modifier = Modifier.clickable(enabled = state.canSwitchWorkspace) {
+				// 选择目录后只更新下一轮上下文；运行中的 turn 不会被中途改 cwd。
 				chooseWorkspaceDirectory(state.workspace.cwd)?.let(onSelectWorkspace)
 			},
 		)

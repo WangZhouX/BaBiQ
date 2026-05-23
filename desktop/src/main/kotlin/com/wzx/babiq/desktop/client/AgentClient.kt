@@ -34,13 +34,25 @@ import kotlinx.serialization.json.put
  * 单元测试可以注入 FakeGateway，真实运行时再注入 AgentClient + KtorAgentTransport。
  */
 interface AgentGateway {
+	/** 后端 notification 事件流，例如 item/added、turn/completed、approval/request。 */
 	val events: Flow<ServerEvent>
 
+	/** 建立连接，并开始监听后端事件。 */
 	suspend fun connect()
+
+	/** 创建一个与 cwd 绑定的后端 Thread，后续 turn 都在这个工作目录里执行。 */
 	suspend fun createThread(cwd: String): String
+
+	/** 启动一轮对话；providerId 为空时由后端使用当前激活模型。 */
 	suspend fun startTurn(threadId: String, prompt: String, providerId: String? = null): String
+
+	/** 回传工具审批结果，editedArgs 只在“修改后批准”时携带。 */
 	suspend fun respondApproval(threadId: String, turnId: String, decision: String, editedArgs: String? = null): Boolean
+
+	/** 读取后端当前可用 Provider/Model 列表。 */
 	suspend fun listProviders(): ProviderListResult
+
+	/** 设置后端当前激活 Provider/Model，下一轮 turn 生效。 */
 	suspend fun setActiveProvider(providerId: String, modelId: String? = null): Boolean
 }
 
@@ -55,13 +67,23 @@ class AgentClient(
 	private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 	private val config: DesktopConfig = DesktopConfig(),
 ) : AgentGateway, AutoCloseable {
+	// JSON-RPC request id 单调递增，保证同一连接里的响应能和请求配对。
 	private val nextId = AtomicLong(1)
+
+	// pending 保存“已经发出去但还没收到 response”的请求。
 	private val pending = ConcurrentHashMap<Long, CompletableDeferred<JsonRpcResponse>>()
+
+	// 后端 notification 没有 id，不能唤醒 pending，只能作为事件广播给状态层。
 	private val _events = MutableSharedFlow<ServerEvent>(extraBufferCapacity = 128)
+
+	// 防止重复 connect() 时启动多个 collector，导致同一后端事件被消费多次。
 	private var collecting = false
 
 	override val events: Flow<ServerEvent> = _events
 
+	/**
+	 * 连接 WebSocket 并启动后端消息收集。
+	 */
 	override suspend fun connect() {
 		transport.connect()
 		if (!collecting) {
@@ -74,6 +96,9 @@ class AgentClient(
 		}
 	}
 
+	/**
+	 * 调用后端 `thread/create`，把桌面端选中的 cwd 固化到后端 Thread。
+	 */
 	override suspend fun createThread(cwd: String): String {
 		val response = request(
 			method = "thread/create",
@@ -82,6 +107,11 @@ class AgentClient(
 		return response.requireResult().jsonObject.requiredText("threadId")
 	}
 
+	/**
+	 * 调用后端 `turn/start`。
+	 *
+	 * 注意 providerId 是可选的：为空时后端使用当前 active provider；不为空时本轮显式指定。
+	 */
 	override suspend fun startTurn(threadId: String, prompt: String, providerId: String?): String {
 		val params = buildJsonObject {
 			put("threadId", threadId)
@@ -94,6 +124,9 @@ class AgentClient(
 		return response.requireResult().jsonObject.requiredText("turnId")
 	}
 
+	/**
+	 * 调用后端 `approval/respond`，让 Human-in-the-loop 暂停点继续运行。
+	 */
 	override suspend fun respondApproval(
 		threadId: String,
 		turnId: String,
@@ -113,11 +146,17 @@ class AgentClient(
 			?: true
 	}
 
+	/**
+	 * 拉取后端模型列表，供 UI 下拉框渲染。
+	 */
 	override suspend fun listProviders(): ProviderListResult {
 		val response = request("model/providers/list", buildJsonObject {})
 		return protocolJson.decodeFromJsonElement(ProviderListResult.serializer(), response.requireResult())
 	}
 
+	/**
+	 * 切换后端 active provider/model。
+	 */
 	override suspend fun setActiveProvider(providerId: String, modelId: String?): Boolean {
 		val response = request(
 			method = "model/providers/set-active",
@@ -129,20 +168,32 @@ class AgentClient(
 		return response.requireResult().jsonObject["ok"]?.jsonPrimitive?.booleanOrNull ?: true
 	}
 
+	/**
+	 * 中断正在等待审批的 turn。当前 UI 还没有暴露按钮，但协议客户端先保留能力。
+	 */
 	suspend fun interruptTurn(turnId: String): Boolean {
 		val response = request("turn/interrupt", buildJsonObject { put("turnId", turnId) })
 		return response.requireResult().jsonObject["accepted"]?.jsonPrimitive?.booleanOrNull ?: true
 	}
 
+	/**
+	 * 取消正在运行的 turn。当前 UI 还没有暴露按钮，但协议客户端先保留能力。
+	 */
 	suspend fun cancelTurn(turnId: String): Boolean {
 		val response = request("turn/cancel", buildJsonObject { put("turnId", turnId) })
 		return response.requireResult().jsonObject["ok"]?.jsonPrimitive?.booleanOrNull ?: true
 	}
 
+	/**
+	 * 释放底层 WebSocket/HTTP client 资源。
+	 */
 	override fun close() {
 		transport.close()
 	}
 
+	/**
+	 * 发送一个 JSON-RPC request，并等待同 id 的 response。
+	 */
 	private suspend fun request(method: String, params: JsonElement): JsonRpcResponse {
 		val id = nextId.getAndIncrement()
 		val deferred = CompletableDeferred<JsonRpcResponse>()
@@ -151,12 +202,16 @@ class AgentClient(
 		// 先注册 pending 再发送，确保响应即使立刻回来也能找到等待者。
 		transport.send(protocolJson.encodeToString(request))
 		val response = withTimeout(config.requestTimeout) { deferred.await() }
+		// 后端返回 JSON-RPC error 时，转成普通异常，Controller 可以统一展示错误提示。
 		response.error?.let { error ->
 			throw AgentClientException(error.code, error.message)
 		}
 		return response
 	}
 
+	/**
+	 * 处理后端发来的一个原始 JSON 文本帧。
+	 */
 	private suspend fun handleIncoming(text: String) {
 		val root = protocolJson.parseToJsonElement(text).jsonObject
 		val id = root["id"]?.jsonPrimitive?.content?.toLongOrNull()
@@ -174,10 +229,16 @@ class AgentClient(
 	}
 }
 
+/**
+ * JSON-RPC error 在桌面端的异常表示。
+ */
 class AgentClientException(
 	val code: Int,
 	override val message: String,
 ) : RuntimeException(message)
 
+/**
+ * 从 JSON object 中读取必填字符串字段；缺字段说明后端响应不满足协议。
+ */
 private fun kotlinx.serialization.json.JsonObject.requiredText(name: String): String =
 	this[name]?.jsonPrimitive?.content ?: error("JSON-RPC result 缺少字段: $name")

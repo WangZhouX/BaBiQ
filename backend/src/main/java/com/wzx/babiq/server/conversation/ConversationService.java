@@ -148,6 +148,7 @@ public class ConversationService {
     }
 
     private String newId(String prefix) {
+        // UUID 去掉连字符后取前 12 位，P1 内存态足够用；未来持久化阶段可换成更严格的 id 生成器。
         String randomPart = UUID.randomUUID().toString().replace("-", "").substring(0, ID_RANDOM_LENGTH);
         return prefix + randomPart;
     }

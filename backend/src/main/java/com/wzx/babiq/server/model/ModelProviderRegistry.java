@@ -94,6 +94,7 @@ public class ModelProviderRegistry {
 
         Map<String, ModelProviderConfig> providerIndex = new LinkedHashMap<>();
         for (ModelProviderConfig providerConfig : providers) {
+            // 保留配置文件顺序，桌面端下拉列表就能按用户在 yml 中写的顺序展示。
             ModelProviderConfig previousConfig = providerIndex.put(providerConfig.id(), providerConfig);
             if (previousConfig != null) {
                 throw new IllegalStateException(

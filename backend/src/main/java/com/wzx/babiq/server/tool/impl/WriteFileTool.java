@@ -16,6 +16,9 @@ import java.nio.file.Path;
 @Component
 public class WriteFileTool implements Tool {
 
+    /**
+     * 工具注册名，需要和 HITL 审批配置保持一致。
+     */
     @Override
     public String name() {
         return "write_file";
@@ -41,6 +44,7 @@ public class WriteFileTool implements Tool {
             Path file = Path.of(path);
             Path parent = file.getParent();
             if (parent != null) {
+                // 写文件前自动创建父目录，让模型可以一次性写入新路径。
                 Files.createDirectories(parent);
             }
             Files.writeString(file, content == null ? "" : content);

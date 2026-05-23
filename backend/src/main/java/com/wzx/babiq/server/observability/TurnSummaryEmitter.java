@@ -19,6 +19,9 @@ public class TurnSummaryEmitter {
     private final BaBiQMetrics metrics;
     private final StructuredTurnLogger structuredTurnLogger;
 
+    /**
+     * 创建 turn 摘要发射器。
+     */
     public TurnSummaryEmitter(ConversationService conversationService,
                               CostCalculator costCalculator,
                               BaBiQMetrics metrics,
@@ -29,7 +32,11 @@ public class TurnSummaryEmitter {
         this.structuredTurnLogger = structuredTurnLogger;
     }
 
+    /**
+     * 构造 turnSummary item，推送给桌面端，并记录本地指标。
+     */
     public TurnSummaryItem emit(TurnObservationContext context, ItemEmitter emitter, String status) throws IOException {
+        // 成本估算只在 turn 收尾时计算，避免 UI 在运行中显示不稳定的“预估成本”。
         BigDecimal cost = costCalculator.estimate(context.model(), context.promptTokens(), context.completionTokens());
         TurnSummaryItem item = conversationService.emitTurnSummary(
                 status,
@@ -46,6 +53,9 @@ public class TurnSummaryEmitter {
         return item;
     }
 
+    /**
+     * 记录 P1 内存指标。
+     */
     private void recordMetrics(TurnObservationContext context, String status) {
         metrics.recordTurn(status);
         metrics.recordTokens(context.promptTokens(), context.completionTokens());

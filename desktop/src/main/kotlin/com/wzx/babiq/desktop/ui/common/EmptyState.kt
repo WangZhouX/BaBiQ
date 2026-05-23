@@ -13,6 +13,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.wzx.babiq.desktop.ui.theme.BaBiQColors
 
+/**
+ * 聊天页空状态。
+ *
+ * P1-4 不做营销落地页，空状态只给一个明确的任务入口提示。
+ */
 @Composable
 fun EmptyState(modifier: Modifier = Modifier) {
 	Column(

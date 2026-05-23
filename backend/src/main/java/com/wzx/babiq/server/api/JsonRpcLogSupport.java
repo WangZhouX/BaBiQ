@@ -73,6 +73,7 @@ public final class JsonRpcLogSupport {
         if (node.isObject()) {
             ObjectNode copy = OBJECT_MAPPER.createObjectNode();
             for (Map.Entry<String, JsonNode> field : node.properties()) {
+                // 字段名命中敏感词时保留 key、替换 value，既能排查字段存在，也不泄漏密钥。
                 if (isSensitiveField(field.getKey())) {
                     copy.set(field.getKey(), TextNode.valueOf("***"));
                 } else {
@@ -87,11 +88,15 @@ public final class JsonRpcLogSupport {
             return copy;
         }
         if (node.isTextual()) {
+            // 用户输入和工具参数可能很长，文本节点统一截断为单行预览。
             return TextNode.valueOf(preview(node.asText()));
         }
         return node;
     }
 
+    /**
+     * 判断字段名是否属于敏感字段。
+     */
     private static boolean isSensitiveField(String fieldName) {
         String normalized = fieldName.toLowerCase(Locale.ROOT)
                 .replace("-", "")
@@ -105,6 +110,9 @@ public final class JsonRpcLogSupport {
                 || "refreshtoken".equals(normalized);
     }
 
+    /**
+     * 通用字符串截断。
+     */
     private static String abbreviate(String value, int limit) {
         if (value.length() <= limit) {
             return value;

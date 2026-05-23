@@ -11,6 +11,9 @@ import com.wzx.babiq.desktop.protocol.ThreadItem
  */
 object ChatReducer {
 
+	/**
+	 * reducer 唯一入口：任何状态变化都从这里进入，便于测试和排查。
+	 */
 	fun reduce(state: AppState, event: AgentEvent): AppState =
 		when (event) {
 			is AgentEvent.ConnectionChanged -> reduceConnection(state, event.state)
@@ -22,6 +25,9 @@ object ChatReducer {
 			is AgentEvent.Server -> reduceServerEvent(state, event.event)
 		}
 
+	/**
+	 * 把连接状态翻译成用户可见的 banner 文案。
+	 */
 	private fun reduceConnection(state: AppState, connectionState: ConnectionState): AppState {
 		val banner = when (connectionState) {
 			ConnectionState.Connected -> null
@@ -32,6 +38,9 @@ object ChatReducer {
 		return state.copy(connectionState = connectionState, bannerMessage = banner)
 	}
 
+	/**
+	 * 后端 ServerEvent 到 AppState 的主分派函数。
+	 */
 	private fun reduceServerEvent(state: AppState, event: ServerEvent): AppState =
 		when (event) {
 			// turn/started 是后端确认开始执行的信号；本地 optimistic user message 已经在 Controller 里追加。
@@ -80,6 +89,9 @@ object ChatReducer {
 			)
 		}
 
+	/**
+	 * 将后端 ThreadItem 合并到聊天列表和运行详情。
+	 */
 	private fun AppState.withItem(item: ThreadItem): AppState =
 		when (item) {
 			// P1-3B 后端只在 turn 结束后发 turnSummary，所以主区成本条不会在 idle/running 时凭空出现。
@@ -108,6 +120,9 @@ object ChatReducer {
 			else -> copy(messages = messages.upsert(item.toChatMessage()))
 		}
 
+	/**
+	 * 把协议 item 转成 UI 气泡模型。
+	 */
 	private fun ThreadItem.toChatMessage(): ChatMessage =
 		when (this) {
 			is ThreadItem.UserMessage -> ChatMessage.User(id, text)

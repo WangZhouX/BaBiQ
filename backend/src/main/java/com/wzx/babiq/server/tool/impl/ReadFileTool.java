@@ -16,6 +16,9 @@ import java.nio.file.Path;
 @Component
 public class ReadFileTool implements Tool {
 
+    /**
+     * 工具注册名。
+     */
     @Override
     public String name() {
         return "read_file";
@@ -37,6 +40,7 @@ public class ReadFileTool implements Tool {
         }
         try {
             Path file = Path.of(path);
+            // 读工具自身只做基本文件形态校验；路径越界类安全问题由上游策略控制。
             if (!Files.exists(file)) {
                 return ToolResult.failure("File not found: " + path);
             }

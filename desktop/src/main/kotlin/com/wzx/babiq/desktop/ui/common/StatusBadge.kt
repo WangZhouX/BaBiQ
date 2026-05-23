@@ -12,6 +12,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.wzx.babiq.desktop.ui.theme.BaBiQColors
 
+/**
+ * 小型状态徽标。
+ *
+ * 项目、权限、连接状态、模型选择都复用它，保证上下文条视觉一致。
+ */
 @Composable
 fun StatusBadge(
 	text: String,
@@ -34,6 +39,9 @@ fun StatusBadge(
 	}
 }
 
+/**
+ * Badge 的语义色调。
+ */
 enum class BadgeTone {
 	Neutral,
 	Info,

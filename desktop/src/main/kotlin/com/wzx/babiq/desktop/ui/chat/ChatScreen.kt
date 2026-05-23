@@ -15,6 +15,11 @@ import com.wzx.babiq.desktop.ui.common.StatusBadge
 import com.wzx.babiq.desktop.ui.common.BadgeTone
 import com.wzx.babiq.desktop.ui.theme.BaBiQColors
 
+/**
+ * 聊天页主屏。
+ *
+ * 它只负责组合顶部状态、消息列表和输入框；业务动作都通过回调交给 ChatController。
+ */
 @Composable
 fun ChatScreen(
 	state: AppState,
@@ -30,6 +35,7 @@ fun ChatScreen(
 	) {
 		TopStatusLine(state, onRetryConnection, onToggleRuntime)
 		if (state.messages.isEmpty()) {
+			// 没有消息时显示首页空状态；这也是 P1-4 的首屏体验。
 			EmptyState(modifier = Modifier.weight(1f))
 		} else {
 			MessageList(
@@ -46,6 +52,9 @@ fun ChatScreen(
 	}
 }
 
+/**
+ * 顶部连接状态和运行详情入口。
+ */
 @Composable
 private fun TopStatusLine(
 	state: AppState,
@@ -74,5 +83,8 @@ private fun TopStatusLine(
 	}
 }
 
+/**
+ * 给 StatusBadge 加一个轻量点击修饰符，当前不定制 ripple。
+ */
 private fun Modifier.clickableNoRipple(onClick: () -> Unit): Modifier =
 	this.then(Modifier.clickable(onClick = onClick))

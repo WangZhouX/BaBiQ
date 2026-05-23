@@ -30,6 +30,8 @@ public class ChatClientFactory {
     private final ModelProviderRegistry registry;
     private final Map<ProviderType, ProviderFactory> factoriesByType;
     private final int maxMessages;
+
+    /** providerId -> ChatClient 缓存，同一 provider 复用短期记忆窗口。 */
     private final Map<String, ChatClient> clientCache = new ConcurrentHashMap<>();
 
     /**
@@ -101,6 +103,7 @@ public class ChatClientFactory {
 
     private ChatClient buildClient(String providerId) {
         ChatModel chatModel = resolveChatModel(providerId);
+        // P1 使用 Spring AI 内置滑窗记忆；P2 再切到 SQLite ChatMemoryRepository。
         ChatMemory chatMemory = MessageWindowChatMemory.builder()
                 .maxMessages(maxMessages)
                 .build();
@@ -112,9 +115,13 @@ public class ChatClientFactory {
                 .build();
     }
 
+    /**
+     * 建立 provider 类型到工厂的索引。
+     */
     private static Map<ProviderType, ProviderFactory> indexFactories(List<ProviderFactory> factories) {
         Map<ProviderType, ProviderFactory> providerFactoryIndex = new EnumMap<>(ProviderType.class);
         for (ProviderFactory factory : factories) {
+            // 一个 ProviderType 只能有一个工厂，否则 resolve 时无法确定该用哪个实现。
             ProviderFactory previousFactory = providerFactoryIndex.put(factory.supports(), factory);
             if (previousFactory != null) {
                 throw new IllegalStateException("重复 ProviderFactory,type=" + factory.supports());

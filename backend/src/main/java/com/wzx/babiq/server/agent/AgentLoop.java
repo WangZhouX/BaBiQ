@@ -10,16 +10,14 @@ import com.wzx.babiq.server.conversation.items.UserMessageItem;
 import com.wzx.babiq.server.observability.TurnObservationContext;
 import com.wzx.babiq.server.observability.TurnObservationRegistry;
 import com.wzx.babiq.server.observability.TurnSummaryEmitter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.stereotype.Component;
 
 import java.util.Optional;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
-/**
- * Agent Loop 主流程，负责发 user item、调用 ReactAgent、处理完成或 HITL 中断。
- */
+/** Agent Loop 主流程，只负责 user item、ReactAgent 调用、HITL 中断和完成态收口。 */
 @Component
 public class AgentLoop {
 
@@ -30,24 +28,26 @@ public class AgentLoop {
     private final TurnSummaryEmitter summaryEmitter;
     private final TurnObservationRegistry observationRegistry;
 
-    public AgentLoop(ReActStrategy strategy,
-                     PendingApprovals pendingApprovals,
-                     TurnSummaryEmitter summaryEmitter,
-                     TurnObservationRegistry observationRegistry) {
+    /** 注入所有协作者；主循环自身保持薄编排，横切逻辑放到 Strategy/Support/Interceptor。 */
+    public AgentLoop(ReActStrategy strategy, PendingApprovals pendingApprovals,
+                     TurnSummaryEmitter summaryEmitter, TurnObservationRegistry observationRegistry) {
         this.strategy = strategy;
         this.pendingApprovals = pendingApprovals;
         this.summaryEmitter = summaryEmitter;
         this.observationRegistry = observationRegistry;
     }
 
+    /** 执行普通用户输入：先发用户 item，再构建本轮专属 ReactAgent，最后处理完成或审批中断。 */
     public void invoke(Turn turn, String userText, String providerId, String cwd, ItemEmitter emitter) {
         TurnObservationContext context = observationRegistry.start(
                 turn.threadId(), turn.id(), providerId, strategy.resolveModelName(providerId));
         long startedNanos = System.nanoTime();
         AgentLoopDiagnostics.started(turn, context, cwd, userText);
         try {
+            // 用户消息先进入 item 流，UI 才能立即展示“后端已接收本轮输入”。
             emitter.emitItemAdded(UserMessageItem.of(AgentLoopSupport.newItemId(), userText));
             AgentLoopDiagnostics.userItemEmitted(turn);
+            // provider、cwd、emitter、观测上下文都是本轮专属，所以 agent 每轮重新装配。
             ReactAgent agent = strategy.buildAgent(providerId, cwd, emitter, context);
             AgentLoopDiagnostics.modelCallStarted(turn, context);
             Optional<NodeOutput> output = agent.invokeAndGetOutput(userText, strategy.buildConfig(turn.threadId(), context));
@@ -59,6 +59,7 @@ public class AgentLoop {
         }
     }
 
+    /** 审批完成后从 SAA HITL 暂停点续跑，并复用原 turn 的观测上下文。 */
     public void invokeResume(Turn turn, InterruptionMetadata feedback, String cwd, ItemEmitter emitter) {
         TurnObservationContext context = observationRegistry.getOrStart(
                 turn.threadId(), turn.id(), null, strategy.resolveModelName(null));
@@ -72,12 +73,12 @@ public class AgentLoop {
         }
     }
 
-    private void handleOutput(Turn turn,
-                              ItemEmitter emitter,
-                              Optional<NodeOutput> output,
+    /** 把 ReactAgent 输出拆成两条路径：HITL 等待审批，或正常 assistant 消息完成。 */
+    private void handleOutput(Turn turn, ItemEmitter emitter, Optional<NodeOutput> output,
                               TurnObservationContext context) throws Exception {
         NodeOutput node = output.orElseThrow(() -> new IllegalStateException("ReactAgent 返回空输出"));
         if (node instanceof InterruptionMetadata metadata) {
+            // HITL 是可恢复的等待态，不按失败处理。
             AgentLoopDiagnostics.waitingApproval(turn, metadata);
             pendingApprovals.put(turn.threadId(), metadata);
             turn.waitApproval();
@@ -87,6 +88,7 @@ public class AgentLoop {
         AssistantMessage assistantMessage = strategy.extractAssistantMessage(node);
         AgentLoopDiagnostics.assistantMessageExtracted(turn, assistantMessage);
         emitter.emitItemAdded(AgentMessageItem.full(AgentLoopSupport.newItemId(), assistantMessage.getText()));
+        // summary 必须在 observationRegistry.remove 前发出，否则 token/成本上下文会丢。
         summaryEmitter.emit(context, emitter, "completed");
         observationRegistry.remove(turn.id());
         turn.complete();

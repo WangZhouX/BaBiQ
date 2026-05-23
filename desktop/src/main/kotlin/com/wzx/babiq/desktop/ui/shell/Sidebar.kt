@@ -22,6 +22,11 @@ import com.wzx.babiq.desktop.state.AppState
 import com.wzx.babiq.desktop.state.Screen
 import com.wzx.babiq.desktop.ui.theme.BaBiQColors
 
+/**
+ * 左侧导航栏。
+ *
+ * P1-4 只开放新对话和设置，搜索/插件/自动化按计划保留为禁用占位。
+ */
 @Composable
 fun Sidebar(
 	state: AppState,
@@ -37,6 +42,7 @@ fun Sidebar(
 	) {
 		Text("BaBiQ", style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold))
 		SidebarAction("＋ 新对话", enabled = true) { onSelectScreen(Screen.Chat) }
+		// 下面三个入口是 P2+ 占位，禁用是为了避免误导用户以为已经接入真实能力。
 		SidebarAction("⌕ 搜索", enabled = false) { }
 		SidebarAction("◇ 插件", enabled = false) { }
 		SidebarAction("◷ 自动化", enabled = false) { }
@@ -65,6 +71,9 @@ fun Sidebar(
 	}
 }
 
+/**
+ * Sidebar 的单行操作入口。
+ */
 @Composable
 private fun SidebarAction(
 	text: String,
@@ -82,6 +91,9 @@ private fun SidebarAction(
 	)
 }
 
+/**
+ * 当前工作区展示块。
+ */
 @Composable
 private fun SidebarProject(title: String, subtitle: String) {
 	Row(

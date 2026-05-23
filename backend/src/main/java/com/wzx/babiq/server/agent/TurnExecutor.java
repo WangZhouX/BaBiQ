@@ -26,7 +26,11 @@ public class TurnExecutor {
     private static final Logger log = LoggerFactory.getLogger(TurnExecutor.class);
 
     private final AgentLoop agentLoop;
+
+    /** P1 使用 cachedThreadPool 简化本机异步执行；P2 可根据资源隔离需求换成受控线程池。 */
     private final ExecutorService executor = Executors.newCachedThreadPool();
+
+    /** turnId -> Future，用于 turn/interrupt 找到正在运行的 worker。 */
     private final Map<String, Future<?>> running = new ConcurrentHashMap<>();
 
     /**
@@ -52,6 +56,7 @@ public class TurnExecutor {
                 turn.threadId(), turn.id(), providerId == null ? "<active-provider>" : providerId, cwd);
         Future<?> future = executor.submit(() -> run(turn.id(),
                 () -> agentLoop.invoke(turn, userText, providerId, cwd, emitter)));
+        // submit 之后再放入 running，interrupt 才能通过 turnId 找到后台任务。
         running.put(turn.id(), future);
         if (future.isDone()) {
             running.remove(turn.id(), future);
@@ -71,6 +76,7 @@ public class TurnExecutor {
                 turn.threadId(), turn.id(), cwd);
         Future<?> future = executor.submit(() -> run(turn.id(),
                 () -> agentLoop.invokeResume(turn, feedback, cwd, emitter)));
+        // resume 仍然属于同一个 turn，所以复用同一个 turnId 作为 running key。
         running.put(turn.id(), future);
         if (future.isDone()) {
             running.remove(turn.id(), future);
@@ -95,11 +101,15 @@ public class TurnExecutor {
         return canceled;
     }
 
+    /**
+     * 包装 worker 生命周期日志和 running 清理。
+     */
     private void run(String turnId, Runnable action) {
         log.info("TurnExecutor worker 开始: turnId={}", turnId);
         try {
             action.run();
         } finally {
+            // finally 中清理，确保 AgentLoop 成功、失败或被取消后 running 都不会残留。
             running.remove(turnId);
             log.info("TurnExecutor worker 结束: turnId={}", turnId);
         }
