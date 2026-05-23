@@ -13,7 +13,9 @@ import com.wzx.babiq.server.conversation.ItemEmitter;
 import com.wzx.babiq.server.conversation.Turn;
 import com.wzx.babiq.server.hook.BaBiQTokenUsageHook;
 import com.wzx.babiq.server.interceptor.BaBiQSandboxInterceptor;
+import com.wzx.babiq.server.interceptor.SpotlightingToolInterceptor;
 import com.wzx.babiq.server.model.ChatClientFactory;
+import com.wzx.babiq.server.security.SystemPromptSecurityRule;
 import com.wzx.babiq.server.tool.ToolRegistry;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.model.ChatModel;
@@ -41,6 +43,7 @@ public class ReActStrategy {
     private final ToolRegistry toolRegistry;
     private final AgentLoopProperties properties;
     private final BaBiQSandboxInterceptor sandboxInterceptor;
+    private final SpotlightingToolInterceptor spotlightingInterceptor;
     private final BaBiQTokenUsageHook tokenUsageHook;
     private final MemorySaver memorySaver = new MemorySaver();
 
@@ -51,17 +54,20 @@ public class ReActStrategy {
      * @param toolRegistry 工具注册表
      * @param properties Agent Loop 配置
      * @param sandboxInterceptor D31 沙箱拦截器
+     * @param spotlightingInterceptor 工具结果不可信数据标注拦截器
      * @param tokenUsageHook token 累计 Hook
      */
     public ReActStrategy(ChatClientFactory chatClientFactory,
                          ToolRegistry toolRegistry,
                          AgentLoopProperties properties,
                          BaBiQSandboxInterceptor sandboxInterceptor,
+                         SpotlightingToolInterceptor spotlightingInterceptor,
                          BaBiQTokenUsageHook tokenUsageHook) {
         this.chatClientFactory = chatClientFactory;
         this.toolRegistry = toolRegistry;
         this.properties = properties;
         this.sandboxInterceptor = sandboxInterceptor;
+        this.spotlightingInterceptor = spotlightingInterceptor;
         this.tokenUsageHook = tokenUsageHook;
     }
 
@@ -101,10 +107,11 @@ public class ReActStrategy {
         return ReactAgent.builder()
                 .name("babiq_agent")
                 .model(chatModel)
+                .systemPrompt(SystemPromptSecurityRule.PROMPT)
                 .tools(callbacks)
                 .toolContext(toolContext)
                 .hooks(hitlHook, limitHook, tokenUsageHook)
-                .interceptors(sandboxInterceptor, evictionInterceptor)
+                .interceptors(sandboxInterceptor, spotlightingInterceptor, evictionInterceptor)
                 .saver(memorySaver)
                 .build();
     }
