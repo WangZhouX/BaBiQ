@@ -45,3 +45,6 @@ desktop/gradle.properties.local
 .omc/
 backend/.omc/
 
+### Git worktrees ###
+.worktrees/
+
