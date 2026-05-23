@@ -38,11 +38,17 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
 
 - P1-3a Agent Loop 内核已实现。
 - P1-3a 缺失的自动化验收证据已经补齐。
-- P1-3b 详细计划和交接文档已经写好：
+- P1-3b 安全 + 可观测已实现并已通过后端全量测试：
   - `docs/superpowers/plans/p1-3b-security-observability/plan.md`
   - `docs/superpowers/plans/p1-3b-security-observability/codex-handoff.md`
-- 下一步是等待用户确认 P1-3b 计划。
-- 用户确认前，不要开始实现 P1-3b 代码；用户确认后，严格按该 plan 执行。
+  - `docs/superpowers/plans/p1-3b-security-observability/official-capability-check.md`
+- P1-3b 已完成的核心能力：
+  - 工具输出 `<untrusted-data>` spotlighting。
+  - system prompt 安全规则。
+  - prompt injection smoke test。
+  - `turnSummary` 协议 item、成本估算、结构化 turn JSON 日志。
+  - P1 内存级 counters：turn、tokens、tool calls、approval decisions。
+- 下一步是 P1-4 Compose Desktop UI；开始实现前必须先写或确认 P1-4 详细计划。
 
 如果仓库状态发生变化，不要盲信本检查点；必须重新核对代码、文档、测试和 `git status`。
 
@@ -71,7 +77,8 @@ P1-3b 范围：
 P1-4 范围：
 
 - Compose Desktop UI。
-- P1-3b 没有完成 plan、实现和验证前，不进入 P1-4。
+- P1-4 需要消费后端已经发出的 `turnSummary`、approval/request、item/added 等协议事件。
+- P1-4 开始前先写详细 plan，明确 ChatScreen、ApprovalDialog、ProviderSelector、成本反馈条和协议模型映射。
 
 ## 4. 实现规则
 
@@ -115,11 +122,12 @@ P1-3b 实现后的自动化硬验收证据必须包括：
 
 - `SpotlighterTest` 和 `SystemPromptSecurityRuleTest` 通过。
 - `SpotlightingToolInterceptorTest` 通过，证明所有工具输出进入模型历史前被 `<untrusted-data>` 包裹。
+- `ToolObservationInterceptorTest` 通过，证明工具调用进入 turn context 和 metrics。
 - `PromptInjectionSmokeIT` 通过，且禁止 `@Disabled` 占位。
-- `TurnSummaryItemJsonTest` 通过，证明 `turnSummary` 是合法 `ThreadItem`。
+- `ThreadItemJsonTest` 通过，证明 `turnSummary` 是合法 `ThreadItem`。
 - `CostCalculatorTest`、`TurnObservationContextTest`、`BaBiQMetricsTest` 通过。
-- `TurnSummaryEmitterTest` 和 `StructuredTurnLoggerTest` 通过。
-- `AgentLoopTurnSummaryTest` 通过，证明 `turnSummary` 在 `turn/completed` 前发出。
+- `TurnSummaryEmitterTest` 通过，覆盖 `TurnSummaryEmitter` 和 `StructuredTurnLogger` 单行 JSON。
+- `AgentLoopTest` 和 `EndToEndIT` 通过，证明 completed / failed 收尾会生成摘要，真实 ReAct 链路会发 `turnSummary`。
 - `clean verify` 全绿，且 P1-3a 的 approval、sandbox、EndToEndIT 回归不坏。
 
 桌面端改动需要在 `desktop/` 下运行对应 Gradle 命令；涉及 UI 时要做实际视觉验证。
@@ -162,4 +170,4 @@ P1-3b 实现后的自动化硬验收证据必须包括：
 - 剩余缺口必须直接说明。
 - 如果下一步是新阶段，要说明详细 plan 是否已经存在。
 
-对于本仓库，只有在 P1-3b plan 已存在、代码已实现、`clean verify` 和阶段专属烟测都通过后，才可以说 P1-3b 完成。
+对于本仓库，只有在当前阶段 plan 已存在、代码已实现、`clean verify` 和阶段专属烟测都通过后，才可以说该阶段完成。

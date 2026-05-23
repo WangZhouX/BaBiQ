@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
-> **状态:** 本文档只写计划。未得到用户确认前,不得进入代码实现。
+> **状态:** 已实现。2026-05-23 按本计划完成 P1-3B 安全 + 可观测,后端全量测试通过。
 
 **Goal:** 在 P1-3A 已完成的 ReactAgent / 工具 / 沙箱 / HITL 基础上,实现 Prompt Injection 防御、TurnSummary 成本反馈、结构化日志和基础计数指标。
 
@@ -13,6 +13,15 @@
 **Master Plan Reference:** [../2026-05-21-p1-master.md](../2026-05-21-p1-master.md)
 
 **Architecture Reference:** [../../../ARCHITECTURE.md](../../../ARCHITECTURE.md) §22 / §24
+
+## 实现记录
+
+- 已刷新官方能力查证: `official-capability-check.md`。
+- 已复用 Spring AI Alibaba 官方 `ReactAgent.builder()`、`ToolInterceptor`、`HumanInTheLoopHook`、`ModelCallLimitHook`、`LargeResultEvictionInterceptor` 与 Spring AI `Usage`。
+- 已新增 `Spotlighter` / `SpotlightingToolInterceptor` / `SystemPromptSecurityRule`。
+- 已新增 `TurnSummaryItem`、`TurnObservationContext`、`TurnObservationRegistry`、`TurnSummaryEmitter`、`StructuredTurnLogger`、`BaBiQMetrics`、`CostCalculator`。
+- 已把 token usage、tool calls、approval decisions 和 completed/failed/interrupted turn summary 接入现有链路。
+- 已通过 `mvn -q test`；最终收尾前还必须重新跑 `mvn clean verify`。
 
 ---
 
