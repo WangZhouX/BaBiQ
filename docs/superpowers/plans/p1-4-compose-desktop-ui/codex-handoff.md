@@ -34,6 +34,8 @@
 
 - 把后端已经发出的协议事件展示到 Compose Desktop UI。
 - 完成聊天、审批、Provider/模型切换、Provider 只读设置、Turn 成本反馈。
+- 成本只来自后端 `turnSummary`；首页/idle 状态和 `ComposerContextBar` 不显示成本 chip。
+- Sidebar 的搜索、插件、自动化和首页快速操作卡在 P1-4 只允许禁用占位或隐藏。
 - 使用最新稳定版：
   - Kotlin `2.3.21`
   - Compose Multiplatform `1.11.0`
@@ -48,4 +50,5 @@
 - 实现时按 `plan.md` 的 Task 顺序推进，并使用 TDD。
 - 涉及 Compose、Ktor、kotlinx.serialization、kotlinx.coroutines 时，优先使用官方能力，不重复造轮子。
 - 完成 P1-4 后必须主动更新根目录 `AGENTS.md`、本交接文档和 master plan。
+- 完成 P1-4 后也必须同步更新 `CLAUDE.md`，不能只更新 `AGENTS.md`。
 - 用户已要求主动 commit、中文 commit、不要 push。

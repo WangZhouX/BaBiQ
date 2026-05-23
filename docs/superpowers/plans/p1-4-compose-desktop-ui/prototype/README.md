@@ -22,7 +22,7 @@ references/README.md
 ## 原型至少需要覆盖
 
 - 主聊天界面: 消息列表、输入框、发送状态、流式输出状态。
-- 顶部 Provider 选择器: 当前 provider、model、切换入口。
+- 输入框附近 Provider 选择器: 当前 provider、model、切换入口。
 - 审批弹窗: 工具名、参数或命令、Approve / Deny / Always / Edit 操作。
 - Turn 成本反馈条: tokens、费用、耗时、工具调用次数。
 - 设置面板: provider 只读列表。
@@ -57,3 +57,11 @@ references/README.md
 - `flows/06-workspace-context-bar.md`
 
 当前推荐使用 V2 方案:把项目、模式、分支、worktree、权限、模型放在输入框附近的上下文条中,不要把“文件上下文”做成独立导航页。
+
+## 原型语义修正
+
+- 首页/idle 状态不显示成本 chip；成本只能在后端发送 `turnSummary` 后展示。
+- `ComposerContextBar` 不显示“本轮约 $...”之类成本信息，避免和聊天流中的 `TurnSummaryBar` 重复。
+- `TurnSummaryBar` 是聊天主区的成本摘要入口；右侧运行详情展开后展示同一份 `turnSummary` 的明细。
+- Sidebar 中 `搜索`、`插件`、`自动化` 在 P1-4 只作为禁用 P2 占位或隐藏，不实现真实功能。
+- 首页三张快速操作卡如果保留，只能作为禁用 P2 placeholder；P1-4 不实现消息传送、电子邮件、文件/网盘连接器。

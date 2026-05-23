@@ -9,11 +9,11 @@
 
 进入仓库时，先读本文件，再读 §2 列出的上下文入口文档，不能只靠记忆判断项目状态。
 
-根据任务类型使用对应工作流：
+开始实现前，按任务类型使用对应 superpowers 技能：
 
-- **写新的多步骤实现计划前**：用 `/dev-analyze` 拆解需求，产出可验收的任务列表后再动手。
-- **做功能或修 bug 前**：先写失败测试，再实现，再让测试通过（TDD 原则，贯穿整个 P1）。
-- **声称完成、可进入下一阶段前**：用 `/dev-verify` 逐条核对验收标准，没有新鲜验证证据不能说完成。
+- 写新的多步骤实现计划前，使用 `superpowers:writing-plans`。
+- 做功能或修 bug 前，使用 `superpowers:test-driven-development`。
+- 声称完成、通过、可进入下一阶段前，使用 `superpowers:verification-before-completion`。
 
 ---
 
@@ -52,7 +52,11 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
   - `TurnSummaryItem` 协议 item、配置化成本估算、结构化 turn JSON 日志。
   - P1 内存级 counters：turn、tokens、tool calls、approval decisions。
   - 计划与交接文档：`docs/superpowers/plans/p1-3b-security-observability/`
-- **下一步**：进入 P1-4 Compose Desktop UI；开始实现前必须先写详细 P1-4 plan 并等用户确认。
+- P1-4 Compose Desktop UI 已完成原型、交互流程图和正式详细实现计划：
+  - `docs/superpowers/plans/p1-4-compose-desktop-ui/plan.md`
+  - `docs/superpowers/plans/p1-4-compose-desktop-ui/codex-handoff.md`
+  - `docs/superpowers/plans/p1-4-compose-desktop-ui/prototype/`
+- **下一步**：在用户确认后，按 P1-4 详细计划进入 Compose Desktop UI 实现。
 
 如果仓库状态已发生变化，不要盲信本检查点；必须重新核对代码、文档、测试和 `git status`。
 
@@ -80,11 +84,14 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
 - 增加 P1 内存级基础 counter：turn duration、llm tokens、tool calls、approval decisions。
 - **不引入**：Actuator、Prometheus、桌面 UI、Lakera Guard、Dual LLM、OWASP 大数据集回归。
 
-**P1-4 范围（当前阶段，P1-3b 已验收）：**
+**P1-4 范围（当前阶段，P1-3b 已验收，详细计划已完成）：**
 
-- Compose Desktop UI：ChatScreen、ApprovalDialog、ProviderSelector、成本反馈条。
-- 消费后端已发出的 `turnSummary`、`approval/request`、`item/added` 等协议事件。
-- 开始实现前必须先写详细 plan，明确 UI 组件、状态管理和协议模型映射。
+- Compose Desktop UI：ChatScreen、ApprovalDialog、ProviderSelector、Provider 只读设置、成本反馈条和协议模型映射。
+- 消费后端已发出的 `turnSummary`、`approval/request`、`item/added`、`turn/completed` 等协议事件。
+- 采用用户审核通过的 V2 原型：上下文条和模型切换靠近输入框，右侧运行详情默认收起。
+- 首页/idle 状态不显示成本 chip；成本只来自后端 `turnSummary`，不做桌面端预估。
+- Sidebar 中搜索、插件、自动化和首页快速操作卡在 P1-4 只允许禁用占位或隐藏，不实现真实功能。
+- 不做 Provider 编辑、API Key 管理、KeyStore、多工作区文件 pinning 或 P2+ 可观测 UI。
 
 ---
 
@@ -94,6 +101,8 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
 - 实现任何 Agent、LLM、工具、Hook、Interceptor、Memory、HITL、观测、沙箱或协议相关能力前，必须先查看对应的官方代码库或官方文档，优先确认 Spring AI Alibaba、Spring AI、JDK/Java 标准库或成熟 Java 生态中是否已有实现。
 - 能使用官方组件、官方扩展点或成熟 Java 库时，优先做薄封装和集成，不重复造轮子；只有官方能力缺失、与 BaBiQ 协议不匹配或引入成本过高时，才允许自实现，并在计划或代码注释中说明原因。
 - 查证顺序优先级：Spring AI Alibaba 官方仓库/文档 → Spring AI 官方仓库/文档 → Java/JDK 官方文档 → 成熟 Java 生态库；涉及版本差异时，以当前仓库锁定版本和官方最新稳定说明共同判断。
+- Compose/Kotlin/Ktor/kotlinx 相关实现也必须先查官方文档或官方仓库。
+- 版本使用最新稳定版，禁止为了“看起来更新”使用 RC、Beta、EAP。
 - 优先沿用仓库现有模式，不随意创造新抽象。
 - 修改范围必须贴合当前 issue 或阶段，不做无关重构。
 - P1 收口期间，不引入 P2+ 功能。
@@ -140,6 +149,23 @@ cd backend
 - `clean verify` 全绿（143 单测 + 8 IT），P1-3a 的 approval、sandbox、EndToEndIT 回归不坏。
 
 桌面端改动需要在 `desktop/` 下运行对应 Gradle 命令；涉及 UI 时要做实际视觉验证。
+
+**桌面端改动默认验证命令：**
+
+```powershell
+cd desktop
+.\gradlew.bat test
+.\gradlew.bat run
+```
+
+**P1-4 实现验收必须包含：**
+
+- `desktop` 单元测试通过。
+- 后端 `clean verify` 通过。
+- 桌面端真实启动。
+- UI 能完成“分析 E:\BaBiQ 项目结构并写一个总结”的真实业务场景。
+- 审批弹窗、Provider/模型切换、TurnSummary 成本反馈、断线提示均可见可用。
+- 视觉对齐 V2 原型截图，不能出现文字溢出、控件重叠或 V1 旧设计回流。
 
 没有新鲜验证证据前，不要声称完成、通过或可以进入下一阶段。
 

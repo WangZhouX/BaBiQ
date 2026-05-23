@@ -2,7 +2,7 @@
 
 ## 目标
 
-默认保持聊天界面清爽,右侧运行详情收起。用户需要查看时展开,看到当前 turn 的工具轨迹、事件流和成本明细。TurnSummary 成本反馈条始终在聊天流中可见。
+默认保持聊天界面清爽,右侧运行详情收起。用户需要查看时展开,看到当前 turn 的工具轨迹、事件流和成本明细。TurnSummary 成本反馈条只在收到后端 `turnSummary` 后出现在聊天流中。
 
 ## 主流程
 
@@ -47,5 +47,7 @@ flowchart TD
 ## 关键约束
 
 - 成本反馈条来自后端 `turnSummary`,桌面端不自行估算 tokens 或价格。
+- 首页/idle 状态没有 `turnSummary`,不显示成本 chip、不显示 `0` 成本、不显示预估成本。
+- `ComposerContextBar` 不显示成本;成本摘要只在聊天流 `TurnSummaryBar` 展示,右侧运行详情使用同一份数据展示明细。
 - 右侧详情默认收起,避免抢占聊天主空间。
 - 错误和 interrupted turn 也要显示 summary,只要后端发送了 `turnSummary`。

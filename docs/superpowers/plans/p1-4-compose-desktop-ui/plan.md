@@ -94,12 +94,16 @@ P1-4 完成后应满足：
 - 首次发送前如果没有 thread，应调用 `thread/create`，再调用 `turn/start`。
 - 收到 `turn/started`、`item/added`、`item/updated`、`item/completed`、`turn/completed`、`turn/failed`、`approval/request` 后，UI 状态即时更新。
 - 收到 `turnSummary` 类型 item 后，渲染 tokens、成本、耗时、工具次数等摘要。
+- 成本展示只能来自后端 `turnSummary`。首页/idle 状态不显示成本 chip，运行中不展示预估成本；`ComposerContextBar` 不承担成本展示职责。
 - 工具审批弹窗展示工具名、命令/参数、风险上下文，并支持 Approve、Deny、Always、Edit。
 - Provider/模型下拉靠近输入框，切换后调用 `model/providers/set-active`，仅从下一条消息开始生效。
 - 设置页只读展示 Provider 信息，不做 API key 编辑。
-- 连接断开时禁用发送和审批，显示重连状态；恢复连接后可继续新 turn。
+- 连接断开时保留聊天历史和输入草稿，禁用发送和审批，显示重连状态；按 1s 到 10s 指数退避自动重连，并提供手动重试按钮；恢复连接后可继续新 turn。
+- 如果断线发生在 turn 运行中，UI 标记为“状态未知”，重连后等待后端后续事件；P1 不做离线发送队列。
 - 右侧运行详情默认收起，展开后展示工具轨迹、事件、耗时和成本明细。
 - 所有新增解释性代码注释使用中文，且只在逻辑不显然处添加。
+- 左侧 Sidebar 中 `新对话`、最近任务和设置入口可用；`搜索`、`插件`、`自动化` 在 P1-4 只作为禁用占位或隐藏，不得实现真实能力。
+- 首页快速操作卡如果保留，只能作为禁用的 P2 placeholder；P1-4 不接入消息传送、电子邮件或网盘/文件连接器。
 
 ## 5. 协议边界
 
@@ -136,6 +140,8 @@ P1-4 只消费后端现有 JSON-RPC 协议：
   - 缩减为窗口启动和 `BaBiQDesktopApp()` 入口。
 - `AGENTS.md`
   - P1-4 实现完成后更新当前检查点、验收命令与下一阶段提示。
+- `CLAUDE.md`
+  - P1-4 实现完成后与 `AGENTS.md` 同步更新当前检查点、验收命令与下一阶段提示。
 - `docs\superpowers\plans\p1-4-compose-desktop-ui\codex-handoff.md`
   - P1-4 实现完成后更新交接状态。
 
@@ -174,7 +180,7 @@ P1-4 只消费后端现有 JSON-RPC 协议：
 - `desktop\src\main\kotlin\com\wzx\babiq\desktop\ui\shell\AppShell.kt`
   - 左侧导航、主内容、可折叠右侧运行详情。
 - `desktop\src\main\kotlin\com\wzx\babiq\desktop\ui\shell\Sidebar.kt`
-  - 新对话、最近任务、设置入口。
+  - 新对话、最近任务、设置入口；搜索、插件、自动化只做禁用 P2 占位或隐藏。
 - `desktop\src\main\kotlin\com\wzx\babiq\desktop\ui\chat\ChatScreen.kt`
   - 首页/聊天运行态总入口。
 - `desktop\src\main\kotlin\com\wzx\babiq\desktop\ui\chat\MessageList.kt`
@@ -184,7 +190,7 @@ P1-4 只消费后端现有 JSON-RPC 协议：
 - `desktop\src\main\kotlin\com\wzx\babiq\desktop\ui\chat\Composer.kt`
   - 输入框、发送按钮、Enter 发送。
 - `desktop\src\main\kotlin\com\wzx\babiq\desktop\ui\chat\ComposerContextBar.kt`
-  - 项目、模式、分支、worktree、权限、模型 chip。
+  - 项目、模式、分支、worktree、权限、模型 chip；禁止显示成本 chip。
 - `desktop\src\main\kotlin\com\wzx\babiq\desktop\ui\chat\ProviderSelector.kt`
   - 输入框附近模型切换下拉。
 - `desktop\src\main\kotlin\com\wzx\babiq\desktop\ui\approval\ApprovalDialog.kt`
@@ -648,9 +654,11 @@ fun main() = singleWindowApplication(
 布局要求：
 
 - 左侧固定 288px 导航区。
+- Sidebar 可用入口只包括新对话、最近任务和设置；搜索、插件、自动化如果出现在视觉上，必须是禁用的 P2 placeholder，不能点击触发真实功能。
 - 中间为聊天主区域。
 - 右侧运行详情默认折叠，展开宽度 320px。
 - 首页第一视觉是输入框和上下文条，不做营销页。
+- 首页快速操作卡如果保留，只能禁用并标记为 P2 placeholder；P1-4 不实现连接消息传送、电子邮件、文件/网盘等外部连接器。
 - 不使用大面积渐变和装饰性图形。
 - 圆角控制在 8px 以内，除输入框等局部控件可按原型略大。
 
@@ -709,8 +717,10 @@ git commit -m "feat(p1-4): 搭建桌面端 V2 外壳"
 - `worktree`
 - 权限状态
 - 当前模型
+- 不显示成本、预估成本或“本轮约”信息
 
 重要：不要恢复右侧独立“文件上下文”入口，用户已确认上下文应靠近输入框。
+成本只能在收到后端 `turnSummary` 后由 `TurnSummaryBar` 和 `RuntimeDetailsPanel` 渲染。
 
 - [ ] **Step 4: 运行桌面端检查**
 
@@ -721,7 +731,7 @@ cd E:\BaBiQ\desktop
 .\gradlew.bat run
 ```
 
-Expected: 首页与聊天运行态分别接近 `v2-01-home-context-bar.png` 和 `v2-02-chat-runtime.png`。
+Expected: 首页与聊天运行态分别接近 `v2-01-home-context-bar.png` 和 `v2-02-chat-runtime.png`；如果截图里仍有上下文条成本 chip，以本计划为准，不实现该 chip。
 
 - [ ] **Step 5: 提交**
 
@@ -863,6 +873,8 @@ git commit -m "feat(p1-4): 实现工具审批弹窗"
 - completed/failed 后显示最新 summary。
 - running 时显示当前耗时或 skeleton 状态。
 - 不自己估算 tokens；只展示后端返回数据。
+- `TurnSummaryBar` 是聊天主区唯一的成本摘要条；`ComposerContextBar` 不重复展示成本。
+- 首页/idle 状态没有 `turnSummary` 时隐藏成本摘要，不显示 `0` 或预估值。
 
 - [ ] **Step 3: 实现 RuntimeDetailsPanel**
 
@@ -1073,6 +1085,7 @@ git commit -m "fix(p1-4): 完成桌面端联调修正"
 ### Task 14: 文档同步和阶段收尾
 
 **Files:**
+- Modify: `CLAUDE.md`
 - Modify: `AGENTS.md`
 - Modify: `docs\superpowers\plans\p1-4-compose-desktop-ui\codex-handoff.md`
 - Modify: `docs\superpowers\plans\2026-05-21-p1-master.md`
@@ -1088,7 +1101,7 @@ git commit -m "fix(p1-4): 完成桌面端联调修正"
 - 已知限制。
 - 下一步阶段。
 
-- [ ] **Step 2: 更新 AGENTS.md**
+- [ ] **Step 2: 更新 AGENTS.md 和 CLAUDE.md**
 
 必须更新：
 
@@ -1102,6 +1115,7 @@ cd desktop
 ```
 
 - 保留“完成一个计划后主动更新 AGENTS.md”的规则。
+- `CLAUDE.md` 必须与 `AGENTS.md` 保持同等阶段状态，不能停留在“P1-4 计划尚未完成”。
 
 - [ ] **Step 3: 更新 master plan 状态**
 
@@ -1127,7 +1141,7 @@ Expected: 两边均成功。
 - [ ] **Step 6: 收尾提交**
 
 ```powershell
-git add AGENTS.md docs/ARCHITECTURE.md docs/superpowers/plans/2026-05-21-p1-master.md docs/superpowers/plans/p1-4-compose-desktop-ui/codex-handoff.md
+git add AGENTS.md CLAUDE.md docs/ARCHITECTURE.md docs/superpowers/plans/2026-05-21-p1-master.md docs/superpowers/plans/p1-4-compose-desktop-ui/codex-handoff.md
 git commit -m "docs(p1-4): 同步桌面端阶段状态"
 ```
 
@@ -1145,8 +1159,8 @@ P1-4 只有同时满足以下条件才可标记完成：
 - [ ] `turnSummary` 能展示成本、token、耗时、工具次数。
 - [ ] 断线状态有可见提示，发送和审批不会静默失败。
 - [ ] 设置页只读展示 provider 信息，不做 P2+ 配置编辑。
-- [ ] UI 与五张 V2 截图保持一致，不恢复 V1。
-- [ ] `AGENTS.md`、`codex-handoff.md` 和 master plan 已按真实状态更新。
+- [ ] UI 与五张 V2 截图保持一致，并按本计划修正成本 chip、P2 占位等语义；不恢复 V1。
+- [ ] `AGENTS.md`、`CLAUDE.md`、`codex-handoff.md` 和 master plan 已按真实状态更新。
 - [ ] 已用中文 conventional commit 主动提交，且没有 push。
 
 ## 9. 风险和处理
