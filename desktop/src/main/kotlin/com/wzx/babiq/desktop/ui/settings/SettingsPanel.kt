@@ -35,7 +35,7 @@ fun SettingsPanel(state: AppState) {
 		}
 		SettingsCard("Provider 只读信息") {
 			if (state.providerState.providers.isEmpty()) {
-				Text("后端当前只返回占位 Provider，P1-4 不做编辑。", color = BaBiQColors.Muted)
+				Text("当前没有可选择的后端 Provider，请检查后端配置。", color = BaBiQColors.Muted)
 			} else {
 				state.providerState.providers.forEach { provider ->
 					Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
