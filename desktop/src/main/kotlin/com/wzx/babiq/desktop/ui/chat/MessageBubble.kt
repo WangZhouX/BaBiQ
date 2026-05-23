@@ -1,0 +1,78 @@
+package com.wzx.babiq.desktop.ui.chat
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import com.wzx.babiq.desktop.state.ChatMessage
+import com.wzx.babiq.desktop.ui.runtime.TurnSummaryBar
+import com.wzx.babiq.desktop.ui.theme.BaBiQColors
+
+@Composable
+fun MessageBubble(message: ChatMessage) {
+	when (message) {
+		is ChatMessage.TurnSummary -> TurnSummaryBar(message.summary)
+		else -> Row(
+			modifier = Modifier.fillMaxWidth(),
+			horizontalArrangement = if (message is ChatMessage.User) Arrangement.End else Arrangement.Start,
+		) {
+			Column(
+				modifier = Modifier
+					.widthIn(max = 680.dp)
+					.background(backgroundFor(message), RoundedCornerShape(8.dp))
+					.padding(12.dp),
+				verticalArrangement = Arrangement.spacedBy(6.dp),
+				horizontalAlignment = Alignment.Start,
+			) {
+				Text(titleFor(message), style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
+				Text(bodyFor(message), style = bodyStyleFor(message))
+			}
+		}
+	}
+}
+
+private fun backgroundFor(message: ChatMessage): Color =
+	when (message) {
+		is ChatMessage.User -> Color(0xFFE4ECF7)
+		is ChatMessage.Tool, is ChatMessage.FileChange -> Color(0xFFF1EFE8)
+		else -> BaBiQColors.Panel
+	}
+
+private fun titleFor(message: ChatMessage): String =
+	when (message) {
+		is ChatMessage.User -> "你"
+		is ChatMessage.Agent -> if (message.streaming) "BaBiQ 正在输入" else "BaBiQ"
+		is ChatMessage.Tool -> "工具 · ${message.status}"
+		is ChatMessage.FileChange -> "文件 · ${message.status}"
+		is ChatMessage.TurnSummary -> "摘要"
+	}
+
+private fun bodyFor(message: ChatMessage): String =
+	when (message) {
+		is ChatMessage.User -> message.text
+		is ChatMessage.Agent -> message.text
+		is ChatMessage.Tool -> "${message.title}\n${message.detail}"
+		is ChatMessage.FileChange -> "${message.action}: ${message.path}\n${message.preview.orEmpty()}"
+		is ChatMessage.TurnSummary -> ""
+	}
+
+@Composable
+private fun bodyStyleFor(message: ChatMessage) =
+	if (message is ChatMessage.Tool || message is ChatMessage.FileChange) {
+		MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
+	} else {
+		MaterialTheme.typography.bodyMedium
+	}

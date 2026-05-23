@@ -166,6 +166,14 @@ class ChatController(
 		}
 	}
 
+	fun showScreen(screen: Screen) {
+		_state.update { it.copy(screen = screen) }
+	}
+
+	fun toggleRuntimeDetails() {
+		_state.update { it.copy(runtimeExpanded = !it.runtimeExpanded) }
+	}
+
 	fun applyEvent(event: AgentEvent) {
 		_state.update { ChatReducer.reduce(it, event) }
 	}
