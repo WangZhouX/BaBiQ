@@ -107,7 +107,7 @@ class AgentClientTest {
 		}
 
 		assertEquals(-32602, error.code)
-		assertTrue(error.message!!.contains("缺少必填字段"))
+		assertTrue(error.message.contains("缺少必填字段"))
 	}
 
 	@Test

@@ -27,19 +27,30 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
+interface AgentGateway {
+	val events: Flow<ServerEvent>
+
+	suspend fun connect()
+	suspend fun createThread(cwd: String): String
+	suspend fun startTurn(threadId: String, prompt: String, providerId: String? = null): String
+	suspend fun respondApproval(threadId: String, turnId: String, decision: String, editedArgs: String? = null): Boolean
+	suspend fun listProviders(): ProviderListResult
+	suspend fun setActiveProvider(providerId: String, modelId: String? = null): Boolean
+}
+
 class AgentClient(
 	private val transport: AgentTransport,
 	private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 	private val config: DesktopConfig = DesktopConfig(),
-) : AutoCloseable {
+) : AgentGateway, AutoCloseable {
 	private val nextId = AtomicLong(1)
 	private val pending = ConcurrentHashMap<Long, CompletableDeferred<JsonRpcResponse>>()
 	private val _events = MutableSharedFlow<ServerEvent>(extraBufferCapacity = 128)
 	private var collecting = false
 
-	val events: Flow<ServerEvent> = _events
+	override val events: Flow<ServerEvent> = _events
 
-	suspend fun connect() {
+	override suspend fun connect() {
 		transport.connect()
 		if (!collecting) {
 			collecting = true
@@ -49,7 +60,7 @@ class AgentClient(
 		}
 	}
 
-	suspend fun createThread(cwd: String): String {
+	override suspend fun createThread(cwd: String): String {
 		val response = request(
 			method = "thread/create",
 			params = buildJsonObject { put("cwd", cwd) },
@@ -57,7 +68,7 @@ class AgentClient(
 		return response.requireResult().jsonObject.requiredText("threadId")
 	}
 
-	suspend fun startTurn(threadId: String, prompt: String, providerId: String? = null): String {
+	override suspend fun startTurn(threadId: String, prompt: String, providerId: String?): String {
 		val params = buildJsonObject {
 			put("threadId", threadId)
 			put("input", buildJsonObject { put("text", prompt) })
@@ -69,11 +80,11 @@ class AgentClient(
 		return response.requireResult().jsonObject.requiredText("turnId")
 	}
 
-	suspend fun respondApproval(
+	override suspend fun respondApproval(
 		threadId: String,
 		turnId: String,
 		decision: String,
-		editedArgs: String? = null,
+		editedArgs: String?,
 	): Boolean {
 		val response = request(
 			method = "approval/respond",
@@ -88,12 +99,12 @@ class AgentClient(
 			?: true
 	}
 
-	suspend fun listProviders(): ProviderListResult {
+	override suspend fun listProviders(): ProviderListResult {
 		val response = request("model/providers/list", buildJsonObject {})
 		return protocolJson.decodeFromJsonElement(ProviderListResult.serializer(), response.requireResult())
 	}
 
-	suspend fun setActiveProvider(providerId: String, modelId: String? = null): Boolean {
+	override suspend fun setActiveProvider(providerId: String, modelId: String?): Boolean {
 		val response = request(
 			method = "model/providers/set-active",
 			params = protocolJson.encodeToJsonElement(
