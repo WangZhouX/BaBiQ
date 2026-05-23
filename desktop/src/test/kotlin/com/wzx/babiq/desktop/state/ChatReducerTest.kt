@@ -50,6 +50,28 @@ class ChatReducerTest {
 	}
 
 	@Test
+	fun `server userMessage replaces matching optimistic user message`() {
+		val state = AppState.empty().copy(
+			messages = listOf(ChatMessage.User("local-user-1", "你好啊")),
+			turnState = TurnState.Running,
+		)
+		val serverUserMessage = ThreadItem.UserMessage(
+			id = "it-user-1",
+			text = "你好啊",
+		)
+
+		val next = ChatReducer.reduce(
+			state,
+			AgentEvent.Server(ServerEvent.ItemAdded("thread-1", "turn-1", serverUserMessage)),
+		)
+
+		assertEquals(1, next.messages.size)
+		val userMessage = assertIs<ChatMessage.User>(next.messages.single())
+		assertEquals("it-user-1", userMessage.id)
+		assertEquals("你好啊", userMessage.text)
+	}
+
+	@Test
 	fun `turn failed preserves messages and records visible error`() {
 		val state = AppState.empty().copy(
 			messages = listOf(ChatMessage.Agent("a1", "已经读取 README")),

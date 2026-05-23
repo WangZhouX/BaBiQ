@@ -102,6 +102,9 @@ object ChatReducer {
 				),
 			)
 
+			is ThreadItem.UserMessage -> copy(
+				messages = messages.reconcileUserMessage(ChatMessage.User(item.id, item.text)),
+			)
 			else -> copy(messages = messages.upsert(item.toChatMessage()))
 		}
 
@@ -137,5 +140,24 @@ object ChatReducer {
 			return this + message
 		}
 		return toMutableList().also { messages -> messages[existingIndex] = message }
+	}
+
+	/**
+	 * 发送消息时 Controller 会先追加一条 local-user-* 临时气泡，后端随后会发正式 userMessage。
+	 * 如果两者文本一致，就用服务端 item id 替换本地临时 id，避免界面把同一条用户输入显示两遍。
+	 */
+	private fun List<ChatMessage>.reconcileUserMessage(message: ChatMessage.User): List<ChatMessage> {
+		val existingIndex = indexOfFirst { it.id == message.id }
+		if (existingIndex >= 0) {
+			return toMutableList().also { messages -> messages[existingIndex] = message }
+		}
+
+		val optimisticIndex = indexOfLast {
+			it is ChatMessage.User && it.id.startsWith("local-user-") && it.text == message.text
+		}
+		if (optimisticIndex < 0) {
+			return this + message
+		}
+		return toMutableList().also { messages -> messages[optimisticIndex] = message }
 	}
 }
