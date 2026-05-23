@@ -31,3 +31,16 @@ references/README.md
 ## 交付说明
 
 原型进入本目录后,Codex 需要先阅读这些材料,再把确认后的 UI 结构、组件边界和验收标准写入 `../plan.md`。
+
+## 当前原型
+
+已创建 Figma 高保真原型,详情见:
+
+- `figma.md`
+
+已导出的本地截图位于:
+
+- `screens/01-chat-main-connected.png`
+- `screens/02-approval-dialog.png`
+- `screens/03-provider-dropdown.png`
+- `screens/04-settings-providers.png`
