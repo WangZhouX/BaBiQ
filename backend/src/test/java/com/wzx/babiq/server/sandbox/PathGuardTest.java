@@ -1,6 +1,5 @@
 package com.wzx.babiq.server.sandbox;
 
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -38,18 +37,21 @@ class PathGuardTest {
     }
 
     @Test
-    void rejects_symbolic_link_escape(@TempDir Path root) throws Exception {
+    void rejects_symbolic_link_or_traversal_escape(@TempDir Path root) throws Exception {
         Path outside = Files.createTempDirectory("babiq-outside-");
         Path link = root.resolve("link");
+        Path escapeCandidate;
         try {
             Files.createSymbolicLink(link, outside);
+            escapeCandidate = link;
         } catch (UnsupportedOperationException | java.io.IOException exception) {
-            Assumptions.assumeTrue(false, "当前环境不支持创建符号链接，跳过此用例");
-            return;
+            // Windows 普通权限可能无法创建符号链接，退化为同样必须拒绝的 .. 逃逸路径。
+            escapeCandidate = root.resolve("..").resolve(outside.getFileName()).normalize();
         }
 
         PathGuard guard = new PathGuard(List.of(root.toRealPath()));
-        assertThatThrownBy(() -> guard.checkRead(link.resolve("escape.txt").toString()))
+        Path finalEscapeCandidate = escapeCandidate;
+        assertThatThrownBy(() -> guard.checkRead(finalEscapeCandidate.resolve("escape.txt").toString()))
                 .isInstanceOf(SandboxViolationException.class);
     }
 
