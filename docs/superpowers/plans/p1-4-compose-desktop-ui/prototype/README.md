@@ -40,7 +40,14 @@ references/README.md
 
 已导出的本地截图位于:
 
+- `screens/v2-01-home-context-bar.png`
+- `screens/v2-02-chat-runtime.png`
+- `screens/v2-03-approval-context-aware.png`
+- `screens/v2-04-model-picker-near-composer.png`
+- `screens/v2-05-settings-workspace-providers.png`
 - `screens/01-chat-main-connected.png`
 - `screens/02-approval-dialog.png`
 - `screens/03-provider-dropdown.png`
 - `screens/04-settings-providers.png`
+
+当前推荐使用 V2 方案:把项目、模式、分支、worktree、权限、模型放在输入框附近的上下文条中,不要把“文件上下文”做成独立导航页。
