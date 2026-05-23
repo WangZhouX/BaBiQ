@@ -37,6 +37,7 @@ public class JsonRpcDispatcher {
     public JsonRpcDispatcher(List<JsonRpcMethodHandler> allHandlers, ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
         this.handlers = indexHandlers(allHandlers);
+        log.info("JSON-RPC method 注册完成: count={}, methods={}", handlers.size(), handlers.keySet());
     }
 
     /**
@@ -49,6 +50,8 @@ public class JsonRpcDispatcher {
     public JsonRpcMessage dispatch(JsonRpcMessage.Request request, WebSocketSession session) {
         JsonRpcMethodHandler handler = handlers.get(request.method());
         if (handler == null) {
+            log.warn("JSON-RPC 未知 method: requestId={}, method={}, availableMethods={}",
+                    request.id(), request.method(), handlers.keySet());
             return JsonRpcMessage.ErrorResponse.of(
                     request.id(),
                     JsonRpcErrorCode.METHOD_NOT_FOUND,
@@ -63,20 +66,44 @@ public class JsonRpcDispatcher {
             JsonRpcMessage.Request request,
             WebSocketSession session,
             JsonRpcMethodHandler handler) {
+        long startedNanos = System.nanoTime();
         try {
             JsonNode params = request.params() == null
                     ? objectMapper.nullNode()
                     : objectMapper.valueToTree(request.params());
+            log.debug("JSON-RPC method 开始执行: requestId={}, method={}, handler={}, sessionId={}, params={}",
+                    request.id(),
+                    request.method(),
+                    handler.getClass().getSimpleName(),
+                    session == null ? "null" : session.getId(),
+                    JsonRpcLogSupport.paramsSummary(params));
             Object responsePayload = handler.handle(params, session);
+            log.info("JSON-RPC method 执行成功: requestId={}, method={}, handler={}, elapsedMs={}, resultType={}",
+                    request.id(),
+                    request.method(),
+                    handler.getClass().getSimpleName(),
+                    JsonRpcLogSupport.elapsedMillis(startedNanos),
+                    responsePayload == null ? "null" : responsePayload.getClass().getSimpleName());
             return JsonRpcMessage.Response.ok(request.id(), responsePayload);
         } catch (JsonRpcException jsonRpcException) {
+            log.warn("JSON-RPC method 参数/业务错误: requestId={}, method={}, code={}, message={}, elapsedMs={}",
+                    request.id(),
+                    request.method(),
+                    jsonRpcException.errorCode().code(),
+                    JsonRpcLogSupport.preview(jsonRpcException.getMessage()),
+                    JsonRpcLogSupport.elapsedMillis(startedNanos));
             return JsonRpcMessage.ErrorResponse.of(
                     request.id(),
                     jsonRpcException.errorCode(),
                     jsonRpcException.getMessage(),
                     jsonRpcException.errorData());
         } catch (Exception exception) {
-            log.error("JSON-RPC method={} 执行失败", request.method(), exception);
+            log.error("JSON-RPC method 执行失败: requestId={}, method={}, handler={}, elapsedMs={}",
+                    request.id(),
+                    request.method(),
+                    handler.getClass().getSimpleName(),
+                    JsonRpcLogSupport.elapsedMillis(startedNanos),
+                    exception);
             return JsonRpcMessage.ErrorResponse.of(
                     request.id(),
                     JsonRpcErrorCode.SERVER_ERROR,

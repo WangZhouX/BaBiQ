@@ -12,6 +12,7 @@ import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 
 /**
  * JSON-RPC WebSocket 主入口。
@@ -46,7 +47,8 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
      */
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
-        log.info("WebSocket 已连接: sessionId={}", session.getId());
+        log.info("WebSocket 已连接: sessionId={}, remote={}, uri={}",
+                session.getId(), session.getRemoteAddress(), session.getUri());
     }
 
     /**
@@ -57,7 +59,8 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
      */
     @Override
     protected void handleTextMessage(WebSocketSession session, TextMessage message) {
-        JsonRpcMessage response = handleRequest(session, message.getPayload());
+        long startedNanos = System.nanoTime();
+        JsonRpcMessage response = handleRequest(session, message.getPayload(), startedNanos);
         sendResponse(session, response);
     }
 
@@ -72,27 +75,50 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
         log.info("WebSocket 已关闭: sessionId={}, status={}", session.getId(), status);
     }
 
-    private JsonRpcMessage handleRequest(WebSocketSession session, String payload) {
+    private JsonRpcMessage handleRequest(WebSocketSession session, String payload, long startedNanos) {
         Long requestId = null;
+        String method = "<parse-failed>";
         try {
             JsonRpcMessage.Request request = objectMapper.readValue(payload, JsonRpcMessage.Request.class);
             requestId = request.id();
+            method = request.method();
+            log.info("JSON-RPC 请求进入: sessionId={}, requestId={}, method={}, payloadBytes={}, params={}",
+                    session.getId(),
+                    requestId,
+                    method,
+                    payload.getBytes(StandardCharsets.UTF_8).length,
+                    JsonRpcLogSupport.paramsSummary(objectMapper.valueToTree(request.params())));
             if (!isValidEnvelope(request)) {
+                log.warn("JSON-RPC envelope 非法: sessionId={}, requestId={}, method={}, payload={}",
+                        session.getId(), requestId, method, JsonRpcLogSupport.preview(payload));
                 return JsonRpcMessage.ErrorResponse.of(
                         requestId,
                         JsonRpcErrorCode.INVALID_REQUEST,
                         "Invalid JSON-RPC envelope",
                         null);
             }
-            return dispatcher.dispatch(request, session);
+            JsonRpcMessage response = dispatcher.dispatch(request, session);
+            log.info("JSON-RPC 请求完成: sessionId={}, requestId={}, method={}, response={}, elapsedMs={}",
+                    session.getId(),
+                    requestId,
+                    method,
+                    responseSummary(response),
+                    JsonRpcLogSupport.elapsedMillis(startedNanos));
+            return response;
         } catch (JsonProcessingException exception) {
+            log.warn("JSON-RPC 解析失败: sessionId={}, payloadBytes={}, error={}, payloadPreview={}",
+                    session.getId(),
+                    payload.getBytes(StandardCharsets.UTF_8).length,
+                    exception.getOriginalMessage(),
+                    JsonRpcLogSupport.preview(payload));
             return JsonRpcMessage.ErrorResponse.of(
                     null,
                     JsonRpcErrorCode.PARSE_ERROR,
                     "Parse error: " + exception.getOriginalMessage(),
                     null);
         } catch (Exception exception) {
-            log.error("WebSocket 请求处理失败", exception);
+            log.error("WebSocket 请求处理失败: sessionId={}, requestId={}, method={}, elapsedMs={}",
+                    session.getId(), requestId, method, JsonRpcLogSupport.elapsedMillis(startedNanos), exception);
             return JsonRpcMessage.ErrorResponse.of(
                     requestId,
                     JsonRpcErrorCode.INTERNAL_ERROR,
@@ -118,5 +144,16 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
         } catch (IOException exception) {
             log.error("WebSocket 响应发送失败: sessionId={}", session.getId(), exception);
         }
+    }
+
+    private String responseSummary(JsonRpcMessage response) {
+        if (response instanceof JsonRpcMessage.Response success) {
+            Object result = success.result();
+            return "ok:" + (result == null ? "null" : result.getClass().getSimpleName());
+        }
+        if (response instanceof JsonRpcMessage.ErrorResponse errorResponse) {
+            return "error:" + errorResponse.error().code() + ":" + JsonRpcLogSupport.preview(errorResponse.error().message());
+        }
+        return response.getClass().getSimpleName();
     }
 }

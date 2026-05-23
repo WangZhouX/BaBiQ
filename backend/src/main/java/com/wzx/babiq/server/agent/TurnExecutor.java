@@ -48,6 +48,8 @@ public class TurnExecutor {
      * @param emitter 当前 WebSocket 发射器
      */
     public void submit(Turn turn, String userText, String providerId, String cwd, ItemEmitter emitter) {
+        log.info("TurnExecutor 提交普通 turn: threadId={}, turnId={}, providerId={}, cwd={}",
+                turn.threadId(), turn.id(), providerId == null ? "<active-provider>" : providerId, cwd);
         Future<?> future = executor.submit(() -> run(turn.id(),
                 () -> agentLoop.invoke(turn, userText, providerId, cwd, emitter)));
         running.put(turn.id(), future);
@@ -65,6 +67,8 @@ public class TurnExecutor {
      * @param emitter 当前 WebSocket 发射器
      */
     public void submitResume(Turn turn, InterruptionMetadata feedback, String cwd, ItemEmitter emitter) {
+        log.info("TurnExecutor 提交审批恢复 turn: threadId={}, turnId={}, cwd={}",
+                turn.threadId(), turn.id(), cwd);
         Future<?> future = executor.submit(() -> run(turn.id(),
                 () -> agentLoop.invokeResume(turn, feedback, cwd, emitter)));
         running.put(turn.id(), future);
@@ -87,14 +91,17 @@ public class TurnExecutor {
         }
         boolean canceled = future.cancel(true);
         running.remove(turnId, future);
+        log.info("turn/interrupt 已请求取消: turnId={}, canceled={}", turnId, canceled);
         return canceled;
     }
 
     private void run(String turnId, Runnable action) {
+        log.info("TurnExecutor worker 开始: turnId={}", turnId);
         try {
             action.run();
         } finally {
             running.remove(turnId);
+            log.info("TurnExecutor worker 结束: turnId={}", turnId);
         }
     }
 }

@@ -2,8 +2,11 @@ package com.wzx.babiq.server.conversation;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wzx.babiq.server.agent.ApprovalRequestPayload;
+import com.wzx.babiq.server.api.JsonRpcLogSupport;
 import com.wzx.babiq.server.api.JsonRpcMessage;
 import com.wzx.babiq.server.conversation.items.ThreadItem;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
@@ -18,6 +21,8 @@ import java.util.Map;
  * 基础参数统一注入,并封装 session 写入同步,让 handler 只关心业务事件顺序。</p>
  */
 public class ItemEmitter {
+
+    private static final Logger log = LoggerFactory.getLogger(ItemEmitter.class);
 
     private final WebSocketSession session;
     private final ObjectMapper objectMapper;
@@ -176,5 +181,11 @@ public class ItemEmitter {
         synchronized (session) {
             session.sendMessage(new TextMessage(payload));
         }
+        log.info("WebSocket 通知已发送: sessionId={}, method={}, threadId={}, turnId={}, params={}",
+                session.getId(),
+                method,
+                threadId,
+                turnId,
+                JsonRpcLogSupport.paramsSummary(objectMapper.valueToTree(params)));
     }
 }

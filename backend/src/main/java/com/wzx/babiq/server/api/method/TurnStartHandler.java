@@ -3,6 +3,7 @@ package com.wzx.babiq.server.api.method;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wzx.babiq.server.agent.TurnExecutor;
+import com.wzx.babiq.server.api.JsonRpcLogSupport;
 import com.wzx.babiq.server.api.JsonRpcMethodHandler;
 import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
 import com.wzx.babiq.server.api.error.JsonRpcException;
@@ -71,11 +72,21 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
         String threadId = requiredText(params, "threadId");
         String userText = requiredInputText(params);
         String providerId = optionalText(params, "providerId");
+        log.info("turn/start 收到请求: threadId={}, providerId={}, inputChars={}, inputPreview={}",
+                threadId,
+                providerId == null ? "<active-provider>" : providerId,
+                userText.length(),
+                JsonRpcLogSupport.preview(userText));
         Thread thread = conversationService.findThread(threadId)
                 .orElseThrow(() -> new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS,
                         "threadId=" + threadId + " 不存在，无法创建 Turn"));
         Turn turn = conversationService.startTurn(threadId);
         turn.start();
+        log.info("turn/start 已创建 Turn: threadId={}, turnId={}, cwd={}, providerId={}",
+                threadId,
+                turn.id(),
+                thread.cwd(),
+                providerId == null ? "<active-provider>" : providerId);
 
         ItemEmitter emitter = new ItemEmitter(session, objectMapper, threadId, turn.id());
         try {
@@ -84,6 +95,10 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
             log.warn("发送 turn/started 失败 turnId={}", turn.id(), exception);
         }
         turnExecutor.submit(turn, userText, providerId, thread.cwd(), emitter);
+        log.info("turn/start 已提交 AgentLoop: threadId={}, turnId={}, providerId={}",
+                threadId,
+                turn.id(),
+                providerId == null ? "<active-provider>" : providerId);
         return Map.of("turnId", turn.id());
     }
 
