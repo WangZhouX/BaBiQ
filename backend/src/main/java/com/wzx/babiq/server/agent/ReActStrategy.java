@@ -41,13 +41,21 @@ import java.util.UUID;
 @Component
 public class ReActStrategy {
 
+    /** 根据当前 Provider 选择并缓存 Spring AI ChatClient，ReActAgent 最终通过它调用模型。 */
     private final ChatClientFactory chatClientFactory;
+    /** 汇总 BaBiQ 暴露给 Agent 的所有工具，并转换成 Spring AI ToolCallback。 */
     private final ToolRegistry toolRegistry;
+    /** agent-loop 配置项，控制系统提示词、最大步数、上下文窗口、审批策略等运行参数。 */
     private final AgentLoopProperties properties;
+    /** 工具执行前的沙箱拦截器，负责限制写文件、命令执行和补丁应用的可访问路径。 */
     private final BaBiQSandboxInterceptor sandboxInterceptor;
+    /** 工具执行后的观测拦截器，用于统计每个 turn 的工具调用次数和工具名称。 */
     private final ToolObservationInterceptor toolObservationInterceptor;
+    /** 工具输出安全拦截器，用 spotlighting 标记外部内容，降低 prompt injection 风险。 */
     private final SpotlightingToolInterceptor spotlightingInterceptor;
+    /** Spring AI Alibaba token hook，用于从模型响应里累计 prompt/completion token。 */
     private final BaBiQTokenUsageHook tokenUsageHook;
+    /** Spring AI Alibaba Graph 的内存检查点，HITL 暂停和恢复需要依赖它保存图状态。 */
     private final MemorySaver memorySaver = new MemorySaver();
 
     /**

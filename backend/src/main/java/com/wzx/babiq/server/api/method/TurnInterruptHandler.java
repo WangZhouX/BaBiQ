@@ -19,6 +19,7 @@ import java.util.Map;
 @Component
 public class TurnInterruptHandler implements JsonRpcMethodHandler {
 
+    /** 正在运行 turn 的调度器，interrupt 请求会通过它取消后台 Future。 */
     private final TurnExecutor turnExecutor;
 
     /**

@@ -20,6 +20,7 @@ import java.util.Map;
 @Component
 public class ProvidersSetActiveHandler implements JsonRpcMethodHandler {
 
+    /** 模型 Provider 注册表，UI 切换模型时最终会更新这里的 active provider。 */
     private final ModelProviderRegistry registry;
 
     /**

@@ -25,6 +25,7 @@ public class TurnExecutor {
 
     private static final Logger log = LoggerFactory.getLogger(TurnExecutor.class);
 
+    /** 单个 turn 的实际业务执行器；本类只调度线程，不直接实现模型和工具逻辑。 */
     private final AgentLoop agentLoop;
 
     /** P1 使用 cachedThreadPool 简化本机异步执行；P2 可根据资源隔离需求换成受控线程池。 */

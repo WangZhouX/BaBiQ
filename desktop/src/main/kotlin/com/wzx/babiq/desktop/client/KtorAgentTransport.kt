@@ -24,6 +24,9 @@ import kotlinx.coroutines.launch
  *
  * 它不理解 JSON-RPC，也不关心 Thread/Turn/Item；这些协议语义留给 AgentClient。
  * 分开后，如果以后要换成测试内存传输、Unix socket 或远程 relay，只需要替换这一层。
+ *
+ * @param config 后端地址、WebSocket 路径和请求超时等桌面端配置。
+ * @param scope 读取 WebSocket 帧的后台协程作用域，默认使用 IO dispatcher。
  */
 class KtorAgentTransport(
 	private val config: DesktopConfig = DesktopConfig(),

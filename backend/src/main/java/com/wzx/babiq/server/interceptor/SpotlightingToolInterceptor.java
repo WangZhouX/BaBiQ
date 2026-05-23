@@ -15,7 +15,9 @@ import org.springframework.stereotype.Component;
 @Component
 public class SpotlightingToolInterceptor extends ToolInterceptor {
 
+    /** 把外部文件/命令输出包装成带边界的 spotlight 文本，提醒模型不要把它当系统指令。 */
     private final Spotlighter spotlighter;
+    /** 解析工具入参里的 path 字段，判断本次输出是否来自用户文件或命令。 */
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     /**

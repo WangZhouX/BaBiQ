@@ -10,6 +10,7 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component
 public class TurnObservationRegistry {
 
+    /** turnId -> 观测上下文，模型 hook、工具 interceptor 和 summary emitter 都会按 turnId 共享它。 */
     private final ConcurrentHashMap<String, TurnObservationContext> contexts = new ConcurrentHashMap<>();
 
     public TurnObservationContext start(String threadId, String turnId, String providerId, String model) {

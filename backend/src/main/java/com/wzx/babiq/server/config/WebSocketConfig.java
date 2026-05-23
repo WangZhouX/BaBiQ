@@ -17,8 +17,11 @@ import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry
 @EnableWebSocket
 public class WebSocketConfig implements WebSocketConfigurer {
 
+    /** BaBiQ JSON-RPC WebSocket 处理器，所有桌面端协议帧都会进入它。 */
     private final JsonRpcWebSocketHandler jsonRpcWebSocketHandler;
+    /** WebSocket 注册路径，默认 /ws/agent，桌面端 DesktopConfig 必须与它一致。 */
     private final String wsPath;
+    /** 允许跨域连接的来源列表，本地桌面端开发通常使用 *。 */
     private final String allowedOrigins;
 
     /**

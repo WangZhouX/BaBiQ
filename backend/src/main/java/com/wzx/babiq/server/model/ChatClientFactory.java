@@ -27,11 +27,15 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component
 public class ChatClientFactory {
 
+    /** Provider 注册表，负责告诉工厂当前有哪些模型提供方以及哪个处于 active 状态。 */
     private final ModelProviderRegistry registry;
+    /** provider type -> 具体构建器，例如 dashscope/openai-compatible 各有不同配置方式。 */
     private final Map<ProviderType, ProviderFactory> factoriesByType;
+    /** 每次发送给模型的最大历史消息数，避免上下文无限增长。 */
     private final int maxMessages;
 
     /** providerId -> ChatClient 缓存，同一 provider 复用短期记忆窗口。 */
+    /** providerId:modelId -> ChatClient 缓存，避免同一个模型每轮都重新创建客户端。 */
     private final Map<String, ChatClient> clientCache = new ConcurrentHashMap<>();
 
     /**

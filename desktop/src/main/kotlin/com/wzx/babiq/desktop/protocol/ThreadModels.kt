@@ -23,6 +23,13 @@ sealed interface ThreadItem {
 	val type: String
 
 	@Serializable
+	/**
+	 * 用户消息协议 item。
+	 *
+	 * @property id 后端生成的 item id。
+	 * @property type 协议类型固定为 userMessage。
+	 * @property text 用户输入文本。
+	 */
 	data class UserMessage(
 		override val id: String,
 		override val type: String = "userMessage",
@@ -30,6 +37,14 @@ sealed interface ThreadItem {
 	) : ThreadItem
 
 	@Serializable
+	/**
+	 * Agent 文本协议 item。
+	 *
+	 * @property id 后端生成的 item id。
+	 * @property type 协议类型固定为 agentMessage。
+	 * @property text 完整助手回复，通常在 turn 完成时出现。
+	 * @property textDelta 流式增量文本，UI 会追加到正在展示的助手消息里。
+	 */
 	data class AgentMessage(
 		override val id: String,
 		override val type: String = "agentMessage",
@@ -38,6 +53,13 @@ sealed interface ThreadItem {
 	) : ThreadItem
 
 	@Serializable
+	/**
+	 * 推理过程协议 item。
+	 *
+	 * @property id 后端生成的 item id。
+	 * @property type 协议类型固定为 reasoning。
+	 * @property text 后端暴露的推理/计划摘要文本。
+	 */
 	data class Reasoning(
 		override val id: String,
 		override val type: String = "reasoning",
@@ -45,6 +67,18 @@ sealed interface ThreadItem {
 	) : ThreadItem
 
 	@Serializable
+	/**
+	 * 命令执行协议 item。
+	 *
+	 * @property id 后端生成的 item id。
+	 * @property type 协议类型固定为 commandExecution。
+	 * @property command 实际执行的 shell 命令。
+	 * @property status 命令状态，例如 running/completed/failed。
+	 * @property exitCode 进程退出码，仍在运行时为空。
+	 * @property stdout 标准输出摘要。
+	 * @property stderr 标准错误摘要。
+	 * @property durationMs 命令耗时，单位毫秒。
+	 */
 	data class CommandExecution(
 		override val id: String,
 		override val type: String = "commandExecution",
@@ -57,6 +91,16 @@ sealed interface ThreadItem {
 	) : ThreadItem
 
 	@Serializable
+	/**
+	 * 文件变更协议 item。
+	 *
+	 * @property id 后端生成的 item id。
+	 * @property type 协议类型固定为 fileChange。
+	 * @property action 文件动作，例如 read/write/patch。
+	 * @property path 文件路径。
+	 * @property status 动作状态。
+	 * @property contentPreview 可选内容预览。
+	 */
 	data class FileChange(
 		override val id: String,
 		override val type: String = "fileChange",
@@ -67,6 +111,20 @@ sealed interface ThreadItem {
 	) : ThreadItem
 
 	@Serializable
+	/**
+	 * turn 结束摘要协议 item。
+	 *
+	 * @property id 后端生成的 item id。
+	 * @property type 协议类型固定为 turnSummary。
+	 * @property status turn 结束状态。
+	 * @property model 本轮实际使用的模型名。
+	 * @property promptTokens 输入 token 数。
+	 * @property completionTokens 输出 token 数。
+	 * @property totalTokens 输入和输出 token 总数。
+	 * @property toolCalls 本轮工具调用次数。
+	 * @property estimatedCostUsd 估算美元成本。
+	 * @property durationMs 本轮耗时，单位毫秒。
+	 */
 	data class TurnSummary(
 		override val id: String,
 		override val type: String = "turnSummary",
@@ -80,6 +138,13 @@ sealed interface ThreadItem {
 		val durationMs: Long = 0,
 	) : ThreadItem
 
+	/**
+	 * 未知协议 item。
+	 *
+	 * @property id 尽量从 raw 中读取的 item id。
+	 * @property type 后端传来的未知类型。
+	 * @property raw 完整原始 JSON，便于协议升级时排查。
+	 */
 	data class Unknown(
 		override val id: String,
 		override val type: String,

@@ -24,7 +24,9 @@ import java.util.concurrent.atomic.LongAdder;
 @HookPositions({HookPosition.AFTER_MODEL})
 public final class BaBiQTokenUsageHook extends ModelHook {
 
+    /** 本轮 prompt token 临时累计器；每轮模型调用前会 reset。 */
     private final LongAdder promptTokens = new LongAdder();
+    /** 本轮 completion token 临时累计器；ReActStrategy 会把它同步到 TurnObservationContext。 */
     private final LongAdder completionTokens = new LongAdder();
 
     /**

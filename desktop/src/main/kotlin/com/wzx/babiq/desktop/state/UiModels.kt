@@ -40,20 +40,38 @@ sealed interface ChatMessage {
 	/** Compose LazyColumn 用 id 来稳定列表项，避免更新时整列表闪动。 */
 	val id: String
 
-	/** 用户消息气泡。 */
+	/**
+	 * 用户消息气泡。
+	 *
+	 * @property id 列表项唯一 id。
+	 * @property text 用户输入的完整文本。
+	 */
 	data class User(
 		override val id: String,
 		val text: String,
 	) : ChatMessage
 
-	/** Agent 文本消息；streaming=true 表示来自 textDelta 的临时增量。 */
+	/**
+	 * Agent 文本消息。
+	 *
+	 * @property id 列表项唯一 id。
+	 * @property text 当前已显示的助手文本。
+	 * @property streaming true 表示来自 textDelta 的临时增量，后续 full 消息会覆盖它。
+	 */
 	data class Agent(
 		override val id: String,
 		val text: String,
 		val streaming: Boolean = false,
 	) : ChatMessage
 
-	/** 工具执行展示卡，例如 shell 命令或 MCP 调用。 */
+	/**
+	 * 工具执行展示卡，例如 shell 命令或 MCP 调用。
+	 *
+	 * @property id 列表项唯一 id。
+	 * @property title 卡片标题，通常是工具名或命令名。
+	 * @property status 工具执行状态，例如 running/completed/failed。
+	 * @property detail UI 展示的简短详情，例如命令文本、退出码或摘要。
+	 */
 	data class Tool(
 		override val id: String,
 		val title: String,
@@ -61,7 +79,15 @@ sealed interface ChatMessage {
 		val detail: String,
 	) : ChatMessage
 
-	/** 文件变更展示卡。 */
+	/**
+	 * 文件变更展示卡。
+	 *
+	 * @property id 列表项唯一 id。
+	 * @property action 文件动作，例如 read/write/patch。
+	 * @property path 被访问或修改的文件路径。
+	 * @property status 文件动作状态。
+	 * @property preview 可选内容预览，避免直接把大文件塞进聊天列表。
+	 */
 	data class FileChange(
 		override val id: String,
 		val action: String,
@@ -70,7 +96,12 @@ sealed interface ChatMessage {
 		val preview: String?,
 	) : ChatMessage
 
-	/** 一轮任务结束后的 token、耗时和成本摘要。 */
+	/**
+	 * 一轮任务结束后的 token、耗时和成本摘要。
+	 *
+	 * @property id 列表项唯一 id。
+	 * @property summary 后端 turnSummary 原始结构，渲染层会复用其中 token/cost/duration 字段。
+	 */
 	data class TurnSummary(
 		override val id: String,
 		val summary: ThreadItem.TurnSummary,
@@ -81,6 +112,11 @@ sealed interface ChatMessage {
  * 右侧运行详情面板里的事件。
  *
  * raw 保留未知 JSON，方便协议新增字段时调试，而不要求 UI 立即完全支持。
+ *
+ * @property id 运行事件唯一 id。
+ * @property title 面板列表中显示的标题。
+ * @property detail 面板列表中显示的正文摘要。
+ * @property raw 后端原始事件 JSON，主要用于调试和后续兼容新增字段。
  */
 data class RuntimeEvent(
 	val id: String,
@@ -94,6 +130,13 @@ data class RuntimeEvent(
  *
  * cwd 是真正影响后端执行边界的字段；projectName、branch、worktree 等主要用于 P1-4 UI 展示，
  * 后续 P2/P3 可以逐步接入真实项目列表和 Git 状态。
+ *
+ * @property projectName 当前项目显示名。
+ * @property cwd 后端 thread/create 使用的真实工作目录，也是工具沙箱的执行边界。
+ * @property mode 执行模式标签，当前 P1-4 固定为本地模式。
+ * @property branch Git 分支展示标签，后续会接真实 Git 状态。
+ * @property worktree worktree 标签，当前用于说明执行环境。
+ * @property permission 权限模式展示文本，例如完全访问权限。
  */
 data class WorkspaceContext(
 	val projectName: String = "BaBiQ",
@@ -106,6 +149,10 @@ data class WorkspaceContext(
 
 /**
  * UI 当前选择的 provider/model。
+ *
+ * @property providerId 后端 provider id，例如 dashscope-default。
+ * @property modelId provider 下具体模型 id；为空表示使用 provider 默认模型。
+ * @property label 给用户看的组合展示文本。
  */
 data class ProviderSelection(
 	val providerId: String = "mock-provider",
@@ -115,6 +162,11 @@ data class ProviderSelection(
 
 /**
  * Provider 下拉框所需的完整状态。
+ *
+ * @property providers 后端返回的 provider 列表。
+ * @property active 当前 UI 选中的 provider/model。
+ * @property loading true 表示正在从后端刷新模型列表。
+ * @property error 刷新或切换 provider 失败时的错误文本。
  */
 data class ProviderState(
 	val providers: List<ProviderInfo> = emptyList(),
@@ -127,6 +179,13 @@ data class ProviderState(
  * UI 内部使用的待审批模型。
  *
  * 它从协议 payload 转换而来，保留弹窗需要的字段即可。
+ *
+ * @property threadId 审批所属 thread id。
+ * @property turnId 审批所属 turn id。
+ * @property itemId 后端 approval item id，便于日志或未来多审批定位。
+ * @property toolName 触发审批的工具名。
+ * @property arguments 工具原始参数 JSON 字符串，编辑后批准会基于它修改。
+ * @property description 后端给用户看的审批说明。
  */
 data class PendingApproval(
 	val threadId: String,

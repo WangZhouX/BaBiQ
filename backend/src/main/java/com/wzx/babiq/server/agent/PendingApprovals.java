@@ -12,6 +12,7 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component
 public final class PendingApprovals {
 
+    /** threadId -> SAA HITL 暂停元数据；审批响应需要它恢复 Graph 执行。 */
     private final Map<String, InterruptionMetadata> pendingByThread = new ConcurrentHashMap<>();
 
     /**

@@ -17,6 +17,7 @@ import java.util.Map;
 public class StructuredTurnLogger {
 
     private static final Logger log = LoggerFactory.getLogger(StructuredTurnLogger.class);
+    /** turn 结构化日志的 JSON 序列化器，失败时会退回普通日志避免影响主流程。 */
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public void logSummary(TurnObservationContext context, TurnSummaryItem item) {

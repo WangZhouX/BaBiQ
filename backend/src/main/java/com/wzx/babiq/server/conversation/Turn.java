@@ -12,8 +12,11 @@ import java.time.Instant;
  */
 public final class Turn {
 
+    /** turn 全局唯一 id，前后端所有 turn/start、item、summary 事件都会引用它。 */
     private final String id;
+    /** turn 所属 thread id，用来把多轮对话归到同一个工作目录和会话上下文。 */
     private final String threadId;
+    /** turn 创建时间，后续可以用于历史排序和超时诊断。 */
     private final Instant createdAt;
     private TurnStatus status;
     private String failureReason;

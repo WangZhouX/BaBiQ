@@ -20,6 +20,7 @@ import java.util.Map;
 @Component
 public class TurnCancelHandler implements JsonRpcMethodHandler {
 
+    /** 会话服务，用来找到 turn 并把它标记为 cancelled。 */
     private final ConversationService conversationService;
 
     /**

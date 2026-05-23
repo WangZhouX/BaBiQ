@@ -20,8 +20,11 @@ import java.util.concurrent.TimeUnit;
  */
 public final class JsonRpcLogSupport {
 
+    /** 日志摘要专用 ObjectMapper，只做安全序列化，不参与业务请求反序列化。 */
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    /** 文本字段预览长度上限，避免用户长 prompt 把控制台刷屏。 */
     private static final int TEXT_PREVIEW_LIMIT = 120;
+    /** JSON 摘要长度上限，保护日志可读性并降低敏感数据泄漏面。 */
     private static final int JSON_SUMMARY_LIMIT = 280;
 
     private JsonRpcLogSupport() {

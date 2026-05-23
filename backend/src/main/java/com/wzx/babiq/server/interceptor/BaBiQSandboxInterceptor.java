@@ -42,10 +42,14 @@ public final class BaBiQSandboxInterceptor extends ToolInterceptor {
     public static final String CONTEXT_ITEM_EMITTER = "babiq.itemEmitter";
 
     private static final Logger log = LoggerFactory.getLogger(BaBiQSandboxInterceptor.class);
+    /** 解析工具调用入参，提取 path/cwd 等需要做沙箱校验的字段。 */
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    /** 会改变本地文件系统或执行命令的工具集合，只有这些工具需要写权限审批/沙箱。 */
     private static final Set<String> WRITE_TOOLS = Set.of("write_file", "exec_shell", "apply_patch");
 
+    /** agent-loop.sandbox 配置，决定当前是 workspace-only 还是更宽的本地访问模式。 */
     private final AgentLoopProperties properties;
+    /** 用于查询 thread 的 cwd，防止工具调用伪造一个不属于当前会话的工作目录。 */
     private final ConversationService conversationService;
 
     /**

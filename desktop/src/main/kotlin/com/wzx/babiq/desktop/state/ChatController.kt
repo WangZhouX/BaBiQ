@@ -20,6 +20,9 @@ import java.nio.file.Path
  *
  * Kotlin 里把这种纯配置 + 纯函数写成 data class 很常见：调用方可以在测试中注入更短的延迟，
  * 生产环境则使用默认的 1s -> 2s -> 4s -> 8s -> 10s 上限，避免后端暂时不可用时疯狂重试。
+ *
+ * @property initialDelayMs 第一次自动重连前等待多久，单位毫秒。
+ * @property maxDelayMs 指数退避允许增长到的最大等待时间，单位毫秒。
  */
 data class ReconnectPolicy(
 	val initialDelayMs: Long = 1_000,
@@ -35,6 +38,11 @@ data class ReconnectPolicy(
  * 这里刻意不让 Composable 直接调用 JSON-RPC 或改 reducer 状态：UI 只表达用户意图，
  * Controller 负责异步调用后端，Reducer 负责把协议事件折叠成稳定的 AppState。
  * 这种分层能让协议、状态和界面分别测试，也方便你学习 Kotlin 时逐层阅读。
+ *
+ * @param gateway Agent 后端访问入口，真实运行时是 AgentClient，测试时可以换成 Fake。
+ * @param scope Controller 自己启动协程的作用域，统一管理连接监听、发送请求和重连任务。
+ * @param initialState 初始 UI 状态，测试可以传入特定状态验证某个分支。
+ * @param reconnectPolicy 自动重连退避策略，避免断线时过于频繁地请求后端。
  */
 class ChatController(
 	private val gateway: AgentGateway,
@@ -42,10 +50,14 @@ class ChatController(
 	initialState: AppState = AppState.empty(),
 	private val reconnectPolicy: ReconnectPolicy = ReconnectPolicy(),
 ) {
+	// 私有可变状态流；只有 Controller/Reducer 可以写，Composable 只能读公开的 state。
 	private val _state = MutableStateFlow(initialState)
+	// 是否已经开始收集后端事件；防止多次 connect 后同一个事件被重复处理。
 	private var collectingEvents = false
+	// 当前自动重连任务；手动重连或连接成功时需要取消旧任务。
 	private var reconnectJob: Job? = null
 
+	/** 对 UI 暴露的只读状态流，Compose 会 collect 它并自动刷新界面。 */
 	val state: StateFlow<AppState> = _state
 
 	suspend fun connect() {

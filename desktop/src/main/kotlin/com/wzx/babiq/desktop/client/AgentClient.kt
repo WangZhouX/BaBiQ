@@ -61,6 +61,10 @@ interface AgentGateway {
  *
  * pending 表保存“请求 id -> 等待中的响应”，后端返回同一个 id 时再唤醒对应协程；
  * 不带 id 的 notification 则进入 events 流，由 ChatController 交给 reducer 更新界面。
+ *
+ * @param transport WebSocket 传输层，负责收发纯文本帧；AgentClient 只关心 JSON-RPC 语义。
+ * @param scope 内部 collector 使用的协程作用域，默认放在 Default 线程池。
+ * @param config 桌面端连接配置，提供请求超时等参数。
  */
 class AgentClient(
 	private val transport: AgentTransport,

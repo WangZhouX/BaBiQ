@@ -15,6 +15,7 @@ import java.util.List;
  */
 public final class PathGuard {
 
+    /** 允许写入的根目录集合；write_file/apply_patch/exec_shell 都必须落在这些目录之内。 */
     private final List<Path> writableRoots;
 
     /**

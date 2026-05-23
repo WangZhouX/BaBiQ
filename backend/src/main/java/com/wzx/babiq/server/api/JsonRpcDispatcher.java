@@ -24,7 +24,9 @@ public class JsonRpcDispatcher {
 
     private static final Logger log = LoggerFactory.getLogger(JsonRpcDispatcher.class);
 
+    /** method 名称到 handler 的索引表，例如 turn/start -> TurnStartHandler。 */
     private final Map<String, JsonRpcMethodHandler> handlers;
+    /** Jackson JSON 编解码器，负责把 params 转成 handler 需要的 Java 类型。 */
     private final ObjectMapper objectMapper;
 
     /**

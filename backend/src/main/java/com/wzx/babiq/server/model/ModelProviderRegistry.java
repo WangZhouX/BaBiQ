@@ -19,7 +19,9 @@ import java.util.concurrent.atomic.AtomicReference;
 @Component
 public class ModelProviderRegistry {
 
+    /** providerId -> Provider 配置，供后端校验 UI 选择的模型是否存在。 */
     private final Map<String, ModelProviderConfig> providersById;
+    /** 当前 UI 选中的 provider；AtomicReference 让切换操作在并发请求下保持原子可见。 */
     private final AtomicReference<String> activeProviderId;
 
     /**

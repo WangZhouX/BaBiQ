@@ -20,6 +20,7 @@ import java.util.Map;
 @Component
 public class ThreadCreateHandler implements JsonRpcMethodHandler {
 
+    /** 会话服务，负责创建 thread 并保存它绑定的工作目录 cwd。 */
     private final ConversationService conversationService;
 
     /**

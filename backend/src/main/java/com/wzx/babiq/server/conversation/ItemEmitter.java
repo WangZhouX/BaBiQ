@@ -24,9 +24,13 @@ public class ItemEmitter {
 
     private static final Logger log = LoggerFactory.getLogger(ItemEmitter.class);
 
+    /** 当前前端连接的 WebSocket 会话，所有 item/turn 通知都会通过它发回桌面端。 */
     private final WebSocketSession session;
+    /** 通知 payload 的 JSON 序列化器，保证后端事件和桌面端协议模型字段一致。 */
     private final ObjectMapper objectMapper;
+    /** 当前对话线程 id，事件 params 必须带上它，前端 reducer 才能归属到正确会话。 */
     private final String threadId;
+    /** 当前执行轮次 id，item/summary/approval 都需要用它关联到同一轮请求。 */
     private final String turnId;
 
     /**

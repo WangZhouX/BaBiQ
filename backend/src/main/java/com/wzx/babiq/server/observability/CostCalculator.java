@@ -11,9 +11,12 @@ import java.math.RoundingMode;
 @Component
 public class CostCalculator {
 
+    /** 模型计价通常按百万 token 给价格，这个常量用于把 token 数换算成价格单位。 */
     private static final BigDecimal ONE_MILLION = new BigDecimal("1000000");
+    /** 成本金额保留的小数位，8 位足够展示低成本单轮调用。 */
     private static final int MONEY_SCALE = 8;
 
+    /** 观测配置，里面维护不同模型的 prompt/completion 单价。 */
     private final ObservabilityProperties properties;
 
     public CostCalculator(ObservabilityProperties properties) {

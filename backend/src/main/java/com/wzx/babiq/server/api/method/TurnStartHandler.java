@@ -30,8 +30,11 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
 
     private static final Logger log = LoggerFactory.getLogger(TurnStartHandler.class);
 
+    /** 创建或读取 thread/turn 的内存会话服务，是 turn/start 的状态来源。 */
     private final ConversationService conversationService;
+    /** 把 JSON-RPC params 转成强类型 TurnStartParams，减少手写字段解析。 */
     private final ObjectMapper objectMapper;
+    /** 后台 turn 调度器，handler 快速返回后由它继续执行 AgentLoop。 */
     private final TurnExecutor turnExecutor;
 
     /**

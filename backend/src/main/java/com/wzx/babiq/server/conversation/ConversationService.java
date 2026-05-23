@@ -22,9 +22,12 @@ import java.util.concurrent.ConcurrentHashMap;
 @Service
 public class ConversationService {
 
+    /** id 随机后缀长度；够短便于日志阅读，同时降低本地开发时的碰撞概率。 */
     private static final int ID_RANDOM_LENGTH = 12;
 
+    /** threadId -> Thread，会话级上下文，例如 cwd 和创建时间都保存在这里。 */
     private final Map<String, Thread> threads = new ConcurrentHashMap<>();
+    /** turnId -> Turn，记录每一轮请求的状态机，供取消、审批恢复和摘要使用。 */
     private final Map<String, Turn> turns = new ConcurrentHashMap<>();
 
     /**

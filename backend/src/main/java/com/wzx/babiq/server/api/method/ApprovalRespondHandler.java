@@ -28,10 +28,15 @@ import java.util.Map;
 @Component
 public class ApprovalRespondHandler implements JsonRpcMethodHandler {
 
+    /** threadId -> HITL 暂停点，用户审批后从这里取回 InterruptionMetadata。 */
     private final PendingApprovals pendingApprovals;
+    /** 查询 turn/thread 状态，确保审批响应能找到原来的执行轮次和工作目录。 */
     private final ConversationService conversationService;
+    /** 把 JSON-RPC params 转成 ApprovalRespondParams。 */
     private final ObjectMapper objectMapper;
+    /** 审批通过或编辑后交给它恢复 AgentLoop；拒绝则直接关闭 turn。 */
     private final TurnExecutor turnExecutor;
+    /** 记录 approve/deny/edit 等审批决策指标。 */
     private final BaBiQMetrics metrics;
 
     /**

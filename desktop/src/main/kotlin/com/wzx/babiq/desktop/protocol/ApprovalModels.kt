@@ -25,6 +25,8 @@ data class ApprovalRequestPayload(
 /**
  * 桌面端提交审批结果时发送给后端的参数。
  *
+ * @property threadId 审批所属会话，后端用它找到待恢复的 HITL 暂停点。
+ * @property turnId 审批所属轮次，后端用它更新 turn 状态。
  * @property decision `approve`、`deny` 或 `edit`。
  * @property editedArgs 只有 decision 为 `edit` 时才携带修改后的工具参数。
  */

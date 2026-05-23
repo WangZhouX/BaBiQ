@@ -20,6 +20,7 @@ import java.util.Map;
 @Component
 public class ProvidersListHandler implements JsonRpcMethodHandler {
 
+    /** 模型 Provider 注册表，负责提供当前可选模型和 active 状态。 */
     private final ModelProviderRegistry registry;
 
     /**

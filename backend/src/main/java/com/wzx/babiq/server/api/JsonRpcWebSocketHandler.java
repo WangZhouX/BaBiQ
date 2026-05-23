@@ -26,7 +26,9 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
 
     private static final Logger log = LoggerFactory.getLogger(JsonRpcWebSocketHandler.class);
 
+    /** JSON-RPC 分发器，负责根据 method 找到具体业务 handler。 */
     private final JsonRpcDispatcher dispatcher;
+    /** WebSocket 文本帧与 JsonRpcMessage 之间的 Jackson 编解码器。 */
     private final ObjectMapper objectMapper;
 
     /**

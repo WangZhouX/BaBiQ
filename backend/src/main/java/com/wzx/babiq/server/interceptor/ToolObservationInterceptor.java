@@ -14,6 +14,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class ToolObservationInterceptor extends ToolInterceptor {
 
+    /** 全局工具调用指标聚合器，和每轮 TurnObservationContext 的局部统计互相补充。 */
     private final BaBiQMetrics metrics;
 
     /**

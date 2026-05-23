@@ -23,12 +23,15 @@ import kotlinx.coroutines.launch
  */
 @Composable
 fun BaBiQDesktopApp() {
+	// Controller 是 UI 的“状态和动作中枢”，remember 保证窗口重组时不会重新建连接。
 	val controller = remember {
 		ChatController(
 			gateway = AgentClient(KtorAgentTransport()),
 		)
 	}
+	// 把 StateFlow 转成 Compose State；AppState 变化后界面会自动重组。
 	val state by controller.state.collectAsState()
+	// UI 回调里启动协程，避免网络请求阻塞 Compose 主线程。
 	val scope = rememberCoroutineScope()
 
 	LaunchedEffect(controller) {

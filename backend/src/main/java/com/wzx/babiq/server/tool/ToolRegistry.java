@@ -19,7 +19,9 @@ import java.util.Optional;
 @Component
 public class ToolRegistry {
 
+    /** toolName -> BaBiQ 工具实例，Agent 执行工具调用时通过名称查找实现。 */
     private final Map<String, Tool> toolsByName;
+    /** 适配给 Spring AI 的 ToolCallback 数组，ReactAgent 只认识这一层抽象。 */
     private final ToolCallback[] callbacks;
 
     /**

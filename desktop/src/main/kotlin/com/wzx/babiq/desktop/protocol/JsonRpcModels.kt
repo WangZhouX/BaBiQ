@@ -18,6 +18,11 @@ import kotlinx.serialization.json.put
 
 /**
  * 桌面端发给后端的 JSON-RPC request。
+ *
+ * @property jsonrpc JSON-RPC 协议版本，固定为 2.0。
+ * @property id 请求 id，后端响应会带回同一个 id。
+ * @property method 后端方法名，例如 turn/start。
+ * @property params 方法参数 JSON。
  */
 @Serializable
 data class JsonRpcRequest(
@@ -29,6 +34,10 @@ data class JsonRpcRequest(
 
 /**
  * JSON-RPC 标准 error 对象。
+ *
+ * @property code 标准或业务错误码。
+ * @property message 给调用方展示或记录的错误消息。
+ * @property data 可选错误详情，通常用于调试。
  */
 @Serializable
 data class JsonRpcError(
@@ -39,6 +48,11 @@ data class JsonRpcError(
 
 /**
  * 后端对 request 的响应。
+ *
+ * @property jsonrpc JSON-RPC 协议版本，固定为 2.0。
+ * @property id 对应请求 id；notification 不会有响应，所以这里允许为空。
+ * @property result 成功响应内容。
+ * @property error 失败响应内容，和 result 二选一。
  */
 @Serializable
 data class JsonRpcResponse(
@@ -64,7 +78,12 @@ sealed interface ServerEvent {
 	/** JSON-RPC notification method 名称。 */
 	val method: String
 
-	/** 后端确认 turn 已开始。 */
+	/**
+	 * 后端确认 turn 已开始。
+	 *
+	 * @property threadId 当前会话 id。
+	 * @property turnId 后端新建的执行轮次 id。
+	 */
 	data class TurnStarted(
 		val threadId: String,
 		val turnId: String,
@@ -72,7 +91,13 @@ sealed interface ServerEvent {
 		override val method: String = "turn/started"
 	}
 
-	/** 后端新增一个 ThreadItem。 */
+	/**
+	 * 后端新增一个 ThreadItem。
+	 *
+	 * @property threadId item 所属会话。
+	 * @property turnId item 所属执行轮次。
+	 * @property item 新增的协议 item。
+	 */
 	data class ItemAdded(
 		val threadId: String,
 		val turnId: String,
@@ -81,7 +106,13 @@ sealed interface ServerEvent {
 		override val method: String = "item/added"
 	}
 
-	/** 后端更新一个已有 ThreadItem。 */
+	/**
+	 * 后端更新一个已有 ThreadItem。
+	 *
+	 * @property threadId item 所属会话。
+	 * @property turnId item 所属执行轮次。
+	 * @property item 更新后的完整协议 item。
+	 */
 	data class ItemUpdated(
 		val threadId: String,
 		val turnId: String,
@@ -90,7 +121,13 @@ sealed interface ServerEvent {
 		override val method: String = "item/updated"
 	}
 
-	/** 后端标记一个 ThreadItem 已完成。 */
+	/**
+	 * 后端标记一个 ThreadItem 已完成。
+	 *
+	 * @property threadId item 所属会话。
+	 * @property turnId item 所属执行轮次。
+	 * @property item 完成态协议 item。
+	 */
 	data class ItemCompleted(
 		val threadId: String,
 		val turnId: String,
@@ -99,7 +136,13 @@ sealed interface ServerEvent {
 		override val method: String = "item/completed"
 	}
 
-	/** 当前 turn 正常结束。 */
+	/**
+	 * 当前 turn 正常结束。
+	 *
+	 * @property threadId turn 所属会话。
+	 * @property turnId 已结束的执行轮次。
+	 * @property status 后端结束状态，例如 completed。
+	 */
 	data class TurnCompleted(
 		val threadId: String,
 		val turnId: String,
@@ -108,7 +151,13 @@ sealed interface ServerEvent {
 		override val method: String = "turn/completed"
 	}
 
-	/** 当前 turn 失败。 */
+	/**
+	 * 当前 turn 失败。
+	 *
+	 * @property threadId turn 所属会话。
+	 * @property turnId 失败的执行轮次。
+	 * @property reason 后端给出的失败原因。
+	 */
 	data class TurnFailed(
 		val threadId: String,
 		val turnId: String,
@@ -117,14 +166,23 @@ sealed interface ServerEvent {
 		override val method: String = "turn/failed"
 	}
 
-	/** 工具调用被 HITL 暂停，需要用户审批。 */
+	/**
+	 * 工具调用被 HITL 暂停，需要用户审批。
+	 *
+	 * @property request 审批请求详情，弹窗会直接读取它。
+	 */
 	data class ApprovalRequested(
 		val request: ApprovalRequestPayload,
 	) : ServerEvent {
 		override val method: String = "approval/request"
 	}
 
-	/** 未知 notification，保留原始参数用于运行详情排查。 */
+	/**
+	 * 未知 notification，保留原始参数用于运行详情排查。
+	 *
+	 * @property method 后端传来的未知 method。
+	 * @property params 原始 params JSON。
+	 */
 	data class Unknown(
 		override val method: String,
 		val params: JsonElement,
