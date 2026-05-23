@@ -27,6 +27,12 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
+/**
+ * UI 只依赖这个网关接口，不直接依赖 Ktor 或 JSON-RPC 编解码。
+ *
+ * 这是 Kotlin/Compose 项目里常用的“端口-适配器”写法：Controller 面向接口编程，
+ * 单元测试可以注入 FakeGateway，真实运行时再注入 AgentClient + KtorAgentTransport。
+ */
 interface AgentGateway {
 	val events: Flow<ServerEvent>
 
@@ -38,6 +44,12 @@ interface AgentGateway {
 	suspend fun setActiveProvider(providerId: String, modelId: String? = null): Boolean
 }
 
+/**
+ * AgentClient 负责把类型安全的方法调用翻译成 JSON-RPC 2.0 报文。
+ *
+ * pending 表保存“请求 id -> 等待中的响应”，后端返回同一个 id 时再唤醒对应协程；
+ * 不带 id 的 notification 则进入 events 流，由 ChatController 交给 reducer 更新界面。
+ */
 class AgentClient(
 	private val transport: AgentTransport,
 	private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
@@ -54,6 +66,8 @@ class AgentClient(
 		transport.connect()
 		if (!collecting) {
 			collecting = true
+			// 使用 UNDISPATCHED 让 collector 在 connect() 返回前就开始订阅。
+			// 这能避免测试或高速后端“先发响应、后启动 collector”造成的竞态。
 			scope.launch(start = CoroutineStart.UNDISPATCHED) {
 				transport.incoming.collect(::handleIncoming)
 			}
@@ -134,6 +148,7 @@ class AgentClient(
 		val deferred = CompletableDeferred<JsonRpcResponse>()
 		pending[id] = deferred
 		val request = JsonRpcRequest(id = id, method = method, params = params)
+		// 先注册 pending 再发送，确保响应即使立刻回来也能找到等待者。
 		transport.send(protocolJson.encodeToString(request))
 		val response = withTimeout(config.requestTimeout) { deferred.await() }
 		response.error?.let { error ->
@@ -146,12 +161,14 @@ class AgentClient(
 		val root = protocolJson.parseToJsonElement(text).jsonObject
 		val id = root["id"]?.jsonPrimitive?.content?.toLongOrNull()
 		if (id != null && ("result" in root || "error" in root)) {
+			// JSON-RPC response：交还给发起 request 的协程。
 			val response = protocolJson.decodeFromString(JsonRpcResponse.serializer(), text)
 			pending.remove(id)?.complete(response)
 			return
 		}
 
 		if ("method" in root) {
+			// JSON-RPC notification：没有 request/response 配对，直接作为后端事件广播。
 			_events.emit(protocolJson.decodeFromString(ServerEvent.serializer(), text))
 		}
 	}

@@ -11,6 +11,12 @@ import kotlinx.serialization.json.JsonDecoder
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 
+/**
+ * ThreadItem 镜像后端的 Thread / Turn / Item 协议模型。
+ *
+ * sealed interface 的好处是：when 分支处理 item 时，编译器能提醒我们是否漏掉已知类型；
+ * Unknown 则保留未来协议字段，避免后端新增 item 时桌面端直接崩溃。
+ */
 @Serializable(with = ThreadItemSerializer::class)
 sealed interface ThreadItem {
 	val id: String
@@ -81,6 +87,10 @@ sealed interface ThreadItem {
 	) : ThreadItem
 }
 
+/**
+ * 后端 item 用 type 字段区分具体形态，kotlinx.serialization 默认不会自动按这个字段分派。
+ * 因此这里写一个很薄的自定义 serializer：只读一次原始 JsonObject，再根据 type 选择目标 data class。
+ */
 object ThreadItemSerializer : KSerializer<ThreadItem> {
 	override val descriptor: SerialDescriptor = buildClassSerialDescriptor("ThreadItem")
 
@@ -89,12 +99,14 @@ object ThreadItemSerializer : KSerializer<ThreadItem> {
 			?: throw SerializationException("ThreadItem 只能从 JSON 解码")
 		val raw = jsonDecoder.decodeJsonElement().jsonObject
 		return when (val type = raw.requiredText("type")) {
+			// 已知 P1 类型转成强类型对象，UI 和 reducer 不需要手写 JsonObject 取字段。
 			"userMessage" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.UserMessage.serializer(), raw)
 			"agentMessage" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.AgentMessage.serializer(), raw)
 			"reasoning" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.Reasoning.serializer(), raw)
 			"commandExecution" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.CommandExecution.serializer(), raw)
 			"fileChange" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.FileChange.serializer(), raw)
 			"turnSummary" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.TurnSummary.serializer(), raw)
+			// 未知类型不丢弃，交给运行详情面板展示 raw JSON，方便后续协议扩展排查。
 			else -> ThreadItem.Unknown(
 				id = raw.optionalText("id") ?: "unknown",
 				type = type,

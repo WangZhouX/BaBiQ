@@ -15,6 +15,12 @@ import com.wzx.babiq.desktop.ui.shell.AppShell
 import com.wzx.babiq.desktop.ui.theme.BaBiQTheme
 import kotlinx.coroutines.launch
 
+/**
+ * 桌面端的组合根节点。
+ *
+ * remember 让 ChatController 在重组时保持同一个实例；collectAsState 把 StateFlow 接入 Compose。
+ * 之后 UI 的按钮回调只发意图给 Controller，真正的网络调用都放到协程里执行，避免阻塞 UI 线程。
+ */
 @Composable
 fun BaBiQDesktopApp() {
 	val controller = remember {

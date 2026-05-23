@@ -33,6 +33,7 @@ fun ApprovalDialog(
 	}
 	var editedArgs by remember { mutableStateOf(approval.arguments) }
 	LaunchedEffect(approval.itemId) {
+		// 同一个弹窗组件会被 Compose 复用；itemId 变化时重置编辑框，避免上一次审批参数残留。
 		editedArgs = approval.arguments
 	}
 
@@ -61,20 +62,20 @@ fun ApprovalDialog(
 		confirmButton = {
 			Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
 				Button(enabled = canSubmit, onClick = { onDecision("approve", null) }) {
-					Text("Approve")
+					Text("批准")
 				}
 				Button(enabled = canSubmit, onClick = { onDecision("edit", editedArgs) }) {
-					Text("Edit")
+					Text("修改后批准")
 				}
 			}
 		},
 		dismissButton = {
 			Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
 				TextButton(enabled = canSubmit, onClick = { onDecision("deny", null) }) {
-					Text("Deny")
+					Text("拒绝")
 				}
 				TextButton(enabled = false, onClick = { }) {
-					Text("Always")
+					Text("始终允许")
 				}
 			}
 		},

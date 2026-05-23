@@ -9,8 +9,12 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class ChatControllerTest {
 
 	@Test
@@ -67,14 +71,34 @@ class ChatControllerTest {
 	}
 
 	@Test
-	fun `connect 失败会进入 disconnected 并显示错误`() = runTest {
+	fun `connect 失败会进入 reconnecting 并显示错误`() = runTest {
 		val gateway = FakeGateway(connectFails = true)
 		val controller = ChatController(gateway, backgroundScope)
 
 		controller.connect()
 
-		assertEquals(ConnectionState.Disconnected, controller.state.value.connectionState)
+		assertEquals(ConnectionState.Reconnecting, controller.state.value.connectionState)
 		assertEquals("连接后端失败: boom", controller.state.value.lastError)
+	}
+
+	@Test
+	fun `connect 失败后按退避策略自动重连并保留草稿`() = runTest {
+		val gateway = FakeGateway(connectFailuresBeforeSuccess = 1)
+		val controller = ChatController(gateway, backgroundScope)
+
+		controller.connect()
+		controller.sendMessage("恢复后再发")
+
+		assertEquals(ConnectionState.Reconnecting, controller.state.value.connectionState)
+		assertEquals("恢复后再发", controller.state.value.draft)
+		assertEquals(1, gateway.calls.count { it == "connect" })
+
+		advanceTimeBy(1_001)
+		advanceUntilIdle()
+
+		assertEquals(ConnectionState.Connected, controller.state.value.connectionState)
+		assertEquals(2, gateway.calls.count { it == "connect" })
+		assertEquals("恢复后再发", controller.state.value.draft)
 	}
 
 	private fun sampleApproval() = com.wzx.babiq.desktop.protocol.ApprovalRequestPayload(
@@ -88,13 +112,17 @@ class ChatControllerTest {
 
 	private class FakeGateway(
 		private val connectFails: Boolean = false,
+		private var connectFailuresBeforeSuccess: Int = 0,
 	) : AgentGateway {
 		override val events = MutableSharedFlow<ServerEvent>()
 		val calls = mutableListOf<String>()
 
 		override suspend fun connect() {
 			calls += "connect"
-			if (connectFails) error("boom")
+			if (connectFails || connectFailuresBeforeSuccess > 0) {
+				connectFailuresBeforeSuccess = (connectFailuresBeforeSuccess - 1).coerceAtLeast(0)
+				error("boom")
+			}
 		}
 
 		override suspend fun createThread(cwd: String): String {

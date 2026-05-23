@@ -5,37 +5,56 @@ import com.wzx.babiq.desktop.protocol.ProviderInfo
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
+/**
+ * 重连退避策略是一个很小的策略对象。
+ *
+ * Kotlin 里把这种纯配置 + 纯函数写成 data class 很常见：调用方可以在测试中注入更短的延迟，
+ * 生产环境则使用默认的 1s -> 2s -> 4s -> 8s -> 10s 上限，避免后端暂时不可用时疯狂重试。
+ */
+data class ReconnectPolicy(
+	val initialDelayMs: Long = 1_000,
+	val maxDelayMs: Long = 10_000,
+) {
+	fun nextDelayAfter(previousDelayMs: Long): Long =
+		(previousDelayMs * 2).coerceAtMost(maxDelayMs)
+}
+
+/**
+ * ChatController 是 Compose UI 和 AgentGateway 之间的协调层。
+ *
+ * 这里刻意不让 Composable 直接调用 JSON-RPC 或改 reducer 状态：UI 只表达用户意图，
+ * Controller 负责异步调用后端，Reducer 负责把协议事件折叠成稳定的 AppState。
+ * 这种分层能让协议、状态和界面分别测试，也方便你学习 Kotlin 时逐层阅读。
+ */
 class ChatController(
 	private val gateway: AgentGateway,
 	private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 	initialState: AppState = AppState.empty(),
+	private val reconnectPolicy: ReconnectPolicy = ReconnectPolicy(),
 ) {
 	private val _state = MutableStateFlow(initialState)
 	private var collectingEvents = false
+	private var reconnectJob: Job? = null
 
 	val state: StateFlow<AppState> = _state
 
 	suspend fun connect() {
+		// 用户点击“重试”时应立即尝试一次，所以先取消后台自动重连任务。
+		reconnectJob?.cancel()
+		reconnectJob = null
 		applyEvent(AgentEvent.ConnectionChanged(ConnectionState.Connecting))
 		try {
-			gateway.connect()
-			applyEvent(AgentEvent.ConnectionChanged(ConnectionState.Connected))
-			startCollectingEvents()
-			loadProviders()
+			connectOnce()
 		} catch (exception: Exception) {
-			applyEvent(AgentEvent.ConnectionChanged(ConnectionState.Disconnected))
-			_state.update {
-				it.copy(
-					lastError = "连接后端失败: ${exception.message}",
-					bannerMessage = "连接后端失败: ${exception.message}",
-				)
-			}
+			handleConnectionFailure(exception)
 		}
 	}
 
@@ -176,6 +195,60 @@ class ChatController(
 
 	fun applyEvent(event: AgentEvent) {
 		_state.update { ChatReducer.reduce(it, event) }
+	}
+
+	private suspend fun connectOnce() {
+		// 一次连接尝试只做三件事：建立 WebSocket、订阅事件、读取 Provider 列表。
+		// 失败处理和重试节奏放在外层，避免这个函数同时承担太多职责。
+		gateway.connect()
+		applyEvent(AgentEvent.ConnectionChanged(ConnectionState.Connected))
+		startCollectingEvents()
+		loadProviders()
+	}
+
+	private fun handleConnectionFailure(exception: Exception) {
+		_state.update {
+			it.copy(
+				connectionState = ConnectionState.Reconnecting,
+				lastError = "连接后端失败: ${exception.message}",
+				bannerMessage = "连接后端失败: ${exception.message}",
+			)
+		}
+		scheduleReconnect()
+	}
+
+	private fun scheduleReconnect() {
+		if (reconnectJob?.isActive == true) {
+			return
+		}
+		reconnectJob = scope.launch {
+			var delayMs = reconnectPolicy.initialDelayMs
+			while (true) {
+				// 重连期间保留 messages 和 draft，只改变连接提示；这样用户输入不会因为网络波动丢失。
+				_state.update {
+					it.copy(
+						connectionState = ConnectionState.Reconnecting,
+						bannerMessage = "连接已断开，${delayMs / 1_000} 秒后自动重试",
+					)
+				}
+				delay(delayMs)
+				try {
+					connectOnce()
+					reconnectJob = null
+					return@launch
+				} catch (exception: Exception) {
+					// 这里不把 turnState 改成 Failed，因为失败的是传输连接，不一定代表后端 turn 已失败。
+					_state.update {
+						it.copy(
+							connectionState = ConnectionState.Reconnecting,
+							lastError = "连接后端失败: ${exception.message}",
+							bannerMessage = "连接后端失败: ${exception.message}",
+						)
+					}
+					delayMs = reconnectPolicy.nextDelayAfter(delayMs)
+				}
+			}
+		}
 	}
 
 	private fun startCollectingEvents() {

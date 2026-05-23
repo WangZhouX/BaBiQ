@@ -3,6 +3,12 @@ package com.wzx.babiq.desktop.state
 import com.wzx.babiq.desktop.protocol.ServerEvent
 import com.wzx.babiq.desktop.protocol.ThreadItem
 
+/**
+ * Reducer 是“事件 -> 新状态”的纯函数集合。
+ *
+ * 这里不做网络请求、不启动协程、不访问 Compose API，只根据输入 state 和 event 返回新 state。
+ * 这种模式适合聊天 UI：后端事件可能很多，但只要 reducer 稳定，界面行为就容易回归测试。
+ */
 object ChatReducer {
 
 	fun reduce(state: AppState, event: AgentEvent): AppState =
@@ -28,6 +34,7 @@ object ChatReducer {
 
 	private fun reduceServerEvent(state: AppState, event: ServerEvent): AppState =
 		when (event) {
+			// turn/started 是后端确认开始执行的信号；本地 optimistic user message 已经在 Controller 里追加。
 			is ServerEvent.TurnStarted -> state.copy(
 				currentThreadId = event.threadId,
 				currentTurnId = event.turnId,
@@ -38,6 +45,7 @@ object ChatReducer {
 			is ServerEvent.ItemAdded -> state.withItem(event.item)
 			is ServerEvent.ItemUpdated -> state.withItem(event.item)
 			is ServerEvent.ItemCompleted -> state.withItem(event.item)
+			// 审批请求会把 turn 暂停在 WaitingApproval，直到用户点 approve/deny/edit。
 			is ServerEvent.ApprovalRequested -> state.copy(
 				turnState = TurnState.WaitingApproval,
 				pendingApproval = PendingApproval.from(event.request),
@@ -74,6 +82,7 @@ object ChatReducer {
 
 	private fun AppState.withItem(item: ThreadItem): AppState =
 		when (item) {
+			// P1-3B 后端只在 turn 结束后发 turnSummary，所以主区成本条不会在 idle/running 时凭空出现。
 			is ThreadItem.TurnSummary -> copy(
 				latestSummary = item,
 				messages = messages.upsert(ChatMessage.TurnSummary(item.id, item)),
