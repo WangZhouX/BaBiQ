@@ -2,6 +2,7 @@
 
 plugins {
 	kotlin("jvm") version "2.3.21"
+	kotlin("plugin.serialization") version "2.3.21"
 	id("org.jetbrains.compose") version "1.11.0"
 	id("org.jetbrains.kotlin.plugin.compose") version "2.3.21"
 }
@@ -16,8 +17,21 @@ repositories {
 }
 
 dependencies {
+	val ktorVersion = "3.5.0"
+	val kotlinxSerializationVersion = "1.11.0"
+	val kotlinxCoroutinesVersion = "1.11.0"
+
 	implementation(compose.desktop.currentOs)
 	implementation(compose.material3)
+	implementation("io.ktor:ktor-client-core:$ktorVersion")
+	implementation("io.ktor:ktor-client-cio:$ktorVersion")
+	implementation("io.ktor:ktor-client-websockets:$ktorVersion")
+	implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:$kotlinxSerializationVersion")
+	implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:$kotlinxCoroutinesVersion")
+	implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:$kotlinxCoroutinesVersion")
+
+	testImplementation(kotlin("test"))
+	testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:$kotlinxCoroutinesVersion")
 }
 
 kotlin {
