@@ -16,7 +16,33 @@
 
 ---
 
-## 0. 阶段边界
+## 0. Java / Spring 生态优先硬门
+
+> 本阶段执行前必须先完成本节。P1-3B 不是练手重造轮子,而是在 BaBiQ 协议边界内优先复用 Java 生态、Spring AI 和 Spring AI Alibaba 的最新稳定能力。
+
+### 官方来源优先级
+
+实现任何 Agent、LLM、工具、Hook、Interceptor、Memory、HITL、观测、沙箱或协议相关能力前,先查以下官方来源:
+
+1. [Spring AI Alibaba 官方仓库](https://github.com/alibaba/spring-ai-alibaba)
+2. [Spring AI Alibaba Agent Framework 文档: Hooks 和 Interceptors](https://java2ai.com/en/docs/frameworks/agent-framework/tutorials/hooks/)
+3. [Spring AI Alibaba Agent Framework 文档: Human-in-the-Loop](https://java2ai.com/en/docs/frameworks/agent-framework/advanced/human-in-the-loop/)
+4. [Spring AI Tool Calling 官方文档](https://docs.spring.io/spring-ai/reference/api/tools.html)
+5. [Spring AI Alibaba Releases](https://github.com/alibaba/spring-ai-alibaba/releases)
+6. JDK / Java 标准库与成熟 Java 生态库文档。
+
+### P1-3B 复用决策规则
+
+- **Tool output / Spotlighting:** 先确认 Spring AI Alibaba 是否已有可直接改写工具响应或模型上下文的 `ToolInterceptor`、`ModelInterceptor`、`MessagesModelHook`、`ContextEditingInterceptor` 等能力。只有没有“直接把工具结果包成 untrusted-data”的官方能力时,才实现 `SpotlightingToolInterceptor` 和 `Spotlighter`。
+- **System prompt 安全规则:** 优先使用 `ReactAgent.builder().systemPrompt(...)` 或官方推荐的系统提示注入方式;不得绕过 ReactAgent builder 自己拼底层 message。
+- **Token / Usage:** 优先使用 Spring AI `Usage` metadata、Spring AI Alibaba Hook/Observation 能力;自写逻辑只能是薄的 turn 级汇总层。
+- **Metrics / Observability:** 先确认 Micrometer `MeterRegistry`、Spring AI observation、Spring AI Alibaba `observationRegistry(...)` 是否已经适合当前 P1 范围。若可用,`BaBiQMetrics` 应作为薄 adapter;只有引入 Actuator/Prometheus 会越过 P1 边界时,才保留内存级 fallback。
+- **HITL / limit / truncation:** 继续复用 P1-3A 已验证的 `HumanInTheLoopHook`、`ModelCallLimitHook`、`LargeResultEvictionInterceptor`,不得回退到手写阻塞审批或自写 limit/truncation。
+- 如果某项最终选择自实现,必须在计划执行记录或代码注释中写清楚:查过哪些官方能力、为什么不适配、BaBiQ 只自实现了哪一层薄封装。
+
+---
+
+## 1. 阶段边界
 
 ### 本阶段必须做
 
@@ -37,7 +63,14 @@
 
 ---
 
-## 1. 文件结构
+## 2. 文件结构
+
+### 新增文档
+
+```text
+docs/superpowers/plans/p1-3b-security-observability/
+└── official-capability-check.md      # 执行时新增:记录官方文档/官方代码/本地 jar 查证结果
+```
 
 ### 新增生产代码
 
@@ -106,7 +139,7 @@ backend/src/test/java/com/wzx/babiq/server/agent/
 
 ---
 
-## 2. Pre-flight
+## 3. Pre-flight
 
 - [ ] **Step 0.1: 确认工作树和 P1-3A 测试基线**
 
@@ -137,6 +170,46 @@ Expected:
 - `Builder` 有 `systemPrompt(String)`。
 - `ToolCallResponse` 有 `of(...)`, `error(...)`, `getResult()`, `getStatus()`, `getMetadata()`。
 
+- [ ] **Step 0.3: 官方能力查证与复用决策**
+
+执行前必须打开并检查本计划 §0 列出的官方来源,同时检查本地锁定版本 jar 中是否已有可复用实现。
+
+Run:
+
+```powershell
+cd E:\BaBiQ
+jar tf "$env:USERPROFILE\.m2\repository\com\alibaba\cloud\ai\spring-ai-alibaba-agent-framework\1.1.2.3\spring-ai-alibaba-agent-framework-1.1.2.3.jar" |
+  Select-String -Pattern "ContextEditing|MessagesModelHook|ModelInterceptor|ToolInterceptor|Observation|Prompt|PII|ToolRetry|LargeResult|ModelCallLimit"
+jar tf "$env:USERPROFILE\.m2\repository\org\springframework\ai\spring-ai-model\1.1.6\spring-ai-model-1.1.6.jar" |
+  Select-String -Pattern "Usage|Observation|ToolCallback|ToolContext"
+```
+
+Create `docs/superpowers/plans/p1-3b-security-observability/official-capability-check.md` with:
+
+```markdown
+# P1-3B 官方能力查证记录
+
+## 查证来源
+- Spring AI Alibaba 官方仓库:
+- Spring AI Alibaba Hooks / Interceptors 文档:
+- Spring AI Alibaba HITL 文档:
+- Spring AI Tool Calling 文档:
+- 本地 jar / javap:
+
+## 复用决策
+| 能力 | 官方/生态候选 | 是否复用 | 不复用原因或薄封装说明 |
+|---|---|---:|---|
+| untrusted-data 工具输出包装 |  |  |  |
+| system prompt 安全规则注入 |  |  |  |
+| token/usage 采集 |  |  |  |
+| turn metrics |  |  |  |
+| 结构化日志 |  |  |  |
+```
+
+Expected:
+- 每个自实现类都能在表格中找到“不复用官方实现”的明确理由,或被改成官方能力薄封装。
+- 若发现官方已有等价能力,必须先更新本 plan,再实现。
+
 ---
 
 ## Task 1: Spotlighting 基础能力
@@ -146,6 +219,13 @@ Expected:
 - Create: `backend/src/main/java/com/wzx/babiq/server/security/SystemPromptSecurityRule.java`
 - Test: `backend/src/test/java/com/wzx/babiq/server/security/SpotlighterTest.java`
 - Test: `backend/src/test/java/com/wzx/babiq/server/security/SystemPromptSecurityRuleTest.java`
+
+- [ ] **Step 1.0: 确认没有官方等价 Spotlighting 组件**
+
+先查看 `official-capability-check.md`:
+
+- 若 Spring AI Alibaba 已有直接支持“工具输出标记为不可信数据”的 Hook / Interceptor,优先使用官方组件,本 Task 改成 thin adapter + 测试。
+- 若只有通用 `ToolInterceptor` / `ContextEditingInterceptor` / `MessagesModelHook`,而没有等价 untrusted-data 包装,才继续实现 `Spotlighter`。
 
 - [ ] **Step 1.1: 写 SpotlighterTest**
 
@@ -238,6 +318,16 @@ git commit -m "feat(p1-3b): 增加 Spotlighting 包装和系统安全规则"
 - Create: `backend/src/main/java/com/wzx/babiq/server/interceptor/SpotlightingToolInterceptor.java`
 - Modify: `backend/src/main/java/com/wzx/babiq/server/agent/ReActStrategy.java`
 - Test: `backend/src/test/java/com/wzx/babiq/server/interceptor/SpotlightingToolInterceptorTest.java`
+
+- [ ] **Step 2.0: 复核官方 Interceptor 选择**
+
+在写自定义 `SpotlightingToolInterceptor` 前,先复核 Spring AI Alibaba 官方 Interceptor:
+
+- `ToolInterceptor` 是否仍是最小正确扩展点。
+- `ContextEditingInterceptor` 是否可以无需自写地完成同样目标。
+- 是否存在官方 Prompt Injection / Guardrail / PII Hook 可直接组合使用。
+
+决策写入 `official-capability-check.md`。若官方组件可满足 P1-3B,本 Task 改为配置官方组件和补 BaBiQ 协议测试。
 
 - [ ] **Step 2.1: 写 SpotlightingToolInterceptorTest**
 
@@ -437,6 +527,16 @@ git commit -m "feat(p1-3b): 增加 TurnSummaryItem 协议 schema"
 - Modify: `backend/src/main/resources/application.yml`
 - Test: `backend/src/test/java/com/wzx/babiq/server/observability/CostCalculatorTest.java`
 
+- [ ] **Step 5.0: 确认 Spring AI / Spring AI Alibaba 是否已有成本计算**
+
+先查 Spring AI observation、`Usage` metadata、Spring AI Alibaba observability 能力:
+
+- 如果官方已经提供 token cost 计算或价格表扩展点,优先接官方能力。
+- 如果官方只提供 token usage,没有成本价格表,则保留本 Task 的配置化 `CostCalculator`。
+- 不允许把真实厂商价格硬编码进 Java 类。
+
+决策写入 `official-capability-check.md`。
+
 - [ ] **Step 5.1: 写 CostCalculatorTest**
 
 测试:
@@ -507,6 +607,17 @@ git commit -m "feat(p1-3b): 增加配置化成本计算"
 - Test: `backend/src/test/java/com/wzx/babiq/server/observability/TurnObservationContextTest.java`
 - Test: `backend/src/test/java/com/wzx/babiq/server/observability/BaBiQMetricsTest.java`
 - Test: `backend/src/test/java/com/wzx/babiq/server/interceptor/ToolObservationInterceptorTest.java`
+
+- [ ] **Step 6.0: 优先评估 Micrometer / Observation**
+
+实现 `BaBiQMetrics` 前先查:
+
+- Spring Boot / Micrometer `MeterRegistry` 是否已经可用且不需要引入 P2 范围的 Actuator。
+- Spring AI / Spring AI Alibaba observation 是否能承载 turn duration、llm tokens、tool calls、approval decisions。
+- 如果可用,`BaBiQMetrics` 应做成 adapter,不要自建一套与 Micrometer 冲突的指标模型。
+- 如果不可用或引入成本越过 P1 边界,才使用本计划的内存级 counters fallback。
+
+决策写入 `official-capability-check.md`。
 
 - [ ] **Step 6.1: 实现 TurnObservationContext**
 
@@ -787,21 +898,23 @@ Expected:
 - [ ] **Step 10.4: AGENTS.md 同步**
 
 按根目录规则更新:
-- 当前检查点: P1-3B plan 已写;等待用户确认后才能实现。
-- 下一阶段: 用户确认后执行 P1-3B;完成后再进入 P1-4。
-- P1-3B 验收新增测试列表。
+- 当前检查点: P1-3B 安全 + 可观测已实现,并写清楚通过的测试命令和验收证据。
+- 下一阶段: 进入 P1-4 Compose Desktop UI;在写 P1-4 代码前必须先写详细 P1-4 plan 并等待用户确认。
+- 阶段边界: P1-4 负责 UI 渲染 `turnSummary`、chat、approval、provider selector;不要回头扩 P1-3B 后端范围。
+- 测试与验收: 同步 P1-3B 新增测试类、官方能力查证记录和 `clean verify` 结果。
 
 - [ ] **Step 10.5: Commit 收尾**
 
 ```powershell
 git add docs/superpowers/plans/p1-3b-security-observability AGENTS.md
-git commit -m "docs(p1-3b): 编写安全与可观测详细计划"
+git commit -m "docs(p1-3b): 同步安全与可观测验收状态"
 ```
 
 ---
 
 ## Done Criteria
 
+- [ ] `official-capability-check.md` 已记录官方仓库、官方文档、本地 jar / javap 查证结果,并解释每个自实现点为什么没有直接复用官方实现。
 - [ ] `SpotlighterTest` 证明工具输出被 `<untrusted-data>` 包裹且不能逃逸闭合标签。
 - [ ] `SystemPromptSecurityRuleTest` 证明 system prompt 有明确安全条款。
 - [ ] `SpotlightingToolInterceptorTest` 证明所有工具响应进入模型前被包装。

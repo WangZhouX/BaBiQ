@@ -33,12 +33,15 @@
 ## 执行规则
 
 1. 先读完整 `plan.md`。
-2. 使用 `superpowers:executing-plans` 或 `superpowers:subagent-driven-development` 执行。
-3. 每个 task 先写失败测试,再实现。
-4. 每个 task 完成后用中文 conventional commit。
-5. 不 push。
-6. 不进入 P1-4 UI。
-7. 完成 P1-3B 后主动更新根目录 `AGENTS.md` 当前检查点和下一阶段。
+2. 先完成 `plan.md` 中的 Java / Spring 生态优先硬门,查 Spring AI Alibaba、Spring AI 官方仓库/文档和本地 jar。
+3. 新增或修改 `official-capability-check.md`,记录哪些能力已由官方或 Java 生态提供,哪些必须由 BaBiQ 薄封装。
+4. 能复用 Spring AI Alibaba / Spring AI / Java 生态时,优先复用;不能复用时,在计划执行记录或代码注释中说明原因。
+5. 使用 `superpowers:executing-plans` 或 `superpowers:subagent-driven-development` 执行。
+6. 每个 task 先写失败测试,再实现。
+7. 每个 task 完成后用中文 conventional commit。
+8. 不 push。
+9. 不进入 P1-4 UI。
+10. 完成 P1-3B 后主动更新根目录 `AGENTS.md` 当前检查点和下一阶段。
 
 ## 最终验收命令
 
