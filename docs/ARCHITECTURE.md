@@ -693,10 +693,11 @@ public ChatClient resolve(String providerId) {
 
 ### 8.5 桌面端 UI 体现
 
-- **顶部状态栏**: 显示当前 provider 名 + model,点击下拉切换 → 触发 `model/providers/set-active`
-- **设置面板**: 列出所有 provider,支持新增 / 编辑 / 删除 / 测试连接
-- **每条消息底部**: 显示"由 xxx 模型生成"(便于多模型对比学习)
-- **可选**: 一次性把同一 prompt 发给 2-3 个 provider,并排对比输出(后期 Battle 模式)
+- **输入框上下文条**: 显示当前工作区、模式、分支、worktree、权限和 provider/model,Provider 下拉靠近输入框 → 触发 `model/providers/set-active`
+- **设置面板**: P1 只读列出 provider/model 信息,不支持新增 / 编辑 / 删除 / API Key 管理
+- **TurnSummary 反馈条**: 只在后端发出 `turnSummary` 后显示 tokens、耗时、工具次数和成本;首页/idle 状态不显示成本 chip
+- **运行详情**: 默认收起,展开后查看工具轨迹、未知协议 item 和运行摘要
+- **P2+ 才做**: Provider 编辑、连接测试、Battle 模式、KeyStore、多工作区文件 pinning
 
 ### 8.6 安全与可配置项
 
@@ -704,7 +705,7 @@ public ChatClient resolve(String providerId) {
 | --- | --- |
 | API Key 存储 | **优先环境变量**(`${VAR_NAME}`),次选用户目录加密文件(P2 加 KeyStore) |
 | 配置热加载 | P1 重启生效,P2 支持运行时 reload |
-| 连接测试 | UI 提供"测试连接"按钮 → 后端 `model/providers/test` 方法,发个 `ping` prompt |
+| 连接测试 | P2+ UI 提供"测试连接"按钮 → 后端 `model/providers/test` 方法,发个 `ping` prompt |
 | Reasoning 模型 | 配置项 `supports-reasoning: true` 时,把模型输出按 `<think>...</think>` 切成 `reasoning` Item |
 | 失败降级 | provider 调用失败时,可配置 `fallback-provider-id` 自动切换 |
 
@@ -714,8 +715,9 @@ public ChatClient resolve(String providerId) {
 | --- | --- | --- |
 | 语言 | Kotlin 2.3.21 | 主语言 |
 | UI 框架 | Compose Multiplatform 1.11.0 | 桌面 UI |
-| HTTP/WS 客户端 | Ktor Client 2.3+ | 后端通信 |
-| 序列化 | kotlinx.serialization 1.7+ | JSON |
+| HTTP/WS 客户端 | Ktor Client 3.5.0 | 后端通信 |
+| 序列化 | kotlinx.serialization 1.11.0 | JSON |
+| 协程 | kotlinx.coroutines 1.11.0 | StateFlow、异步请求、重连 |
 | 构建 | Gradle (Kotlin DSL) | 构建工具 |
 | 打包 | Compose Desktop nativeDistributions | MSI/Dmg/Deb |
 
@@ -732,11 +734,11 @@ public ChatClient resolve(String providerId) {
 - [ ] backend: 审批引擎 (三档策略)
 - [ ] backend: 沙箱 PathGuard (workspace-write)
 - [ ] backend: `model/providers/*` 协议方法
-- [ ] desktop: Compose Desktop 骨架 + ChatScreen
-- [ ] desktop: WebSocket 客户端 + 流式渲染 agentMessage
-- [ ] desktop: ApprovalDialog 弹窗
-- [ ] desktop: 顶部 Provider 切换下拉 + 设置面板
-- [ ] desktop: CommandPreview + DiffViewer 组件
+- [x] desktop: Compose Desktop 骨架 + ChatScreen
+- [x] desktop: WebSocket 客户端 + 流式渲染 agentMessage
+- [x] desktop: ApprovalDialog 弹窗
+- [x] desktop: 输入框附近 Provider 切换下拉 + 只读设置面板
+- [x] desktop: CommandPreview + DiffViewer 等价能力由 Tool / FileChange 消息卡承载
 
 **验收**: 在桌面端输入"分析 X 项目结构并写一个 README",能完整流程跑通,过程中弹审批,最终落盘文件。
 
@@ -2534,7 +2536,7 @@ ReactAgent mainAgent = ReactAgent.builder()
 |---|---|
 | 拖拽提示 | 拖入图/音/PDF 时桌面端边缘高亮 + "释放以发送" |
 | 多 part 预览 | 输入框上方显示已附加的图/音缩略图,可单独删除 |
-| Provider 切换提示 | 自动切到 vision 时,顶部状态栏短暂闪 "已切换到 qwen-vl-plus" |
+| Provider 切换提示 | 自动切到 vision 时,输入框上下文条短暂闪 "已切换到 qwen-vl-plus" |
 | 语音录制反馈 | 按住按钮录音 + 实时波形 + 自动 transcribe 后填入文本框 |
 | TTS 播放控件 | agent 回复带 🔊 图标可点播放,可配置"自动朗读" |
 

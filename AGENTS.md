@@ -39,11 +39,21 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
 - P1-3A Agent Loop 内核已实现。
 - P1-3A 验收补齐已完成。
 - P1-3B 安全 + 可观测已实现，并已通过后端全量测试。
-- P1-4 Compose Desktop UI 已完成原型、交互流程图和正式详细实现计划：
+- P1-4 Compose Desktop UI 已完成实现：
+  - 桌面端已从 skeleton 升级为 V2 Chat UI。
+  - 已实现 JSON-RPC 协议模型、Ktor WebSocket 客户端、AgentClient、AppState、ChatReducer、ChatController。
+  - 已实现聊天消息、工具/文件/TurnSummary 渲染、审批弹窗、Provider/模型下拉、只读设置页、连接断开提示和 1s-10s 自动重连。
+  - 成本只来自后端 `turnSummary`；首页/idle 状态和 `ComposerContextBar` 不展示成本 chip。
+  - Sidebar 搜索、插件、自动化只作为 P1 禁用占位，不实现真实能力。
+- P1-4 计划、原型和交互材料仍保留在：
   - `docs/superpowers/plans/p1-4-compose-desktop-ui/plan.md`
   - `docs/superpowers/plans/p1-4-compose-desktop-ui/codex-handoff.md`
   - `docs/superpowers/plans/p1-4-compose-desktop-ui/prototype/`
-- 下一步是在用户确认后，按 P1-4 详细计划进入 Compose Desktop UI 实现。
+- 已验证：
+  - `cd desktop; .\gradlew.bat test`
+  - `cd backend; .\mvnw.cmd clean verify`
+  - `cd desktop; .\gradlew.bat run --no-daemon` 已进入 `:run` 并在受控烟测中保持运行。
+- 下一步建议先做 P1 总体验收和真实 Provider 环境人工视觉复验；进入 P2 前必须先写新的详细 plan。
 
 如果仓库状态发生变化，不要盲信本检查点；必须重新核对代码、文档、测试和 `git status`。
 
@@ -60,7 +70,7 @@ P1-3B 已完成范围：
 - P1 内存级 counters: turn、tokens、tool calls、approval decisions。
 - 不引入 Actuator、Prometheus、OpenTelemetry、Langfuse UI、Lakera Guard、Dual LLM 或 OWASP 大数据集回归。
 
-P1-4 范围：
+P1-4 已完成范围：
 
 - Compose Desktop UI。
 - 消费后端已经发出的 `turnSummary`、`approval/request`、`item/added`、`turn/completed` 等协议事件。
@@ -68,6 +78,11 @@ P1-4 范围：
 - 采用用户审核通过的 V2 原型：上下文条和模型切换靠近输入框，右侧运行详情默认收起。
 - 不恢复 V1 原型，不把“文件上下文”做成独立右侧入口。
 - 不做 Provider 编辑、API Key 管理、KeyStore、多工作区文件 pinning 或 P2+ 可观测 UI。
+
+下一阶段边界：
+
+- P2 之前先做 P1 总体验收或 P2 详细 plan。
+- 未经新计划确认，不要直接引入 SQLite 持久化、KeyStore、Provider 编辑、MCP、Langfuse、Prometheus、Actuator 或多工作区 pinning。
 
 ## 4. 实现规则
 
@@ -109,6 +124,19 @@ P1-4 实现验收必须包含：
 - UI 能完成“分析 E:\BaBiQ 项目结构并写一个总结”的真实业务场景。
 - 审批弹窗、Provider/模型切换、TurnSummary 成本反馈、断线提示均可见可用。
 - 视觉对齐 V2 原型截图，不能出现文字溢出、控件重叠或 V1 旧设计回流。
+
+P1-4 当前自动化验收补充：
+
+```powershell
+cd desktop
+.\gradlew.bat test --tests "*ChatControllerTest"
+.\gradlew.bat test
+
+cd ..\backend
+.\mvnw.cmd clean verify
+```
+
+桌面启动烟测可用 `.\gradlew.bat run --no-daemon`；如果没有配置真实 Provider/API Key，只能验证窗口启动、断线/重连提示和只读 UI，真实“分析项目结构并总结”需要在可用模型环境中人工复验。
 
 没有新鲜验证证据前，不要声称完成、通过或可进入下一阶段。
 

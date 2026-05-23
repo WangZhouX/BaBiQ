@@ -27,5 +27,5 @@ p1-4-compose-desktop-ui/
 - P1-4 V2 高保真原型已完成并经用户审核，暂时没有问题。
 - P1-4 交互流程图已完成。
 - P1-4 正式详细计划已完成。
-- 尚未开始 P1-4 实现。
-- 下一步是在用户确认后，按 `plan.md` 进入 Compose Desktop UI 实现。
+- P1-4 Compose Desktop UI 代码实现已完成，并已通过桌面端测试、后端 `clean verify` 和受控桌面启动烟测。
+- 下一步建议先做 P1 总体验收；进入 P2 前先编写并确认新的详细 plan。

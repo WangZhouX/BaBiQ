@@ -11,7 +11,18 @@
 - P1-4 交互流程图已完成。
 - P1-4 正式详细实现计划已完成：
   - `E:\BaBiQ\docs\superpowers\plans\p1-4-compose-desktop-ui\plan.md`
-- 下一步可以在用户确认后进入 P1-4 Compose Desktop UI 实现。
+- P1-4 Compose Desktop UI 已完成代码实现：
+  - 桌面端入口 `BaBiQDesktopApp()` 已替换 P1-0 skeleton。
+  - 已实现协议模型、JSON-RPC client、Ktor WebSocket transport、状态 reducer/controller。
+  - 已实现 V2 shell、聊天主区、输入框上下文条、Provider/模型下拉、审批弹窗、TurnSummary、运行详情和只读设置页。
+  - 已实现连接失败后的 1s-10s 自动重连，断线期间保留草稿并禁用发送/审批。
+  - 已补充核心 Kotlin 代码中文注释，便于学习协议、协程、StateFlow、reducer 分层。
+- P1-4 已通过自动化/启动验证：
+  - `cd E:\BaBiQ\desktop; .\gradlew.bat test`
+  - `cd E:\BaBiQ\backend; .\mvnw.cmd clean verify`
+  - `cd E:\BaBiQ\desktop; .\gradlew.bat run --no-daemon` 已进入 `:run` 并在受控烟测中保持运行。
+- 真实 Provider/API Key 未在本交接中固化；如果要验收“分析 E:\BaBiQ 项目结构并写一个总结”，需要在可用模型环境中人工复验。
+- 下一步建议：先做 P1 总体验收；进入 P2 前先编写并确认新的详细 plan。
 
 ## 必读入口
 
@@ -32,10 +43,10 @@
 
 ## P1-4 实现目标摘要
 
-- 把后端已经发出的协议事件展示到 Compose Desktop UI。
-- 完成聊天、审批、Provider/模型切换、Provider 只读设置、Turn 成本反馈。
+- 已把后端已经发出的协议事件展示到 Compose Desktop UI。
+- 已完成聊天、审批、Provider/模型切换、Provider 只读设置、Turn 成本反馈。
 - 成本只来自后端 `turnSummary`；首页/idle 状态和 `ComposerContextBar` 不显示成本 chip。
-- Sidebar 的搜索、插件、自动化和首页快速操作卡在 P1-4 只允许禁用占位或隐藏。
+- Sidebar 的搜索、插件、自动化在 P1-4 只作为禁用占位；首页快速操作卡未实现，避免误导 P1 能力。
 - 使用最新稳定版：
   - Kotlin `2.3.21`
   - Compose Multiplatform `1.11.0`
@@ -46,9 +57,8 @@
 
 ## 后续规则
 
-- 实现前重新核对官方版本，禁止使用 RC/Beta/EAP。
-- 实现时按 `plan.md` 的 Task 顺序推进，并使用 TDD。
+- 进入 P2 前重新核对官方版本，禁止使用 RC/Beta/EAP。
+- 后续新阶段继续按详细 plan 的 Task 顺序推进，并使用 TDD。
 - 涉及 Compose、Ktor、kotlinx.serialization、kotlinx.coroutines 时，优先使用官方能力，不重复造轮子。
-- 完成 P1-4 后必须主动更新根目录 `AGENTS.md`、本交接文档和 master plan。
-- 完成 P1-4 后也必须同步更新 `CLAUDE.md`，不能只更新 `AGENTS.md`。
+- 完成每个阶段后必须主动更新根目录 `AGENTS.md`、`CLAUDE.md`、对应 handoff 和 master plan。
 - 用户已要求主动 commit、中文 commit、不要 push。

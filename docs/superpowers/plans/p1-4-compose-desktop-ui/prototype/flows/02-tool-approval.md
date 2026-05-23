@@ -2,7 +2,7 @@
 
 ## 目标
 
-当后端因为 HITL 触发 `approval/request` 时,桌面端弹出审批弹窗。用户可以 Approve、Deny、Always 或 Edit,桌面端调用 `approval/respond` 回写决策。
+当后端因为 HITL 触发 `approval/request` 时,桌面端弹出审批弹窗。用户可以批准、拒绝或修改后批准,桌面端调用 `approval/respond` 回写决策；“始终允许”在 P1-4 仅显示为禁用占位,不发送后端尚未承诺的 `always` 决策。
 
 ## 主流程
 
@@ -13,15 +13,15 @@ flowchart TD
     C --> D["弹出 ApprovalDialog"]
     D --> E["显示工具名、工作目录、参数、权限模式"]
     E --> F{"用户选择"}
-    F -- "Approve" --> G["approval/respond: decision=approve"]
-    F -- "Deny" --> H["approval/respond: decision=deny"]
-    F -- "Always" --> I["approval/respond: decision=always"]
-    F -- "Edit" --> J["进入参数编辑态"]
+    F -- "批准" --> G["approval/respond: decision=approve"]
+    F -- "拒绝" --> H["approval/respond: decision=deny"]
+    F -- "始终允许 (禁用占位)" --> I["不发送请求,提示 P1-4 暂未开放"]
+    F -- "修改后批准" --> J["进入参数编辑态"]
     J --> K["用户修改参数"]
     K --> L["approval/respond: decision=edit, args=修改后参数"]
     G --> M["关闭弹窗,显示工具继续执行"]
     H --> N["关闭弹窗,显示工具被拒绝"]
-    I --> M
+    I --> D
     L --> M
     M --> O["继续消费 item/added / item/updated"]
     N --> O
@@ -36,7 +36,7 @@ flowchart TD
 | 风险标签 | 当前权限策略,例如 `on-request` 或 `完全访问权限` |
 | 上下文标签 | 项目、cwd、分支、worktree |
 | 工具信息 | tool name、命令或参数 JSON |
-| 操作按钮 | `Deny`、`Edit`、`Always`、`Approve` |
+| 操作按钮 | `拒绝`、`修改后批准`、`始终允许(禁用)`、`批准` |
 
 ## 异常流程
 
@@ -55,5 +55,6 @@ flowchart TD
 ## 关键约束
 
 - `approval/request` 的 `itemId`、`threadId`、`turnId` 必须原样保留,供 `approval/respond` 使用。
-- `Edit` 只允许编辑后端暴露的工具参数;P1 不做任意脚本编辑器。
+- `修改后批准` 只允许编辑后端暴露的工具参数;P1 不做任意脚本编辑器。
+- `始终允许` 在 P1-4 不发送 `always` 决策,避免 UI 暗示不存在的协议语义。
 - 如果审批提交失败,弹窗不直接消失,要显示错误并允许用户重试或取消。

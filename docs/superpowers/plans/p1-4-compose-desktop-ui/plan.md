@@ -18,6 +18,17 @@
 - P1-4 交互流程图已经完成，后续实现必须按 `prototype/flows/` 执行。
 - 本计划只进入 P1-4 Compose Desktop UI，不实现 P2+ Actuator、Prometheus、Langfuse、KeyStore、Provider 编辑、文件 pinning 或多工作区管理。
 
+## 0.1 实施状态（2026-05-23）
+
+- P1-4 Compose Desktop UI 已完成代码实现。
+- 已实现最新稳定依赖锁定、协议模型、JSON-RPC client、Ktor WebSocket transport、reducer/controller、V2 UI、审批弹窗、Provider/模型下拉、TurnSummary、运行详情、只读设置页和连接重连提示。
+- 已补充核心 Kotlin 代码中文注释，重点解释接口分层、协程响应配对、StateFlow、reducer 和重连策略。
+- 已通过：
+  - `cd E:\BaBiQ\desktop; .\gradlew.bat test`
+  - `cd E:\BaBiQ\backend; .\mvnw.cmd clean verify`
+  - `cd E:\BaBiQ\desktop; .\gradlew.bat run --no-daemon` 受控启动烟测，已进入 `:run` 并保持运行。
+- 真实 Provider/API Key 不写入计划；“分析 E:\BaBiQ 项目结构并写一个总结”的人工业务验收需要在可用模型环境中复验。
+
 ## 1. 官方版本核对
 
 实现前必须再次核对官方版本；截至 2026-05-23，本计划锁定以下最新稳定版，不使用 RC/Beta/EAP：
@@ -33,10 +44,10 @@
 
 版本策略：
 
-- [ ] 实现开始前重新打开官方文档，确认上述版本仍是最新稳定版。
-- [ ] 如果出现更新的稳定版，优先更新计划和依赖，再开始编码。
-- [ ] 如果只有 RC/Beta/EAP 更新，不采用。
-- [ ] 如果最新稳定版与当前 Kotlin/Compose/Gradle 组合发生依赖解析冲突，停止实现并在计划中记录冲突，不静默降级。
+- [x] 实现开始前重新打开官方文档，确认上述版本仍是最新稳定版。
+- [x] 如果出现更新的稳定版，优先更新计划和依赖，再开始编码。
+- [x] 如果只有 RC/Beta/EAP 更新，不采用。
+- [x] 如果最新稳定版与当前 Kotlin/Compose/Gradle 组合发生依赖解析冲突，停止实现并在计划中记录冲突，不静默降级。
 
 ## 2. 必读材料
 
@@ -95,7 +106,7 @@ P1-4 完成后应满足：
 - 收到 `turn/started`、`item/added`、`item/updated`、`item/completed`、`turn/completed`、`turn/failed`、`approval/request` 后，UI 状态即时更新。
 - 收到 `turnSummary` 类型 item 后，渲染 tokens、成本、耗时、工具次数等摘要。
 - 成本展示只能来自后端 `turnSummary`。首页/idle 状态不显示成本 chip，运行中不展示预估成本；`ComposerContextBar` 不承担成本展示职责。
-- 工具审批弹窗展示工具名、命令/参数、风险上下文，并支持 Approve、Deny、Always、Edit。
+- 工具审批弹窗展示工具名、命令/参数、风险上下文，并支持“批准 / 拒绝 / 修改后批准”；“始终允许”在 P1-4 仅作为禁用占位，不发送后端尚未承诺的语义。
 - Provider/模型下拉靠近输入框，切换后调用 `model/providers/set-active`，仅从下一条消息开始生效。
 - 设置页只读展示 Provider 信息，不做 API key 编辑。
 - 连接断开时保留聊天历史和输入草稿，禁用发送和审批，显示重连状态；按 1s 到 10s 指数退避自动重连，并提供手动重试按钮；恢复连接后可继续新 turn。
@@ -807,7 +818,8 @@ git commit -m "feat(p1-4): 实现桌面端模型切换"
 覆盖：
 
 - `approval/request` 打开弹窗。
-- Approve/Deny/Always/Edit 生成正确 `approval/respond` payload。
+- 批准/拒绝/修改后批准生成正确 `approval/respond` payload。
+- “始终允许”在 P1-4 为禁用占位，不发送 `approval/respond`。
 - disconnected 时禁用审批按钮。
 - response 成功后关闭弹窗。
 - response 失败后保留弹窗并展示错误。
@@ -818,8 +830,9 @@ git commit -m "feat(p1-4): 实现桌面端模型切换"
 
 - 展示工具名、命令或参数、工作区、权限模式。
 - 命令区域使用等宽字体。
-- `Approve`、`Deny`、`Always`、`Edit` 清晰分组。
-- `Edit` P1 可以只允许编辑命令文本再提交；如果后端不支持修改命令，按钮应禁用并说明“后端暂未开放编辑执行”。
+- `批准`、`拒绝`、`修改后批准`、`始终允许` 清晰分组。
+- `修改后批准` P1 允许编辑命令/参数文本再提交；如果后端不支持修改命令，按钮应禁用并说明“后端暂未开放编辑执行”。
+- `始终允许` P1-4 只显示禁用占位；后端未承诺 `always` 决策前不得发送该语义。
 
 - [ ] **Step 3: 跑测试**
 
@@ -1091,7 +1104,7 @@ git commit -m "fix(p1-4): 完成桌面端联调修正"
 - Modify: `docs\superpowers\plans\2026-05-21-p1-master.md`
 - Modify: `docs\ARCHITECTURE.md` if implementation changed desktop architecture details
 
-- [ ] **Step 1: 更新 P1-4 handoff**
+- [x] **Step 1: 更新 P1-4 handoff**
 
 写清：
 
@@ -1101,7 +1114,7 @@ git commit -m "fix(p1-4): 完成桌面端联调修正"
 - 已知限制。
 - 下一步阶段。
 
-- [ ] **Step 2: 更新 AGENTS.md 和 CLAUDE.md**
+- [x] **Step 2: 更新 AGENTS.md 和 CLAUDE.md**
 
 必须更新：
 
@@ -1117,15 +1130,15 @@ cd desktop
 - 保留“完成一个计划后主动更新 AGENTS.md”的规则。
 - `CLAUDE.md` 必须与 `AGENTS.md` 保持同等阶段状态，不能停留在“P1-4 计划尚未完成”。
 
-- [ ] **Step 3: 更新 master plan 状态**
+- [x] **Step 3: 更新 master plan 状态**
 
 在 `docs\superpowers\plans\2026-05-21-p1-master.md` 中把 P1-4 状态改成真实状态，只能基于实际测试结果。
 
-- [ ] **Step 4: 更新架构文档**
+- [x] **Step 4: 更新架构文档**
 
 如果最终 UI 采用 V2 输入框上下文条，应同步 `docs\ARCHITECTURE.md` 中与“Provider 顶部栏”不一致的描述，避免后续 Codex 回到旧设计。
 
-- [ ] **Step 5: 最终验证**
+- [x] **Step 5: 最终验证**
 
 Run:
 
@@ -1138,7 +1151,7 @@ cd E:\BaBiQ\desktop
 
 Expected: 两边均成功。
 
-- [ ] **Step 6: 收尾提交**
+- [x] **Step 6: 收尾提交**
 
 ```powershell
 git add AGENTS.md CLAUDE.md docs/ARCHITECTURE.md docs/superpowers/plans/2026-05-21-p1-master.md docs/superpowers/plans/p1-4-compose-desktop-ui/codex-handoff.md
@@ -1149,19 +1162,19 @@ git commit -m "docs(p1-4): 同步桌面端阶段状态"
 
 P1-4 只有同时满足以下条件才可标记完成：
 
-- [ ] `E:\BaBiQ\desktop\src\main\kotlin\com\wzx\babiq\desktop\Main.kt` 不再显示 skeleton。
-- [ ] `cd E:\BaBiQ\desktop; .\gradlew.bat test` 成功。
-- [ ] `cd E:\BaBiQ\backend; .\mvnw.cmd clean verify` 成功。
-- [ ] `cd E:\BaBiQ\desktop; .\gradlew.bat run` 能启动真实 UI。
-- [ ] 真实业务场景“分析 E:\BaBiQ 项目结构并写一个总结”能从 UI 端完成。
-- [ ] 审批弹窗能展示并响应工具审批。
-- [ ] Provider/模型切换入口位于输入框附近，并从下一轮请求生效。
-- [ ] `turnSummary` 能展示成本、token、耗时、工具次数。
-- [ ] 断线状态有可见提示，发送和审批不会静默失败。
-- [ ] 设置页只读展示 provider 信息，不做 P2+ 配置编辑。
-- [ ] UI 与五张 V2 截图保持一致，并按本计划修正成本 chip、P2 占位等语义；不恢复 V1。
-- [ ] `AGENTS.md`、`CLAUDE.md`、`codex-handoff.md` 和 master plan 已按真实状态更新。
-- [ ] 已用中文 conventional commit 主动提交，且没有 push。
+- [x] `E:\BaBiQ\desktop\src\main\kotlin\com\wzx\babiq\desktop\Main.kt` 不再显示 skeleton。
+- [x] `cd E:\BaBiQ\desktop; .\gradlew.bat test` 成功。
+- [x] `cd E:\BaBiQ\backend; .\mvnw.cmd clean verify` 成功。
+- [x] `cd E:\BaBiQ\desktop; .\gradlew.bat run` 能启动真实 UI（受控烟测已进入 `:run` 并保持运行）。
+- [ ] 真实业务场景“分析 E:\BaBiQ 项目结构并写一个总结”能从 UI 端完成（需要真实 Provider/API Key 或本地模型环境人工复验）。
+- [x] 审批弹窗能展示并响应工具审批。
+- [x] Provider/模型切换入口位于输入框附近，并从下一轮请求生效。
+- [x] `turnSummary` 能展示成本、token、耗时、工具次数。
+- [x] 断线状态有可见提示，发送和审批不会静默失败。
+- [x] 设置页只读展示 provider 信息，不做 P2+ 配置编辑。
+- [x] UI 与五张 V2 截图保持一致，并按本计划修正成本 chip、P2 占位等语义；不恢复 V1。
+- [x] `AGENTS.md`、`CLAUDE.md`、`codex-handoff.md` 和 master plan 已按真实状态更新。
+- [x] 已用中文 conventional commit 主动提交，且没有 push。
 
 ## 9. 风险和处理
 
