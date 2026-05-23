@@ -21,6 +21,7 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
 - `backend/`：Java 21 + Spring Boot Agent Server。
 - 通信协议：WebSocket + JSON-RPC 2.0，端点为 `/ws/agent`。
 - Agent 核心：Spring AI Alibaba `ReactAgent`、本地工具、HITL 审批、沙箱、`Thread / Turn / Item` 状态模型。
+- 技术主线：后端框架以 Java 生态为主，优先使用 Spring AI Alibaba、Spring AI 及其 agent-framework 的最新稳定能力；如需升级依赖，必须先核对官方发布、兼容性和现有代码约束。
 
 ## 2. 必读上下文入口
 
@@ -75,6 +76,9 @@ P1-4 范围：
 ## 4. 实现规则
 
 - 改代码前先读代码。
+- 实现任何 Agent、LLM、工具、Hook、Interceptor、Memory、HITL、观测、沙箱或协议相关能力前，必须先查看对应的官方代码库或官方文档，优先确认 Spring AI Alibaba、Spring AI、JDK/Java 标准库或成熟 Java 生态中是否已有实现。
+- 能使用官方组件、官方扩展点或成熟 Java 库时，优先做薄封装和集成，不重复造轮子；只有官方能力缺失、与 BaBiQ 协议不匹配或引入成本过高时，才允许自实现，并在计划或代码注释中说明原因。
+- 查证顺序优先级：Spring AI Alibaba 官方仓库/文档、Spring AI 官方仓库/文档、Java/JDK 官方文档、成熟 Java 生态库；涉及版本差异时，以当前仓库锁定版本和官方最新稳定说明共同判断。
 - 优先沿用仓库现有模式，不随意创造新抽象。
 - 修改范围必须贴合当前 issue 或阶段。
 - 不做无关重构。
