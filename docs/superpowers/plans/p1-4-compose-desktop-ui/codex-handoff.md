@@ -7,8 +7,9 @@
 
 - P1-3B 安全 + 可观测已完成并通过后端 `mvn clean verify`。
 - P1-4 计划目录已创建。
-- P1-4 详细计划尚未完成。
-- P1-4 原型材料尚未放入 `prototype/`。
+- P1-4 V2 高保真原型已完成并经用户初审通过,暂时没有问题。
+- P1-4 交互流程图已完成。
+- P1-4 详细实施计划尚未完成。
 - 不允许直接开始桌面端实现;必须先补全并确认详细计划。
 
 ## 必读入口
@@ -17,7 +18,16 @@
 2. `E:\BaBiQ\docs\ARCHITECTURE.md`
 3. `E:\BaBiQ\docs\superpowers\plans\2026-05-21-p1-master.md`
 4. `E:\BaBiQ\docs\superpowers\plans\p1-4-compose-desktop-ui\prototype\README.md`
-5. `E:\BaBiQ\docs\superpowers\plans\p1-4-compose-desktop-ui\plan.md`
+5. `E:\BaBiQ\docs\superpowers\plans\p1-4-compose-desktop-ui\prototype\figma.md`
+6. `E:\BaBiQ\docs\superpowers\plans\p1-4-compose-desktop-ui\prototype\flows\README.md`
+7. `E:\BaBiQ\docs\superpowers\plans\p1-4-compose-desktop-ui\plan.md`
+
+## 原型材料入口
+
+- Figma 文件: <https://www.figma.com/design/frTp55zgrKf4NAWxn6LdI7>
+- V2 截图目录: `E:\BaBiQ\docs\superpowers\plans\p1-4-compose-desktop-ui\prototype\screens`
+- 交互流程目录: `E:\BaBiQ\docs\superpowers\plans\p1-4-compose-desktop-ui\prototype\flows`
+- 当前只保留 V2 方案,不要再参考旧版 V1。
 
 ## P1-4 目标摘要
 
@@ -27,8 +37,8 @@
 
 ## 后续规则
 
-- 先等原型材料进入 `prototype/`。
-- 原型确认后,再补全详细计划。
+- 先读取并吸收 `prototype/` 下的 V2 原型截图和 flows。
+- 原型已初审通过;下一步是补全详细计划。
 - 计划确认后,再使用 TDD/分步实现。
 - 涉及 Compose、Ktor、kotlinx.serialization 时,实现前必须查官方文档或官方示例。
 - 完成阶段后必须主动更新根目录 `AGENTS.md`。
