@@ -57,6 +57,11 @@ fun ApprovalDialog(
 				if (!canSubmit) {
 					Text("连接恢复后才能提交审批")
 				}
+				Text(
+					text = "始终允许：后端暂未开放 always 决策，P1-4 保持禁用。",
+					style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+					color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+				)
 			}
 		},
 		confirmButton = {

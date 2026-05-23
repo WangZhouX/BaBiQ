@@ -23,6 +23,8 @@
 - P1-4 Compose Desktop UI 已完成代码实现。
 - 已实现最新稳定依赖锁定、协议模型、JSON-RPC client、Ktor WebSocket transport、reducer/controller、V2 UI、审批弹窗、Provider/模型下拉、TurnSummary、运行详情、只读设置页和连接重连提示。
 - 已补充核心 Kotlin 代码中文注释，重点解释接口分层、协程响应配对、StateFlow、reducer 和重连策略。
+- 已补充 `slf4j-simple 2.0.17` runtime binding，避免桌面端 Ktor 启动时出现 SLF4J provider 缺失警告。
+- 已明确“始终允许”按钮是 P1-4 禁用占位；后端目前只支持 `approve` / `deny` / `edit`。
 - 已通过：
   - `cd E:\BaBiQ\desktop; .\gradlew.bat test`
   - `cd E:\BaBiQ\backend; .\mvnw.cmd clean verify`

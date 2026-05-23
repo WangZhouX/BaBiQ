@@ -20,6 +20,7 @@ dependencies {
 	val ktorVersion = "3.5.0"
 	val kotlinxSerializationVersion = "1.11.0"
 	val kotlinxCoroutinesVersion = "1.11.0"
+	val slf4jVersion = "2.0.17"
 
 	implementation(compose.desktop.currentOs)
 	implementation(compose.material3)
@@ -29,6 +30,7 @@ dependencies {
 	implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:$kotlinxSerializationVersion")
 	implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:$kotlinxCoroutinesVersion")
 	implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:$kotlinxCoroutinesVersion")
+	runtimeOnly("org.slf4j:slf4j-simple:$slf4jVersion")
 
 	testImplementation(kotlin("test"))
 	testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:$kotlinxCoroutinesVersion")
