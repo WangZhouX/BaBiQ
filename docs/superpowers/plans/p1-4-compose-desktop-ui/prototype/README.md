@@ -46,4 +46,14 @@ references/README.md
 - `screens/v2-04-model-picker-near-composer.png`
 - `screens/v2-05-settings-workspace-providers.png`
 
+已设计的交互流程图位于:
+
+- `flows/README.md`
+- `flows/01-send-message-and-turn-summary.md`
+- `flows/02-tool-approval.md`
+- `flows/03-provider-model-switch.md`
+- `flows/04-connection-and-reconnect.md`
+- `flows/05-runtime-details-and-cost.md`
+- `flows/06-workspace-context-bar.md`
+
 当前推荐使用 V2 方案:把项目、模式、分支、worktree、权限、模型放在输入框附近的上下文条中,不要把“文件上下文”做成独立导航页。
