@@ -24,7 +24,7 @@ import com.wzx.babiq.desktop.ui.theme.BaBiQColors
 /**
  * 单条聊天消息的渲染入口。
  *
- * TurnSummary 有专门的成本条；其它消息统一渲染为左右对齐的气泡。
+ * TurnSummary 有专门的运行反馈条；其它消息统一渲染为左右对齐的气泡。
  */
 @Composable
 fun MessageBubble(message: ChatMessage) {

@@ -5,22 +5,15 @@ import java.text.NumberFormat
 import java.util.Locale
 
 /**
- * 成本摘要条里的单个指标。
+ * 本轮运行反馈条里的单个指标。
+ *
+ * @property label 主展示文本，通常是 token 数、耗时或工具调用数。
+ * @property helper 辅助说明，帮助刚接触模型统计的读者理解这个指标来自哪里。
  */
 data class SummaryMetric(
 	val label: String,
 	val helper: String,
 )
-
-/**
- * 格式化美元成本；null 表示后端没有给出估算。
- */
-fun formatCostUsd(value: Double?): String =
-	if (value == null) {
-		"--"
-	} else {
-		"$" + "%.4f".format(Locale.US, value)
-	}
 
 /**
  * 把毫秒耗时转换为中文秒数显示。
@@ -37,7 +30,8 @@ fun ThreadItem.TurnSummary.toSummaryMetrics(): List<SummaryMetric> {
 	return listOf(
 		SummaryMetric("输入 ${integerFormat.format(promptTokens)}", "prompt tokens"),
 		SummaryMetric("输出 ${integerFormat.format(completionTokens)}", "completion tokens"),
-		SummaryMetric(formatCostUsd(estimatedCostUsd), "估算成本"),
+		// 前端只展示真实 token 用量，不再根据模型名或价格表展示估算费用。
+		SummaryMetric("总计 ${integerFormat.format(totalTokens)}", "total tokens"),
 		SummaryMetric(formatDuration(durationMs), "耗时"),
 		SummaryMetric("$toolCalls 工具", "工具调用"),
 	)

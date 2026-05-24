@@ -9,9 +9,9 @@ import kotlinx.serialization.Serializable
  * 只承载展示所需的聚合结果，不暴露 SQLite 表结构和 SQL 细节。
  *
  * @property range 本次统计窗口，合法值为 7d、30d 或 all。
- * @property totals 总量统计，例如 turn 数、token 数和估算成本。
+ * @property totals 总量统计，例如 turn 数和 token 数。
  * @property byProvider Provider 维度聚合；model 为空表示按 Provider 汇总。
- * @property byModel Provider/Model 维度聚合，适合展示模型成本排行。
+ * @property byModel Provider/Model 维度聚合，适合展示模型 token 用量排行。
  * @property byTool 工具调用维度聚合，适合展示工具次数和失败次数。
  * @property byStatus turn 状态分布，例如 COMPLETED、FAILED。
  */
@@ -32,7 +32,7 @@ data class ObservabilitySnapshotResult(
  * @property failedTurns 统计窗口内失败 turn 数。
  * @property promptTokens 输入 token 总数。
  * @property completionTokens 输出 token 总数。
- * @property estimatedCostUsd 估算美元成本；桌面端只展示，不做二次计费计算。
+ * @property estimatedCostUsd 后端兼容字段；当前桌面端不展示价格，只展示 token 用量。
  */
 @Serializable
 data class ObservabilityTotalsInfo(
@@ -44,7 +44,7 @@ data class ObservabilityTotalsInfo(
 )
 
 /**
- * Provider 或 Provider/Model 维度的成本统计。
+ * Provider 或 Provider/Model 维度的模型用量统计。
  *
  * @property providerId Provider 稳定标识，来自 turn 启动时的快照。
  * @property model 模型名；按 Provider 聚合时为空。
@@ -52,7 +52,7 @@ data class ObservabilityTotalsInfo(
  * @property failedTurns 该维度下的失败 turn 数。
  * @property promptTokens 输入 token 总数。
  * @property completionTokens 输出 token 总数。
- * @property estimatedCostUsd 该维度的估算美元成本。
+ * @property estimatedCostUsd 后端兼容字段；当前桌面端不展示价格，只展示 token 用量。
  */
 @Serializable
 data class ModelCostStatsInfo(
@@ -108,8 +108,10 @@ data class ObservabilityToolsResult(
 /**
  * observability/costs 的桌面端响应模型。
  *
+ * 方法名沿用后端协议，UI 会把它作为 Provider/Model token 聚合来展示。
+ *
  * @property range 本次统计窗口。
- * @property models Provider/Model 维度成本聚合。
+ * @property models Provider/Model 维度 token 聚合。
  */
 @Serializable
 data class ObservabilityCostsResult(

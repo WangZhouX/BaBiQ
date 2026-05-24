@@ -22,7 +22,7 @@ import com.wzx.babiq.desktop.protocol.ThreadItem
  * @property currentTurnId 当前正在执行或刚结束的 turn id，用于取消、审批和事件归属。
  * @property messages 聊天主列表里的用户消息、助手消息、工具消息和摘要消息。
  * @property runtimeEvents 运行详情抽屉里的过程事件，例如工具调用、文件变更和错误。
- * @property latestSummary 最近一轮 turnSummary，用于底部成本反馈条。
+ * @property latestSummary 最近一轮 turnSummary，用于底部运行反馈条。
  * @property pendingApproval 当前等待用户处理的工具审批请求。
  * @property bannerMessage 顶部临时提示，例如断线、重连或发送失败。
  * @property lastError 最近一次错误文本，方便设置页或调试面板展示。

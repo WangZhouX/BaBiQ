@@ -1,19 +1,12 @@
 package com.wzx.babiq.desktop.ui
 
 import com.wzx.babiq.desktop.protocol.ThreadItem
-import com.wzx.babiq.desktop.ui.runtime.formatCostUsd
 import com.wzx.babiq.desktop.ui.runtime.formatDuration
 import com.wzx.babiq.desktop.ui.runtime.toSummaryMetrics
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 class TurnSummaryFormattingTest {
-
-	@Test
-	fun `small cost keeps useful precision`() {
-		assertEquals("$0.0021", formatCostUsd(0.0021))
-		assertEquals("$0.0004", formatCostUsd(0.0004))
-	}
 
 	@Test
 	fun `duration formats milliseconds to seconds`() {
@@ -39,7 +32,8 @@ class TurnSummaryFormattingTest {
 
 		assertEquals("输入 1,824", metrics[0].label)
 		assertEquals("输出 386", metrics[1].label)
-		assertEquals("$0.0021", metrics[2].label)
+		assertEquals("总计 2,210", metrics[2].label)
+		assertEquals("total tokens", metrics[2].helper)
 		assertEquals("8.2 秒", metrics[3].label)
 		assertEquals("5 工具", metrics[4].label)
 	}

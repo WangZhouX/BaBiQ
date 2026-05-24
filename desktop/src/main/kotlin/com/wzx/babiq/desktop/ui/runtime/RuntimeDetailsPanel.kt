@@ -33,7 +33,7 @@ import com.wzx.babiq.desktop.ui.theme.BaBiQColors
 /**
  * 右侧运行详情面板。
  *
- * 它展示和聊天主区同一份状态：当前 turn 状态、最近成本摘要、实时事件，以及 P2-4 持久化后的历史运行记录。
+ * 它展示和聊天主区同一份状态：当前 turn 状态、最近运行摘要、实时事件，以及 P2-4 持久化后的历史运行记录。
  */
 @Composable
 fun RuntimeDetailsPanel(
@@ -63,14 +63,14 @@ fun RuntimeDetailsPanel(
 			state = state.runRecordState.observability,
 			onSelectRange = onSelectObservabilityRange,
 		)
-		// 成本摘要在这里作为详情复用；聊天流里的 TurnSummaryBar 仍然是主展示位置。
+		// 运行摘要在这里作为详情复用；聊天流里的 TurnSummaryBar 仍然是主展示位置。
 		state.latestSummary?.let { TurnSummaryBar(it) }
 		DetailCard("当前状态", "${state.turnState} / ${state.connectionState}")
 		state.runtimeEvents.forEach { event ->
 			DetailCard(event.title, event.detail + event.raw?.let { "\n$it" }.orEmpty())
 		}
 		if (state.runtimeEvents.isEmpty() && state.latestSummary == null) {
-			Text("暂无运行详情。完成一轮任务后，这里会显示工具轨迹和成本明细。", color = BaBiQColors.Muted)
+			Text("暂无运行详情。完成一轮任务后，这里会显示工具轨迹和 token 明细。", color = BaBiQColors.Muted)
 		}
 	}
 }
@@ -101,6 +101,8 @@ private fun ObservabilitySection(
 		state.error?.let { DetailCard("统计错误", it) }
 		state.snapshot?.let { snapshot ->
 			val totals = snapshot.totals
+			// 总 token 用输入和输出相加得到，避免 UI 依赖后端价格表或模型价格命名。
+			val totalTokens = totals.promptTokens + totals.completionTokens
 			DetailCard(
 				title = "统计总览",
 				detail = buildString {
@@ -108,14 +110,16 @@ private fun ObservabilitySection(
 					append("\n失败: ").append(totals.failedTurns)
 					append("\n输入 token: ").append(totals.promptTokens)
 					append("\n输出 token: ").append(totals.completionTokens)
-					append("\n成本: $").append("%.6f".format(totals.estimatedCostUsd))
+					append("\n总 token: ").append(totalTokens)
 				},
 			)
 			if (snapshot.byModel.isNotEmpty()) {
 				DetailCard(
-					title = "模型成本",
+					title = "模型用量",
 					detail = snapshot.byModel.take(3).joinToString("\n") { model ->
-						"${model.model ?: model.providerId ?: "未知模型"} / ${model.turns} turn / $${"%.6f".format(model.estimatedCostUsd)}"
+						// 模型维度同样只展示 token，用于排查哪类模型消耗最多上下文。
+						val modelTokens = model.promptTokens + model.completionTokens
+						"${model.model ?: model.providerId ?: "未知模型"} / ${model.turns} turn / ${modelTokens} token"
 					},
 				)
 			}

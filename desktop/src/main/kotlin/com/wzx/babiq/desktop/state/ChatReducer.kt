@@ -108,7 +108,7 @@ object ChatReducer {
 	 */
 	private fun AppState.withItem(item: ThreadItem): AppState =
 		when (item) {
-			// P1-3B 后端只在 turn 结束后发 turnSummary，所以主区成本条不会在 idle/running 时凭空出现。
+			// P1-3B 后端只在 turn 结束后发 turnSummary，所以主区运行反馈条不会在 idle/running 时凭空出现。
 			is ThreadItem.TurnSummary -> copy(
 				latestSummary = item,
 				messages = messages.upsert(ChatMessage.TurnSummary(item.id, item)),

@@ -136,7 +136,7 @@ interface AgentGateway {
 	/** 读取工具维度统计，预留给后续工具明细面板按需刷新。 */
 	suspend fun getObservabilityTools(range: String = "7d", cwd: String? = null): ObservabilityToolsResult
 
-	/** 读取 Provider/Model 成本统计，预留给后续成本面板按需刷新。 */
+	/** 读取 Provider/Model 用量统计；协议名仍叫 costs，但 UI 只展示 token 聚合。 */
 	suspend fun getObservabilityCosts(range: String = "7d", cwd: String? = null): ObservabilityCostsResult
 
 	/** 读取本地 MCP server 状态列表。 */
@@ -456,7 +456,9 @@ class AgentClient(
 	}
 
 	/**
-	 * 调用后端 `observability/costs`，读取模型成本聚合。
+	 * 调用后端 `observability/costs`，读取模型用量聚合。
+	 *
+	 * 后端方法名暂时保持兼容，桌面端不要在这里二次计算或展示价格。
 	 */
 	override suspend fun getObservabilityCosts(range: String, cwd: String?): ObservabilityCostsResult {
 		val response = request("observability/costs", observabilityParams(range, cwd))

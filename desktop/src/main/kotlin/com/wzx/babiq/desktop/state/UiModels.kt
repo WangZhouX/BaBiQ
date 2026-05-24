@@ -44,7 +44,7 @@ enum class Screen {
  * 聊天主区可渲染的消息模型。
  *
  * 它不是后端 wire item 的一比一复制，而是 UI 友好的展示模型：例如 tool/file 会变成卡片，
- * turnSummary 会变成成本反馈条。
+ * turnSummary 会变成本轮运行反馈条。
  */
 sealed interface ChatMessage {
 	/** Compose LazyColumn 用 id 来稳定列表项，避免更新时整列表闪动。 */
@@ -107,10 +107,10 @@ sealed interface ChatMessage {
 	) : ChatMessage
 
 	/**
-	 * 一轮任务结束后的 token、耗时和成本摘要。
+	 * 一轮任务结束后的 token、耗时和工具调用摘要。
 	 *
 	 * @property id 列表项唯一 id。
-	 * @property summary 后端 turnSummary 原始结构，渲染层会复用其中 token/cost/duration 字段。
+	 * @property summary 后端 turnSummary 原始结构，渲染层会复用其中 token、duration、toolCalls 字段。
 	 */
 	data class TurnSummary(
 		override val id: String,
@@ -163,7 +163,7 @@ data class RunRecordState(
  * 运行详情面板里的本地可观测统计状态。
  *
  * 这部分统计和单个 turn 详情不同：它按当前工作目录汇总 SQLite 历史记录，
- * 用于让用户快速看到最近 7 天、30 天或全部范围内的运行规模、失败数和成本。
+ * 用于让用户快速看到最近 7 天、30 天或全部范围内的运行规模、失败数和 token 用量。
  *
  * @property loading true 表示正在请求 observability/snapshot。
  * @property range 当前统计窗口，合法值为 7d、30d 或 all。
