@@ -5,6 +5,7 @@ import com.wzx.babiq.desktop.protocol.ApprovalRespondParams
 import com.wzx.babiq.desktop.protocol.JsonRpcRequest
 import com.wzx.babiq.desktop.protocol.JsonRpcResponse
 import com.wzx.babiq.desktop.protocol.ProviderListResult
+import com.wzx.babiq.desktop.protocol.SandboxPolicyResult
 import com.wzx.babiq.desktop.protocol.ServerEvent
 import com.wzx.babiq.desktop.protocol.SetActiveProviderParams
 import com.wzx.babiq.desktop.protocol.protocolJson
@@ -51,6 +52,9 @@ interface AgentGateway {
 
 	/** 读取后端当前可用 Provider/Model 列表。 */
 	suspend fun listProviders(): ProviderListResult
+
+	/** 读取后端真实沙箱/权限策略，用于输入框上下文条展示权限 chip。 */
+	suspend fun getSandboxPolicy(): SandboxPolicyResult
 
 	/** 设置后端当前激活 Provider/Model，下一轮 turn 生效。 */
 	suspend fun setActiveProvider(providerId: String, modelId: String? = null): Boolean
@@ -156,6 +160,14 @@ class AgentClient(
 	override suspend fun listProviders(): ProviderListResult {
 		val response = request("model/providers/list", buildJsonObject {})
 		return protocolJson.decodeFromJsonElement(ProviderListResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 拉取后端当前沙箱策略，避免前端写死“完全访问权限”。
+	 */
+	override suspend fun getSandboxPolicy(): SandboxPolicyResult {
+		val response = request("sandbox/policy", buildJsonObject {})
+		return protocolJson.decodeFromJsonElement(SandboxPolicyResult.serializer(), response.requireResult())
 	}
 
 	/**

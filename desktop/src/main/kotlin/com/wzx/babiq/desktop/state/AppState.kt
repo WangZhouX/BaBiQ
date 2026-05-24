@@ -11,7 +11,7 @@ import com.wzx.babiq.desktop.protocol.ThreadItem
  * @property screen 当前主区域展示哪个页面，例如聊天页或设置页。
  * @property connectionState 桌面端与后端 WebSocket 的连接状态。
  * @property turnState 当前 turn 的生命周期状态，决定发送、取消、审批按钮是否可用。
- * @property workspace 当前工作区上下文，包含 cwd、分支、权限模式等输入框上下文条信息。
+ * @property workspace 当前工作区上下文，包含 cwd 和后端返回的权限模式等输入框上下文条信息。
  * @property providerState 后端可用模型列表、当前选中模型以及加载/错误状态。
  * @property currentThreadId 后端 thread id；为空表示还没有为当前工作区创建会话。
  * @property currentTurnId 当前正在执行或刚结束的 turn id，用于取消、审批和事件归属。

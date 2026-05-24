@@ -1,6 +1,7 @@
 package com.wzx.babiq.desktop.client
 
 import com.wzx.babiq.desktop.protocol.JsonRpcRequest
+import com.wzx.babiq.desktop.protocol.SandboxPolicyResult
 import com.wzx.babiq.desktop.protocol.ServerEvent
 import com.wzx.babiq.desktop.protocol.protocolJson
 import kotlin.test.Test
@@ -97,6 +98,20 @@ class AgentClientTest {
 	}
 
 	@Test
+	fun `getSandboxPolicy 拉取后端权限策略`() = runTest {
+		val transport = FakeAgentTransport()
+		val client = AgentClient(transport, backgroundScope)
+		client.connect()
+
+		val policy: SandboxPolicyResult = client.getSandboxPolicy()
+
+		val request = transport.sent.single()
+		assertEquals("sandbox/policy", request.method)
+		assertEquals("DANGER_FULL_ACCESS", policy.mode)
+		assertEquals("完全访问权限", policy.label)
+	}
+
+	@Test
 	fun `json rpc error 会转成 AgentClientException`() = runTest {
 		val transport = FakeAgentTransport(errorMethods = setOf("thread/create"))
 		val client = AgentClient(transport, backgroundScope)
@@ -172,6 +187,10 @@ class AgentClientTest {
 					)
 				}
 				"model/providers/set-active" -> buildJsonObject { put("ok", true) }
+				"sandbox/policy" -> buildJsonObject {
+					put("mode", "DANGER_FULL_ACCESS")
+					put("label", "完全访问权限")
+				}
 				else -> buildJsonObject { put("ok", true) }
 			}
 			return protocolJson.encodeToString(

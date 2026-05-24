@@ -129,14 +129,18 @@ data class RuntimeEvent(
  * 当前工作区上下文。
  *
  * cwd 是真正影响后端执行边界的字段；projectName 来自当前目录名，用于 UI 展示。
- * 分支、权限模式等扩展信息暂未接真实数据，因此当前不放进状态模型，避免误导用户。
+ * permissionMode/permissionLabel 来自后端 sandbox/policy，不再由前端写死。
  *
  * @property projectName 当前项目显示名。
  * @property cwd 后端 thread/create 使用的真实工作目录，也是工具沙箱的执行边界。
+ * @property permissionMode 后端真实沙箱模式，例如 DANGER_FULL_ACCESS；未连接前为空。
+ * @property permissionLabel 用户可读权限文案，例如“完全访问权限”；未连接前为空。
  */
 data class WorkspaceContext(
 	val projectName: String = "BaBiQ",
 	val cwd: String = "E:\\BaBiQ",
+	val permissionMode: String? = null,
+	val permissionLabel: String? = null,
 )
 
 /**

@@ -40,6 +40,10 @@ fun SettingsPanel(
 		SettingsCard("工作区") {
 			Text("项目: ${state.workspace.projectName}")
 			Text("路径: ${state.workspace.cwd}")
+			state.workspace.permissionLabel?.let { label ->
+				// 权限展示来自后端 sandbox/policy，和输入框上下文条保持同源。
+				Text("权限: $label")
+			}
 			Button(
 				enabled = state.canSwitchWorkspace,
 				onClick = {

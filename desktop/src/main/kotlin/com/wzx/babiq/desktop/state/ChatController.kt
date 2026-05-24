@@ -257,12 +257,13 @@ class ChatController(
 	}
 
 	private suspend fun connectOnce() {
-		// 一次连接尝试只做三件事：建立 WebSocket、订阅事件、读取 Provider 列表。
+		// 一次连接尝试只做四件事：建立 WebSocket、订阅事件、读取 Provider 列表、读取权限策略。
 		// 失败处理和重试节奏放在外层，避免这个函数同时承担太多职责。
 		gateway.connect()
 		applyEvent(AgentEvent.ConnectionChanged(ConnectionState.Connected))
 		startCollectingEvents()
 		loadProviders()
+		loadSandboxPolicy()
 	}
 
 	private fun handleConnectionFailure(exception: Exception) {
@@ -342,6 +343,27 @@ class ChatController(
 					providerState = it.providerState.copy(loading = false, error = exception.message),
 				)
 			}
+		}
+	}
+
+	/**
+	 * 从后端读取真实沙箱权限，并写入工作区上下文。
+	 *
+	 * 权限 chip 只是辅助信息，拉取失败不应该让 WebSocket 连接失败；因此这里仅记录错误。
+	 */
+	private suspend fun loadSandboxPolicy() {
+		try {
+			val policy = gateway.getSandboxPolicy()
+			_state.update {
+				it.copy(
+					workspace = it.workspace.copy(
+						permissionMode = policy.mode,
+						permissionLabel = policy.label,
+					),
+				)
+			}
+		} catch (exception: Exception) {
+			_state.update { it.copy(lastError = exception.message) }
 		}
 	}
 

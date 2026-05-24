@@ -2,6 +2,7 @@ package com.wzx.babiq.desktop.state
 
 import com.wzx.babiq.desktop.client.AgentGateway
 import com.wzx.babiq.desktop.protocol.ProviderListResult
+import com.wzx.babiq.desktop.protocol.SandboxPolicyResult
 import com.wzx.babiq.desktop.protocol.ServerEvent
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -25,10 +26,25 @@ class ChatControllerTest {
 
 		controller.sendMessage("分析项目")
 
-		assertEquals(listOf("connect", "listProviders", "createThread:E:\\BaBiQ", "startTurn:thread-1:分析项目:null"), gateway.calls)
+		assertEquals(
+			listOf("connect", "listProviders", "getSandboxPolicy", "createThread:E:\\BaBiQ", "startTurn:thread-1:分析项目:null"),
+			gateway.calls,
+		)
 		assertEquals("thread-1", controller.state.value.currentThreadId)
 		assertEquals("turn-1", controller.state.value.currentTurnId)
 		assertTrue(controller.state.value.messages.any { it is ChatMessage.User && it.text == "分析项目" })
+	}
+
+	@Test
+	fun `connect 成功后拉取后端权限策略并更新工作区权限展示`() = runTest {
+		val gateway = FakeGateway(policy = SandboxPolicyResult("DANGER_FULL_ACCESS", "完全访问权限"))
+		val controller = ChatController(gateway, backgroundScope)
+
+		controller.connect()
+
+		assertEquals(listOf("connect", "listProviders", "getSandboxPolicy"), gateway.calls)
+		assertEquals("DANGER_FULL_ACCESS", controller.state.value.workspace.permissionMode)
+		assertEquals("完全访问权限", controller.state.value.workspace.permissionLabel)
 	}
 
 	@Test
@@ -155,6 +171,7 @@ class ChatControllerTest {
 	private class FakeGateway(
 		private val connectFails: Boolean = false,
 		private var connectFailuresBeforeSuccess: Int = 0,
+		private val policy: SandboxPolicyResult = SandboxPolicyResult("WORKSPACE_WRITE", "工作区可写"),
 	) : AgentGateway {
 		override val events = MutableSharedFlow<ServerEvent>()
 		val calls = mutableListOf<String>()
@@ -185,6 +202,11 @@ class ChatControllerTest {
 		override suspend fun listProviders(): ProviderListResult {
 			calls += "listProviders"
 			return ProviderListResult()
+		}
+
+		override suspend fun getSandboxPolicy(): SandboxPolicyResult {
+			calls += "getSandboxPolicy"
+			return policy
 		}
 
 		override suspend fun setActiveProvider(providerId: String, modelId: String?): Boolean {
