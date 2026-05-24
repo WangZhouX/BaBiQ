@@ -39,8 +39,9 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
 
 1. `docs/ARCHITECTURE.md`
 2. `docs/superpowers/plans/2026-05-21-p1-master.md`
-3. 当前阶段的 `docs/superpowers/plans/p1-*/plan.md`
-4. 当前阶段的 `docs/superpowers/plans/p1-*/codex-handoff.md`
+3. `docs/superpowers/plans/p2-master.md`
+4. 当前阶段的 `docs/superpowers/plans/p2-*/plan.md`
+5. 当前阶段的 `docs/superpowers/plans/p2-*/codex-handoff.md`
 
 **当前检查点（截至 2026-05-23）：**
 
@@ -62,11 +63,16 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
   - `docs/superpowers/plans/p1-4-compose-desktop-ui/plan.md`
   - `docs/superpowers/plans/p1-4-compose-desktop-ui/codex-handoff.md`
   - `docs/superpowers/plans/p1-4-compose-desktop-ui/prototype/`
+- P2 master plan 已创建：
+  - `docs/superpowers/plans/p2-master.md`
+  - P2 技术主线为 SQLite + MyBatis-Plus + Flyway/migration + Java 常见分层结构。
+  - P2 必须先走 `P2-0 P1 总体验收和收口`，再进入 `P2-1 SQLite + MyBatis-Plus 持久化底座`。
+  - P2 子计划必须逐个编写、用户确认、再实现；不要直接从 master plan 跳到代码。
 - 已验证：
   - `cd desktop; .\gradlew.bat test`
   - `cd backend; .\mvnw.cmd clean verify`
   - `cd desktop; .\gradlew.bat run --no-daemon` 已进入 `:run` 并在受控烟测中保持运行。
-- **下一步**：先做 P1 总体验收和真实 Provider 环境人工视觉复验；进入 P2 前必须先写新的详细 plan。
+- **下一步**：先写 `docs/superpowers/plans/p2-0-final-acceptance/plan.md`，做 P1 总体验收和真实 Provider 环境人工视觉复验；P2-0 通过后再写 P2-1 详细计划。
 
 如果仓库状态已发生变化，不要盲信本检查点；必须重新核对代码、文档、测试和 `git status`。
 
@@ -105,8 +111,10 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
 
 **下一阶段边界：**
 
-- P2 之前先做 P1 总体验收或 P2 详细 plan。
-- 未经新计划确认，不要直接引入 SQLite 持久化、KeyStore、Provider 编辑、MCP、Langfuse、Prometheus、Actuator 或多工作区 pinning。
+- P2 master plan 已存在，但 P2 实现尚未开始。
+- 先做 P2-0 P1 总体验收和收口；P2-0 通过后再进入 P2-1 SQLite + MyBatis-Plus 持久化。
+- 未经对应 P2 子计划确认，不要直接引入 SQLite 持久化、KeyStore/SecretStore、Provider 编辑、MCP、Actuator、Prometheus、Langfuse、OpenTelemetry 或多工作区 pinning。
+- P2 范围内 SQLite 使用 MyBatis-Plus 和 Java 常见分层，但 Agent 核心不得直接依赖 Mapper；必须通过 repository/adapter 隔离。
 
 ---
 
