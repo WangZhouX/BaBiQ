@@ -40,8 +40,6 @@ fun SettingsPanel(
 		SettingsCard("工作区") {
 			Text("项目: ${state.workspace.projectName}")
 			Text("路径: ${state.workspace.cwd}")
-			Text("模式: ${state.workspace.mode}")
-			Text("权限: ${state.workspace.permission}")
 			Button(
 				enabled = state.canSwitchWorkspace,
 				onClick = {

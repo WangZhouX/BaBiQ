@@ -7,15 +7,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.wzx.babiq.desktop.state.AppState
-import com.wzx.babiq.desktop.ui.common.BadgeTone
 import com.wzx.babiq.desktop.ui.common.StatusBadge
 import com.wzx.babiq.desktop.ui.common.chooseWorkspaceDirectory
 
 /**
  * 输入框上下文条。
  *
- * 它展示本轮任务将使用的执行边界：工作目录、模式、分支、worktree、权限和模型。
- * P1-4 中只有目录和模型是真实可切换能力，其余先作为上下文展示。
+ * 它只展示当前已经接入真实数据的上下文：工作目录和模型。
+ * 分支、权限模式等扩展信息待后续真正接入后再恢复，避免展示死数据。
  */
 @Composable
 fun ComposerContextBar(
@@ -36,10 +35,6 @@ fun ComposerContextBar(
 				chooseWorkspaceDirectory(state.workspace.cwd)?.let(onSelectWorkspace)
 			},
 		)
-		StatusBadge(state.workspace.mode)
-		StatusBadge("⑂ ${state.workspace.branch}")
-		StatusBadge(state.workspace.worktree)
-		StatusBadge(state.workspace.permission, BadgeTone.Warning)
 		ProviderSelector(
 			providerState = state.providerState,
 			onSelectProvider = onSelectProvider,

@@ -128,23 +128,15 @@ data class RuntimeEvent(
 /**
  * 当前工作区上下文。
  *
- * cwd 是真正影响后端执行边界的字段；projectName、branch、worktree 等主要用于 P1-4 UI 展示，
- * 后续 P2/P3 可以逐步接入真实项目列表和 Git 状态。
+ * cwd 是真正影响后端执行边界的字段；projectName 来自当前目录名，用于 UI 展示。
+ * 分支、权限模式等扩展信息暂未接真实数据，因此当前不放进状态模型，避免误导用户。
  *
  * @property projectName 当前项目显示名。
  * @property cwd 后端 thread/create 使用的真实工作目录，也是工具沙箱的执行边界。
- * @property mode 执行模式标签，当前 P1-4 固定为本地模式。
- * @property branch Git 分支展示标签，后续会接真实 Git 状态。
- * @property worktree worktree 标签，当前用于说明执行环境。
- * @property permission 权限模式展示文本，例如完全访问权限。
  */
 data class WorkspaceContext(
 	val projectName: String = "BaBiQ",
 	val cwd: String = "E:\\BaBiQ",
-	val mode: String = "本地模式",
-	val branch: String = "master",
-	val worktree: String = "worktree",
-	val permission: String = "完全访问权限",
 )
 
 /**
