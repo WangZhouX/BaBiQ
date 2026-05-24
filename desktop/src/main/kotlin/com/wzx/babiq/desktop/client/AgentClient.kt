@@ -7,6 +7,10 @@ import com.wzx.babiq.desktop.protocol.ApprovalPolicyResult
 import com.wzx.babiq.desktop.protocol.ApprovalPolicySetParams
 import com.wzx.babiq.desktop.protocol.JsonRpcRequest
 import com.wzx.babiq.desktop.protocol.JsonRpcResponse
+import com.wzx.babiq.desktop.protocol.McpServerRefreshParams
+import com.wzx.babiq.desktop.protocol.McpServerRefreshResult
+import com.wzx.babiq.desktop.protocol.McpServersListResult
+import com.wzx.babiq.desktop.protocol.McpToolsListResult
 import com.wzx.babiq.desktop.protocol.ObservabilityCostsResult
 import com.wzx.babiq.desktop.protocol.ObservabilitySnapshotResult
 import com.wzx.babiq.desktop.protocol.ObservabilityToolsResult
@@ -134,6 +138,15 @@ interface AgentGateway {
 
 	/** 读取 Provider/Model 成本统计，预留给后续成本面板按需刷新。 */
 	suspend fun getObservabilityCosts(range: String = "7d", cwd: String? = null): ObservabilityCostsResult
+
+	/** 读取本地 MCP server 状态列表。 */
+	suspend fun listMcpServers(): McpServersListResult
+
+	/** 读取指定 MCP server 的工具列表。 */
+	suspend fun listMcpTools(serverId: String): McpToolsListResult
+
+	/** 手动刷新指定 MCP server 的连接和工具目录。 */
+	suspend fun refreshMcpServer(serverId: String): McpServerRefreshResult
 }
 
 /**
@@ -448,6 +461,36 @@ class AgentClient(
 	override suspend fun getObservabilityCosts(range: String, cwd: String?): ObservabilityCostsResult {
 		val response = request("observability/costs", observabilityParams(range, cwd))
 		return protocolJson.decodeFromJsonElement(ObservabilityCostsResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `mcp/servers/list`，读取本地 MCP server 状态。
+	 */
+	override suspend fun listMcpServers(): McpServersListResult {
+		val response = request("mcp/servers/list", buildJsonObject {})
+		return protocolJson.decodeFromJsonElement(McpServersListResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `mcp/tools/list`，读取某个 server 的工具目录。
+	 */
+	override suspend fun listMcpTools(serverId: String): McpToolsListResult {
+		val response = request("mcp/tools/list", buildJsonObject { put("serverId", serverId) })
+		return protocolJson.decodeFromJsonElement(McpToolsListResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `mcp/servers/refresh`，手动重连并刷新工具列表。
+	 */
+	override suspend fun refreshMcpServer(serverId: String): McpServerRefreshResult {
+		val response = request(
+			method = "mcp/servers/refresh",
+			params = protocolJson.encodeToJsonElement(
+				McpServerRefreshParams.serializer(),
+				McpServerRefreshParams(serverId),
+			),
+		)
+		return protocolJson.decodeFromJsonElement(McpServerRefreshResult.serializer(), response.requireResult())
 	}
 
 	/**

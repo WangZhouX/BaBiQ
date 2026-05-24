@@ -2,6 +2,8 @@ package com.wzx.babiq.desktop.state
 
 import com.wzx.babiq.desktop.protocol.ApprovalRequestPayload
 import com.wzx.babiq.desktop.protocol.AppSettingsResult
+import com.wzx.babiq.desktop.protocol.McpServerInfo
+import com.wzx.babiq.desktop.protocol.McpToolInfo
 import com.wzx.babiq.desktop.protocol.ObservabilitySnapshotResult
 import com.wzx.babiq.desktop.protocol.ProviderInfo
 import com.wzx.babiq.desktop.protocol.ProviderSaveParams
@@ -35,6 +37,7 @@ enum class TurnState {
 enum class Screen {
 	Chat,
 	Settings,
+	Mcp,
 }
 
 /**
@@ -296,6 +299,27 @@ data class SettingsState(
 	val saving: Boolean = false,
 	val settings: AppSettingsResult? = null,
 	val providerDraft: ProviderEditorState = ProviderEditorState(),
+	val error: String? = null,
+	val notice: String? = null,
+)
+
+/**
+ * 本地 MCP 页面状态。
+ *
+ * P2-6 只做只读展示和手动刷新，不允许用户在 UI 中输入任意 command 后立即启动外部进程。
+ *
+ * @property loading true 表示正在读取 mcp/servers/list 或 mcp/tools/list。
+ * @property refreshingServerId 当前正在手动刷新的 server；为空表示没有刷新动作。
+ * @property servers 后端配置中的 MCP server 状态列表。
+ * @property toolsByServer serverId -> 工具列表。
+ * @property error 最近一次读取或刷新失败原因。
+ * @property notice 最近一次成功提示。
+ */
+data class McpState(
+	val loading: Boolean = false,
+	val refreshingServerId: String? = null,
+	val servers: List<McpServerInfo> = emptyList(),
+	val toolsByServer: Map<String, List<McpToolInfo>> = emptyMap(),
 	val error: String? = null,
 	val notice: String? = null,
 )

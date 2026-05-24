@@ -14,6 +14,7 @@ import com.wzx.babiq.desktop.protocol.ThreadItem
  * @property workspace 当前工作区上下文，包含 cwd 和后端返回的权限模式等输入框上下文条信息。
  * @property providerState 后端可用模型列表、当前选中模型以及加载/错误状态。
  * @property settingsState 设置页需要的本地设置快照、保存状态和表单草稿。
+ * @property mcpState 本地 MCP server 状态和工具列表。
  * @property threadHistory Sidebar 最近会话列表的真实后端数据。
  * @property runRecordState 右侧运行详情面板读取到的持久化 turn、审批、工具调用和恢复报告。
  * @property currentThreadId 后端 thread id；为空表示还没有为当前工作区创建会话。
@@ -35,6 +36,7 @@ data class AppState(
 	val workspace: WorkspaceContext = WorkspaceContext(),
 	val providerState: ProviderState = ProviderState(),
 	val settingsState: SettingsState = SettingsState(),
+	val mcpState: McpState = McpState(),
 	val threadHistory: ThreadHistoryState = ThreadHistoryState(),
 	val runRecordState: RunRecordState = RunRecordState(),
 	val currentThreadId: String? = null,

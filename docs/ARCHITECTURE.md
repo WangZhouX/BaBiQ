@@ -1,8 +1,17 @@
 # BaBiQ 架构设计文档
 
 > 一个对标 OpenAI Codex 桌面端、基于 Spring AI Alibaba 的通用 AI Agent 学习项目。
-> 文档版本: v0.1 (2026-05-21)
-> 状态: **架构草案**(实施前会再迭代,以 brainstorming + writing-plans 产出的最终版为准)
+> 文档版本: v0.2 (2026-05-24)
+> 状态: **P2 已实现快照 + 后续架构草案**。P2 已按 `docs/superpowers/plans/p2-master.md` 完成，P3+ 内容仍需新计划确认后实施。
+
+## 0. 当前实现快照
+
+截至 2026-05-24，BaBiQ 已完成 P1 和 P2:
+
+- P1 已完成 WebSocket + JSON-RPC、Thread / Turn / Item、ReactAgent 主循环、本地工具、HITL 审批、沙箱、Spotlighting、TurnSummary 和 Compose Desktop V2 UI。
+- P2 已完成 SQLite + MyBatis-Plus + Flyway 持久化、多会话历史、Provider/API Key/沙箱/审批设置、运行记录、本地统计和本地 stdio MCP Client 最小接入。
+- 当前 MCP 仅支持本地 stdio client，不实现 MCP server、远程 MCP、OAuth 或插件市场。
+- 下一阶段进入 P3 或后续能力前，必须先做 P2 总体验收复盘，并编写新的详细计划。
 
 ---
 
@@ -535,6 +544,9 @@ turn/start
 | 模型 | **多 Provider 可配置(DashScope / DeepSeek / OpenAI 兼容中转 / Ollama 本地)** | LLM 调用 |
 | WebSocket | spring-boot-starter-websocket | 通信 |
 | JSON | Jackson | 序列化 |
+| 本地数据库 | SQLite + xerial sqlite-jdbc | P2 持久化 thread、turn、item、设置、运行记录和 MCP 元数据 |
+| 数据访问 | MyBatis-Plus + Flyway | P2 标准 Java 分层、migration 和字段注释覆盖测试 |
+| MCP Client | MCP Java SDK 1.1.3 | P2 本地 stdio MCP server 接入 |
 | 构建 | Maven (mvnw) | 构建工具 |
 | 日志 | Logback + SLF4J | 日志 |
 
@@ -726,14 +738,14 @@ public ChatClient resolve(String providerId) {
 ## 9. 学习路线分期
 
 ### P1 — 内核 + 端到端最小可用 (4-6 周)
-- [ ] backend: WebSocket + JSON-RPC 框架
-- [ ] backend: Thread/Turn/Item 数据模型 (12 种 Item 的接口与基础实现)
-- [ ] backend: **多 Provider 配置体系**(DashScope + OpenAI Compatible 两个 Factory)
-- [ ] backend: Agent Loop + ChatClient + 工具调用
-- [ ] backend: 6 个核心工具 (read_file / write_file / exec_shell / list_dir / grep / apply_patch)
-- [ ] backend: 审批引擎 (三档策略)
-- [ ] backend: 沙箱 PathGuard (workspace-write)
-- [ ] backend: `model/providers/*` 协议方法
+- [x] backend: WebSocket + JSON-RPC 框架
+- [x] backend: Thread/Turn/Item 数据模型 (12 种 Item 的接口与基础实现)
+- [x] backend: **多 Provider 配置体系**(DashScope + OpenAI Compatible 两个 Factory)
+- [x] backend: Agent Loop + ChatClient + 工具调用
+- [x] backend: 6 个核心工具 (read_file / write_file / exec_shell / list_dir / grep / apply_patch)
+- [x] backend: 审批引擎 (approve / deny / edit / always)
+- [x] backend: 沙箱 PathGuard (workspace-write)
+- [x] backend: `model/providers/*` 协议方法
 - [x] desktop: Compose Desktop 骨架 + ChatScreen
 - [x] desktop: WebSocket 客户端 + 流式渲染 agentMessage
 - [x] desktop: ApprovalDialog 弹窗
@@ -743,13 +755,13 @@ public ChatClient resolve(String providerId) {
 **验收**: 在桌面端输入"分析 X 项目结构并写一个 README",能完整流程跑通,过程中弹审批,最终落盘文件。
 
 ### P2 — 持久化 + MCP + 多模型 (4-6 周)
-- [ ] backend: SQLite 持久化 thread/turn/item
-- [ ] backend: 历史会话恢复
-- [ ] backend: MCP Client 接入 (调用外部 MCP Server)
-- [ ] backend: 多模型路由 (qwen-plus / qwq-plus / 切换其他厂商)
-- [ ] backend: webSearch + imageView 两种 Item 实现
-- [ ] desktop: 会话列表 + 历史浏览
-- [ ] desktop: 设置面板 (模型/沙箱/审批策略)
+- [x] backend: SQLite 持久化 thread/turn/item
+- [x] backend: 历史会话恢复
+- [x] backend: MCP Client 接入 (本地 stdio MCP Server)
+- [x] backend: 多模型 Provider 配置、测试连接和切换
+- [ ] backend: webSearch + imageView 两种 Item 实现 (未进入本轮 P2 goal)
+- [x] desktop: 会话列表 + 历史浏览
+- [x] desktop: 设置面板 (模型/沙箱/审批策略)
 
 ### P3 — 进阶机制 (长期)
 - [ ] backend: 上下文压缩 (contextCompaction Item)
@@ -807,11 +819,12 @@ public ChatClient resolve(String providerId) {
 
 ## 13. 下一步动作
 
-待用户确认本架构后:
-1. 进入 `superpowers:brainstorming`,细化协议字段、错误码、配置项
-2. 进入 `superpowers:writing-plans`,产出可执行的 P1 任务清单(带验收标准)
-3. 用 OMC 执行,从 backend 骨架开始
-4. 全程用 wscat/Postman 验证后端协议,**桌面端最后写**
+P2 已完成后:
+
+1. 先做 P2 总体验收复盘，确认真实 Provider、会话恢复、设置、运行记录、统计和本地 MCP 页面都符合人工验收预期。
+2. 如果验收发现缺口，单独开 P2 bugfix，不把 P3 功能混入修复。
+3. 如果验收无新增缺口，再进入 `superpowers:writing-plans`，为 P3 或下一阶段编写详细计划。
+4. P3 候选方向包括 Multi-Agent、上下文压缩、RAG / 语义记忆、真 OS 沙箱、A2A、多模态；实际范围必须由新计划和用户确认决定。
 
 ---
 

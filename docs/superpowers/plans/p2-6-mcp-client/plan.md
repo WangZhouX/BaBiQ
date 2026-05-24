@@ -1,6 +1,8 @@
-# P2-6 MCP Client Minimal Integration Implementation Plan
+﻿# P2-6 MCP Client Minimal Integration Implementation Plan
 
 > **For agentic workers:** REQUIRED: Use `superpowers:subagent-driven-development` if subagents are available, otherwise use `superpowers:executing-plans` to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Status:** 已完成并通过自动化验证。P2-6 实现采用官方 MCP Java SDK 稳定版 `1.1.3` 做薄适配，不使用 milestone 依赖，不把远程 MCP、OAuth 或插件市场混入本阶段。
 
 **Goal:** 在 P2 主线稳定后，验证 BaBiQ 能接入本地 stdio MCP server，并把 MCP 工具包装进 BaBiQ 的审批、沙箱、日志和 TurnSummary 链路。
 
@@ -32,11 +34,13 @@ P2-6 的重点是最小可用接入，不是插件平台。
 
 实现前必须重新核对官方文档和 Maven Central。
 
-2026-05-24 初步核对:
+2026-05-24 初步核对和实现决策:
 
 - `org.springframework.ai:spring-ai-starter-mcp-client` Maven latest/release 指向 `2.0.0-M7`，属于 milestone，不符合本仓库“禁止 RC/Beta/EAP/Milestone”的规则。
 - 同 artifact 最新稳定可用线为 `1.1.7`，但当前仓库锁定 Spring AI `1.1.6`。
 - `io.modelcontextprotocol.sdk:mcp` 最新稳定可用线为 `1.1.3`，Maven latest 可能指向 milestone。
+- Spring AI MCP starter 的预编译检查显示 `spring-ai-mcp:1.1.6` 期望 MCP SDK `0.18.2`，而 Spring AI Alibaba agent-framework 传递了 MCP SDK `0.14.0`，Maven 会选中旧版本，存在运行期 API 冲突风险。
+- 最终实现选择 `io.modelcontextprotocol.sdk:mcp:1.1.3`，通过 `SdkMcpClientConnector` 封装官方 `McpClient.sync` + `StdioClientTransport`，避免升级 Spring AI 主线和引入 milestone。
 
 决策规则:
 
@@ -210,7 +214,7 @@ Migration 注释要求:
 - Modify: `backend/pom.xml`
 - Modify: `docs/superpowers/plans/p2-6-mcp-client/codex-handoff.md`
 
-- [ ] **Step 1: 查官方文档和 Maven Central**
+- [x] **Step 1: 查官方文档和 Maven Central**
 
 记录:
 
@@ -218,7 +222,7 @@ Migration 注释要求:
 - MCP Java SDK 最新稳定版。
 - 与当前 Spring AI Alibaba 的兼容性判断。
 
-- [ ] **Step 2: 做最小依赖验证**
+- [x] **Step 2: 做最小依赖验证**
 
 如果使用 Spring AI MCP Client:
 
@@ -229,7 +233,7 @@ cd backend
 
 Expected: 编译通过。
 
-- [ ] **Step 3: 如需升级 Spring AI 小版本，先跑全量后端测试**
+- [x] **Step 3: 如需升级 Spring AI 小版本，先跑全量后端测试**
 
 ```powershell
 cd backend
@@ -248,7 +252,7 @@ Expected: BUILD SUCCESS。
 - Create: `backend/src/main/java/com/wzx/babiq/server/mcp/McpServerConfig.java`
 - Create: `backend/src/main/java/com/wzx/babiq/server/mcp/McpServerStatus.java`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 覆盖:
 
@@ -256,21 +260,21 @@ Expected: BUILD SUCCESS。
 - stdio server 缺 command 报配置错误。
 - args/cwd 正确绑定。
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 ```powershell
 cd backend
 .\mvnw.cmd -Dtest=McpPropertiesTest test
 ```
 
-- [ ] **Step 3: 实现配置模型**
+- [x] **Step 3: 实现配置模型**
 
 实现要求:
 
 - 注释解释 stdio command/args/cwd 的安全边界。
 - 不允许从 UI 输入任意命令后立即执行，P2-6 只读或需明确保存确认。
 
-- [ ] **Step 4: 运行测试通过**
+- [x] **Step 4: 运行测试通过**
 
 ```powershell
 cd backend
@@ -284,7 +288,7 @@ cd backend
 - Create: `backend/src/main/java/com/wzx/babiq/server/mcp/McpClientManager.java`
 - Create: `backend/src/main/java/com/wzx/babiq/server/mcp/McpToolCatalog.java`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 覆盖:
 
@@ -293,14 +297,14 @@ cd backend
 - refresh 会重新拉取工具。
 - disabled server 不连接。
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 ```powershell
 cd backend
 .\mvnw.cmd -Dtest=McpClientManagerTest test
 ```
 
-- [ ] **Step 3: 实现 manager**
+- [x] **Step 3: 实现 manager**
 
 实现要求:
 
@@ -308,7 +312,7 @@ cd backend
 - 连接日志包含 serverId，但不输出敏感环境变量。
 - 资源释放实现 `DisposableBean` 或等价生命周期接口。
 
-- [ ] **Step 4: 运行测试通过**
+- [x] **Step 4: 运行测试通过**
 
 ```powershell
 cd backend
@@ -323,7 +327,7 @@ cd backend
 - Modify: `backend/src/main/java/com/wzx/babiq/server/tool/ToolRegistry.java`
 - Modify: `backend/src/main/java/com/wzx/babiq/server/conversation/items/McpToolCallItem.java`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 覆盖:
 
@@ -332,14 +336,14 @@ cd backend
 - 成功/失败都产生可观察结果。
 - 工具输出仍被 Spotlighting 包裹。
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 ```powershell
 cd backend
 .\mvnw.cmd -Dtest=McpToolAdapterTest test
 ```
 
-- [ ] **Step 3: 实现 adapter**
+- [x] **Step 3: 实现 adapter**
 
 实现要求:
 
@@ -347,7 +351,7 @@ cd backend
 - 不绕过审批和沙箱链路。
 - MCP 输出视为不可信数据，继续走 spotlighting。
 
-- [ ] **Step 4: 运行测试通过**
+- [x] **Step 4: 运行测试通过**
 
 ```powershell
 cd backend
@@ -362,7 +366,7 @@ cd backend
 - Create: `backend/src/main/java/com/wzx/babiq/server/api/method/McpToolsListHandler.java`
 - Create: `backend/src/main/java/com/wzx/babiq/server/api/method/McpServersRefreshHandler.java`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 覆盖:
 
@@ -371,21 +375,21 @@ cd backend
 - `mcp/servers/refresh` 触发刷新。
 - MCP disabled 时返回空列表，不报错。
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 ```powershell
 cd backend
 .\mvnw.cmd -Dtest=McpHandlersTest test
 ```
 
-- [ ] **Step 3: 实现 handlers**
+- [x] **Step 3: 实现 handlers**
 
 实现要求:
 
 - handler 不直接操作 SDK client。
 - 返回 DTO 只包含 UI 需要的字段。
 
-- [ ] **Step 4: 运行测试通过**
+- [x] **Step 4: 运行测试通过**
 
 ```powershell
 cd backend
@@ -406,7 +410,7 @@ cd backend
 - Modify: `desktop/src/test/kotlin/com/wzx/babiq/desktop/client/AgentClientTest.kt`
 - Modify: `desktop/src/test/kotlin/com/wzx/babiq/desktop/state/ChatControllerTest.kt`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 覆盖:
 
@@ -414,14 +418,14 @@ cd backend
 - 刷新按钮调用 `mcp/servers/refresh`。
 - 连接失败展示 lastError。
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 ```powershell
 cd desktop
 .\gradlew.bat test --tests "*AgentClientTest" --tests "*ChatControllerTest"
 ```
 
-- [ ] **Step 3: 实现 UI**
+- [x] **Step 3: 实现 UI**
 
 UI 要求:
 
@@ -430,7 +434,7 @@ UI 要求:
 - 不做 marketplace。
 - 不允许用户随意输入命令并立即执行。
 
-- [ ] **Step 4: 运行测试通过**
+- [x] **Step 4: 运行测试通过**
 
 ```powershell
 cd desktop
@@ -443,11 +447,11 @@ cd desktop
 - Create: `backend/src/test/java/com/wzx/babiq/server/mcp/McpEndToEndIT.java`
 - Modify: `docs/superpowers/plans/p2-6-mcp-client/codex-handoff.md`
 
-- [ ] **Step 1: 准备本地测试 MCP server**
+- [x] **Step 1: 准备本地测试 MCP server**
 
 优先使用官方示例或测试 stub，不把外部 server 源码复制进业务代码。
 
-- [ ] **Step 2: 写集成测试**
+- [x] **Step 2: 写集成测试**
 
 覆盖:
 
@@ -456,7 +460,7 @@ cd desktop
 - 调用一个安全工具。
 - 输出进入 BaBiQ tool result。
 
-- [ ] **Step 3: 运行集成测试**
+- [x] **Step 3: 运行集成测试**
 
 ```powershell
 cd backend
@@ -471,21 +475,21 @@ cd backend
 - Modify: `AGENTS.md`
 - Modify: `CLAUDE.md`
 
-- [ ] **Step 1: 后端全量验证**
+- [x] **Step 1: 后端全量验证**
 
 ```powershell
 cd backend
 .\mvnw.cmd clean verify
 ```
 
-- [ ] **Step 2: 桌面端全量验证**
+- [x] **Step 2: 桌面端全量验证**
 
 ```powershell
 cd desktop
 .\gradlew.bat test
 ```
 
-- [ ] **Step 3: 手动验收**
+- [x] **Step 3: 手动验收**
 
 1. 配置一个本地 stdio MCP server。
 2. 启动后端后能看到 MCP connected。
@@ -493,14 +497,14 @@ cd desktop
 4. Agent 调用 MCP 工具时仍触发审批和日志。
 5. TurnSummary 工具数包含 MCP 调用。
 
-- [ ] **Step 4: 更新文档**
+- [x] **Step 4: 更新文档**
 
 - `docs/superpowers/plans/p2-6-mcp-client/codex-handoff.md`
 - `docs/superpowers/plans/p2-task-index.md`
 - `AGENTS.md`
 - `CLAUDE.md`
 
-- [ ] **Step 5: 中文 commit**
+- [x] **Step 5: 中文 commit**
 
 ```powershell
 git add backend desktop docs AGENTS.md CLAUDE.md

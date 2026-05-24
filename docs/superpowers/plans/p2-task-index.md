@@ -13,11 +13,11 @@
 | P2-3 | 已完成 | Provider / API Key / 沙箱 / 审批设置系统 | `docs/superpowers/plans/p2-3-settings-system/plan.md` | P2-1 |
 | P2-4 | 已完成 | 持久化后的恢复语义和运行记录 | `docs/superpowers/plans/p2-4-recovery-records/plan.md` | P2-1, P2-2 |
 | P2-5 | 已完成 | 基础可观测增强 | `docs/superpowers/plans/p2-5-local-observability/plan.md` | P2-4 |
-| P2-6 | 下一步 | MCP Client 最小接入 | `docs/superpowers/plans/p2-6-mcp-client/plan.md` | P2-3, P2-4, P2-5 |
+| P2-6 | 已完成 | MCP Client 最小接入 | `docs/superpowers/plans/p2-6-mcp-client/plan.md` | P2-3, P2-4, P2-5 |
 
 ## 执行规则
 
-- 每个阶段的详细 `plan.md` 已全部写出；当前用户已要求使用 goal 完成 P2 全部任务，后续实现仍必须逐阶段核对计划。
+- 每个阶段的详细 `plan.md` 已全部写出；当前用户要求的 P2 全量 goal 已覆盖 P2-1 到 P2-6。
 - 每个阶段实现前必须重新核对官方文档和 Maven Central，禁止使用 RC、Beta、EAP。
 - 每个阶段实现后必须更新 `AGENTS.md`、`CLAUDE.md`、对应 `codex-handoff.md`，并主动中文 commit，不主动 push。
-- P2-1 到 P2-4 是 P2 主线，P2-5 是增强，P2-6 已纳入本次 P2 全量 goal 执行范围。
+- P2-1 到 P2-4 是 P2 主线，P2-5 是增强，P2-6 是本地 MCP Client 最小接入，均已完成；进入下一阶段前需要先做 P2 总体验收复盘和新阶段详细计划。

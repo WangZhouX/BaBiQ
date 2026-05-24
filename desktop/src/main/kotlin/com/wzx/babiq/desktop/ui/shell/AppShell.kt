@@ -13,6 +13,7 @@ import com.wzx.babiq.desktop.state.Screen
 import com.wzx.babiq.desktop.protocol.ProviderSaveParams
 import com.wzx.babiq.desktop.ui.chat.ChatScreen
 import com.wzx.babiq.desktop.ui.runtime.RuntimeDetailsPanel
+import com.wzx.babiq.desktop.ui.settings.McpSettingsPanel
 import com.wzx.babiq.desktop.ui.settings.SettingsPanel
 import com.wzx.babiq.desktop.ui.theme.BaBiQColors
 
@@ -37,6 +38,7 @@ fun AppShell(
 	onTestProvider: (String) -> Unit,
 	onSaveSandboxMode: (String) -> Unit,
 	onSaveApprovalPolicy: (String) -> Unit,
+	onRefreshMcpServer: (String) -> Unit,
 	onToggleRuntime: () -> Unit,
 	onSelectRunTurn: (String) -> Unit,
 	onSelectObservabilityRange: (String) -> Unit,
@@ -74,6 +76,11 @@ fun AppShell(
 					onTestProvider = onTestProvider,
 					onSaveSandboxMode = onSaveSandboxMode,
 					onSaveApprovalPolicy = onSaveApprovalPolicy,
+				)
+
+				Screen.Mcp -> McpSettingsPanel(
+					state = state,
+					onRefreshServer = onRefreshMcpServer,
 				)
 			}
 		}

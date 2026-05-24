@@ -27,7 +27,7 @@ import com.wzx.babiq.desktop.ui.theme.BaBiQColors
 /**
  * 左侧导航栏。
  *
- * P1-4 只开放新对话和设置，搜索/插件/自动化按计划保留为禁用占位。
+ * P2-6 起插件占位升级为“本地 MCP”状态页；搜索和自动化仍保留为禁用占位。
  */
 @Composable
 fun Sidebar(
@@ -50,9 +50,9 @@ fun Sidebar(
 			onSelectScreen(Screen.Chat)
 			onNewChat()
 		}
-		// 下面三个入口是 P2+ 占位，禁用是为了避免误导用户以为已经接入真实能力。
+		// 搜索和自动化仍是 P2+ 占位，禁用是为了避免误导用户以为已经接入真实能力。
 		SidebarAction("⌕ 搜索", enabled = false) { }
-		SidebarAction("◇ 插件", enabled = false) { }
+		SidebarAction("◇ 本地 MCP", enabled = true) { onSelectScreen(Screen.Mcp) }
 		SidebarAction("◷ 自动化", enabled = false) { }
 
 		Text(

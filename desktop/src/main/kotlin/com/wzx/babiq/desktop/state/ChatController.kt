@@ -473,6 +473,49 @@ class ChatController(
 
 	fun showScreen(screen: Screen) {
 		_state.update { it.copy(screen = screen) }
+		if (screen == Screen.Mcp) {
+			scope.launch(start = CoroutineStart.UNDISPATCHED) {
+				loadMcpServers()
+			}
+		}
+	}
+
+	/**
+	 * 手动刷新一个 MCP server。
+	 *
+	 * 刷新动作只影响 MCP 状态页和下一轮 Agent 可见工具目录，不会修改正在运行的 turn。
+	 */
+	fun refreshMcpServer(serverId: String) {
+		scope.launch(start = CoroutineStart.UNDISPATCHED) {
+			_state.update {
+				it.copy(mcpState = it.mcpState.copy(refreshingServerId = serverId, error = null, notice = null))
+			}
+			try {
+				val refreshed = gateway.refreshMcpServer(serverId).server
+				val tools = gateway.listMcpTools(serverId)
+				_state.update {
+					it.copy(
+						mcpState = it.mcpState.copy(
+							refreshingServerId = null,
+							servers = replaceMcpServer(it.mcpState.servers, refreshed),
+							toolsByServer = it.mcpState.toolsByServer + (serverId to tools.tools),
+							error = null,
+							notice = "MCP server 已刷新",
+						),
+					)
+				}
+			} catch (exception: Exception) {
+				_state.update {
+					it.copy(
+						mcpState = it.mcpState.copy(
+							refreshingServerId = null,
+							error = exception.message ?: "刷新 MCP server 失败",
+						),
+						lastError = exception.message,
+					)
+				}
+			}
+		}
 	}
 
 	fun toggleRuntimeDetails() {
@@ -809,6 +852,39 @@ class ChatController(
 	}
 
 	/**
+	 * 读取 MCP server 状态和工具列表。
+	 *
+	 * MCP 是外部进程能力，所以加载失败只写入 mcpState.error，不影响聊天连接状态。
+	 */
+	private suspend fun loadMcpServers() {
+		_state.update { it.copy(mcpState = it.mcpState.copy(loading = true, error = null, notice = null)) }
+		try {
+			val servers = gateway.listMcpServers().servers
+			val toolsByServer = servers.associate { server ->
+				val tools = gateway.listMcpTools(server.serverId)
+				server.serverId to tools.tools
+			}
+			_state.update {
+				it.copy(
+					mcpState = it.mcpState.copy(
+						loading = false,
+						servers = servers,
+						toolsByServer = toolsByServer,
+						error = null,
+					),
+				)
+			}
+		} catch (exception: Exception) {
+			_state.update {
+				it.copy(
+					mcpState = it.mcpState.copy(loading = false, error = exception.message ?: "读取 MCP 状态失败"),
+					lastError = exception.message,
+				)
+			}
+		}
+	}
+
+	/**
 	 * 从后端读取真实沙箱权限，并写入工作区上下文。
 	 *
 	 * 权限 chip 只是辅助信息，拉取失败不应该让 WebSocket 连接失败；因此这里仅记录错误。
@@ -866,6 +942,14 @@ class ChatController(
 
 	private fun projectNameFrom(cwd: String): String =
 		Path.of(cwd).fileName?.toString()?.ifBlank { null } ?: cwd
+
+	private fun replaceMcpServer(
+		servers: List<com.wzx.babiq.desktop.protocol.McpServerInfo>,
+		replacement: com.wzx.babiq.desktop.protocol.McpServerInfo,
+	): List<com.wzx.babiq.desktop.protocol.McpServerInfo> {
+		val replaced = servers.map { if (it.serverId == replacement.serverId) replacement else it }
+		return if (replaced.any { it.serverId == replacement.serverId }) replaced else replaced + replacement
+	}
 
 	private fun ServerEvent.shouldRefreshThreadHistory(): Boolean =
 		this is ServerEvent.TurnCompleted || this is ServerEvent.TurnFailed

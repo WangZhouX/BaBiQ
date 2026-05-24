@@ -54,8 +54,8 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
   - `docs/superpowers/plans/p2-master.md`
   - P2 技术主线为 SQLite + MyBatis-Plus + Flyway/migration + Java 常见分层结构。
   - P1 总体验收已由用户在 2026-05-24 确认通过，`P2-0` 仅保留验收记录。
-  - P2 正在按用户 goal 全量执行；P2-1、P2-2、P2-3、P2-4、P2-5 已完成，当前下一步为 P2-6。
-  - P2-1 到 P2-6 的详细计划已全部写出；后续实现必须逐阶段核对对应 `plan.md`。
+  - P2 已按用户 goal 全量执行完成；P2-1、P2-2、P2-3、P2-4、P2-5、P2-6 均已完成。
+  - P2-1 到 P2-6 的详细计划和 handoff 已同步；进入下一阶段前必须先做 P2 总体验收复盘并编写新阶段详细 plan。
 - P2 任务文档已创建：
   - `docs/superpowers/plans/p2-task-index.md`
   - `docs/superpowers/plans/p2-0-final-acceptance/codex-handoff.md`
@@ -120,7 +120,19 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
   - P2-5 额外验证：`cd desktop; .\gradlew.bat test --tests "*ObservabilityModelsTest" --tests "*AgentClientTest" --tests "*ChatControllerTest"`
   - P2-5 全量验证：`cd backend; .\mvnw.cmd clean verify`
   - P2-5 全量验证：`cd desktop; .\gradlew.bat test`
-- 下一步进入 `P2-6 MCP Client 最小接入`，详细计划已存在于 `docs/superpowers/plans/p2-6-mcp-client/plan.md`。
+- P2-6 MCP Client 最小接入已完成：
+  - 后端新增 `babiq.mcp` 配置、`McpClientManager`、`McpToolCatalog`、`McpToolAdapter` 和官方 MCP Java SDK 薄适配连接器。
+  - 后端新增 `bq_mcp_servers`、`bq_mcp_tools` 两张表，所有表和字段都已写入 SQL 中文注释和 `bq_schema_comments`。
+  - MCP 工具以 `mcp.<serverId>.<toolName>` 命名并合并进 `ToolRegistry`，继续经过审批、沙箱、Spotlighting、工具观测和 TurnSummary 链路。
+  - 后端新增 `mcp/servers/list`、`mcp/tools/list`、`mcp/servers/refresh` JSON-RPC 方法。
+  - 桌面端新增“本地 MCP”入口，可展示 server 状态、错误信息、工具列表并手动刷新；不提供任意 command 编辑入口。
+  - P2-6 依赖决策：不使用 milestone 版 Spring AI MCP starter；使用官方 MCP Java SDK 稳定版 `1.1.3`。
+  - P2-6 额外验证：`cd backend; .\mvnw.cmd "-Dtest=McpPropertiesTest,McpClientManagerTest,McpToolAdapterTest,McpHandlersTest,McpEndToEndIT,ToolRegistryTest" test`
+  - P2-6 额外验证：`cd backend; .\mvnw.cmd "-Dtest=SchemaCommentsCoverageTest" test`
+  - P2-6 额外验证：`cd desktop; .\gradlew.bat test --tests "*McpModelsTest" --tests "*AgentClientTest" --tests "*ChatControllerTest"`
+  - P2 全量验证：`cd backend; .\mvnw.cmd clean verify`
+  - P2 全量验证：`cd desktop; .\gradlew.bat test`
+- 下一步应做 P2 总体验收复盘；如果验收无新增缺口，再写 P3 或后续阶段详细计划。
 
 如果仓库状态发生变化，不要盲信本检查点；必须重新核对代码、文档、测试和 `git status`。
 
@@ -148,9 +160,9 @@ P1-4 已完成范围：
 
 下一阶段边界：
 
-- P2-1、P2-2、P2-3、P2-4、P2-5 已完成；当前应进入 P2-6。
-- P2-6 允许实现 MCP Client 最小接入，例如 MCP server 配置持久化、启停健康检查、工具发现和桌面端最小管理入口。
-- P2-6 不做 MCP server 开发、不做远程插件市场、不做 OAuth、多租户权限或复杂沙箱编排。
+- P2-1、P2-2、P2-3、P2-4、P2-5、P2-6 已完成；当前应进入 P2 总体验收复盘。
+- P2-6 已完成 MCP Client 最小接入；后续如要扩展远程 MCP、OAuth、插件市场、MCP server 开发或复杂沙箱编排，必须进入新阶段计划，不得混入 P2 收口。
+- P3 或后续阶段可能涉及 Multi-Agent、RAG、真 OS 沙箱、A2A、多模态、上下文压缩等能力；开始前必须先写详细 plan 并由用户确认。
 - P2 范围内 SQLite 使用 MyBatis-Plus 和 Java 常见分层，但 Agent 核心不得直接依赖 Mapper；必须通过 repository/adapter 或 application service 隔离。
 - 后续任何新增业务表或业务字段都必须同步 SQL 中文注释、`bq_schema_comments` 元数据和覆盖测试。
 
@@ -217,6 +229,19 @@ cd ..\backend
 ```
 
 桌面启动烟测可用 `.\gradlew.bat run --no-daemon`；如果没有配置真实 Provider/API Key，只能验证窗口启动、断线/重连提示和只读 UI，真实“分析项目结构并总结”需要在可用模型环境中人工复验。
+
+P2 收口自动化验收补充：
+
+```powershell
+cd backend
+.\mvnw.cmd "-Dtest=SchemaCommentsCoverageTest" test
+.\mvnw.cmd "-Dtest=McpPropertiesTest,McpClientManagerTest,McpToolAdapterTest,McpHandlersTest,McpEndToEndIT,ToolRegistryTest" test
+.\mvnw.cmd clean verify
+
+cd ..\desktop
+.\gradlew.bat test --tests "*McpModelsTest" --tests "*AgentClientTest" --tests "*ChatControllerTest"
+.\gradlew.bat test
+```
 
 没有新鲜验证证据前，不要声称完成、通过或可进入下一阶段。
 

@@ -3,6 +3,11 @@ package com.wzx.babiq.desktop.state
 import com.wzx.babiq.desktop.client.AgentGateway
 import com.wzx.babiq.desktop.protocol.AppSettingsResult
 import com.wzx.babiq.desktop.protocol.ApprovalPolicyResult
+import com.wzx.babiq.desktop.protocol.McpServerInfo
+import com.wzx.babiq.desktop.protocol.McpServerRefreshResult
+import com.wzx.babiq.desktop.protocol.McpServersListResult
+import com.wzx.babiq.desktop.protocol.McpToolInfo
+import com.wzx.babiq.desktop.protocol.McpToolsListResult
 import com.wzx.babiq.desktop.protocol.ModelCostStatsInfo
 import com.wzx.babiq.desktop.protocol.ObservabilityCostsResult
 import com.wzx.babiq.desktop.protocol.ObservabilitySnapshotResult
@@ -109,6 +114,33 @@ class ChatControllerTest {
 
 		assertEquals("thr_history", controller.state.value.threadHistory.items.single().threadId)
 		assertEquals("历史会话", controller.state.value.threadHistory.items.single().title)
+	}
+
+	@Test
+	fun `打开本地 MCP 页面时加载 server 和工具列表`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(gateway, backgroundScope, initialState = AppState(connectionState = ConnectionState.Connected))
+
+		controller.showScreen(Screen.Mcp)
+		advanceUntilIdle()
+
+		assertEquals(Screen.Mcp, controller.state.value.screen)
+		assertEquals(listOf("listMcpServers", "listMcpTools:local-filesystem"), gateway.calls)
+		assertEquals("local-filesystem", controller.state.value.mcpState.servers.single().serverId)
+		assertEquals("read_file", controller.state.value.mcpState.toolsByServer["local-filesystem"]?.single()?.toolName)
+	}
+
+	@Test
+	fun `刷新 MCP server 后更新状态和工具列表`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(gateway, backgroundScope, initialState = AppState(connectionState = ConnectionState.Connected))
+
+		controller.refreshMcpServer("local-filesystem")
+		advanceUntilIdle()
+
+		assertEquals(listOf("refreshMcp:local-filesystem", "listMcpTools:local-filesystem"), gateway.calls)
+		assertEquals("connected", controller.state.value.mcpState.servers.single().status)
+		assertEquals("read_file", controller.state.value.mcpState.toolsByServer["local-filesystem"]?.single()?.toolName)
 	}
 
 	@Test
@@ -449,6 +481,13 @@ class ChatControllerTest {
 			lastRecoveredAt = "2026-05-24T08:10:00Z",
 			interruptedTurns = 1,
 		),
+		private val mcpServers: McpServersListResult = McpServersListResult(
+			servers = listOf(sampleMcpServer()),
+		),
+		private val mcpTools: McpToolsListResult = McpToolsListResult(
+			serverId = "local-filesystem",
+			tools = listOf(sampleMcpTool()),
+		),
 	) : AgentGateway {
 		override val events = MutableSharedFlow<ServerEvent>()
 		val calls = mutableListOf<String>()
@@ -594,6 +633,21 @@ class ChatControllerTest {
 
 		override suspend fun getObservabilityCosts(range: String, cwd: String?): ObservabilityCostsResult =
 			ObservabilityCostsResult(range = range)
+
+		override suspend fun listMcpServers(): McpServersListResult {
+			calls += "listMcpServers"
+			return mcpServers
+		}
+
+		override suspend fun listMcpTools(serverId: String): McpToolsListResult {
+			calls += "listMcpTools:$serverId"
+			return mcpTools.copy(serverId = serverId)
+		}
+
+		override suspend fun refreshMcpServer(serverId: String): McpServerRefreshResult {
+			calls += "refreshMcp:$serverId"
+			return McpServerRefreshResult(sampleMcpServer(status = "connected", toolCount = 1))
+		}
 	}
 
 	private fun sampleRunTurn(turnId: String): RunTurnSummaryInfo =
@@ -607,5 +661,27 @@ class ChatControllerTest {
 			model = "deepseek-v4-pro",
 			startedAt = "2026-05-24T08:00:00Z",
 			completedAt = "2026-05-24T08:00:03Z",
+		)
+
+	private fun sampleMcpServer(
+		status: String = "connected",
+		toolCount: Int = 1,
+	): McpServerInfo =
+		McpServerInfo(
+			serverId = "local-filesystem",
+			displayName = "本地文件 MCP",
+			transport = "stdio",
+			enabled = true,
+			status = status,
+			toolCount = toolCount,
+		)
+
+	private fun sampleMcpTool(): McpToolInfo =
+		McpToolInfo(
+			serverId = "local-filesystem",
+			toolName = "read_file",
+			namespacedName = "mcp.local-filesystem.read_file",
+			description = "Read file",
+			enabled = true,
 		)
 }

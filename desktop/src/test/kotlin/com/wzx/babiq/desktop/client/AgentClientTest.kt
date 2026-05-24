@@ -1,6 +1,9 @@
 package com.wzx.babiq.desktop.client
 
 import com.wzx.babiq.desktop.protocol.JsonRpcRequest
+import com.wzx.babiq.desktop.protocol.McpServerRefreshResult
+import com.wzx.babiq.desktop.protocol.McpServersListResult
+import com.wzx.babiq.desktop.protocol.McpToolsListResult
 import com.wzx.babiq.desktop.protocol.ObservabilityCostsResult
 import com.wzx.babiq.desktop.protocol.ObservabilitySnapshotResult
 import com.wzx.babiq.desktop.protocol.ObservabilityToolsResult
@@ -258,6 +261,25 @@ class AgentClientTest {
 	}
 
 	@Test
+	fun `MCP 接口可以读取 server 工具并刷新`() = runTest {
+		val transport = FakeAgentTransport()
+		val client = AgentClient(transport, backgroundScope)
+		client.connect()
+
+		val servers: McpServersListResult = client.listMcpServers()
+		val tools: McpToolsListResult = client.listMcpTools("local-filesystem")
+		val refreshed: McpServerRefreshResult = client.refreshMcpServer("local-filesystem")
+
+		assertEquals("mcp/servers/list", transport.sent[0].method)
+		assertEquals("local-filesystem", servers.servers.single().serverId)
+		assertEquals("mcp/tools/list", transport.sent[1].method)
+		assertEquals("local-filesystem", transport.sent[1].paramsText("serverId"))
+		assertEquals("read_file", tools.tools.single().toolName)
+		assertEquals("mcp/servers/refresh", transport.sent[2].method)
+		assertEquals("connected", refreshed.server.status)
+	}
+
+	@Test
 	fun `json rpc error 会转成 AgentClientException`() = runTest {
 		val transport = FakeAgentTransport(errorMethods = setOf("thread/create"))
 		val client = AgentClient(transport, backgroundScope)
@@ -501,6 +523,11 @@ class AgentClientTest {
 						},
 					)
 				}
+				"mcp/servers/list" -> mcpServers()
+				"mcp/tools/list" -> mcpTools(request.paramsText("serverId"))
+				"mcp/servers/refresh" -> buildJsonObject {
+					put("server", mcpServer(status = "connected", toolCount = 1))
+				}
 				else -> buildJsonObject { put("ok", true) }
 			}
 			return protocolJson.encodeToString(
@@ -626,6 +653,43 @@ class AgentClientTest {
 		put("calls", 2)
 		put("failures", 0)
 		put("avgDurationMs", 300)
+	}
+
+	private fun mcpServers() = buildJsonObject {
+		put(
+			"servers",
+			buildJsonArray {
+				add(mcpServer(status = "connected", toolCount = 1))
+			},
+		)
+	}
+
+	private fun mcpServer(status: String, toolCount: Int) = buildJsonObject {
+		put("serverId", "local-filesystem")
+		put("displayName", "本地文件 MCP")
+		put("transport", "stdio")
+		put("enabled", true)
+		put("status", status)
+		put("toolCount", toolCount)
+	}
+
+	private fun mcpTools(serverId: String) = buildJsonObject {
+		put("serverId", serverId)
+		put(
+			"tools",
+			buildJsonArray {
+				add(
+					buildJsonObject {
+						put("serverId", serverId)
+						put("toolName", "read_file")
+						put("namespacedName", "mcp.$serverId.read_file")
+						put("description", "Read file")
+						put("inputSchema", buildJsonObject { put("type", "object") })
+						put("enabled", true)
+					},
+				)
+			},
+		)
 	}
 
 	private fun JsonRpcRequest.paramsText(name: String): String =

@@ -8,7 +8,7 @@
 
 **Architecture:** P2 继续保持 Kotlin Compose Desktop + Spring Boot Agent Server 的跨进程架构，通信仍走 WebSocket + JSON-RPC 2.0。后端引入 SQLite 本地持久化，使用 MyBatis-Plus 和 Java 常见分层结构，但 Agent 领域模型不直接依赖 Mapper；数据库实现通过 repository/adapter 隔离，方便未来切 PostgreSQL。桌面端在 P1 V2 UI 基础上补齐真实会话历史、设置系统和运行记录展示。
 
-**Tech Stack:** Java 21 LTS, Spring Boot 3.5.14, Spring AI 1.1.6, Spring AI Alibaba 1.1.2.3, SQLite, MyBatis-Plus, Flyway, xerial sqlite-jdbc, MyBatis-Plus pagination, Kotlin 2.3.21, Compose Multiplatform 1.11.0, Ktor Client 3.5.0, kotlinx.serialization 1.11.0, kotlinx.coroutines 1.11.0, WebSocket, JSON-RPC 2.0.
+**Tech Stack:** Java 21 LTS, Spring Boot 3.5.14, Spring AI 1.1.6, Spring AI Alibaba 1.1.2.3, SQLite, MyBatis-Plus, Flyway, xerial sqlite-jdbc, MyBatis-Plus pagination, MCP Java SDK 1.1.3, Kotlin 2.3.21, Compose Multiplatform 1.11.0, Ktor Client 3.5.0, kotlinx.serialization 1.11.0, kotlinx.coroutines 1.11.0, WebSocket, JSON-RPC 2.0.
 
 **Architecture References:**
 
@@ -25,7 +25,7 @@
 
 ---
 
-## 1. P2 当前起点
+## 1. P2 当前状态
 
 P1-0 到 P1-4 已完成主要代码实现。当前 P1 能力包括:
 
@@ -43,7 +43,16 @@ P1 总体验收状态:
 
 - 用户已在 2026-05-24 确认 P1 验收通过。
 - `docs/superpowers/plans/p2-0-final-acceptance/codex-handoff.md` 已记录该前置状态。
-- P2 正式入口改为 `P2-1 SQLite + MyBatis-Plus 持久化底座`。
+- P2-1 到 P2-6 已全部完成。
+
+P2 当前具备:
+
+- SQLite + MyBatis-Plus + Flyway 本地持久化底座。
+- 多会话历史、最近对话、归档和恢复。
+- Provider / API Key / 沙箱 / 审批策略设置系统。
+- 持久化后的恢复语义、运行记录和工具调用记录。
+- 本地运行统计聚合和桌面端运行详情展示。
+- 本地 stdio MCP Client 最小接入。
 
 若后续又发现 P1 遗留 bug，应单独开 P1 收口 bugfix，不要把 bug 混入 P2 持久化主体。
 
@@ -475,7 +484,7 @@ P2 子计划必须先写 migration，再写 mapper/entity。表名和字段可�
 
 - `docs/superpowers/plans/p2-5-local-observability/plan.md`
 
-### P2-6: MCP Client 最小接入（可选）
+### P2-6: MCP Client 最小接入（已完成）
 
 **目标:** 在 P2 主体稳定后，验证 BaBiQ 能接入本地 MCP server。
 
@@ -497,6 +506,7 @@ P2 子计划必须先写 migration，再写 mapper/entity。表名和字段可�
 **输出:**
 
 - `docs/superpowers/plans/p2-6-mcp-client/plan.md`
+- `docs/superpowers/plans/p2-6-mcp-client/codex-handoff.md`
 
 ---
 
@@ -524,6 +534,14 @@ P2 完成必须满足以下验收:
   - `docs/ARCHITECTURE.md`
   - `docs/superpowers/plans/p2-master.md`
   - 对应子计划 `codex-handoff.md`
+
+截至 2026-05-24，P2 自动化验收已完成:
+
+- `cd backend; .\mvnw.cmd clean verify`
+- `cd desktop; .\gradlew.bat test`
+- `cd backend; .\mvnw.cmd "-Dtest=SchemaCommentsCoverageTest" test`
+- `cd backend; .\mvnw.cmd "-Dtest=McpPropertiesTest,McpClientManagerTest,McpToolAdapterTest,McpHandlersTest,McpEndToEndIT,ToolRegistryTest" test`
+- `cd desktop; .\gradlew.bat test --tests "*McpModelsTest" --tests "*AgentClientTest" --tests "*ChatControllerTest"`
 
 ---
 
@@ -575,16 +593,15 @@ P2-2 到 P2-6 的 `task-card.md` 仍作为摘要入口保留，详细执行以�
 
 ## 11. 立即下一步
 
-1. 用户确认 P1 验收已通过，`P2-0` 已记录为前置完成。
-2. P2-1 到 P2-6 的详细计划已全部创建。
-3. 下一步应先请用户确认 P2-1 计划，再开始实现；后续子计划按依赖顺序逐个确认。
-4. 每个子计划都必须先由用户确认，再开始实现。
-5. 每个子计划完成后必须验证、更新文档、中文 commit，不主动 push。
+1. P2-1 到 P2-6 已全部完成，先做 P2 总体验收复盘。
+2. 若验收无新增缺口，再进入 P3 或下一阶段规划。
+3. P3 或后续阶段必须先写新的详细 plan，并由用户确认后再实现。
+4. 不要把 P3 的 Multi-Agent、RAG、真 OS 沙箱、A2A、多模态等能力混入 P2 收口。
 
 推荐下一条用户指令:
 
 ```text
-确认 P2-1 计划，开始实现 SQLite + MyBatis-Plus 持久化底座。
+开始做 P2 总体验收复盘，并准备 P3 详细计划。
 ```
 
 ---
@@ -594,7 +611,7 @@ P2-2 到 P2-6 的 `task-card.md` 仍作为摘要入口保留，详细执行以�
 | # | 问题 | 当前建议 |
 |---|---|---|
 | Q1 | API Key 的 P2 SecretStore 具体实现 | 子计划前查 Java/Windows 官方或成熟库；优先不明文落库 |
-| Q2 | P2 是否必须做 MCP | 可选，取决于 P2-1 到 P2-5 稳定度 |
+| Q2 | P2 是否必须做 MCP | 已纳入本次 P2 goal，并以本地 stdio MCP Client 最小接入完成 |
 | Q3 | Actuator 是否进入 P2-5 | 可进入，但只做基础 metrics，不接 Langfuse/OTel UI |
 | Q4 | P2 是否启用简单 RAG | 不放入必做；最多预留接口或单独子计划 |
 | Q5 | SQLite 数据库默认位置 | 建议默认 `${user.home}/.babiq/babiq.db`，允许 `application.yml` 覆盖 |

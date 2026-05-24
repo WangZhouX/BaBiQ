@@ -118,12 +118,18 @@ public class ReActStrategy {
         toolContext.put(BaBiQSandboxInterceptor.CONTEXT_ITEM_EMITTER, emitter);
         toolContext.put(TurnObservationContext.METADATA_KEY, context);
 
-        // D23：写类工具声明式触发 SAA 原生 HumanInTheLoopHook，不手写阻塞审批状态机。
-        HumanInTheLoopHook hitlHook = HumanInTheLoopHook.builder()
+        // D23：写类工具和 MCP 动态工具都声明式触发 SAA 原生 HumanInTheLoopHook，不手写阻塞审批状态机。
+        HumanInTheLoopHook.Builder hitlBuilder = HumanInTheLoopHook.builder()
                 .approvalOn("write_file", ToolConfig.builder().description("写入文件需要确认").build())
                 .approvalOn("exec_shell", ToolConfig.builder().description("执行 Shell 命令需要确认").build())
-                .approvalOn("apply_patch", ToolConfig.builder().description("应用补丁需要确认").build())
-                .build();
+                .approvalOn("apply_patch", ToolConfig.builder().description("应用补丁需要确认").build());
+        for (String toolName : toolRegistry.names()) {
+            if (toolName.startsWith("mcp.")) {
+                // MCP 工具来自外部 server，即使只是读操作也必须先让用户确认，防止第三方工具越权访问本机数据。
+                hitlBuilder.approvalOn(toolName, ToolConfig.builder().description("调用 MCP 工具需要确认").build());
+            }
+        }
+        HumanInTheLoopHook hitlHook = hitlBuilder.build();
         ModelCallLimitHook limitHook = ModelCallLimitHook.builder()
                 .runLimit(properties.maxIterations())
                 .exitBehavior(ModelCallLimitHook.ExitBehavior.ERROR)
