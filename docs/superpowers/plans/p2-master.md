@@ -539,22 +539,22 @@ P2 完成必须满足以下验收:
 ```
 docs/superpowers/plans/p2-0-final-acceptance/codex-handoff.md
 docs/superpowers/plans/p2-1-sqlite-persistence/plan.md
-docs/superpowers/plans/p2-2-thread-history/task-card.md
-docs/superpowers/plans/p2-3-settings-system/task-card.md
-docs/superpowers/plans/p2-4-recovery-records/task-card.md
-docs/superpowers/plans/p2-5-local-observability/task-card.md
-docs/superpowers/plans/p2-6-mcp-client/task-card.md
+docs/superpowers/plans/p2-2-thread-history/plan.md
+docs/superpowers/plans/p2-3-settings-system/plan.md
+docs/superpowers/plans/p2-4-recovery-records/plan.md
+docs/superpowers/plans/p2-5-local-observability/plan.md
+docs/superpowers/plans/p2-6-mcp-client/plan.md
 ```
 
-其中 P2-2 到 P2-6 当前先保留任务卡，等进入对应子阶段时再升级为详细 `plan.md`。
+P2-2 到 P2-6 的 `task-card.md` 仍作为摘要入口保留，详细执行以对应 `plan.md` 为准。
 
 ---
 
 ## 11. 立即下一步
 
 1. 用户确认 P1 验收已通过，`P2-0` 已记录为前置完成。
-2. 已创建 `docs/superpowers/plans/p2-1-sqlite-persistence/plan.md`。
-3. 下一步应先请用户确认 P2-1 计划，再开始实现。
+2. P2-1 到 P2-6 的详细计划已全部创建。
+3. 下一步应先请用户确认 P2-1 计划，再开始实现；后续子计划按依赖顺序逐个确认。
 4. 每个子计划都必须先由用户确认，再开始实现。
 5. 每个子计划完成后必须验证、更新文档、中文 commit，不主动 push。
 

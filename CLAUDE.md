@@ -68,17 +68,22 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
   - P2 技术主线为 SQLite + MyBatis-Plus + Flyway/migration + Java 常见分层结构。
   - P1 总体验收已由用户在 2026-05-24 确认通过，`P2-0` 仅保留验收记录。
   - P2 正式入口为 `P2-1 SQLite + MyBatis-Plus 持久化底座`。
-  - P2 子计划必须逐个编写、用户确认、再实现；不要直接从 master plan 跳到代码。
+  - P2-1 到 P2-6 的详细计划已全部写出；实现前仍必须由用户按阶段确认。
 - P2 任务文档已创建：
   - `docs/superpowers/plans/p2-task-index.md`
   - `docs/superpowers/plans/p2-0-final-acceptance/codex-handoff.md`
   - `docs/superpowers/plans/p2-1-sqlite-persistence/plan.md`
   - `docs/superpowers/plans/p2-1-sqlite-persistence/codex-handoff.md`
-  - `docs/superpowers/plans/p2-2-thread-history/task-card.md`
-  - `docs/superpowers/plans/p2-3-settings-system/task-card.md`
-  - `docs/superpowers/plans/p2-4-recovery-records/task-card.md`
-  - `docs/superpowers/plans/p2-5-local-observability/task-card.md`
-  - `docs/superpowers/plans/p2-6-mcp-client/task-card.md`
+  - `docs/superpowers/plans/p2-2-thread-history/plan.md`
+  - `docs/superpowers/plans/p2-2-thread-history/codex-handoff.md`
+  - `docs/superpowers/plans/p2-3-settings-system/plan.md`
+  - `docs/superpowers/plans/p2-3-settings-system/codex-handoff.md`
+  - `docs/superpowers/plans/p2-4-recovery-records/plan.md`
+  - `docs/superpowers/plans/p2-4-recovery-records/codex-handoff.md`
+  - `docs/superpowers/plans/p2-5-local-observability/plan.md`
+  - `docs/superpowers/plans/p2-5-local-observability/codex-handoff.md`
+  - `docs/superpowers/plans/p2-6-mcp-client/plan.md`
+  - `docs/superpowers/plans/p2-6-mcp-client/codex-handoff.md`
 - 已验证：
   - `cd desktop; .\gradlew.bat test`
   - `cd backend; .\mvnw.cmd clean verify`
@@ -124,7 +129,7 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
 
 - P2 master plan 已存在，但 P2 实现尚未开始。
 - P1 总体验收已通过，P2-0 不再阻塞。
-- P2-1 SQLite + MyBatis-Plus 持久化详细计划已存在，但尚未实现；必须等用户确认后再编码。
+- P2-1 到 P2-6 详细计划已存在，但尚未实现；必须等用户按阶段确认后再编码。
 - 未经对应 P2 子计划确认，不要直接引入 SQLite 持久化、KeyStore/SecretStore、Provider 编辑、MCP、Actuator、Prometheus、Langfuse、OpenTelemetry 或多工作区 pinning。
 - P2 范围内 SQLite 使用 MyBatis-Plus 和 Java 常见分层，但 Agent 核心不得直接依赖 Mapper；必须通过 repository/adapter 隔离。
 
