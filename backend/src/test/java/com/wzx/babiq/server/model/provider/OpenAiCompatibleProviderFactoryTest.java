@@ -4,9 +4,16 @@ import com.wzx.babiq.server.model.ModelProviderConfig;
 import com.wzx.babiq.server.model.ProviderType;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
+import org.springframework.ai.openai.api.OpenAiApi;
+import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.definition.ToolDefinition;
 
+import java.lang.reflect.Method;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -62,6 +69,32 @@ class OpenAiCompatibleProviderFactoryTest {
     }
 
     @Test
+    @DisplayName("OpenAI 兼容流式工具调用必须保留 DeepSeek usage 请求参数")
+    void build_should_keep_stream_usage_when_tool_options_are_merged() throws Exception {
+        ModelProviderConfig config = new ModelProviderConfig(
+                "deepseek-official",
+                "DeepSeek 官方",
+                ProviderType.OPENAI_COMPATIBLE,
+                "deepseek-v4-pro",
+                "sk-fake-key",
+                "https://api.deepseek.com",
+                null
+        );
+        OpenAiChatModel chatModel = (OpenAiChatModel) factory.build(config);
+        ToolCallingChatOptions toolOptions = ToolCallingChatOptions.builder()
+                .toolCallbacks(fakeTool())
+                .internalToolExecutionEnabled(false)
+                .build();
+        Prompt prompt = new Prompt(new UserMessage("你好"), toolOptions);
+
+        Prompt requestPrompt = invokeBuildRequestPrompt(chatModel, prompt);
+        OpenAiApi.ChatCompletionRequest request = invokeCreateRequest(chatModel, requestPrompt, true);
+
+        assertThat(request.streamOptions()).isNotNull();
+        assertThat(request.streamOptions().includeUsage()).isTrue();
+    }
+
+    @Test
     @DisplayName("Ollama 风格配置用占位 key 也能构建 ChatModel")
     void build_should_create_chat_model_for_ollama_style_config() {
         ModelProviderConfig config = new ModelProviderConfig(
@@ -113,5 +146,37 @@ class OpenAiCompatibleProviderFactoryTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("api-key")
                 .hasMessageContaining("deepseek-official");
+    }
+
+    private static Prompt invokeBuildRequestPrompt(OpenAiChatModel chatModel, Prompt prompt) throws Exception {
+        Method method = OpenAiChatModel.class.getDeclaredMethod("buildRequestPrompt", Prompt.class);
+        method.setAccessible(true);
+        return (Prompt) method.invoke(chatModel, prompt);
+    }
+
+    private static OpenAiApi.ChatCompletionRequest invokeCreateRequest(OpenAiChatModel chatModel,
+                                                                       Prompt prompt,
+                                                                       boolean streaming) throws Exception {
+        Method method = OpenAiChatModel.class.getDeclaredMethod("createRequest", Prompt.class, boolean.class);
+        method.setAccessible(true);
+        return (OpenAiApi.ChatCompletionRequest) method.invoke(chatModel, prompt, streaming);
+    }
+
+    private static ToolCallback fakeTool() {
+        return new ToolCallback() {
+            @Override
+            public ToolDefinition getToolDefinition() {
+                return ToolDefinition.builder()
+                        .name("read_file")
+                        .description("读取文件")
+                        .inputSchema("{\"type\":\"object\",\"properties\":{}}")
+                        .build();
+            }
+
+            @Override
+            public String call(String toolInput) {
+                return "ok";
+            }
+        };
     }
 }

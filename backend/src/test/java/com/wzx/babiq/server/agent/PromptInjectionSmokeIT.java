@@ -16,6 +16,7 @@ import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import reactor.core.publisher.Flux;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -114,6 +115,17 @@ class PromptInjectionSmokeIT {
             }
             secondPrompt.set(prompt.toString());
             return new ChatResponse(List.of(new Generation(new AssistantMessage("README 已总结。"))));
+        }
+
+        /**
+         * 让 prompt injection 烟测跟随生产代码的流式 Agent 路径，避免只验证旧的非流式调用。
+         *
+         * @param prompt 第二轮会包含工具输出 spotlighting，因此仍交给 call 方法统一记录
+         * @return 单块 Flux，模拟兼容 OpenAI/DeepSeek 的流式响应最小形态
+         */
+        @Override
+        public Flux<ChatResponse> stream(Prompt prompt) {
+            return Flux.just(call(prompt));
         }
 
         private String jsonEscape(String text) {

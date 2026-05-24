@@ -15,6 +15,7 @@ import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import reactor.core.publisher.Flux;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -107,6 +108,17 @@ class EndToEndIT {
             }
             AssistantMessage finalMessage = new AssistantMessage("README 已通过 read_file 工具读取并完成总结。");
             return new ChatResponse(List.of(new Generation(finalMessage)));
+        }
+
+        /**
+         * AgentLoop 现在统一走 ReactAgent.stream；测试模型也要实现流式接口，才能覆盖真实执行链路。
+         *
+         * @param prompt SAA 传入的当前轮 Prompt，内容和 call 方法一致
+         * @return 只有一个响应块的 Flux，足够模拟“流式 API 最终返回一个 ChatResponse”的行为
+         */
+        @Override
+        public Flux<ChatResponse> stream(Prompt prompt) {
+            return Flux.just(call(prompt));
         }
     }
 }
