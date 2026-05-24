@@ -6,14 +6,17 @@ import com.wzx.babiq.server.conversation.repository.ItemRecord;
 import com.wzx.babiq.server.conversation.repository.TurnSummaryRecord;
 import com.wzx.babiq.server.persistence.entity.ItemEntity;
 import com.wzx.babiq.server.persistence.entity.ThreadEntity;
+import com.wzx.babiq.server.persistence.entity.TurnEntity;
 import com.wzx.babiq.server.persistence.entity.TurnSummaryEntity;
 import com.wzx.babiq.server.persistence.mapper.ItemMapper;
 import com.wzx.babiq.server.persistence.mapper.ThreadMapper;
+import com.wzx.babiq.server.persistence.mapper.TurnMapper;
 import com.wzx.babiq.server.persistence.mapper.TurnSummaryMapper;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 
@@ -30,6 +33,8 @@ public class SQLiteConversationRepository implements ConversationRepository {
     private final ThreadMapper threadMapper;
     /** item 表 mapper，负责 `bq_items` 单表 CRUD。 */
     private final ItemMapper itemMapper;
+    /** turn 表 mapper，负责读取最近 turn 状态，避免列表层重复拼 SQL。 */
+    private final TurnMapper turnMapper;
     /** turn 摘要表 mapper，负责 `bq_turn_summaries` 单表 CRUD。 */
     private final TurnSummaryMapper turnSummaryMapper;
 
@@ -38,14 +43,17 @@ public class SQLiteConversationRepository implements ConversationRepository {
      *
      * @param threadMapper thread 单表 mapper
      * @param itemMapper item 单表 mapper
+     * @param turnMapper turn 单表 mapper
      * @param turnSummaryMapper turnSummary 单表 mapper
      */
     public SQLiteConversationRepository(
             ThreadMapper threadMapper,
             ItemMapper itemMapper,
+            TurnMapper turnMapper,
             TurnSummaryMapper turnSummaryMapper) {
         this.threadMapper = threadMapper;
         this.itemMapper = itemMapper;
+        this.turnMapper = turnMapper;
         this.turnSummaryMapper = turnSummaryMapper;
     }
 
@@ -105,9 +113,10 @@ public class SQLiteConversationRepository implements ConversationRepository {
     @Override
     @Transactional
     public void saveItem(ItemRecord record) {
-        ItemEntity entity = toEntity(record);
         ItemEntity existing = itemMapper.selectOne(Wrappers.<ItemEntity>lambdaQuery()
                 .eq(ItemEntity::getItemId, record.itemId()));
+        int sequenceNo = existing == null ? nextSequenceNo(record.threadId()) : existing.getSequenceNo();
+        ItemEntity entity = toEntity(record, sequenceNo);
         if (existing == null) {
             itemMapper.insert(entity);
             touchThread(record.threadId(), record.updatedAt());
@@ -120,14 +129,43 @@ public class SQLiteConversationRepository implements ConversationRepository {
 
     @Override
     public List<ItemRecord> listItems(String threadId, int limit) {
+        return listItems(threadId, limit, null);
+    }
+
+    @Override
+    public List<ItemRecord> listItems(String threadId, int limit, String beforeItemId) {
         int sanitizedLimit = Math.max(1, limit);
-        return itemMapper.selectList(Wrappers.<ItemEntity>lambdaQuery()
-                        .eq(ItemEntity::getThreadId, threadId)
-                        .orderByAsc(ItemEntity::getSequenceNo)
-                        .last("LIMIT " + sanitizedLimit))
-                .stream()
+        var query = Wrappers.<ItemEntity>lambdaQuery()
+                .eq(ItemEntity::getThreadId, threadId)
+                .orderByDesc(ItemEntity::getSequenceNo)
+                .last("LIMIT " + sanitizedLimit);
+        if (beforeItemId != null && !beforeItemId.isBlank()) {
+            Optional<ItemEntity> before = findItemEntity(threadId, beforeItemId);
+            if (before.isEmpty()) {
+                return List.of();
+            }
+            query.lt(ItemEntity::getSequenceNo, before.get().getSequenceNo());
+        }
+        return itemMapper.selectList(query).stream()
                 .map(this::toRecord)
+                .sorted(Comparator.comparingInt(ItemRecord::sequenceNo))
                 .toList();
+    }
+
+    @Override
+    public long countItems(String threadId) {
+        Long count = itemMapper.selectCount(Wrappers.<ItemEntity>lambdaQuery()
+                .eq(ItemEntity::getThreadId, threadId));
+        return count == null ? 0L : count;
+    }
+
+    @Override
+    public Optional<String> findLatestTurnStatus(String threadId) {
+        return Optional.ofNullable(turnMapper.selectOne(Wrappers.<TurnEntity>lambdaQuery()
+                        .eq(TurnEntity::getThreadId, threadId)
+                        .orderByDesc(TurnEntity::getStartedAt)
+                        .last("LIMIT 1")))
+                .map(TurnEntity::getStatus);
     }
 
     @Override
@@ -161,13 +199,27 @@ public class SQLiteConversationRepository implements ConversationRepository {
         threadMapper.updateById(existing);
     }
 
-    private ItemEntity toEntity(ItemRecord record) {
+    private int nextSequenceNo(String threadId) {
+        ItemEntity latest = itemMapper.selectOne(Wrappers.<ItemEntity>lambdaQuery()
+                .eq(ItemEntity::getThreadId, threadId)
+                .orderByDesc(ItemEntity::getSequenceNo)
+                .last("LIMIT 1"));
+        return latest == null ? 1 : latest.getSequenceNo() + 1;
+    }
+
+    private Optional<ItemEntity> findItemEntity(String threadId, String itemId) {
+        return Optional.ofNullable(itemMapper.selectOne(Wrappers.<ItemEntity>lambdaQuery()
+                .eq(ItemEntity::getThreadId, threadId)
+                .eq(ItemEntity::getItemId, itemId)));
+    }
+
+    private ItemEntity toEntity(ItemRecord record, int sequenceNo) {
         ItemEntity entity = new ItemEntity();
         entity.setItemId(record.itemId());
         entity.setThreadId(record.threadId());
         entity.setTurnId(record.turnId());
         entity.setType(record.type());
-        entity.setSequenceNo(record.sequenceNo());
+        entity.setSequenceNo(sequenceNo);
         entity.setPayloadJson(record.payloadJson());
         entity.setStatus(record.status());
         entity.setCreatedAt(PersistenceTime.write(record.createdAt()));

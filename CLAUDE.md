@@ -67,8 +67,8 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
   - `docs/superpowers/plans/p2-master.md`
   - P2 技术主线为 SQLite + MyBatis-Plus + Flyway/migration + Java 常见分层结构。
   - P1 总体验收已由用户在 2026-05-24 确认通过，`P2-0` 仅保留验收记录。
-  - P2 正式入口为 `P2-1 SQLite + MyBatis-Plus 持久化底座`。
-  - P2-1 到 P2-6 的详细计划已全部写出；实现前仍必须由用户按阶段确认。
+  - P2 正在按用户 goal 全量执行；P2-1、P2-2 已完成，当前下一步为 P2-3。
+  - P2-1 到 P2-6 的详细计划已全部写出；后续实现必须逐阶段核对对应 `plan.md`。
 - P2 任务文档已创建：
   - `docs/superpowers/plans/p2-task-index.md`
   - `docs/superpowers/plans/p2-0-final-acceptance/codex-handoff.md`
@@ -84,11 +84,24 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
   - `docs/superpowers/plans/p2-5-local-observability/codex-handoff.md`
   - `docs/superpowers/plans/p2-6-mcp-client/plan.md`
   - `docs/superpowers/plans/p2-6-mcp-client/codex-handoff.md`
+- P2-1 SQLite + MyBatis-Plus 持久化底座已完成：
+  - 后端已引入 SQLite JDBC、MyBatis-Plus、Flyway，并建立 `bq_*` 业务表。
+  - 每张业务表和每个业务字段都在 SQL 注释和 `bq_schema_comments` 中保留中文说明。
+  - 已建立 Thread、Turn、Item、TurnSummary、ProviderConfig、AppSetting、Approval、MetricsDaily 等 Entity / Mapper / Repository adapter。
+  - 已有 `SchemaCommentsCoverageTest` 校验所有业务字段中文说明不缺失。
+  - 提交：`e149244 feat(p2-1): 建立 SQLite 持久化底座`。
+- P2-2 多会话历史和桌面端最近对话已完成：
+  - 后端新增 `thread/list`、`thread/load`、`thread/archive` JSON-RPC 方法。
+  - `ConversationEventRecorder` 已把运行中 ThreadItem、TurnSummary 和 Turn 终态同步落库。
+  - `ConversationService` 和 `SQLiteConversationRepository` 已支持从 SQLite 查询 thread 元数据、item 历史、消息数量和最新 turn 状态。
+  - 桌面端 Sidebar 最近对话已改为真实 `thread/list` 数据，支持打开历史会话、归档会话、新建当前对话、切换工作目录后重载列表。
 - 已验证：
   - `cd desktop; .\gradlew.bat test`
   - `cd backend; .\mvnw.cmd clean verify`
   - `cd desktop; .\gradlew.bat run --no-daemon` 已进入 `:run` 并在受控烟测中保持运行。
-- **下一步**：先由用户确认 `docs/superpowers/plans/p2-1-sqlite-persistence/plan.md`，确认后再开始实现 P2-1。
+  - P2-2 额外验证：`cd backend; .\mvnw.cmd "-Dtest=ThreadCreateHandlerTest,TurnStartHandlerTest,ApprovalRespondHandlerTest,ThreadListHandlerTest,ThreadLoadHandlerTest,ThreadArchiveHandlerTest,ConversationEventRecorderTest,ConversationHistoryIT" test`
+  - P2-2 额外验证：`cd desktop; .\gradlew.bat test --tests "*AgentClientTest" --tests "*ThreadHistoryModelsTest"`、`cd desktop; .\gradlew.bat test --tests "*ChatControllerTest"`
+- **下一步**：进入 `P2-3 Provider / API Key / 沙箱 / 审批设置系统`。
 
 如果仓库状态已发生变化，不要盲信本检查点；必须重新核对代码、文档、测试和 `git status`。
 
@@ -127,11 +140,11 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
 
 **下一阶段边界：**
 
-- P2 master plan 已存在，但 P2 实现尚未开始。
-- P1 总体验收已通过，P2-0 不再阻塞。
-- P2-1 到 P2-6 详细计划已存在，但尚未实现；必须等用户按阶段确认后再编码。
-- 未经对应 P2 子计划确认，不要直接引入 SQLite 持久化、KeyStore/SecretStore、Provider 编辑、MCP、Actuator、Prometheus、Langfuse、OpenTelemetry 或多工作区 pinning。
-- P2 范围内 SQLite 使用 MyBatis-Plus 和 Java 常见分层，但 Agent 核心不得直接依赖 Mapper；必须通过 repository/adapter 隔离。
+- P2-1 和 P2-2 已完成；当前应进入 P2-3，不要跳过设置系统直接做 P2-4/P2-5/P2-6。
+- P2-3 允许实现 Provider 配置、API Key SecretStore 接入、沙箱模式设置、审批策略设置，以及对应桌面设置 UI。
+- P2-3 不做 MCP Client、运行记录详情页、Prometheus/Langfuse/OpenTelemetry 或跨设备同步。
+- P2 范围内 SQLite 使用 MyBatis-Plus 和 Java 常见分层，但 Agent 核心不得直接依赖 Mapper；必须通过 repository/adapter 或 application service 隔离。
+- 后续任何新增业务表或业务字段都必须同步 SQL 中文注释、`bq_schema_comments` 元数据和覆盖测试。
 
 ---
 

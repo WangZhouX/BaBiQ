@@ -44,6 +44,9 @@ fun BaBiQDesktopApp() {
 			onSend = { text -> scope.launch { controller.sendMessage(text) } },
 			onRetryConnection = { scope.launch { controller.connect() } },
 			onSelectScreen = { screen -> controller.showScreen(screen) },
+			onNewChat = { controller.newChat() },
+			onOpenThread = { threadId -> scope.launch { controller.openThread(threadId) } },
+			onArchiveThread = { threadId -> scope.launch { controller.archiveThread(threadId) } },
 			onSelectWorkspace = { cwd -> controller.selectWorkspace(cwd) },
 			onSelectProvider = { providerId, modelId ->
 				scope.launch { controller.selectProvider(providerId, modelId) }

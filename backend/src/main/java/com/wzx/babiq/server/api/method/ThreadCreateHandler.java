@@ -43,7 +43,7 @@ public class ThreadCreateHandler implements JsonRpcMethodHandler {
     }
 
     /**
-     * 创建 Thread 并返回 threadId。
+     * 创建 Thread 并返回 threadId、title 和 cwd。
      *
      * @param params 必须包含 cwd 字段
      * @param session 当前 WebSocket 会话,本方法不直接使用
@@ -54,7 +54,10 @@ public class ThreadCreateHandler implements JsonRpcMethodHandler {
     public Object handle(JsonNode params, WebSocketSession session) {
         String cwd = requiredText(params, "cwd");
         Thread thread = conversationService.createThread(cwd);
-        return Map.of("threadId", thread.id());
+        return Map.of(
+                "threadId", thread.id(),
+                "title", conversationService.defaultTitleFor(thread.cwd()),
+                "cwd", thread.cwd());
     }
 
     private String requiredText(JsonNode params, String fieldName) {

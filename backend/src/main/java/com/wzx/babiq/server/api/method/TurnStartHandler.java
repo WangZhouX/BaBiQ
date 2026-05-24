@@ -8,9 +8,14 @@ import com.wzx.babiq.server.api.JsonRpcMethodHandler;
 import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
 import com.wzx.babiq.server.api.error.JsonRpcException;
 import com.wzx.babiq.server.conversation.ConversationService;
+import com.wzx.babiq.server.conversation.ConversationEventRecorder;
 import com.wzx.babiq.server.conversation.ItemEmitter;
 import com.wzx.babiq.server.conversation.Thread;
 import com.wzx.babiq.server.conversation.Turn;
+import com.wzx.babiq.server.agent.AgentLoopProperties;
+import com.wzx.babiq.server.model.ModelProviderConfig;
+import com.wzx.babiq.server.model.ModelProviderRegistry;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -36,6 +41,12 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
     private final ObjectMapper objectMapper;
     /** 后台 turn 调度器，handler 快速返回后由它继续执行 AgentLoop。 */
     private final TurnExecutor turnExecutor;
+    /** 当前模型 Provider 注册表，用来把本轮实际 provider/model 写入 turn 快照。 */
+    private final ModelProviderRegistry providerRegistry;
+    /** Agent 配置快照，用来保存本轮沙箱和审批策略。 */
+    private final AgentLoopProperties agentLoopProperties;
+    /** 运行事件记录器，会被传给 ItemEmitter，实现先落库再推送。 */
+    private final ConversationEventRecorder eventRecorder;
 
     /**
      * 创建 turn/start handler。
@@ -48,9 +59,33 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
             ConversationService conversationService,
             ObjectMapper objectMapper,
             TurnExecutor turnExecutor) {
+        this(conversationService, objectMapper, turnExecutor, null, null, null);
+    }
+
+    /**
+     * 创建生产环境 turn/start handler。
+     *
+     * @param conversationService 对话生命周期服务
+     * @param objectMapper JSON 序列化器
+     * @param turnExecutor Agent 异步执行器
+     * @param providerRegistry 模型 Provider 注册表
+     * @param agentLoopProperties Agent 配置
+     * @param eventRecorder 运行事件记录器
+     */
+    @Autowired
+    public TurnStartHandler(
+            ConversationService conversationService,
+            ObjectMapper objectMapper,
+            TurnExecutor turnExecutor,
+            ModelProviderRegistry providerRegistry,
+            AgentLoopProperties agentLoopProperties,
+            ConversationEventRecorder eventRecorder) {
         this.conversationService = conversationService;
         this.objectMapper = objectMapper;
         this.turnExecutor = turnExecutor;
+        this.providerRegistry = providerRegistry;
+        this.agentLoopProperties = agentLoopProperties;
+        this.eventRecorder = eventRecorder;
     }
 
     /**
@@ -85,13 +120,22 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
                         "threadId=" + threadId + " 不存在，无法创建 Turn"));
         Turn turn = conversationService.startTurn(threadId);
         turn.start();
+        ModelProviderConfig provider = resolveProvider(providerId);
+        conversationService.persistTurnStarted(
+                turn,
+                userText,
+                provider == null ? providerId : provider.id(),
+                provider == null ? null : provider.model(),
+                thread.cwd(),
+                agentLoopProperties == null ? null : agentLoopProperties.sandboxMode().name(),
+                agentLoopProperties == null ? null : agentLoopProperties.approvalPolicy().name());
         log.info("turn/start 已创建 Turn: threadId={}, turnId={}, cwd={}, providerId={}",
                 threadId,
                 turn.id(),
                 thread.cwd(),
                 providerId == null ? "<active-provider>" : providerId);
 
-        ItemEmitter emitter = new ItemEmitter(session, objectMapper, threadId, turn.id());
+        ItemEmitter emitter = new ItemEmitter(session, objectMapper, threadId, turn.id(), eventRecorder);
         try {
             emitter.emitTurnStarted();
         } catch (Exception exception) {
@@ -103,6 +147,13 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
                 turn.id(),
                 providerId == null ? "<active-provider>" : providerId);
         return Map.of("turnId", turn.id());
+    }
+
+    private ModelProviderConfig resolveProvider(String providerId) {
+        if (providerRegistry == null) {
+            return null;
+        }
+        return providerId == null ? providerRegistry.active() : providerRegistry.get(providerId);
     }
 
     private String requiredText(JsonNode params, String fieldName) {

@@ -32,6 +32,8 @@ public class ItemEmitter {
     private final String threadId;
     /** 当前执行轮次 id，item/summary/approval 都需要用它关联到同一轮请求。 */
     private final String turnId;
+    /** 可选持久化记录器；生产环境先写 SQLite，再发 WebSocket，单元测试可为空。 */
+    private final ConversationEventRecorder recorder;
 
     /**
      * 创建绑定当前 WebSocket session 的发射器。
@@ -42,10 +44,28 @@ public class ItemEmitter {
      * @param turnId 当前 Turn 标识
      */
     public ItemEmitter(WebSocketSession session, ObjectMapper objectMapper, String threadId, String turnId) {
+        this(session, objectMapper, threadId, turnId, null);
+    }
+
+    /**
+     * 创建绑定当前 WebSocket session 且带持久化记录器的发射器。
+     *
+     * @param session 当前 WebSocket 连接
+     * @param objectMapper JSON 序列化器
+     * @param threadId 当前 Thread 标识
+     * @param turnId 当前 Turn 标识
+     * @param recorder 运行事件记录器；为空时只发送 WebSocket
+     */
+    public ItemEmitter(WebSocketSession session,
+                       ObjectMapper objectMapper,
+                       String threadId,
+                       String turnId,
+                       ConversationEventRecorder recorder) {
         this.session = session;
         this.objectMapper = objectMapper;
         this.threadId = threadId;
         this.turnId = turnId;
+        this.recorder = recorder;
     }
 
     /**
@@ -64,6 +84,13 @@ public class ItemEmitter {
      * @throws IOException WebSocket 写入失败时抛出
      */
     public void emitItemAdded(ThreadItem item) throws IOException {
+        if (recorder != null) {
+            if (item instanceof com.wzx.babiq.server.conversation.items.TurnSummaryItem summaryItem) {
+                recorder.recordTurnSummary(threadId, turnId, summaryItem);
+            } else {
+                recorder.recordItemAdded(threadId, turnId, item);
+            }
+        }
         Map<String, Object> params = paramsWithItem(item);
         sendNotification("item/added", params);
     }
@@ -75,6 +102,9 @@ public class ItemEmitter {
      * @throws IOException WebSocket 写入失败时抛出
      */
     public void emitItemUpdated(ThreadItem item) throws IOException {
+        if (recorder != null) {
+            recorder.recordItemUpdated(threadId, turnId, item);
+        }
         Map<String, Object> params = paramsWithItem(item);
         sendNotification("item/updated", params);
     }
@@ -86,6 +116,9 @@ public class ItemEmitter {
      * @throws IOException WebSocket 写入失败时抛出
      */
     public void emitItemCompleted(ThreadItem item) throws IOException {
+        if (recorder != null) {
+            recorder.recordItemCompleted(threadId, turnId, item);
+        }
         Map<String, Object> params = paramsWithItem(item);
         sendNotification("item/completed", params);
     }
@@ -137,6 +170,9 @@ public class ItemEmitter {
      * @throws IOException WebSocket 写入失败时抛出
      */
     public void emitTurnCompleted(String status) throws IOException {
+        if (recorder != null) {
+            recorder.recordTurnFinished(turnId, databaseTurnStatus(status), null);
+        }
         Map<String, Object> params = baseParams();
         params.put("status", status);
         sendNotification("turn/completed", params);
@@ -149,6 +185,9 @@ public class ItemEmitter {
      * @throws IOException WebSocket 写入失败时抛出
      */
     public void emitTurnFailed(String reason) throws IOException {
+        if (recorder != null) {
+            recorder.recordTurnFinished(turnId, "FAILED", reason);
+        }
         Map<String, Object> params = baseParams();
         params.put("reason", reason);
         sendNotification("turn/failed", params);
@@ -200,5 +239,14 @@ public class ItemEmitter {
                 threadId,
                 turnId,
                 JsonRpcLogSupport.paramsSummary(objectMapper.valueToTree(params)));
+    }
+
+    private String databaseTurnStatus(String protocolStatus) {
+        String normalized = protocolStatus == null ? "completed" : protocolStatus.toLowerCase();
+        return switch (normalized) {
+            case "canceled", "cancelled", "interrupted" -> "CANCELED";
+            case "failed" -> "FAILED";
+            default -> "COMPLETED";
+        };
     }
 }

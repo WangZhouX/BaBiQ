@@ -7,6 +7,8 @@ import com.wzx.babiq.server.persistence.mapper.TurnMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
+
 /**
  * Turn 表的持久化服务。
  *
@@ -43,6 +45,29 @@ public class TurnPersistenceService {
         }
         entity.setId(existing.getId());
         turnMapper.updateById(entity);
+    }
+
+    /**
+     * 更新 turn 的终态。
+     *
+     * <p>P2-2 的实时事件由 ItemEmitter 发出，因此终态更新也在事件发送前完成，避免 UI 收到完成事件后
+     * 数据库仍停留在 RUNNING。</p>
+     *
+     * @param turnId 协议层 turn id
+     * @param status 终态状态，例如 COMPLETED、FAILED、CANCELED
+     * @param failureReason 失败原因；非失败状态为空
+     */
+    @Transactional
+    public void updateTurnStatus(String turnId, String status, String failureReason) {
+        TurnEntity existing = turnMapper.selectOne(Wrappers.<TurnEntity>lambdaQuery()
+                .eq(TurnEntity::getTurnId, turnId));
+        if (existing == null) {
+            return;
+        }
+        existing.setStatus(status);
+        existing.setCompletedAt(PersistenceTime.write(Instant.now()));
+        existing.setFailureReason(failureReason);
+        turnMapper.updateById(existing);
     }
 
     private TurnEntity toEntity(TurnRecord record) {

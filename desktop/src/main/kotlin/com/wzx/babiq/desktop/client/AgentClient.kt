@@ -9,6 +9,9 @@ import com.wzx.babiq.desktop.protocol.SandboxPolicyResult
 import com.wzx.babiq.desktop.protocol.ServerEvent
 import com.wzx.babiq.desktop.protocol.SetActiveProviderParams
 import com.wzx.babiq.desktop.protocol.protocolJson
+import com.wzx.babiq.desktop.protocol.ThreadArchiveResult
+import com.wzx.babiq.desktop.protocol.ThreadListResult
+import com.wzx.babiq.desktop.protocol.ThreadLoadResult
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CompletableDeferred
@@ -58,6 +61,15 @@ interface AgentGateway {
 
 	/** 设置后端当前激活 Provider/Model，下一轮 turn 生效。 */
 	suspend fun setActiveProvider(providerId: String, modelId: String? = null): Boolean
+
+	/** 按工作目录读取最近会话列表，供 Sidebar 展示真实历史。 */
+	suspend fun listThreads(cwd: String, includeArchived: Boolean = false, limit: Int = 30): ThreadListResult
+
+	/** 加载指定会话的历史 item，供用户点击最近对话时恢复聊天流。 */
+	suspend fun loadThread(threadId: String, limit: Int = 200, beforeItemId: String? = null): ThreadLoadResult
+
+	/** 软归档会话，让默认最近列表隐藏它但不删除历史数据。 */
+	suspend fun archiveThread(threadId: String): ThreadArchiveResult
 }
 
 /**
@@ -182,6 +194,49 @@ class AgentClient(
 			),
 		)
 		return response.requireResult().jsonObject["ok"]?.jsonPrimitive?.booleanOrNull ?: true
+	}
+
+	/**
+	 * 调用后端 `thread/list`，读取当前工作目录下的真实最近会话。
+	 */
+	override suspend fun listThreads(cwd: String, includeArchived: Boolean, limit: Int): ThreadListResult {
+		val response = request(
+			method = "thread/list",
+			params = buildJsonObject {
+				put("cwd", cwd)
+				put("includeArchived", includeArchived)
+				put("limit", limit)
+			},
+		)
+		return protocolJson.decodeFromJsonElement(ThreadListResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `thread/load`，并把历史 item 解码成 ThreadItem。
+	 */
+	override suspend fun loadThread(threadId: String, limit: Int, beforeItemId: String?): ThreadLoadResult {
+		val response = request(
+			method = "thread/load",
+			params = buildJsonObject {
+				put("threadId", threadId)
+				put("limit", limit)
+				if (!beforeItemId.isNullOrBlank()) {
+					put("beforeItemId", beforeItemId)
+				}
+			},
+		)
+		return protocolJson.decodeFromJsonElement(ThreadLoadResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `thread/archive`，执行软归档。
+	 */
+	override suspend fun archiveThread(threadId: String): ThreadArchiveResult {
+		val response = request(
+			method = "thread/archive",
+			params = buildJsonObject { put("threadId", threadId) },
+		)
+		return protocolJson.decodeFromJsonElement(ThreadArchiveResult.serializer(), response.requireResult())
 	}
 
 	/**

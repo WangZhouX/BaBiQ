@@ -12,6 +12,20 @@ import com.wzx.babiq.desktop.protocol.ThreadItem
 object ChatReducer {
 
 	/**
+	 * 把 thread/load 返回的历史 item 批量转换成聊天消息。
+	 *
+	 * 这里复用实时 item 的转换规则，保证历史恢复和 WebSocket 推送看到的 UI 形态一致。
+	 */
+	fun messagesFromItems(items: List<ThreadItem>): List<ChatMessage> =
+		items.map { it.toChatMessage() }
+
+	/**
+	 * 从历史 item 中找出最新 turnSummary。
+	 */
+	fun latestSummaryFromItems(items: List<ThreadItem>): ThreadItem.TurnSummary? =
+		items.filterIsInstance<ThreadItem.TurnSummary>().lastOrNull()
+
+	/**
 	 * reducer 唯一入口：任何状态变化都从这里进入，便于测试和排查。
 	 */
 	fun reduce(state: AppState, event: AgentEvent): AppState =

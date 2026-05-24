@@ -4,9 +4,18 @@ import com.wzx.babiq.server.conversation.items.CommandExecutionItem;
 import com.wzx.babiq.server.conversation.items.FileChangeItem;
 import com.wzx.babiq.server.conversation.items.ReasoningItem;
 import com.wzx.babiq.server.conversation.items.TurnSummaryItem;
+import com.wzx.babiq.server.conversation.repository.ConversationRepository;
+import com.wzx.babiq.server.conversation.repository.TurnRecord;
+import com.wzx.babiq.server.model.ModelProviderConfig;
+import com.wzx.babiq.server.model.ModelProviderRegistry;
+import com.wzx.babiq.server.persistence.service.TurnPersistenceService;
+import com.wzx.babiq.server.agent.AgentLoopProperties;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -29,6 +38,43 @@ public class ConversationService {
     private final Map<String, Thread> threads = new ConcurrentHashMap<>();
     /** turnId -> Turn，记录每一轮请求的状态机，供取消、审批恢复和摘要使用。 */
     private final Map<String, Turn> turns = new ConcurrentHashMap<>();
+    /** 可选持久化仓库；生产环境存在，纯单元测试用无参构造时为空。 */
+    private final ConversationRepository conversationRepository;
+    /** 可选 turn 持久化服务；生产环境保存 turn 快照，纯单元测试为空。 */
+    private final TurnPersistenceService turnPersistenceService;
+    /** 可选模型注册表；创建 thread 时保存 active provider/model 快照。 */
+    private final ModelProviderRegistry providerRegistry;
+    /** 可选 Agent 配置；创建 thread/turn 时保存沙箱和审批策略快照。 */
+    private final AgentLoopProperties agentLoopProperties;
+
+    /**
+     * 兼容旧单元测试的无参构造器。
+     *
+     * <p>真实 Spring 运行时会使用带依赖的构造器；无参构造只保留内存行为，方便测试状态机。</p>
+     */
+    public ConversationService() {
+        this(null, null, null, null);
+    }
+
+    /**
+     * 生产环境构造器，注入 P2 持久化和当前运行配置。
+     *
+     * @param conversationRepository 对话持久化仓库
+     * @param turnPersistenceService turn 持久化服务
+     * @param providerRegistry 模型 Provider 注册表
+     * @param agentLoopProperties Agent Loop 配置
+     */
+    @Autowired
+    public ConversationService(
+            ConversationRepository conversationRepository,
+            TurnPersistenceService turnPersistenceService,
+            ModelProviderRegistry providerRegistry,
+            AgentLoopProperties agentLoopProperties) {
+        this.conversationRepository = conversationRepository;
+        this.turnPersistenceService = turnPersistenceService;
+        this.providerRegistry = providerRegistry;
+        this.agentLoopProperties = agentLoopProperties;
+    }
 
     /**
      * 创建新的对话线程。
@@ -40,6 +86,7 @@ public class ConversationService {
         String threadId = newId("thr_");
         Thread thread = Thread.newThread(threadId, cwd);
         threads.put(threadId, thread);
+        persistThreadIfEnabled(thread);
         return thread;
     }
 
@@ -50,7 +97,22 @@ public class ConversationService {
      * @return 找到时返回 Thread,否则 Optional.empty
      */
     public Optional<Thread> findThread(String threadId) {
-        return Optional.ofNullable(threads.get(threadId));
+        Thread existing = threads.get(threadId);
+        if (existing != null) {
+            return Optional.of(existing);
+        }
+        if (conversationRepository == null) {
+            return Optional.empty();
+        }
+        return conversationRepository.findThread(threadId)
+                .map(entity -> {
+                    Thread restored = new Thread(
+                            entity.getThreadId(),
+                            entity.getCwd(),
+                            java.time.Instant.parse(entity.getCreatedAt()));
+                    threads.put(restored.id(), restored);
+                    return restored;
+                });
     }
 
     /**
@@ -61,13 +123,72 @@ public class ConversationService {
      * @throws IllegalArgumentException threadId 不存在时抛出
      */
     public Turn startTurn(String threadId) {
-        if (!threads.containsKey(threadId)) {
+        if (findThread(threadId).isEmpty()) {
             throw new IllegalArgumentException("threadId=" + threadId + " 不存在,无法创建 Turn");
         }
 
         String turnId = newId("turn_");
         Turn turn = new Turn(turnId, threadId);
         turns.put(turnId, turn);
+        return turn;
+    }
+
+    /**
+     * 把已经进入 RUNNING 的 turn 快照写入数据库。
+     *
+     * @param turn 当前 turn
+     * @param inputText 用户输入文本
+     * @param providerId 本轮实际 provider id
+     * @param model 本轮实际模型名
+     * @param cwd 本轮工作目录
+     * @param sandboxMode 本轮沙箱模式
+     * @param approvalPolicy 本轮审批策略
+     */
+    public void persistTurnStarted(Turn turn,
+                                   String inputText,
+                                   String providerId,
+                                   String model,
+                                   String cwd,
+                                   String sandboxMode,
+                                   String approvalPolicy) {
+        if (turnPersistenceService == null) {
+            return;
+        }
+        turnPersistenceService.saveTurn(TurnRecord.started(
+                turn.id(),
+                turn.threadId(),
+                turn.status().name(),
+                inputText,
+                cwd,
+                providerId,
+                model,
+                sandboxMode,
+                approvalPolicy,
+                turn.createdAt()));
+    }
+
+    /**
+     * 创建并持久化一个已知输入快照的 turn。
+     *
+     * @param threadId 所属 thread id
+     * @param inputText 用户输入文本
+     * @param providerId 本轮 provider id
+     * @param model 本轮模型名
+     * @param cwd 工作目录
+     * @param sandboxMode 沙箱模式
+     * @param approvalPolicy 审批策略
+     * @return 新建的 turn
+     */
+    public Turn startTurn(String threadId,
+                          String inputText,
+                          String providerId,
+                          String model,
+                          String cwd,
+                          String sandboxMode,
+                          String approvalPolicy) {
+        Turn turn = startTurn(threadId);
+        turn.start();
+        persistTurnStarted(turn, inputText, providerId, model, cwd, sandboxMode, approvalPolicy);
         return turn;
     }
 
@@ -79,6 +200,38 @@ public class ConversationService {
      */
     public Optional<Turn> findTurn(String turnId) {
         return Optional.ofNullable(turns.get(turnId));
+    }
+
+    /**
+     * 判断某个 thread 是否还有非终态 turn。
+     *
+     * @param threadId 会话 id
+     * @return true 表示仍有 CREATED/RUNNING/WAITING_APPROVAL turn，不能归档
+     */
+    public boolean hasActiveTurn(String threadId) {
+        return turns.values().stream()
+                .anyMatch(turn -> threadId.equals(turn.threadId()) && !turn.status().isTerminal());
+    }
+
+    /**
+     * 从内存注册表中移除 thread 和已结束 turn。
+     *
+     * @param threadId 会话 id
+     */
+    public void removeThread(String threadId) {
+        threads.remove(threadId);
+        turns.entrySet().removeIf(entry ->
+                threadId.equals(entry.getValue().threadId()) && entry.getValue().status().isTerminal());
+    }
+
+    /**
+     * 根据工作目录生成默认会话标题。
+     *
+     * @param cwd 工作目录
+     * @return 默认标题
+     */
+    public String defaultTitleFor(String cwd) {
+        return defaultTitle(cwd);
     }
 
     /**
@@ -154,5 +307,31 @@ public class ConversationService {
         // UUID 去掉连字符后取前 12 位，P1 内存态足够用；未来持久化阶段可换成更严格的 id 生成器。
         String randomPart = UUID.randomUUID().toString().replace("-", "").substring(0, ID_RANDOM_LENGTH);
         return prefix + randomPart;
+    }
+
+    private void persistThreadIfEnabled(Thread thread) {
+        if (conversationRepository == null) {
+            return;
+        }
+        ModelProviderConfig provider = providerRegistry == null ? null : providerRegistry.active();
+        conversationRepository.createThread(
+                thread.id(),
+                defaultTitleFor(thread.cwd()),
+                thread.cwd(),
+                provider == null ? null : provider.id(),
+                provider == null ? null : provider.model(),
+                agentLoopProperties == null ? null : agentLoopProperties.sandboxMode().name(),
+                agentLoopProperties == null ? null : agentLoopProperties.approvalPolicy().name(),
+                thread.createdAt());
+    }
+
+    private String defaultTitle(String cwd) {
+        try {
+            Path fileName = Path.of(cwd).getFileName();
+            String projectName = fileName == null ? cwd : fileName.toString();
+            return projectName + " 新对话";
+        } catch (InvalidPathException exception) {
+            return "新对话";
+        }
     }
 }

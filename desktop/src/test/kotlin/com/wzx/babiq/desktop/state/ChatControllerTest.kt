@@ -4,6 +4,12 @@ import com.wzx.babiq.desktop.client.AgentGateway
 import com.wzx.babiq.desktop.protocol.ProviderListResult
 import com.wzx.babiq.desktop.protocol.SandboxPolicyResult
 import com.wzx.babiq.desktop.protocol.ServerEvent
+import com.wzx.babiq.desktop.protocol.ThreadArchiveResult
+import com.wzx.babiq.desktop.protocol.ThreadItem
+import com.wzx.babiq.desktop.protocol.ThreadListResult
+import com.wzx.babiq.desktop.protocol.ThreadLoadResult
+import com.wzx.babiq.desktop.protocol.ThreadMetaInfo
+import com.wzx.babiq.desktop.protocol.ThreadSummaryInfo
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -27,7 +33,14 @@ class ChatControllerTest {
 		controller.sendMessage("分析项目")
 
 		assertEquals(
-			listOf("connect", "listProviders", "getSandboxPolicy", "createThread:E:\\BaBiQ", "startTurn:thread-1:分析项目:null"),
+			listOf(
+				"connect",
+				"listProviders",
+				"getSandboxPolicy",
+				"listThreads:E:\\BaBiQ",
+				"createThread:E:\\BaBiQ",
+				"startTurn:thread-1:分析项目:null",
+			),
 			gateway.calls,
 		)
 		assertEquals("thread-1", controller.state.value.currentThreadId)
@@ -42,9 +55,102 @@ class ChatControllerTest {
 
 		controller.connect()
 
-		assertEquals(listOf("connect", "listProviders", "getSandboxPolicy"), gateway.calls)
+		assertEquals(listOf("connect", "listProviders", "getSandboxPolicy", "listThreads:E:\\BaBiQ"), gateway.calls)
 		assertEquals("DANGER_FULL_ACCESS", controller.state.value.workspace.permissionMode)
 		assertEquals("完全访问权限", controller.state.value.workspace.permissionLabel)
+	}
+
+	@Test
+	fun `connect 成功后加载最近会话列表`() = runTest {
+		val gateway = FakeGateway(
+			history = ThreadListResult(
+				threads = listOf(
+					ThreadSummaryInfo(
+						threadId = "thr_history",
+						title = "历史会话",
+						cwd = "E:\\BaBiQ",
+						updatedAt = "2026-05-24T08:00:00Z",
+						messageCount = 2,
+					),
+				),
+			),
+		)
+		val controller = ChatController(gateway, backgroundScope)
+
+		controller.connect()
+
+		assertEquals("thr_history", controller.state.value.threadHistory.items.single().threadId)
+		assertEquals("历史会话", controller.state.value.threadHistory.items.single().title)
+	}
+
+	@Test
+	fun `openThread 加载历史 item 并替换当前消息流`() = runTest {
+		val gateway = FakeGateway(
+			loadedThread = ThreadLoadResult(
+				thread = ThreadMetaInfo("thr_history", "历史会话", "E:\\BaBiQ", "active"),
+				items = listOf(ThreadItem.UserMessage("it_user", text = "你好")),
+			),
+		)
+		val controller = ChatController(
+			gateway,
+			backgroundScope,
+			initialState = AppState(connectionState = ConnectionState.Connected),
+		)
+
+		controller.openThread("thr_history")
+
+		assertEquals("loadThread:thr_history", gateway.calls.single())
+		assertEquals("thr_history", controller.state.value.currentThreadId)
+		assertEquals("历史会话", controller.state.value.currentThreadTitle)
+		assertEquals("thr_history", controller.state.value.threadHistory.selectedThreadId)
+		assertEquals("你好", (controller.state.value.messages.single() as ChatMessage.User).text)
+	}
+
+	@Test
+	fun `newChat 只清空当前会话不清空历史列表`() = runTest {
+		val controller = ChatController(
+			FakeGateway(),
+			backgroundScope,
+			initialState = AppState(
+				currentThreadId = "thr_old",
+				currentThreadTitle = "旧会话",
+				messages = listOf(ChatMessage.User("it_user", "旧消息")),
+				threadHistory = ThreadHistoryState(
+					items = listOf(ThreadListItem("thr_old", "旧会话", "E:\\BaBiQ", "active", null, "刚刚", 1)),
+					selectedThreadId = "thr_old",
+				),
+			),
+		)
+
+		controller.newChat()
+
+		assertNull(controller.state.value.currentThreadId)
+		assertTrue(controller.state.value.messages.isEmpty())
+		assertEquals(1, controller.state.value.threadHistory.items.size)
+		assertNull(controller.state.value.threadHistory.selectedThreadId)
+	}
+
+	@Test
+	fun `archiveThread 归档后从最近列表移除`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(
+			gateway,
+			backgroundScope,
+			initialState = AppState(
+				connectionState = ConnectionState.Connected,
+				currentThreadId = "thr_old",
+				threadHistory = ThreadHistoryState(
+					items = listOf(ThreadListItem("thr_old", "旧会话", "E:\\BaBiQ", "active", null, "刚刚", 1)),
+					selectedThreadId = "thr_old",
+				),
+			),
+		)
+
+		controller.archiveThread("thr_old")
+
+		assertEquals("archiveThread:thr_old", gateway.calls.single())
+		assertTrue(controller.state.value.threadHistory.items.isEmpty())
+		assertNull(controller.state.value.currentThreadId)
 	}
 
 	@Test
@@ -66,7 +172,10 @@ class ChatControllerTest {
 
 		assertEquals("Other", controller.state.value.workspace.projectName)
 		assertEquals("D:\\Projects\\Other", controller.state.value.workspace.cwd)
-		assertEquals(listOf("createThread:D:\\Projects\\Other", "startTurn:thread-1:分析新目录:null"), gateway.calls)
+		assertEquals(
+			listOf("listThreads:D:\\Projects\\Other", "createThread:D:\\Projects\\Other", "startTurn:thread-1:分析新目录:null"),
+			gateway.calls,
+		)
 		assertFalse(controller.state.value.messages.any { it.id == "old-user" })
 	}
 
@@ -172,6 +281,10 @@ class ChatControllerTest {
 		private val connectFails: Boolean = false,
 		private var connectFailuresBeforeSuccess: Int = 0,
 		private val policy: SandboxPolicyResult = SandboxPolicyResult("WORKSPACE_WRITE", "工作区可写"),
+		private val history: ThreadListResult = ThreadListResult(),
+		private val loadedThread: ThreadLoadResult = ThreadLoadResult(
+			ThreadMetaInfo("thread-1", "测试会话", "E:\\BaBiQ", "active"),
+		),
 	) : AgentGateway {
 		override val events = MutableSharedFlow<ServerEvent>()
 		val calls = mutableListOf<String>()
@@ -212,6 +325,21 @@ class ChatControllerTest {
 		override suspend fun setActiveProvider(providerId: String, modelId: String?): Boolean {
 			calls += "setActive:$providerId:$modelId"
 			return true
+		}
+
+		override suspend fun listThreads(cwd: String, includeArchived: Boolean, limit: Int): ThreadListResult {
+			calls += "listThreads:$cwd"
+			return history
+		}
+
+		override suspend fun loadThread(threadId: String, limit: Int, beforeItemId: String?): ThreadLoadResult {
+			calls += "loadThread:$threadId"
+			return loadedThread
+		}
+
+		override suspend fun archiveThread(threadId: String): ThreadArchiveResult {
+			calls += "archiveThread:$threadId"
+			return ThreadArchiveResult(ok = true, threadId = threadId, archived = true)
 		}
 	}
 }

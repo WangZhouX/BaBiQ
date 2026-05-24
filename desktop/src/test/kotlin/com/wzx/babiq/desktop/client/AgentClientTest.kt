@@ -3,6 +3,7 @@ package com.wzx.babiq.desktop.client
 import com.wzx.babiq.desktop.protocol.JsonRpcRequest
 import com.wzx.babiq.desktop.protocol.SandboxPolicyResult
 import com.wzx.babiq.desktop.protocol.ServerEvent
+import com.wzx.babiq.desktop.protocol.ThreadItem
 import com.wzx.babiq.desktop.protocol.protocolJson
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -112,6 +113,48 @@ class AgentClientTest {
 	}
 
 	@Test
+	fun `listThreads 发送 thread list 并解析最近会话`() = runTest {
+		val transport = FakeAgentTransport()
+		val client = AgentClient(transport, backgroundScope)
+		client.connect()
+
+		val result = client.listThreads("E:\\BaBiQ")
+
+		val request = transport.sent.single()
+		assertEquals("thread/list", request.method)
+		assertEquals("E:\\BaBiQ", request.paramsText("cwd"))
+		assertEquals("thr_1", result.threads.single().threadId)
+	}
+
+	@Test
+	fun `loadThread 发送 thread load 并解析历史 item`() = runTest {
+		val transport = FakeAgentTransport()
+		val client = AgentClient(transport, backgroundScope)
+		client.connect()
+
+		val result = client.loadThread("thr_1")
+
+		val request = transport.sent.single()
+		assertEquals("thread/load", request.method)
+		assertEquals("thr_1", request.paramsText("threadId"))
+		assertIs<ThreadItem.UserMessage>(result.items.single())
+	}
+
+	@Test
+	fun `archiveThread 发送 thread archive`() = runTest {
+		val transport = FakeAgentTransport()
+		val client = AgentClient(transport, backgroundScope)
+		client.connect()
+
+		val result = client.archiveThread("thr_1")
+
+		val request = transport.sent.single()
+		assertEquals("thread/archive", request.method)
+		assertEquals("thr_1", request.paramsText("threadId"))
+		assertTrue(result.archived)
+	}
+
+	@Test
 	fun `json rpc error 会转成 AgentClientException`() = runTest {
 		val transport = FakeAgentTransport(errorMethods = setOf("thread/create"))
 		val client = AgentClient(transport, backgroundScope)
@@ -190,6 +233,52 @@ class AgentClientTest {
 				"sandbox/policy" -> buildJsonObject {
 					put("mode", "DANGER_FULL_ACCESS")
 					put("label", "完全访问权限")
+				}
+				"thread/list" -> buildJsonObject {
+					put(
+						"threads",
+						buildJsonArray {
+							add(
+								buildJsonObject {
+									put("threadId", "thr_1")
+									put("title", "分析 BaBiQ 项目结构")
+									put("cwd", "E:\\BaBiQ")
+									put("providerId", "deepseek")
+									put("model", "deepseek-v4-pro")
+									put("status", "active")
+									put("lastTurnStatus", "COMPLETED")
+									put("updatedAt", "2026-05-24T08:00:00Z")
+									put("messageCount", 1)
+								},
+							)
+						},
+					)
+				}
+				"thread/load" -> buildJsonObject {
+					put(
+						"thread",
+						buildJsonObject {
+							put("threadId", "thr_1")
+							put("title", "分析 BaBiQ 项目结构")
+							put("cwd", "E:\\BaBiQ")
+							put("status", "active")
+						},
+					)
+					put(
+						"items",
+						buildJsonArray {
+							add(buildJsonObject {
+								put("id", "it_user")
+								put("type", "userMessage")
+								put("text", "你好")
+							})
+						},
+					)
+				}
+				"thread/archive" -> buildJsonObject {
+					put("ok", true)
+					put("threadId", "thr_1")
+					put("archived", true)
 				}
 				else -> buildJsonObject { put("ok", true) }
 			}

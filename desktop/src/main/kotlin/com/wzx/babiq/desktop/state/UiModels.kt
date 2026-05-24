@@ -3,6 +3,7 @@ package com.wzx.babiq.desktop.state
 import com.wzx.babiq.desktop.protocol.ApprovalRequestPayload
 import com.wzx.babiq.desktop.protocol.ProviderInfo
 import com.wzx.babiq.desktop.protocol.ThreadItem
+import com.wzx.babiq.desktop.protocol.ThreadSummaryInfo
 import kotlinx.serialization.json.JsonElement
 
 /** WebSocket 连接状态，直接驱动顶部连接徽标和发送/审批可用性。 */
@@ -169,6 +170,58 @@ data class ProviderState(
 	val active: ProviderSelection = ProviderSelection(),
 	val loading: Boolean = false,
 	val error: String? = null,
+)
+
+/**
+ * Sidebar 中展示的一条最近会话。
+ *
+ * 它从后端 ThreadSummaryInfo 转换而来，只保留 UI 需要的字段；这样 UI 不直接依赖协议 DTO 的全部细节。
+ *
+ * @property threadId 会话 id，点击时用于 thread/load。
+ * @property title 会话标题。
+ * @property cwd 会话所属工作目录。
+ * @property status 会话状态，例如 active。
+ * @property lastTurnStatus 最近一轮 turn 状态。
+ * @property updatedLabel 面向用户的更新时间文本。
+ * @property messageCount 已保存 item 数量。
+ */
+data class ThreadListItem(
+	val threadId: String,
+	val title: String,
+	val cwd: String,
+	val status: String,
+	val lastTurnStatus: String?,
+	val updatedLabel: String,
+	val messageCount: Long,
+) {
+	companion object {
+		/** 把后端会话摘要转成 UI 列表项。 */
+		fun from(summary: ThreadSummaryInfo): ThreadListItem =
+			ThreadListItem(
+				threadId = summary.threadId,
+				title = summary.title,
+				cwd = summary.cwd,
+				status = summary.status,
+				lastTurnStatus = summary.lastTurnStatus,
+				updatedLabel = summary.updatedAt.take(16).replace("T", " "),
+				messageCount = summary.messageCount,
+			)
+	}
+}
+
+/**
+ * 最近会话列表状态。
+ *
+ * @property loading true 表示正在从后端刷新 thread/list。
+ * @property error 最近一次加载或归档失败的错误。
+ * @property items 当前工作目录下的最近会话。
+ * @property selectedThreadId 当前聊天主区打开的历史会话 id。
+ */
+data class ThreadHistoryState(
+	val loading: Boolean = false,
+	val error: String? = null,
+	val items: List<ThreadListItem> = emptyList(),
+	val selectedThreadId: String? = null,
 )
 
 /**

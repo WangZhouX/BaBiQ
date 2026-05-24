@@ -26,6 +26,9 @@ fun AppShell(
 	onSend: (String) -> Unit,
 	onRetryConnection: () -> Unit,
 	onSelectScreen: (Screen) -> Unit,
+	onNewChat: () -> Unit,
+	onOpenThread: (String) -> Unit,
+	onArchiveThread: (String) -> Unit,
 	onSelectWorkspace: (String) -> Unit,
 	onSelectProvider: (String, String?) -> Unit,
 	onToggleRuntime: () -> Unit,
@@ -38,6 +41,9 @@ fun AppShell(
 		Sidebar(
 			state = state,
 			onSelectScreen = onSelectScreen,
+			onNewChat = onNewChat,
+			onOpenThread = onOpenThread,
+			onArchiveThread = onArchiveThread,
 		)
 		// 中间区域占满剩余空间，Chat 和 Settings 互斥显示。
 		Box(modifier = Modifier.weight(1f)) {

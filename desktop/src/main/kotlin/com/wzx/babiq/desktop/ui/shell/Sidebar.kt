@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -20,6 +21,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.wzx.babiq.desktop.state.AppState
 import com.wzx.babiq.desktop.state.Screen
+import com.wzx.babiq.desktop.state.ThreadListItem
 import com.wzx.babiq.desktop.ui.theme.BaBiQColors
 
 /**
@@ -31,6 +33,9 @@ import com.wzx.babiq.desktop.ui.theme.BaBiQColors
 fun Sidebar(
 	state: AppState,
 	onSelectScreen: (Screen) -> Unit,
+	onNewChat: () -> Unit,
+	onOpenThread: (String) -> Unit,
+	onArchiveThread: (String) -> Unit,
 ) {
 	Column(
 		modifier = Modifier
@@ -41,7 +46,10 @@ fun Sidebar(
 		verticalArrangement = Arrangement.spacedBy(14.dp),
 	) {
 		Text("BaBiQ", style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold))
-		SidebarAction("＋ 新对话", enabled = true) { onSelectScreen(Screen.Chat) }
+		SidebarAction("＋ 新对话", enabled = true) {
+			onSelectScreen(Screen.Chat)
+			onNewChat()
+		}
 		// 下面三个入口是 P2+ 占位，禁用是为了避免误导用户以为已经接入真实能力。
 		SidebarAction("⌕ 搜索", enabled = false) { }
 		SidebarAction("◇ 插件", enabled = false) { }
@@ -61,10 +69,13 @@ fun Sidebar(
 			style = MaterialTheme.typography.labelMedium,
 			modifier = Modifier.padding(top = 18.dp),
 		)
-		Text(
-			text = state.messages.lastOrNull()?.let { "当前对话" } ?: "暂无对话",
-			style = MaterialTheme.typography.bodyMedium,
-			color = if (state.messages.isEmpty()) BaBiQColors.Muted else BaBiQColors.Ink,
+		RecentThreads(
+			items = state.threadHistory.items,
+			loading = state.threadHistory.loading,
+			error = state.threadHistory.error,
+			selectedThreadId = state.threadHistory.selectedThreadId,
+			onOpenThread = onOpenThread,
+			onArchiveThread = onArchiveThread,
 		)
 		Spacer(Modifier.weight(1f))
 		SidebarAction("⚙ 设置", enabled = true) { onSelectScreen(Screen.Settings) }
@@ -106,5 +117,87 @@ private fun SidebarProject(title: String, subtitle: String) {
 			Text(title, style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium))
 			Text(subtitle, style = MaterialTheme.typography.labelSmall, color = BaBiQColors.Muted)
 		}
+	}
+}
+
+/**
+ * 最近会话区域。
+ *
+ * loading/error/empty 都在这里收口，避免 Sidebar 主体堆满分支。
+ */
+@Composable
+private fun RecentThreads(
+	items: List<ThreadListItem>,
+	loading: Boolean,
+	error: String?,
+	selectedThreadId: String?,
+	onOpenThread: (String) -> Unit,
+	onArchiveThread: (String) -> Unit,
+) {
+	when {
+		loading -> Text("加载中...", style = MaterialTheme.typography.bodyMedium, color = BaBiQColors.Muted)
+		error != null -> Text(error, style = MaterialTheme.typography.bodySmall, color = Color(0xFFB45309))
+		items.isEmpty() -> Text("暂无对话", style = MaterialTheme.typography.bodyMedium, color = BaBiQColors.Muted)
+		else -> Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+			items.forEach { item ->
+				RecentThreadRow(
+					item = item,
+					selected = item.threadId == selectedThreadId,
+					onOpenThread = onOpenThread,
+					onArchiveThread = onArchiveThread,
+				)
+			}
+		}
+	}
+}
+
+/**
+ * 最近会话单行。
+ *
+ * 归档入口独立放在右侧，避免标题文字和操作挤在一起。
+ */
+@Composable
+private fun RecentThreadRow(
+	item: ThreadListItem,
+	selected: Boolean,
+	onOpenThread: (String) -> Unit,
+	onArchiveThread: (String) -> Unit,
+) {
+	Row(
+		modifier = Modifier
+			.fillMaxWidth()
+			.background(
+				color = if (selected) Color(0xFFE8EEF8) else Color.Transparent,
+				shape = RoundedCornerShape(6.dp),
+			)
+			.padding(horizontal = 8.dp, vertical = 7.dp),
+		verticalAlignment = Alignment.CenterVertically,
+		horizontalArrangement = Arrangement.spacedBy(8.dp),
+	) {
+		Column(
+			modifier = Modifier
+				.weight(1f)
+				.clickable { onOpenThread(item.threadId) },
+			verticalArrangement = Arrangement.spacedBy(2.dp),
+		) {
+			Text(
+				text = item.title,
+				style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+				color = BaBiQColors.Ink,
+				maxLines = 1,
+			)
+			Text(
+				text = listOfNotNull(item.lastTurnStatus, "${item.messageCount} 项").joinToString(" · "),
+				style = MaterialTheme.typography.labelSmall,
+				color = BaBiQColors.Muted,
+				maxLines = 1,
+			)
+		}
+		Text(
+			text = "归档",
+			style = MaterialTheme.typography.labelSmall,
+			color = BaBiQColors.Muted,
+			modifier = Modifier.clickable { onArchiveThread(item.threadId) },
+		)
 	}
 }

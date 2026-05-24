@@ -2,6 +2,7 @@ package com.wzx.babiq.desktop.state
 
 import com.wzx.babiq.desktop.client.AgentGateway
 import com.wzx.babiq.desktop.protocol.ProviderInfo
+import com.wzx.babiq.desktop.protocol.ServerEvent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -199,6 +200,102 @@ class ChatController(
 		}
 	}
 
+	/**
+	 * 开始一个空白新对话。
+	 *
+	 * 历史列表不能被清空；它代表 SQLite 中已存在的会话，而新对话只重置当前主区上下文。
+	 */
+	fun newChat() {
+		_state.update {
+			it.copy(
+				currentThreadId = null,
+				currentThreadTitle = null,
+				currentTurnId = null,
+				turnState = TurnState.Idle,
+				messages = emptyList(),
+				runtimeEvents = emptyList(),
+				latestSummary = null,
+				pendingApproval = null,
+				threadHistory = it.threadHistory.copy(selectedThreadId = null),
+				bannerMessage = null,
+				lastError = null,
+			)
+		}
+	}
+
+	/**
+	 * 打开一条历史会话，并用 thread/load 返回的 item 替换当前消息流。
+	 */
+	suspend fun openThread(threadId: String) {
+		_state.update { it.copy(threadHistory = it.threadHistory.copy(loading = true, error = null)) }
+		try {
+			val loaded = gateway.loadThread(threadId)
+			val messages = ChatReducer.messagesFromItems(loaded.items)
+			_state.update {
+				it.copy(
+					workspace = it.workspace.copy(
+						projectName = projectNameFrom(loaded.thread.cwd),
+						cwd = loaded.thread.cwd,
+					),
+					currentThreadId = loaded.thread.threadId,
+					currentThreadTitle = loaded.thread.title,
+					currentTurnId = null,
+					turnState = TurnState.Idle,
+					messages = messages,
+					runtimeEvents = emptyList(),
+					latestSummary = loaded.latestSummary ?: ChatReducer.latestSummaryFromItems(loaded.items),
+					pendingApproval = null,
+					threadHistory = it.threadHistory.copy(
+						loading = false,
+						error = null,
+						selectedThreadId = loaded.thread.threadId,
+					),
+					bannerMessage = null,
+					lastError = null,
+				)
+			}
+		} catch (exception: Exception) {
+			_state.update {
+				it.copy(
+					threadHistory = it.threadHistory.copy(loading = false, error = exception.message),
+					lastError = exception.message,
+				)
+			}
+		}
+	}
+
+	/**
+	 * 软归档一条历史会话。
+	 */
+	suspend fun archiveThread(threadId: String) {
+		try {
+			gateway.archiveThread(threadId)
+			_state.update {
+				val wasCurrentThread = it.currentThreadId == threadId
+				it.copy(
+					currentThreadId = if (wasCurrentThread) null else it.currentThreadId,
+					currentThreadTitle = if (wasCurrentThread) null else it.currentThreadTitle,
+					currentTurnId = if (wasCurrentThread) null else it.currentTurnId,
+					messages = if (wasCurrentThread) emptyList() else it.messages,
+					latestSummary = if (wasCurrentThread) null else it.latestSummary,
+					threadHistory = it.threadHistory.copy(
+						items = it.threadHistory.items.filterNot { item -> item.threadId == threadId },
+						selectedThreadId = it.threadHistory.selectedThreadId?.takeUnless { selected -> selected == threadId },
+						error = null,
+					),
+					lastError = null,
+				)
+			}
+		} catch (exception: Exception) {
+			_state.update {
+				it.copy(
+					threadHistory = it.threadHistory.copy(error = exception.message),
+					lastError = exception.message,
+				)
+			}
+		}
+	}
+
 	fun selectWorkspace(cwd: String) {
 		val selected = normalizeWorkspace(cwd)
 		if (selected == null) {
@@ -232,6 +329,7 @@ class ChatController(
 				),
 				// 后端 Thread 与 cwd 绑定，切换目录后必须从新 Thread 开始，避免 UI 历史和后端上下文错位。
 				currentThreadId = null,
+				currentThreadTitle = null,
 				currentTurnId = null,
 				turnState = TurnState.Idle,
 				messages = emptyList(),
@@ -241,6 +339,9 @@ class ChatController(
 				lastError = null,
 				bannerMessage = "已切换工作目录: $selected",
 			)
+		}
+		scope.launch(start = CoroutineStart.UNDISPATCHED) {
+			loadThreadHistory(selected)
 		}
 	}
 
@@ -264,6 +365,7 @@ class ChatController(
 		startCollectingEvents()
 		loadProviders()
 		loadSandboxPolicy()
+		loadThreadHistory(state.value.workspace.cwd)
 	}
 
 	private fun handleConnectionFailure(exception: Exception) {
@@ -319,6 +421,32 @@ class ChatController(
 		scope.launch(start = CoroutineStart.UNDISPATCHED) {
 			gateway.events.collect { event ->
 				applyEvent(AgentEvent.Server(event))
+				if (event.shouldRefreshThreadHistory()) {
+					loadThreadHistory(state.value.workspace.cwd)
+				}
+			}
+		}
+	}
+
+	private suspend fun loadThreadHistory(cwd: String = state.value.workspace.cwd) {
+		_state.update { it.copy(threadHistory = it.threadHistory.copy(loading = true, error = null)) }
+		try {
+			val result = gateway.listThreads(cwd)
+			_state.update {
+				it.copy(
+					threadHistory = it.threadHistory.copy(
+						loading = false,
+						error = null,
+						items = result.threads.map(ThreadListItem::from),
+					),
+				)
+			}
+		} catch (exception: Exception) {
+			_state.update {
+				it.copy(
+					threadHistory = it.threadHistory.copy(loading = false, error = exception.message),
+					lastError = exception.message,
+				)
 			}
 		}
 	}
@@ -387,4 +515,7 @@ class ChatController(
 
 	private fun projectNameFrom(cwd: String): String =
 		Path.of(cwd).fileName?.toString()?.ifBlank { null } ?: cwd
+
+	private fun ServerEvent.shouldRefreshThreadHistory(): Boolean =
+		this is ServerEvent.TurnCompleted || this is ServerEvent.TurnFailed
 }

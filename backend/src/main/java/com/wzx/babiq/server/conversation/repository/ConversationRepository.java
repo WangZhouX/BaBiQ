@@ -72,6 +72,32 @@ public interface ConversationRepository {
     List<ItemRecord> listItems(String threadId, int limit);
 
     /**
+     * 按会话读取 item，并支持向更早历史分页。
+     *
+     * @param threadId 会话标识
+     * @param limit 最大返回数量
+     * @param beforeItemId 可选游标；非空时只返回该 item 之前的记录
+     * @return 按 sequenceNo 正序排列的 item 记录
+     */
+    List<ItemRecord> listItems(String threadId, int limit, String beforeItemId);
+
+    /**
+     * 统计会话内已经保存的 item 数量。
+     *
+     * @param threadId 会话标识
+     * @return item 数量
+     */
+    long countItems(String threadId);
+
+    /**
+     * 查询会话最近一轮 turn 的状态。
+     *
+     * @param threadId 会话标识
+     * @return 找到 turn 时返回状态，否则为空
+     */
+    Optional<String> findLatestTurnStatus(String threadId);
+
+    /**
      * 保存或更新 turn 摘要。
      *
      * @param record 摘要记录

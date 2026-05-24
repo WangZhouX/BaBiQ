@@ -13,7 +13,9 @@ import com.wzx.babiq.desktop.protocol.ThreadItem
  * @property turnState 当前 turn 的生命周期状态，决定发送、取消、审批按钮是否可用。
  * @property workspace 当前工作区上下文，包含 cwd 和后端返回的权限模式等输入框上下文条信息。
  * @property providerState 后端可用模型列表、当前选中模型以及加载/错误状态。
+ * @property threadHistory Sidebar 最近会话列表的真实后端数据。
  * @property currentThreadId 后端 thread id；为空表示还没有为当前工作区创建会话。
+ * @property currentThreadTitle 当前打开会话的标题；新对话或未加载历史时为空。
  * @property currentTurnId 当前正在执行或刚结束的 turn id，用于取消、审批和事件归属。
  * @property messages 聊天主列表里的用户消息、助手消息、工具消息和摘要消息。
  * @property runtimeEvents 运行详情抽屉里的过程事件，例如工具调用、文件变更和错误。
@@ -30,7 +32,9 @@ data class AppState(
 	val turnState: TurnState = TurnState.Idle,
 	val workspace: WorkspaceContext = WorkspaceContext(),
 	val providerState: ProviderState = ProviderState(),
+	val threadHistory: ThreadHistoryState = ThreadHistoryState(),
 	val currentThreadId: String? = null,
+	val currentThreadTitle: String? = null,
 	val currentTurnId: String? = null,
 	val messages: List<ChatMessage> = emptyList(),
 	val runtimeEvents: List<RuntimeEvent> = emptyList(),

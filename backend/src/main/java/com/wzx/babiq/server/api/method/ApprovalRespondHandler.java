@@ -9,6 +9,7 @@ import com.wzx.babiq.server.api.JsonRpcMethodHandler;
 import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
 import com.wzx.babiq.server.api.error.JsonRpcException;
 import com.wzx.babiq.server.conversation.ConversationService;
+import com.wzx.babiq.server.conversation.ConversationEventRecorder;
 import com.wzx.babiq.server.conversation.ItemEmitter;
 import com.wzx.babiq.server.conversation.Thread;
 import com.wzx.babiq.server.conversation.Turn;
@@ -38,6 +39,8 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
     private final TurnExecutor turnExecutor;
     /** 记录 approve/deny/edit 等审批决策指标。 */
     private final BaBiQMetrics metrics;
+    /** 运行事件记录器，审批恢复后的新 item 也必须进入历史数据库。 */
+    private final ConversationEventRecorder eventRecorder;
 
     /**
      * 创建 approval/respond handler。
@@ -53,11 +56,32 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
                                   ObjectMapper objectMapper,
                                   TurnExecutor turnExecutor,
                                   BaBiQMetrics metrics) {
+        this(pendingApprovals, conversationService, objectMapper, turnExecutor, metrics, null);
+    }
+
+    /**
+     * 创建带持久化记录器的 approval/respond handler。
+     *
+     * @param pendingApprovals 待审批元数据缓存
+     * @param conversationService 对话生命周期服务
+     * @param objectMapper JSON 序列化器
+     * @param turnExecutor Agent 异步执行器
+     * @param metrics P1 可观测指标聚合器
+     * @param eventRecorder 运行事件记录器
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    public ApprovalRespondHandler(PendingApprovals pendingApprovals,
+                                  ConversationService conversationService,
+                                  ObjectMapper objectMapper,
+                                  TurnExecutor turnExecutor,
+                                  BaBiQMetrics metrics,
+                                  ConversationEventRecorder eventRecorder) {
         this.pendingApprovals = pendingApprovals;
         this.conversationService = conversationService;
         this.objectMapper = objectMapper;
         this.turnExecutor = turnExecutor;
         this.metrics = metrics;
+        this.eventRecorder = eventRecorder;
     }
 
     /**
@@ -93,7 +117,7 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
         Thread thread = conversationService.findThread(threadId)
                 .orElseThrow(() -> new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "thread 不存在: " + threadId));
         turn.resume();
-        ItemEmitter emitter = new ItemEmitter(session, objectMapper, threadId, turnId);
+        ItemEmitter emitter = new ItemEmitter(session, objectMapper, threadId, turnId, eventRecorder);
         InterruptionMetadata feedback = buildFeedback(original, decision, editedArgs);
         metrics.recordApprovalDecision(canonicalDecision(decision));
         turnExecutor.submitResume(turn, feedback, thread.cwd(), emitter);
