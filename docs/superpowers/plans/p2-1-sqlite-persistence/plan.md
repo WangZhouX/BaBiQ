@@ -52,7 +52,7 @@ P2-1 实现时继续使用这些稳定版本，不使用 snapshot、RC、Beta、
 - Create: `backend/src/main/java/com/wzx/babiq/server/persistence/config/MyBatisPlusConfig.java`
   - `@MapperScan`，注册 `MybatisPlusInterceptor` 和 `PaginationInnerInterceptor(DbType.SQLITE)`。
 - Create: `backend/src/main/resources/db/migration/V2__create_p2_persistence_tables.sql`
-  - 创建 P2 初始表、唯一索引、外键和查询索引。
+  - 创建 P2 初始表、唯一索引、外键、查询索引和 `bq_schema_comments` 字段中文说明元数据表。
 - Create: `backend/src/main/java/com/wzx/babiq/server/persistence/entity/*Entity.java`
   - 数据库实体，不作为协议 DTO 返回。
 - Create: `backend/src/main/java/com/wzx/babiq/server/persistence/mapper/*Mapper.java`
@@ -71,6 +71,7 @@ P2-1 实现时继续使用这些稳定版本，不使用 snapshot、RC、Beta、
 ### 后端测试
 
 - Create: `backend/src/test/java/com/wzx/babiq/server/persistence/SQLiteMigrationIT.java`
+- Create: `backend/src/test/java/com/wzx/babiq/server/persistence/SchemaCommentsCoverageTest.java`
 - Create: `backend/src/test/java/com/wzx/babiq/server/persistence/MyBatisPlusConfigTest.java`
 - Create: `backend/src/test/java/com/wzx/babiq/server/persistence/RepositoryAdapterIT.java`
 - Create: `backend/src/test/java/com/wzx/babiq/server/settings/SecretStoreTest.java`
@@ -95,6 +96,7 @@ Migration 必须创建以下表:
 | `bq_approvals` | 审批请求和结果，保存 tool、args、edited args、decision、scope、状态 |
 | `bq_provider_configs` | Provider 配置，保存 display name、type、base url、model、secret ref、启用状态 |
 | `bq_app_settings` | 普通 app 设置，保存 key/value/type |
+| `bq_schema_comments` | SQLite 字段中文说明元数据表，保存每张业务表和每个业务字段的中文注释 |
 
 约束要求:
 
@@ -104,6 +106,18 @@ Migration 必须创建以下表:
 - SQLite 需要启用 `PRAGMA foreign_keys=ON`，否则外键不会生效。
 - `bq_items(thread_id, turn_id, sequence_no)` 建索引，支持 P2-2 加载历史 item 流。
 - `bq_threads(updated_at)` 建索引，支持最近会话列表。
+- 每张表和每个字段必须有中文注释；SQLite 不保存原生列注释，所以必须同时写 SQL `--` 注释和 `bq_schema_comments` 元数据。
+
+### 3.1 字段中文注释硬规则
+
+P2-1 migration 必须满足以下规则:
+
+- 每个 `CREATE TABLE` 前写中文 `--` 表注释。
+- 每个字段定义前写中文 `--` 字段注释，说明字段含义、写入来源、读取方和空值语义。
+- `bq_schema_comments` 使用 `table_name + column_name` 唯一约束；表级说明使用 `column_name='__table__'`。
+- 每创建一张表或新增一个字段，都必须 `INSERT OR REPLACE INTO bq_schema_comments(...)` 写入中文说明。
+- `SchemaCommentsCoverageTest` 必须用 `PRAGMA table_info(<table>)` 扫描所有 `bq_*` 表，校验每个字段都能在 `bq_schema_comments` 中查到非空中文说明。
+- Entity 字段必须有中文字段级注释，和 `bq_schema_comments.comment` 语义保持一致。
 
 ## 4. 任务分解
 
@@ -210,6 +224,7 @@ git commit -m "feat(p2-1): 添加 SQLite 持久化依赖和配置"
 - Create: `backend/src/main/resources/db/migration/V2__create_p2_persistence_tables.sql`
 - Modify: `backend/src/main/java/com/wzx/babiq/server/persistence/config/SQLiteConnectionInitializer.java`
 - Test: `backend/src/test/java/com/wzx/babiq/server/persistence/SQLiteMigrationIT.java`
+- Test: `backend/src/test/java/com/wzx/babiq/server/persistence/SchemaCommentsCoverageTest.java`
 
 - [ ] **Step 1: 写失败测试，验证 migration 自动建表**
 
@@ -231,10 +246,12 @@ static void persistenceProperties(DynamicPropertyRegistry registry) {
 
 断言:
 
-- `bq_threads` 等 7 张表存在。
+- `bq_threads` 等 7 张业务表存在。
+- `bq_schema_comments` 存在。
 - `flyway_schema_history` 存在。
 - `PRAGMA foreign_keys` 返回 `1`。
 - `PRAGMA journal_mode` 返回 `wal` 或在当前环境允许时等于 `wal`。
+- 所有 `bq_*` 表字段都有中文注释元数据。
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -259,6 +276,24 @@ CREATE INDEX IF NOT EXISTS ix_bq_threads_updated_at ON bq_threads(updated_at);
 
 每张表字段按 §3 表设计实现。时间字段统一使用 `TEXT NOT NULL` 保存 ISO-8601 字符串，避免 SQLite 时区和 Java `Instant` 映射复杂度污染 P2-1。
 
+每个表和字段都必须写中文注释，例如:
+
+```sql
+-- 会话线程表：保存桌面端每个对话的业务标识、工作目录和归档状态。
+CREATE TABLE IF NOT EXISTS bq_threads (
+    -- 数据库内部主键，只供 SQLite 关联和排序使用，不暴露给 JSON-RPC 协议。
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- 协议层 thread id，由 ConversationService 创建，桌面端通过它加载历史会话。
+    thread_id TEXT NOT NULL
+);
+
+INSERT OR REPLACE INTO bq_schema_comments(table_name, column_name, comment, created_at, updated_at)
+VALUES
+    ('bq_threads', '__table__', '会话线程表：保存桌面端每个对话的业务标识、工作目录和归档状态。', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('bq_threads', 'id', '数据库内部主键，只供 SQLite 关联和排序使用，不暴露给 JSON-RPC 协议。', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+    ('bq_threads', 'thread_id', '协议层 thread id，由 ConversationService 创建，桌面端通过它加载历史会话。', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+```
+
 - [ ] **Step 4: 实现连接初始化**
 
 `SQLiteConnectionInitializer` 使用 `DataSource` 获取连接并执行:
@@ -269,7 +304,7 @@ PRAGMA journal_mode = WAL;
 PRAGMA busy_timeout = 5000;
 ```
 
-中文注释必须解释: SQLite 外键默认不启用，WAL 是桌面本地读写体验选择，busy timeout 是避免短暂锁竞争直接失败。
+中文注释必须解释: SQLite 外键默认不启用，WAL 是桌面本地读写体验选择，busy timeout 是避免短暂锁竞争直接失败。数据库字段注释必须解释字段业务含义，不允许写“字段 id”这类空注释。
 
 - [ ] **Step 5: 运行 migration 测试**
 
@@ -278,6 +313,7 @@ Run:
 ```powershell
 cd backend
 .\mvnw.cmd -Dtest=SQLiteMigrationIT test
+.\mvnw.cmd -Dtest=SchemaCommentsCoverageTest test
 ```
 
 Expected: PASS。
@@ -285,7 +321,7 @@ Expected: PASS。
 - [ ] **Step 6: 提交**
 
 ```powershell
-git add backend/src/main/resources/db/migration backend/src/main/java/com/wzx/babiq/server/persistence/config/SQLiteConnectionInitializer.java backend/src/test/java/com/wzx/babiq/server/persistence/SQLiteMigrationIT.java
+git add backend/src/main/resources/db/migration backend/src/main/java/com/wzx/babiq/server/persistence/config/SQLiteConnectionInitializer.java backend/src/test/java/com/wzx/babiq/server/persistence/SQLiteMigrationIT.java backend/src/test/java/com/wzx/babiq/server/persistence/SchemaCommentsCoverageTest.java
 git commit -m "feat(p2-1): 创建 P2 SQLite migration"
 ```
 
@@ -555,7 +591,7 @@ Run:
 ```powershell
 cd backend
 .\mvnw.cmd -Dtest=MyBatisPlusConfigTest,SecretStoreTest test
-.\mvnw.cmd -Dtest=SQLiteMigrationIT,RepositoryAdapterIT test
+.\mvnw.cmd -Dtest=SQLiteMigrationIT,SchemaCommentsCoverageTest,RepositoryAdapterIT test
 ```
 
 Expected: PASS。
@@ -578,6 +614,7 @@ Expected: PASS，P1 既有测试不回归。
 - 已实现文件。
 - 数据库默认路径。
 - migration 版本。
+- 数据库表/字段中文注释覆盖情况。
 - 已跑命令和结果。
 - P2-2 接入时应优先使用哪些 repository。
 - 未接入运行链路的边界说明。
@@ -604,7 +641,8 @@ P2-1 只有在以下条件全部满足时才算完成:
 
 - `backend/pom.xml` 使用已核对的稳定版本。
 - SQLite 文件数据库能在临时目录和默认目录配置下启动。
-- Flyway 自动创建 7 张 P2 表。
+- Flyway 自动创建 7 张 P2 业务表和 `bq_schema_comments` 元数据表。
+- 每张 `bq_*` 表和每个字段都有中文注释，且 `SchemaCommentsCoverageTest` 通过。
 - `PRAGMA foreign_keys=ON` 生效。
 - MyBatis-Plus mapper 能插入、查询、分页。
 - Repository adapter 测试不依赖 mapper 细节。

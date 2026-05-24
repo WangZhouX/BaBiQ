@@ -16,8 +16,17 @@ P2-1 只负责建立持久化底座:
 - persistence service。
 - repository adapter。
 - SecretStore 接口边界。
+- `bq_schema_comments` 元数据表。
+- 每张数据库业务表、每个字段的中文注释覆盖测试。
 
 P2-1 不替换现有内存态 `ConversationService`，不改变桌面端 UI 行为。多会话历史和运行恢复留到 P2-2 / P2-4。
+
+## 数据库注释要求
+
+- SQLite 不支持原生字段 COMMENT，因此 migration 必须同时提供 SQL `--` 中文注释和 `bq_schema_comments` 元数据。
+- 每个 `CREATE TABLE` 和每个字段定义前必须有中文 `--` 注释。
+- `bq_schema_comments` 中必须记录每张表和每个字段的中文说明。
+- `SchemaCommentsCoverageTest` 必须通过，确保后续新增表/字段不会漏注释。
 
 ## 版本核对
 

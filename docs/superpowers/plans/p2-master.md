@@ -59,6 +59,7 @@ P1 总体验收状态:
 | SQLite 持久化 | 本地单文件数据库，保存 thread、turn、item、summary、approval、provider config、app setting |
 | MyBatis-Plus 分层 | 采用 `entity / mapper / persistence service / repository adapter / application service` 分层 |
 | Migration | 使用 migration 脚本创建和升级表结构，禁止手动建表或依赖 `ddl-auto` |
+| 数据库中文注释 | 每张业务表、每个业务字段都必须有中文说明；SQLite 用 SQL `--` 注释 + `bq_schema_comments` 元数据表双重记录 |
 | 多会话历史 | 实现 `thread/list`、`thread/load`、`thread/archive`，桌面端最近对话改为真实数据 |
 | 会话恢复 | 后端重启后能恢复历史 Thread、Turn、Item，桌面端可继续旧会话 |
 | 设置系统 | Provider 新增/编辑/删除/测试连接；沙箱权限和审批策略可在 UI 修改并影响下一轮 turn |
@@ -140,6 +141,7 @@ P2-6 MCP Client 最小接入（可选）
 | P2-D10 | 设置生效范围 | 默认影响下一轮 turn，不中途改 running turn | 保持 P1 已建立的 turn 上下文快照语义 |
 | P2-D11 | MyBatis-Plus 分页 | `PaginationInnerInterceptor(DbType.SQLITE)` | 官方分页插件支持 SQLite，单数据库建议显式指定 dbType |
 | P2-D12 | 官方能力查证 | 每个子计划开始前重新查官方文档和 Maven Central | 版本会变，禁止盲用过期版本或 RC/Beta/EAP |
+| P2-D13 | 数据库字段注释 | SQL `--` 注释 + `bq_schema_comments` 元数据表 + Entity 字段注释 | SQLite 不保存原生列注释，必须让源码和数据库内元数据都能读到中文说明 |
 
 ---
 
@@ -225,6 +227,15 @@ backend/src/main/java/com/wzx/babiq/server/
 ## 6. 数据库初始表设计
 
 P2 子计划必须先写 migration，再写 mapper/entity。表名和字段可在子计划中细化，但必须覆盖以下语义。
+
+硬性注释规则:
+
+- 每个 migration 中的 `CREATE TABLE` 前必须有中文表注释。
+- 每个字段定义前必须有中文 `--` 注释，解释字段含义、写入来源、读取方和空值语义。
+- SQLite 不支持 MySQL/PostgreSQL 那类原生 column comment，因此 P2 必须创建并维护 `bq_schema_comments` 元数据表。
+- 每张 `bq_*` 业务表和每个业务字段都必须在 `bq_schema_comments` 中有一条非空中文说明。
+- 每个新增 migration 如果新增表或字段，必须同步 `INSERT OR REPLACE` 对应中文说明。
+- P2-1 必须提供测试，通过 `PRAGMA table_info` 扫描全部 `bq_*` 业务表，校验每个字段都有中文说明。
 
 ### `bq_threads`
 
@@ -326,6 +337,17 @@ P2 子计划必须先写 migration，再写 mapper/entity。表名和字段可�
 | `setting_key` | 设置 key |
 | `setting_value` | 设置值 |
 | `value_type` | `string / number / boolean / json` |
+| `updated_at` | 更新时间 |
+
+### `bq_schema_comments`
+
+| 字段 | 说明 |
+|---|---|
+| `id` | 数据库内部主键 |
+| `table_name` | 表名，例如 `bq_threads` |
+| `column_name` | 字段名；表级说明使用 `__table__` |
+| `comment` | 中文说明，必须非空 |
+| `created_at` | 创建时间 |
 | `updated_at` | 更新时间 |
 
 ---
@@ -485,6 +507,7 @@ P2 完成必须满足以下验收:
 - `cd backend && .\mvnw.cmd clean verify` 通过。
 - `cd desktop && .\gradlew.bat test` 通过。
 - SQLite migration 自动创建数据库。
+- 所有 `bq_*` 业务表和字段都有中文注释，`bq_schema_comments` 元数据覆盖测试通过。
 - 真实桌面端能创建新会话、发送消息、关闭重启后恢复。
 - 左侧最近对话来自数据库。
 - 历史会话能加载完整 item 流。

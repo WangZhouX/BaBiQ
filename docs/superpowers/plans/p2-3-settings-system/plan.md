@@ -46,6 +46,12 @@ SecretStore 需要在实现前重新确认:
 
 - Create: `backend/src/main/resources/db/migration/V3__settings_provider_policy.sql`
 
+Migration 注释要求:
+
+- 本阶段新增或修改的每张表、每个字段都必须在 SQL 中有中文 `--` 注释。
+- 新增 `bq_approval_rules` 或补齐 `bq_provider_configs` / `bq_app_settings` 字段时，必须同步写入 `bq_schema_comments`。
+- `SchemaCommentsCoverageTest` 必须继续通过，确保所有 `bq_*` 表字段都有中文说明。
+
 建议新增/确认表:
 
 ### `bq_provider_configs`

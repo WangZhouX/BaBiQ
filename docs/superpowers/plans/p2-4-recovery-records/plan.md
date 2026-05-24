@@ -126,6 +126,12 @@ P2-4 必须等待:
 
 - Create: `backend/src/main/resources/db/migration/V4__recovery_run_records.sql`
 
+Migration 注释要求:
+
+- 本阶段新增或修改的每张表、每个字段都必须在 SQL 中有中文 `--` 注释。
+- 新增 `bq_tool_calls` 或扩展 `bq_turns` / `bq_approvals` 字段时，必须同步写入 `bq_schema_comments`。
+- `SchemaCommentsCoverageTest` 必须继续通过，确保所有 `bq_*` 表字段都有中文说明。
+
 建议补充:
 
 - `bq_turns.recovery_reason`

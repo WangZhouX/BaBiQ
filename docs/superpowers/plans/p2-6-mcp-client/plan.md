@@ -98,6 +98,12 @@ babiq:
 
 - Create: `backend/src/main/resources/db/migration/V5__mcp_client.sql`
 
+Migration 注释要求:
+
+- 本阶段新增的 `bq_mcp_servers`、`bq_mcp_tools` 以及每个字段都必须在 SQL 中有中文 `--` 注释。
+- 新增表和字段必须同步写入 `bq_schema_comments`。
+- `SchemaCommentsCoverageTest` 必须继续通过，确保所有 `bq_*` 表字段都有中文说明。
+
 字段建议:
 
 | 表 | 字段 |
