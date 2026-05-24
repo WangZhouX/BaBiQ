@@ -3,6 +3,11 @@ package com.wzx.babiq.desktop.state
 import com.wzx.babiq.desktop.client.AgentGateway
 import com.wzx.babiq.desktop.protocol.AppSettingsResult
 import com.wzx.babiq.desktop.protocol.ApprovalPolicyResult
+import com.wzx.babiq.desktop.protocol.ModelCostStatsInfo
+import com.wzx.babiq.desktop.protocol.ObservabilityCostsResult
+import com.wzx.babiq.desktop.protocol.ObservabilitySnapshotResult
+import com.wzx.babiq.desktop.protocol.ObservabilityToolsResult
+import com.wzx.babiq.desktop.protocol.ObservabilityTotalsInfo
 import com.wzx.babiq.desktop.protocol.ProviderListResult
 import com.wzx.babiq.desktop.protocol.ProviderMutationResult
 import com.wzx.babiq.desktop.protocol.ProviderDeleteResult
@@ -312,10 +317,35 @@ class ChatControllerTest {
 
 		controller.toggleRuntimeDetails()
 
-		assertEquals(listOf("getRecoveryStatus", "listRunTurns:thr_history", "getRunTurn:turn-1"), gateway.calls)
+		assertEquals(
+			listOf("getRecoveryStatus", "listRunTurns:thr_history", "getRunTurn:turn-1", "getObservabilitySnapshot:7d:E:\\BaBiQ"),
+			gateway.calls,
+		)
 		assertEquals("turn-1", controller.state.value.runRecordState.selectedTurnId)
 		assertEquals(1, controller.state.value.runRecordState.turns.size)
 		assertEquals("cmd", controller.state.value.runRecordState.selectedDetail?.toolCalls?.single()?.toolName)
+		assertEquals(3L, controller.state.value.runRecordState.observability.snapshot?.totals?.turns)
+	}
+
+	@Test
+	fun `切换可观测 range 只刷新统计快照并保留聊天状态`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(
+			gateway,
+			backgroundScope,
+			initialState = AppState(
+				connectionState = ConnectionState.Connected,
+				currentThreadId = "thr_history",
+				messages = listOf(ChatMessage.User("msg-1", "保留我")),
+			),
+		)
+
+		controller.selectObservabilityRange("30d")
+
+		assertEquals(listOf("getObservabilitySnapshot:30d:E:\\BaBiQ"), gateway.calls)
+		assertEquals("30d", controller.state.value.runRecordState.observability.range)
+		assertEquals(3L, controller.state.value.runRecordState.observability.snapshot?.totals?.turns)
+		assertEquals("保留我", (controller.state.value.messages.single() as ChatMessage.User).text)
 	}
 
 	@Test
@@ -409,6 +439,11 @@ class ChatControllerTest {
 		),
 		private val runTurns: RunTurnListResult = RunTurnListResult(
 			turns = listOf(sampleRunTurn("turn-1")),
+		),
+		private val observabilitySnapshot: ObservabilitySnapshotResult = ObservabilitySnapshotResult(
+			range = "7d",
+			totals = ObservabilityTotalsInfo(turns = 3, failedTurns = 1, promptTokens = 120, completionTokens = 80, estimatedCostUsd = 0.0021),
+			byModel = listOf(ModelCostStatsInfo(providerId = "deepseek", model = "deepseek-v4-pro", turns = 3, estimatedCostUsd = 0.0021)),
 		),
 		private val recoveryStatus: RunRecoveryStatusResult = RunRecoveryStatusResult(
 			lastRecoveredAt = "2026-05-24T08:10:00Z",
@@ -548,6 +583,17 @@ class ChatControllerTest {
 			calls += "getRecoveryStatus"
 			return recoveryStatus
 		}
+
+		override suspend fun getObservabilitySnapshot(range: String, cwd: String?): ObservabilitySnapshotResult {
+			calls += "getObservabilitySnapshot:$range:$cwd"
+			return observabilitySnapshot.copy(range = range)
+		}
+
+		override suspend fun getObservabilityTools(range: String, cwd: String?): ObservabilityToolsResult =
+			ObservabilityToolsResult(range = range)
+
+		override suspend fun getObservabilityCosts(range: String, cwd: String?): ObservabilityCostsResult =
+			ObservabilityCostsResult(range = range)
 	}
 
 	private fun sampleRunTurn(turnId: String): RunTurnSummaryInfo =

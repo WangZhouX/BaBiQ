@@ -151,7 +151,7 @@ Response:
 - Create: `backend/src/main/java/com/wzx/babiq/server/observability/ToolStats.java`
 - Create: `backend/src/main/java/com/wzx/babiq/server/observability/ModelCostStats.java`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 覆盖:
 
@@ -161,14 +161,14 @@ Response:
 - 按工具聚合 calls/failures/avgDurationMs。
 - 空数据库返回 0 和空数组。
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 ```powershell
 cd backend
 .\mvnw.cmd -Dtest=LocalObservabilityServiceTest test
 ```
 
-- [ ] **Step 3: 实现服务**
+- [x] **Step 3: 实现服务**
 
 实现要求:
 
@@ -176,7 +176,7 @@ cd backend
 - SQL 聚合放 mapper 或 persistence service，不在 Java 中加载全量数据后统计。
 - 注释解释统计窗口和空值处理。
 
-- [ ] **Step 4: 运行测试通过**
+- [x] **Step 4: 运行测试通过**
 
 ```powershell
 cd backend
@@ -191,7 +191,7 @@ cd backend
 - Create: `backend/src/main/java/com/wzx/babiq/server/api/method/ObservabilityToolsHandler.java`
 - Create: `backend/src/main/java/com/wzx/babiq/server/api/method/ObservabilityCostsHandler.java`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 覆盖:
 
@@ -199,21 +199,21 @@ cd backend
 - 非法 range 返回 `INVALID_PARAMS`。
 - handler 委托 service，不直接访问 mapper。
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 ```powershell
 cd backend
 .\mvnw.cmd -Dtest=ObservabilityHandlersTest test
 ```
 
-- [ ] **Step 3: 实现 handlers**
+- [x] **Step 3: 实现 handlers**
 
 实现要求:
 
 - 返回 DTO 字段稳定。
 - 不把内部表字段名直接暴露为协议字段。
 
-- [ ] **Step 4: 运行测试通过**
+- [x] **Step 4: 运行测试通过**
 
 ```powershell
 cd backend
@@ -227,7 +227,7 @@ cd backend
 - Optional Create: `backend/src/main/java/com/wzx/babiq/server/observability/BaBiQMetricsEndpoint.java`
 - Optional Create: `backend/src/test/java/com/wzx/babiq/server/observability/BaBiQMetricsEndpointTest.java`
 
-- [ ] **Step 1: 决策是否启用 Actuator**
+- [x] **Step 1: 决策是否启用 Actuator**
 
 如果启用:
 
@@ -239,26 +239,17 @@ cd backend
 
 - 在 handoff 中说明 P2-5 只完成 JSON-RPC 本地统计接口。
 
-- [ ] **Step 2: 写测试**
+- [x] **Step 2: 写测试**
 
-```powershell
-cd backend
-.\mvnw.cmd -Dtest=BaBiQMetricsEndpointTest test
-```
+P2-5 决策为不启用 Actuator，因此不创建 `BaBiQMetricsEndpointTest`；相关边界写入 handoff。
 
-- [ ] **Step 3: 实现可选 endpoint**
+- [x] **Step 3: 实现可选 endpoint**
 
-要求:
+未启用可选 endpoint；JSON-RPC 统计接口已调用 `LocalObservabilityService`，没有重复统计逻辑。
 
-- endpoint 调用 `LocalObservabilityService`。
-- 不重复一套统计逻辑。
+- [x] **Step 4: 运行测试通过**
 
-- [ ] **Step 4: 运行测试通过**
-
-```powershell
-cd backend
-.\mvnw.cmd -Dtest=BaBiQMetricsEndpointTest test
-```
+不适用；已通过 `ObservabilityHandlersTest` 和后端 `clean verify` 覆盖 JSON-RPC 本地统计路径。
 
 ### Task 4: 桌面端本地统计展示
 
@@ -274,7 +265,7 @@ cd backend
 - Modify: `desktop/src/test/kotlin/com/wzx/babiq/desktop/client/AgentClientTest.kt`
 - Modify: `desktop/src/test/kotlin/com/wzx/babiq/desktop/state/ChatControllerTest.kt`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 覆盖:
 
@@ -282,14 +273,14 @@ cd backend
 - range 切换调用后端并更新状态。
 - 后端统计接口失败时展示错误，不影响聊天。
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 ```powershell
 cd desktop
 .\gradlew.bat test --tests "*AgentClientTest" --tests "*ChatControllerTest"
 ```
 
-- [ ] **Step 3: 实现 UI**
+- [x] **Step 3: 实现 UI**
 
 UI 要求:
 
@@ -297,7 +288,7 @@ UI 要求:
 - 显示 totals、provider/model、tool 三组信息。
 - 文本不能溢出运行详情面板。
 
-- [ ] **Step 4: 运行测试通过**
+- [x] **Step 4: 运行测试通过**
 
 ```powershell
 cd desktop
@@ -312,14 +303,14 @@ cd desktop
 - Modify: `AGENTS.md`
 - Modify: `CLAUDE.md`
 
-- [ ] **Step 1: 后端全量验证**
+- [x] **Step 1: 后端全量验证**
 
 ```powershell
 cd backend
 .\mvnw.cmd clean verify
 ```
 
-- [ ] **Step 2: 桌面端全量验证**
+- [x] **Step 2: 桌面端全量验证**
 
 ```powershell
 cd desktop
@@ -333,7 +324,9 @@ cd desktop
 3. 确认 tokens、成本、失败、工具统计来自历史记录。
 4. 重启后端后统计仍存在。
 
-- [ ] **Step 4: 更新文档**
+说明: 自动化验证已完成；真实 Provider 多轮人工验收留到 P2 总体验收时执行。
+
+- [x] **Step 4: 更新文档**
 
 - `docs/superpowers/plans/p2-5-local-observability/codex-handoff.md`
 - `docs/superpowers/plans/p2-task-index.md`

@@ -1,6 +1,9 @@
 package com.wzx.babiq.desktop.client
 
 import com.wzx.babiq.desktop.protocol.JsonRpcRequest
+import com.wzx.babiq.desktop.protocol.ObservabilityCostsResult
+import com.wzx.babiq.desktop.protocol.ObservabilitySnapshotResult
+import com.wzx.babiq.desktop.protocol.ObservabilityToolsResult
 import com.wzx.babiq.desktop.protocol.ProviderDeleteResult
 import com.wzx.babiq.desktop.protocol.ProviderSaveParams
 import com.wzx.babiq.desktop.protocol.ProviderTestResult
@@ -235,6 +238,26 @@ class AgentClientTest {
 	}
 
 	@Test
+	fun `本地可观测接口可以读取统计快照 工具和成本`() = runTest {
+		val transport = FakeAgentTransport()
+		val client = AgentClient(transport, backgroundScope)
+		client.connect()
+
+		val snapshot: ObservabilitySnapshotResult = client.getObservabilitySnapshot("30d", "E:\\BaBiQ")
+		val tools: ObservabilityToolsResult = client.getObservabilityTools("all")
+		val costs: ObservabilityCostsResult = client.getObservabilityCosts("7d", "E:\\BaBiQ")
+
+		assertEquals("observability/snapshot", transport.sent[0].method)
+		assertEquals("30d", transport.sent[0].paramsText("range"))
+		assertEquals("E:\\BaBiQ", transport.sent[0].paramsText("cwd"))
+		assertEquals(2, snapshot.totals.turns)
+		assertEquals("observability/tools", transport.sent[1].method)
+		assertEquals("read_file", tools.tools.single().toolName)
+		assertEquals("observability/costs", transport.sent[2].method)
+		assertEquals("deepseek-v4-pro", costs.models.single().model)
+	}
+
+	@Test
 	fun `json rpc error 会转成 AgentClientException`() = runTest {
 		val transport = FakeAgentTransport(errorMethods = setOf("thread/create"))
 		val client = AgentClient(transport, backgroundScope)
@@ -459,6 +482,25 @@ class AgentClientTest {
 					put("expiredTurns", 0)
 					put("expiredApprovals", 0)
 				}
+				"observability/snapshot" -> observabilitySnapshot(request.paramsText("range"))
+				"observability/tools" -> buildJsonObject {
+					put("range", request.paramsText("range"))
+					put(
+						"tools",
+						buildJsonArray {
+							add(toolStats())
+						},
+					)
+				}
+				"observability/costs" -> buildJsonObject {
+					put("range", request.paramsText("range"))
+					put(
+						"models",
+						buildJsonArray {
+							add(modelStats())
+						},
+					)
+				}
 				else -> buildJsonObject { put("ok", true) }
 			}
 			return protocolJson.encodeToString(
@@ -517,6 +559,73 @@ class AgentClientTest {
 		put("model", "deepseek-v4-pro")
 		put("startedAt", "2026-05-24T08:00:00Z")
 		put("completedAt", "2026-05-24T08:00:03Z")
+	}
+
+	private fun observabilitySnapshot(range: String) = buildJsonObject {
+		put("range", range)
+		put(
+			"totals",
+			buildJsonObject {
+				put("turns", 2)
+				put("failedTurns", 1)
+				put("promptTokens", 120)
+				put("completionTokens", 80)
+				put("estimatedCostUsd", 0.0021)
+			},
+		)
+		put(
+			"byProvider",
+			buildJsonArray {
+				add(providerStats())
+			},
+		)
+		put(
+			"byModel",
+			buildJsonArray {
+				add(modelStats())
+			},
+		)
+		put(
+			"byTool",
+			buildJsonArray {
+				add(toolStats())
+			},
+		)
+		put(
+			"byStatus",
+			buildJsonArray {
+				add(buildJsonObject {
+					put("status", "COMPLETED")
+					put("turns", 1)
+				})
+			},
+		)
+	}
+
+	private fun providerStats() = buildJsonObject {
+		put("providerId", "deepseek")
+		put("turns", 2)
+		put("failedTurns", 1)
+		put("promptTokens", 120)
+		put("completionTokens", 80)
+		put("estimatedCostUsd", 0.0021)
+	}
+
+	private fun modelStats() = buildJsonObject {
+		put("providerId", "deepseek")
+		put("model", "deepseek-v4-pro")
+		put("turns", 2)
+		put("failedTurns", 1)
+		put("promptTokens", 120)
+		put("completionTokens", 80)
+		put("estimatedCostUsd", 0.0021)
+	}
+
+	private fun toolStats() = buildJsonObject {
+		put("toolName", "read_file")
+		put("calls", 2)
+		put("failures", 0)
+		put("avgDurationMs", 300)
 	}
 
 	private fun JsonRpcRequest.paramsText(name: String): String =

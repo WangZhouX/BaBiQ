@@ -54,7 +54,7 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
   - `docs/superpowers/plans/p2-master.md`
   - P2 技术主线为 SQLite + MyBatis-Plus + Flyway/migration + Java 常见分层结构。
   - P1 总体验收已由用户在 2026-05-24 确认通过，`P2-0` 仅保留验收记录。
-  - P2 正在按用户 goal 全量执行；P2-1、P2-2、P2-3、P2-4 已完成，当前下一步为 P2-5。
+  - P2 正在按用户 goal 全量执行；P2-1、P2-2、P2-3、P2-4、P2-5 已完成，当前下一步为 P2-6。
   - P2-1 到 P2-6 的详细计划已全部写出；后续实现必须逐阶段核对对应 `plan.md`。
 - P2 任务文档已创建：
   - `docs/superpowers/plans/p2-task-index.md`
@@ -109,7 +109,18 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
   - P2-4 额外验证：`cd desktop; .\gradlew.bat test --tests "*AgentClientTest" --tests "*ChatControllerTest" --tests "*RunRecordModelsTest"`
   - P2-4 全量验证：`cd backend; .\mvnw.cmd clean verify`
   - P2-4 全量验证：`cd desktop; .\gradlew.bat test`
-- 下一步进入 `P2-5 基础可观测增强`。
+- P2-5 基础可观测增强已完成：
+  - 后端新增 `LocalObservabilityService`，只基于 SQLite 持久化运行记录聚合，不读取 P1 内存计数器。
+  - 后端新增 `observability/snapshot`、`observability/tools`、`observability/costs` JSON-RPC 方法。
+  - 后端已支持按 range/cwd 聚合 turns、tokens、成本、状态分布、provider/model 分布和工具调用分布。
+  - 桌面端运行详情面板已接入本地统计展示，支持 `7d`、`30d`、`all` 三个范围切换。
+  - P2-5 决策为不启用 Actuator/Micrometer；本阶段不暴露额外 HTTP 观测 endpoint。
+  - P2-5 额外验证：`cd backend; .\mvnw.cmd "-Dtest=LocalObservabilityServiceTest" test`
+  - P2-5 额外验证：`cd backend; .\mvnw.cmd "-Dtest=ObservabilityHandlersTest,LocalObservabilityServiceTest" test`
+  - P2-5 额外验证：`cd desktop; .\gradlew.bat test --tests "*ObservabilityModelsTest" --tests "*AgentClientTest" --tests "*ChatControllerTest"`
+  - P2-5 全量验证：`cd backend; .\mvnw.cmd clean verify`
+  - P2-5 全量验证：`cd desktop; .\gradlew.bat test`
+- 下一步进入 `P2-6 MCP Client 最小接入`，详细计划已存在于 `docs/superpowers/plans/p2-6-mcp-client/plan.md`。
 
 如果仓库状态发生变化，不要盲信本检查点；必须重新核对代码、文档、测试和 `git status`。
 
@@ -137,9 +148,9 @@ P1-4 已完成范围：
 
 下一阶段边界：
 
-- P2-1、P2-2、P2-3、P2-4 已完成；当前应进入 P2-5，不要跳过基础可观测增强直接做 P2-6。
-- P2-5 允许实现本地基础可观测增强，例如基于已有持久化表和运行记录做本地指标汇总、诊断接口或桌面端基础观测展示。
-- P2-5 不做 Prometheus/Langfuse/OpenTelemetry 复杂外部平台，不做 MCP Client。
+- P2-1、P2-2、P2-3、P2-4、P2-5 已完成；当前应进入 P2-6。
+- P2-6 允许实现 MCP Client 最小接入，例如 MCP server 配置持久化、启停健康检查、工具发现和桌面端最小管理入口。
+- P2-6 不做 MCP server 开发、不做远程插件市场、不做 OAuth、多租户权限或复杂沙箱编排。
 - P2 范围内 SQLite 使用 MyBatis-Plus 和 Java 常见分层，但 Agent 核心不得直接依赖 Mapper；必须通过 repository/adapter 或 application service 隔离。
 - 后续任何新增业务表或业务字段都必须同步 SQL 中文注释、`bq_schema_comments` 元数据和覆盖测试。
 

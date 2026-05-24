@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.dp
 import com.wzx.babiq.desktop.protocol.RunApprovalInfo
 import com.wzx.babiq.desktop.protocol.RunToolCallInfo
 import com.wzx.babiq.desktop.protocol.RunTurnDetailResult
+import com.wzx.babiq.desktop.state.ObservabilityState
 import com.wzx.babiq.desktop.state.AppState
 import com.wzx.babiq.desktop.state.RunRecordState
 import com.wzx.babiq.desktop.state.RunTurnListItem
@@ -40,6 +41,7 @@ fun RuntimeDetailsPanel(
 	modifier: Modifier = Modifier,
 	onClose: () -> Unit,
 	onSelectRunTurn: (String) -> Unit,
+	onSelectObservabilityRange: (String) -> Unit,
 ) {
 	Column(
 		modifier = modifier
@@ -57,6 +59,10 @@ fun RuntimeDetailsPanel(
 			state = state.runRecordState,
 			onSelectRunTurn = onSelectRunTurn,
 		)
+		ObservabilitySection(
+			state = state.runRecordState.observability,
+			onSelectRange = onSelectObservabilityRange,
+		)
 		// 成本摘要在这里作为详情复用；聊天流里的 TurnSummaryBar 仍然是主展示位置。
 		state.latestSummary?.let { TurnSummaryBar(it) }
 		DetailCard("当前状态", "${state.turnState} / ${state.connectionState}")
@@ -66,6 +72,77 @@ fun RuntimeDetailsPanel(
 		if (state.runtimeEvents.isEmpty() && state.latestSummary == null) {
 			Text("暂无运行详情。完成一轮任务后，这里会显示工具轨迹和成本明细。", color = BaBiQColors.Muted)
 		}
+	}
+}
+
+/**
+ * 本地可观测统计区域。
+ *
+ * 这里展示的是“当前工作目录”的聚合统计，不是某一条 turn 的详情。
+ * range 按钮只刷新 observability/snapshot，不会切换聊天会话或重新发送任务。
+ */
+@Composable
+private fun ObservabilitySection(
+	state: ObservabilityState,
+	onSelectRange: (String) -> Unit,
+) {
+	Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+		Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+			Text("本地统计", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
+			Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+				RangeButton("7d", "7天", state.range, onSelectRange)
+				RangeButton("30d", "30天", state.range, onSelectRange)
+				RangeButton("all", "全部", state.range, onSelectRange)
+			}
+		}
+		if (state.loading) {
+			Text("正在读取本地统计...", color = BaBiQColors.Muted)
+		}
+		state.error?.let { DetailCard("统计错误", it) }
+		state.snapshot?.let { snapshot ->
+			val totals = snapshot.totals
+			DetailCard(
+				title = "统计总览",
+				detail = buildString {
+					append("turn: ").append(totals.turns)
+					append("\n失败: ").append(totals.failedTurns)
+					append("\n输入 token: ").append(totals.promptTokens)
+					append("\n输出 token: ").append(totals.completionTokens)
+					append("\n成本: $").append("%.6f".format(totals.estimatedCostUsd))
+				},
+			)
+			if (snapshot.byModel.isNotEmpty()) {
+				DetailCard(
+					title = "模型成本",
+					detail = snapshot.byModel.take(3).joinToString("\n") { model ->
+						"${model.model ?: model.providerId ?: "未知模型"} / ${model.turns} turn / $${"%.6f".format(model.estimatedCostUsd)}"
+					},
+				)
+			}
+			if (snapshot.byTool.isNotEmpty()) {
+				DetailCard(
+					title = "工具使用",
+					detail = snapshot.byTool.take(5).joinToString("\n") { tool ->
+						"${tool.toolName} / ${tool.calls} 次 / 失败 ${tool.failures} / 平均 ${tool.avgDurationMs} ms"
+					},
+				)
+			}
+		}
+	}
+}
+
+/**
+ * 统计窗口切换按钮。
+ */
+@Composable
+private fun RangeButton(
+	range: String,
+	label: String,
+	currentRange: String,
+	onSelectRange: (String) -> Unit,
+) {
+	TextButton(onClick = { onSelectRange(range) }) {
+		Text(if (range == currentRange) "[$label]" else label)
 	}
 }
 

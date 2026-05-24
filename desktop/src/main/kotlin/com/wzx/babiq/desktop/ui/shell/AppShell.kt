@@ -39,6 +39,7 @@ fun AppShell(
 	onSaveApprovalPolicy: (String) -> Unit,
 	onToggleRuntime: () -> Unit,
 	onSelectRunTurn: (String) -> Unit,
+	onSelectObservabilityRange: (String) -> Unit,
 ) {
 	Row(
 		modifier = Modifier
@@ -83,6 +84,7 @@ fun AppShell(
 				modifier = Modifier.width(320.dp),
 				onClose = onToggleRuntime,
 				onSelectRunTurn = onSelectRunTurn,
+				onSelectObservabilityRange = onSelectObservabilityRange,
 			)
 		}
 	}

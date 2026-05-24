@@ -7,6 +7,9 @@ import com.wzx.babiq.desktop.protocol.ApprovalPolicyResult
 import com.wzx.babiq.desktop.protocol.ApprovalPolicySetParams
 import com.wzx.babiq.desktop.protocol.JsonRpcRequest
 import com.wzx.babiq.desktop.protocol.JsonRpcResponse
+import com.wzx.babiq.desktop.protocol.ObservabilityCostsResult
+import com.wzx.babiq.desktop.protocol.ObservabilitySnapshotResult
+import com.wzx.babiq.desktop.protocol.ObservabilityToolsResult
 import com.wzx.babiq.desktop.protocol.ProviderDeleteParams
 import com.wzx.babiq.desktop.protocol.ProviderDeleteResult
 import com.wzx.babiq.desktop.protocol.ProviderListResult
@@ -122,6 +125,15 @@ interface AgentGateway {
 
 	/** 读取后端最近一次启动恢复报告，帮助 UI 说明 interrupted/expired 的来源。 */
 	suspend fun getRecoveryStatus(): RunRecoveryStatusResult
+
+	/** 读取本地可观测统计总览，运行详情面板默认调用该接口。 */
+	suspend fun getObservabilitySnapshot(range: String = "7d", cwd: String? = null): ObservabilitySnapshotResult
+
+	/** 读取工具维度统计，预留给后续工具明细面板按需刷新。 */
+	suspend fun getObservabilityTools(range: String = "7d", cwd: String? = null): ObservabilityToolsResult
+
+	/** 读取 Provider/Model 成本统计，预留给后续成本面板按需刷新。 */
+	suspend fun getObservabilityCosts(range: String = "7d", cwd: String? = null): ObservabilityCostsResult
 }
 
 /**
@@ -413,6 +425,41 @@ class AgentClient(
 		val response = request("run/recovery/status", buildJsonObject {})
 		return protocolJson.decodeFromJsonElement(RunRecoveryStatusResult.serializer(), response.requireResult())
 	}
+
+	/**
+	 * 调用后端 `observability/snapshot`，读取本地 SQLite 运行统计总览。
+	 */
+	override suspend fun getObservabilitySnapshot(range: String, cwd: String?): ObservabilitySnapshotResult {
+		val response = request("observability/snapshot", observabilityParams(range, cwd))
+		return protocolJson.decodeFromJsonElement(ObservabilitySnapshotResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `observability/tools`，读取工具调用聚合。
+	 */
+	override suspend fun getObservabilityTools(range: String, cwd: String?): ObservabilityToolsResult {
+		val response = request("observability/tools", observabilityParams(range, cwd))
+		return protocolJson.decodeFromJsonElement(ObservabilityToolsResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `observability/costs`，读取模型成本聚合。
+	 */
+	override suspend fun getObservabilityCosts(range: String, cwd: String?): ObservabilityCostsResult {
+		val response = request("observability/costs", observabilityParams(range, cwd))
+		return protocolJson.decodeFromJsonElement(ObservabilityCostsResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 构造 observability 系列接口共用的参数。
+	 */
+	private fun observabilityParams(range: String, cwd: String?): JsonElement =
+		buildJsonObject {
+			put("range", range)
+			if (!cwd.isNullOrBlank()) {
+				put("cwd", cwd)
+			}
+		}
 
 	/**
 	 * 中断正在等待审批的 turn。当前 UI 还没有暴露按钮，但协议客户端先保留能力。

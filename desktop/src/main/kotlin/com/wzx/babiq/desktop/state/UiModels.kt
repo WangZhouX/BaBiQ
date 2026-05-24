@@ -2,6 +2,7 @@ package com.wzx.babiq.desktop.state
 
 import com.wzx.babiq.desktop.protocol.ApprovalRequestPayload
 import com.wzx.babiq.desktop.protocol.AppSettingsResult
+import com.wzx.babiq.desktop.protocol.ObservabilitySnapshotResult
 import com.wzx.babiq.desktop.protocol.ProviderInfo
 import com.wzx.babiq.desktop.protocol.ProviderSaveParams
 import com.wzx.babiq.desktop.protocol.RunRecoveryStatusResult
@@ -143,6 +144,7 @@ data class RuntimeEvent(
  * @property selectedTurnId 当前详情面板选中的历史 turn id；为空时表示还没有可展示详情。
  * @property selectedDetail 当前选中 turn 的完整详情，来自 run/turn/get。
  * @property recoveryStatus 后端最近一次启动恢复报告，用于解释 interrupted/expired 状态。
+ * @property observability 当前工作目录的本地可观测统计快照。
  */
 data class RunRecordState(
 	val loading: Boolean = false,
@@ -151,6 +153,25 @@ data class RunRecordState(
 	val selectedTurnId: String? = null,
 	val selectedDetail: RunTurnDetailResult? = null,
 	val recoveryStatus: RunRecoveryStatusResult? = null,
+	val observability: ObservabilityState = ObservabilityState(),
+)
+
+/**
+ * 运行详情面板里的本地可观测统计状态。
+ *
+ * 这部分统计和单个 turn 详情不同：它按当前工作目录汇总 SQLite 历史记录，
+ * 用于让用户快速看到最近 7 天、30 天或全部范围内的运行规模、失败数和成本。
+ *
+ * @property loading true 表示正在请求 observability/snapshot。
+ * @property range 当前统计窗口，合法值为 7d、30d 或 all。
+ * @property error 最近一次统计请求失败的错误；不会阻塞聊天主流程。
+ * @property snapshot 后端返回的统计快照；为空表示尚未加载或加载失败。
+ */
+data class ObservabilityState(
+	val loading: Boolean = false,
+	val range: String = "7d",
+	val error: String? = null,
+	val snapshot: ObservabilitySnapshotResult? = null,
 )
 
 /**

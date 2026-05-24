@@ -58,6 +58,7 @@ fun BaBiQDesktopApp() {
 			onSaveApprovalPolicy = { policy -> scope.launch { controller.saveApprovalPolicy(policy) } },
 			onToggleRuntime = { controller.toggleRuntimeDetails() },
 			onSelectRunTurn = { turnId -> controller.selectRunTurn(turnId) },
+			onSelectObservabilityRange = { range -> controller.selectObservabilityRange(range) },
 		)
 		ApprovalDialog(
 			approval = state.pendingApproval,

@@ -12,8 +12,8 @@
 | P2-2 | 已完成 | 多会话历史和桌面端最近对话 | `docs/superpowers/plans/p2-2-thread-history/plan.md` | P2-1 |
 | P2-3 | 已完成 | Provider / API Key / 沙箱 / 审批设置系统 | `docs/superpowers/plans/p2-3-settings-system/plan.md` | P2-1 |
 | P2-4 | 已完成 | 持久化后的恢复语义和运行记录 | `docs/superpowers/plans/p2-4-recovery-records/plan.md` | P2-1, P2-2 |
-| P2-5 | 下一步 | 基础可观测增强 | `docs/superpowers/plans/p2-5-local-observability/plan.md` | P2-4 |
-| P2-6 | 待实现 | MCP Client 最小接入 | `docs/superpowers/plans/p2-6-mcp-client/plan.md` | P2-3, P2-4, P2-5 |
+| P2-5 | 已完成 | 基础可观测增强 | `docs/superpowers/plans/p2-5-local-observability/plan.md` | P2-4 |
+| P2-6 | 下一步 | MCP Client 最小接入 | `docs/superpowers/plans/p2-6-mcp-client/plan.md` | P2-3, P2-4, P2-5 |
 
 ## 执行规则
 

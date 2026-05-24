@@ -376,6 +376,7 @@ class ChatController(
 			}
 			if (state.value.runtimeExpanded) {
 				loadRunRecords(loaded.thread.threadId)
+				loadObservabilitySnapshot(state.value.runRecordState.observability.range)
 			}
 		} catch (exception: Exception) {
 			_state.update {
@@ -478,11 +479,12 @@ class ChatController(
 		val shouldExpand = !state.value.runtimeExpanded
 		_state.update { it.copy(runtimeExpanded = shouldExpand) }
 		if (shouldExpand) {
-			// 运行详情展开后才拉历史记录，避免常规聊天路径承担额外数据库查询。
-			state.value.currentThreadId?.let { threadId ->
-				scope.launch(start = CoroutineStart.UNDISPATCHED) {
+			// 运行详情展开后才拉历史记录和统计快照，避免常规聊天路径承担额外数据库查询。
+			scope.launch(start = CoroutineStart.UNDISPATCHED) {
+				state.value.currentThreadId?.let { threadId ->
 					loadRunRecords(threadId)
 				}
+				loadObservabilitySnapshot(state.value.runRecordState.observability.range)
 			}
 		}
 	}
@@ -495,6 +497,17 @@ class ChatController(
 	fun selectRunTurn(turnId: String) {
 		scope.launch(start = CoroutineStart.UNDISPATCHED) {
 			loadRunTurnDetail(turnId)
+		}
+	}
+
+	/**
+	 * 切换本地可观测统计窗口。
+	 *
+	 * 统计窗口只影响右侧运行详情面板，不会修改当前聊天、会话或后端 active provider。
+	 */
+	fun selectObservabilityRange(range: String) {
+		scope.launch(start = CoroutineStart.UNDISPATCHED) {
+			loadObservabilitySnapshot(range)
 		}
 	}
 
@@ -651,6 +664,54 @@ class ChatController(
 		val current = state.value
 		if (current.runtimeExpanded) {
 			current.currentThreadId?.let { loadRunRecords(it) }
+			loadObservabilitySnapshot(current.runRecordState.observability.range)
+		}
+	}
+
+	/**
+	 * 读取当前工作目录下的本地统计快照。
+	 *
+	 * 统计失败时只写入 RunRecordState.observability.error，不改 turnState 和 messages；
+	 * 这样观测面板临时不可用也不会破坏聊天主流程。
+	 */
+	private suspend fun loadObservabilitySnapshot(range: String) {
+		val cwd = state.value.workspace.cwd
+		_state.update {
+			it.copy(
+				runRecordState = it.runRecordState.copy(
+					observability = it.runRecordState.observability.copy(
+						loading = true,
+						range = range,
+						error = null,
+					),
+				),
+			)
+		}
+		try {
+			val snapshot = gateway.getObservabilitySnapshot(range, cwd)
+			_state.update {
+				it.copy(
+					runRecordState = it.runRecordState.copy(
+						observability = it.runRecordState.observability.copy(
+							loading = false,
+							range = snapshot.range,
+							error = null,
+							snapshot = snapshot,
+						),
+					),
+				)
+			}
+		} catch (exception: Exception) {
+			_state.update {
+				it.copy(
+					runRecordState = it.runRecordState.copy(
+						observability = it.runRecordState.observability.copy(
+							loading = false,
+							error = exception.message ?: "读取本地统计失败",
+						),
+					),
+				)
+			}
 		}
 	}
 
