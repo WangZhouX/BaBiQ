@@ -1,9 +1,16 @@
 package com.wzx.babiq.desktop.state
 
 import com.wzx.babiq.desktop.client.AgentGateway
+import com.wzx.babiq.desktop.protocol.AppSettingsResult
+import com.wzx.babiq.desktop.protocol.ApprovalPolicyResult
 import com.wzx.babiq.desktop.protocol.ProviderListResult
+import com.wzx.babiq.desktop.protocol.ProviderMutationResult
+import com.wzx.babiq.desktop.protocol.ProviderDeleteResult
+import com.wzx.babiq.desktop.protocol.ProviderSaveParams
+import com.wzx.babiq.desktop.protocol.ProviderTestResult
 import com.wzx.babiq.desktop.protocol.SandboxPolicyResult
 import com.wzx.babiq.desktop.protocol.ServerEvent
+import com.wzx.babiq.desktop.protocol.SettingsUpdateParams
 import com.wzx.babiq.desktop.protocol.ThreadArchiveResult
 import com.wzx.babiq.desktop.protocol.ThreadItem
 import com.wzx.babiq.desktop.protocol.ThreadListResult
@@ -35,6 +42,7 @@ class ChatControllerTest {
 		assertEquals(
 			listOf(
 				"connect",
+				"getSettings",
 				"listProviders",
 				"getSandboxPolicy",
 				"listThreads:E:\\BaBiQ",
@@ -55,9 +63,20 @@ class ChatControllerTest {
 
 		controller.connect()
 
-		assertEquals(listOf("connect", "listProviders", "getSandboxPolicy", "listThreads:E:\\BaBiQ"), gateway.calls)
+		assertEquals(listOf("connect", "getSettings", "listProviders", "getSandboxPolicy", "listThreads:E:\\BaBiQ"), gateway.calls)
 		assertEquals("DANGER_FULL_ACCESS", controller.state.value.workspace.permissionMode)
 		assertEquals("完全访问权限", controller.state.value.workspace.permissionLabel)
+	}
+
+	@Test
+	fun `connect 成功后加载本地 settings`() = runTest {
+		val gateway = FakeGateway(settings = AppSettingsResult("deepseek-official", "WORKSPACE_WRITE", "ON_REQUEST", "E:\\BaBiQ"))
+		val controller = ChatController(gateway, backgroundScope)
+
+		controller.connect()
+
+		assertEquals("deepseek-official", controller.state.value.settingsState.settings?.activeProviderId)
+		assertEquals("ON_REQUEST", controller.state.value.settingsState.settings?.approvalPolicy)
 	}
 
 	@Test
@@ -232,9 +251,47 @@ class ChatControllerTest {
 
 		controller.respondApproval("approve")
 
-		assertEquals("approval:thread-1:turn-1:approve:null", gateway.calls.last())
+		assertEquals("approval:thread-1:turn-1:approve:null:null", gateway.calls.last())
 		assertNull(controller.state.value.pendingApproval)
 		assertEquals(TurnState.Running, controller.state.value.turnState)
+	}
+
+	@Test
+	fun `respondApproval 支持始终允许的 session scope`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(gateway, backgroundScope)
+		controller.connect()
+		controller.applyEvent(AgentEvent.Server(ServerEvent.ApprovalRequested(sampleApproval())))
+
+		controller.respondApproval("always", scope = "session")
+
+		assertEquals("approval:thread-1:turn-1:always:null:session", gateway.calls.last())
+		assertNull(controller.state.value.pendingApproval)
+	}
+
+	@Test
+	fun `保存 provider 后刷新 provider 列表并保留设置页状态`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(gateway, backgroundScope, initialState = AppState(connectionState = ConnectionState.Connected))
+
+		controller.createProvider(sampleProviderSaveParams())
+
+		assertEquals(listOf("createProvider:custom-openai", "listProviders"), gateway.calls)
+		assertEquals("Provider 已保存，下一轮 turn 生效", controller.state.value.settingsState.notice)
+	}
+
+	@Test
+	fun `保存沙箱和审批策略后更新上下文条与设置状态`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(gateway, backgroundScope, initialState = AppState(connectionState = ConnectionState.Connected))
+
+		controller.saveSandboxMode("READ_ONLY")
+		controller.saveApprovalPolicy("NEVER")
+
+		assertEquals("READ_ONLY", controller.state.value.workspace.permissionMode)
+		assertEquals("只读模式", controller.state.value.workspace.permissionLabel)
+		assertEquals("NEVER", controller.state.value.settingsState.settings?.approvalPolicy)
+		assertEquals(listOf("setSandbox:READ_ONLY", "setApproval:NEVER"), gateway.calls)
 	}
 
 	@Test
@@ -277,9 +334,34 @@ class ChatControllerTest {
 		description = "需要执行 shell 命令",
 	)
 
-	private class FakeGateway(
+	private fun sampleProviderSaveParams() = ProviderSaveParams(
+		providerId = "custom-openai",
+		displayName = "自定义 OpenAI",
+		type = "OPENAI_COMPATIBLE",
+		baseUrl = "https://relay.example.com/v1",
+		model = "deepseek-chat",
+		apiKey = "sk-secret",
+		contextWindow = 128000,
+		enabled = true,
+	)
+
+	private fun sampleProviderMutationResult(providerId: String) = ProviderMutationResult(
+		id = providerId,
+		label = "自定义 OpenAI",
+		displayName = "自定义 OpenAI",
+		type = "OPENAI_COMPATIBLE",
+		baseUrl = "https://relay.example.com/v1",
+		model = "deepseek-chat",
+		contextWindow = 128000,
+		enabled = true,
+		hasApiKey = true,
+		active = false,
+	)
+
+	private inner class FakeGateway(
 		private val connectFails: Boolean = false,
 		private var connectFailuresBeforeSuccess: Int = 0,
+		private val settings: AppSettingsResult = AppSettingsResult("deepseek-official", "WORKSPACE_WRITE", "ON_REQUEST", "E:\\BaBiQ"),
 		private val policy: SandboxPolicyResult = SandboxPolicyResult("WORKSPACE_WRITE", "工作区可写"),
 		private val history: ThreadListResult = ThreadListResult(),
 		private val loadedThread: ThreadLoadResult = ThreadLoadResult(
@@ -307,9 +389,50 @@ class ChatControllerTest {
 			return "turn-1"
 		}
 
-		override suspend fun respondApproval(threadId: String, turnId: String, decision: String, editedArgs: String?): Boolean {
-			calls += "approval:$threadId:$turnId:$decision:$editedArgs"
+		override suspend fun respondApproval(
+			threadId: String,
+			turnId: String,
+			decision: String,
+			editedArgs: String?,
+			scope: String?,
+		): Boolean {
+			calls += "approval:$threadId:$turnId:$decision:$editedArgs:$scope"
 			return true
+		}
+
+		override suspend fun getSettings(): AppSettingsResult {
+			calls += "getSettings"
+			return settings
+		}
+
+		override suspend fun updateSettings(update: SettingsUpdateParams): AppSettingsResult {
+			calls += "updateSettings"
+			return settings.copy(
+				activeProviderId = update.activeProviderId ?: settings.activeProviderId,
+				sandboxMode = update.sandboxMode ?: settings.sandboxMode,
+				approvalPolicy = update.approvalPolicy ?: settings.approvalPolicy,
+				defaultCwd = update.defaultCwd ?: settings.defaultCwd,
+			)
+		}
+
+		override suspend fun createProvider(params: ProviderSaveParams): ProviderMutationResult {
+			calls += "createProvider:${params.providerId}"
+			return sampleProviderMutationResult(params.providerId)
+		}
+
+		override suspend fun updateProvider(params: ProviderSaveParams): ProviderMutationResult {
+			calls += "updateProvider:${params.providerId}"
+			return sampleProviderMutationResult(params.providerId)
+		}
+
+		override suspend fun deleteProvider(providerId: String): ProviderDeleteResult {
+			calls += "deleteProvider:$providerId"
+			return ProviderDeleteResult(ok = true, providerId = providerId, archived = true)
+		}
+
+		override suspend fun testProvider(providerId: String): ProviderTestResult {
+			calls += "testProvider:$providerId"
+			return ProviderTestResult(ok = true, providerId = providerId, message = "Provider 配置可用")
 		}
 
 		override suspend fun listProviders(): ProviderListResult {
@@ -320,6 +443,16 @@ class ChatControllerTest {
 		override suspend fun getSandboxPolicy(): SandboxPolicyResult {
 			calls += "getSandboxPolicy"
 			return policy
+		}
+
+		override suspend fun setSandboxPolicy(mode: String): SandboxPolicyResult {
+			calls += "setSandbox:$mode"
+			return SandboxPolicyResult(mode, if (mode == "READ_ONLY") "只读模式" else "工作区可写")
+		}
+
+		override suspend fun setApprovalPolicy(approvalPolicy: String): ApprovalPolicyResult {
+			calls += "setApproval:$approvalPolicy"
+			return ApprovalPolicyResult(approvalPolicy)
 		}
 
 		override suspend fun setActiveProvider(providerId: String, modelId: String?): Boolean {

@@ -1,7 +1,9 @@
 package com.wzx.babiq.desktop.state
 
 import com.wzx.babiq.desktop.protocol.ApprovalRequestPayload
+import com.wzx.babiq.desktop.protocol.AppSettingsResult
 import com.wzx.babiq.desktop.protocol.ProviderInfo
+import com.wzx.babiq.desktop.protocol.ProviderSaveParams
 import com.wzx.babiq.desktop.protocol.ThreadItem
 import com.wzx.babiq.desktop.protocol.ThreadSummaryInfo
 import kotlinx.serialization.json.JsonElement
@@ -171,6 +173,61 @@ data class ProviderState(
 	val loading: Boolean = false,
 	val error: String? = null,
 )
+
+/**
+ * 设置页状态。
+ *
+ * @property loading true 表示正在读取后端 settings/get。
+ * @property saving true 表示正在保存 Provider、沙箱或审批策略。
+ * @property settings 后端当前设置快照；为空表示尚未连接或读取失败。
+ * @property providerDraft Provider 新增/编辑表单草稿，API Key 只存在于桌面内存和保存请求里。
+ * @property error 设置页最近一次错误。
+ * @property notice 设置页短提示，例如“Provider 已保存”。
+ */
+data class SettingsState(
+	val loading: Boolean = false,
+	val saving: Boolean = false,
+	val settings: AppSettingsResult? = null,
+	val providerDraft: ProviderEditorState = ProviderEditorState(),
+	val error: String? = null,
+	val notice: String? = null,
+)
+
+/**
+ * Provider 表单草稿。
+ *
+ * @property providerId Provider 唯一标识。
+ * @property displayName 用户可读名称。
+ * @property type Provider 类型。
+ * @property baseUrl OpenAI 兼容接口地址。
+ * @property model 默认模型。
+ * @property apiKey 用户输入的明文 API Key；保存后会清空，后端不会回填。
+ * @property contextWindowText 表单里的上下文窗口文本，提交时再转成 Int。
+ */
+data class ProviderEditorState(
+	val providerId: String = "",
+	val displayName: String = "",
+	val type: String = "OPENAI_COMPATIBLE",
+	val baseUrl: String = "",
+	val model: String = "",
+	val apiKey: String = "",
+	val contextWindowText: String = "0",
+) {
+	/**
+	 * 把 UI 草稿转成协议参数。
+	 */
+	fun toSaveParams(): ProviderSaveParams =
+		ProviderSaveParams(
+			providerId = providerId.trim(),
+			displayName = displayName.trim(),
+			type = type.trim(),
+			baseUrl = baseUrl.trim(),
+			model = model.trim(),
+			apiKey = apiKey.trim().ifBlank { null },
+			contextWindow = contextWindowText.toIntOrNull() ?: 0,
+			enabled = true,
+		)
+}
 
 /**
  * Sidebar 中展示的一条最近会话。

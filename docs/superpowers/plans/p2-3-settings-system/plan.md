@@ -10,6 +10,20 @@
 
 ---
 
+## 0.0 实施状态（2026-05-24）
+
+- P2-3 已完成代码实现并通过自动化验收。
+- 后端已实现 Provider/Settings/Sandbox/ApprovalPolicy JSON-RPC 方法、JDK `JCEKS` KeyStore SecretStore、session scope `always` 审批规则和下一轮 turn 设置快照。
+- 桌面端设置页已支持 Provider 新增、编辑、删除、测试连接、切换当前 Provider、修改沙箱模式和审批策略；审批弹窗“始终允许”已接真实协议。
+- 已验证：
+  - `cd backend; .\mvnw.cmd "-Dtest=ProviderSettingsServiceTest,LocalKeyStoreSecretStoreTest,AppSettingsServiceTest,ProviderSettingsHandlersTest,SettingsHandlersTest,ApprovalRuleServiceTest,ApprovalRespondHandlerTest" test`
+  - `cd backend; .\mvnw.cmd "-Dtest=AgentLoopLineCountTest,ProviderTestControllerIntegrationTest" test`
+  - `cd backend; .\mvnw.cmd clean verify`
+  - `cd desktop; .\gradlew.bat test --tests "*SettingsModelsTest" --tests "*AgentClientTest" --tests "*ChatControllerTest"`
+  - `cd desktop; .\gradlew.bat test`
+
+---
+
 ## 0. 当前上下文
 
 P2-3 必须在 P2-1 完成后实现；如果需要在 UI 上展示真实历史状态，最好在 P2-2 后实现。

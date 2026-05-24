@@ -1,5 +1,4 @@
 package com.wzx.babiq.server.agent;
-
 import com.alibaba.cloud.ai.graph.NodeOutput;
 import com.alibaba.cloud.ai.graph.action.InterruptionMetadata;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
@@ -14,9 +13,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.stereotype.Component;
-
 import java.util.Optional;
-
 /** Agent Loop 主流程，只负责 user item、ReactAgent 调用、HITL 中断和完成态收口。 */
 @Component
 public class AgentLoop {
@@ -29,7 +26,6 @@ public class AgentLoop {
     private final TurnSummaryEmitter summaryEmitter;
     /** 保存每个 turn 的观测上下文，保证模型调用、工具调用和最终摘要使用同一份计数数据。 */
     private final TurnObservationRegistry observationRegistry;
-
     /** 注入所有协作者；主循环自身保持薄编排，横切逻辑放到 Strategy/Support/Interceptor。 */
     public AgentLoop(ReActStrategy strategy, PendingApprovals pendingApprovals,
                      TurnSummaryEmitter summaryEmitter, TurnObservationRegistry observationRegistry) {
@@ -38,7 +34,6 @@ public class AgentLoop {
         this.summaryEmitter = summaryEmitter;
         this.observationRegistry = observationRegistry;
     }
-
     /** 执行普通用户输入：先发用户 item，再构建本轮专属 ReactAgent，最后处理完成或审批中断。 */
     public void invoke(Turn turn, String userText, String providerId, String cwd, ItemEmitter emitter) {
         TurnObservationContext context = observationRegistry.start(
@@ -54,13 +49,12 @@ public class AgentLoop {
             AgentLoopDiagnostics.modelCallStarted(turn, context);
             Optional<NodeOutput> output = agent.invokeAndGetOutput(userText, strategy.buildConfig(turn.threadId(), context));
             AgentLoopDiagnostics.modelCallReturned(turn, output, startedNanos);
-            handleOutput(turn, emitter, output, context);
+            handleOutput(turn, emitter, output, context, cwd);
         } catch (Exception exception) {
             AgentLoopDiagnostics.failureClosing(turn, context, exception);
             AgentLoopSupport.fail(log, turn, emitter, exception, summaryEmitter, context, observationRegistry);
         }
     }
-
     /** 审批完成后从 SAA HITL 暂停点续跑，并复用原 turn 的观测上下文。 */
     public void invokeResume(Turn turn, InterruptionMetadata feedback, String cwd, ItemEmitter emitter) {
         TurnObservationContext context = observationRegistry.getOrStart(
@@ -69,17 +63,22 @@ public class AgentLoop {
             ReactAgent agent = strategy.buildAgent(null, cwd, emitter, context);
             Optional<NodeOutput> output = agent.invokeAndGetOutput(java.util.Map.of(),
                     strategy.buildResumeConfig(turn.threadId(), feedback, context));
-            handleOutput(turn, emitter, output, context);
+            handleOutput(turn, emitter, output, context, cwd);
         } catch (Exception exception) {
             AgentLoopSupport.fail(log, turn, emitter, exception, summaryEmitter, context, observationRegistry);
         }
     }
-
     /** 把 ReactAgent 输出拆成两条路径：HITL 等待审批，或正常 assistant 消息完成。 */
     private void handleOutput(Turn turn, ItemEmitter emitter, Optional<NodeOutput> output,
-                              TurnObservationContext context) throws Exception {
+                              TurnObservationContext context, String cwd) throws Exception {
         NodeOutput node = output.orElseThrow(() -> new IllegalStateException("ReactAgent 返回空输出"));
         if (node instanceof InterruptionMetadata metadata) {
+            Optional<InterruptionMetadata> autoApproved = strategy.autoApprovedFeedback(turn.threadId(), metadata);
+            if (autoApproved.isPresent()) {
+                // 命中 always 规则时不进入等待态，直接用 approved feedback 续跑当前图。
+                invokeResume(turn, autoApproved.get(), cwd, emitter);
+                return;
+            }
             // HITL 是可恢复的等待态，不按失败处理。
             AgentLoopDiagnostics.waitingApproval(turn, metadata);
             pendingApprovals.put(turn.threadId(), metadata);

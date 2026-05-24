@@ -67,7 +67,7 @@ fun ApprovalDialog(
 					Text("连接恢复后才能提交审批")
 				}
 				Text(
-					text = "始终允许：后端暂未开放 always 决策，P1-4 保持禁用。",
+					text = "始终允许仅对当前会话、同工具和同参数生效。",
 					style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
 					color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
 				)
@@ -85,12 +85,11 @@ fun ApprovalDialog(
 			}
 		},
 		dismissButton = {
-			// P1-4 后端只承诺 approve/deny/edit；Always 先禁用，避免 UI 暗示不存在的协议语义。
 			Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
 				TextButton(enabled = canSubmit, onClick = { onDecision("deny", null) }) {
 					Text("拒绝")
 				}
-				TextButton(enabled = false, onClick = { }) {
+				TextButton(enabled = canSubmit, onClick = { onDecision("always", null) }) {
 					Text("始终允许")
 				}
 			}

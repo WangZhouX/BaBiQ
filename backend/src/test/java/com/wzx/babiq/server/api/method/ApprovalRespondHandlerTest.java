@@ -5,6 +5,7 @@ import com.alibaba.cloud.ai.graph.action.InterruptionMetadata;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wzx.babiq.server.agent.PendingApprovals;
 import com.wzx.babiq.server.agent.TurnExecutor;
+import com.wzx.babiq.server.approval.ApprovalRuleService;
 import com.wzx.babiq.server.conversation.ConversationService;
 import com.wzx.babiq.server.conversation.Thread;
 import com.wzx.babiq.server.conversation.Turn;
@@ -65,6 +66,33 @@ class ApprovalRespondHandlerTest {
         InterruptionMetadata.ToolFeedback toolFeedback = feedback.toolFeedbacks().get(0);
         assertThat(toolFeedback.getResult()).isEqualTo(InterruptionMetadata.ToolFeedback.FeedbackResult.EDITED);
         assertThat(toolFeedback.getArguments()).isEqualTo("{\"path\":\"b.txt\"}");
+    }
+
+    @Test
+    void handle_always_records_session_rule_and_resumes_as_approved() {
+        ConversationService conversationService = new ConversationService();
+        Thread thread = conversationService.createThread(".");
+        Turn turn = conversationService.startTurn(thread.id());
+        turn.start();
+        turn.waitApproval();
+        PendingApprovals pendingApprovals = new PendingApprovals();
+        pendingApprovals.put(thread.id(), metadata());
+        TurnExecutor executor = mock(TurnExecutor.class);
+        ApprovalRuleService approvalRuleService = mock(ApprovalRuleService.class);
+        BaBiQMetrics metrics = new BaBiQMetrics();
+        ApprovalRespondHandler handler = new ApprovalRespondHandler(
+                pendingApprovals, conversationService, objectMapper, executor, metrics, null, approvalRuleService);
+
+        Object payload = handler.handle(objectMapper.valueToTree(Map.of(
+                "threadId", thread.id(),
+                "turnId", turn.id(),
+                "decision", "always",
+                "scope", "session")), null);
+
+        assertThat(((Map<?, ?>) payload).get("delivered")).isEqualTo(true);
+        assertThat(metrics.snapshot().approvalDecisionsByDecision()).containsEntry("always", 1L);
+        verify(approvalRuleService).rememberAlways(thread.id(), "write_file", "{\"path\":\"a.txt\"}", "session");
+        verify(executor).submitResume(eq(turn), any(InterruptionMetadata.class), eq("."), any());
     }
 
     private InterruptionMetadata metadata() {

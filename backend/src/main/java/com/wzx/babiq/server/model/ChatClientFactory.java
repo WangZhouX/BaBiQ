@@ -105,6 +105,18 @@ public class ChatClientFactory {
         return resolve(registry.active().id());
     }
 
+    /**
+     * 清理某个 Provider 的 ChatClient 缓存。
+     *
+     * <p>Provider 设置页更新 baseUrl、model 或 API Key 后，旧 ChatClient 仍然持有旧 ChatModel。
+     * 设置服务保存成功后会调用这里，让下一轮 turn 重新构建客户端并读取最新配置。</p>
+     *
+     * @param providerId Provider 标识
+     */
+    public void invalidate(String providerId) {
+        clientCache.remove(providerId);
+    }
+
     private ChatClient buildClient(String providerId) {
         ChatModel chatModel = resolveChatModel(providerId);
         // P1 使用 Spring AI 内置滑窗记忆；P2 再切到 SQLite ChatMemoryRepository。

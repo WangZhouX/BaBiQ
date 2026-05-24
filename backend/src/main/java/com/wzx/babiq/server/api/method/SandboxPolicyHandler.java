@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.wzx.babiq.server.agent.AgentLoopProperties;
 import com.wzx.babiq.server.api.JsonRpcMethodHandler;
 import com.wzx.babiq.server.sandbox.SandboxMode;
+import com.wzx.babiq.server.settings.AppSettingsService;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.WebSocketSession;
 
@@ -12,14 +13,16 @@ import java.util.Map;
 /**
  * sandbox/policy 方法处理器。
  *
- * <p>桌面端权限 chip 必须展示后端真实沙箱模式，因此这里直接读取
- * {@link AgentLoopProperties#sandboxMode()}，并返回 UI 可展示的中文标签。</p>
+ * <p>桌面端权限 chip 必须展示后端真实沙箱模式。P2-3 后优先读取 AppSettingsService，
+ * 若单元测试只传入 AgentLoopProperties，则退回 yml 默认值。</p>
  */
 @Component
 public class SandboxPolicyHandler implements JsonRpcMethodHandler {
 
     /** Agent Loop 配置快照，沙箱模式的真实来源。 */
     private final AgentLoopProperties properties;
+    /** 应用设置服务；存在时覆盖 yml 默认值。 */
+    private final AppSettingsService appSettingsService;
 
     /**
      * 创建沙箱策略查询处理器。
@@ -27,7 +30,19 @@ public class SandboxPolicyHandler implements JsonRpcMethodHandler {
      * @param properties Agent Loop 配置
      */
     public SandboxPolicyHandler(AgentLoopProperties properties) {
+        this(properties, null);
+    }
+
+    /**
+     * 创建带设置服务的沙箱策略查询处理器。
+     *
+     * @param properties Agent Loop 配置
+     * @param appSettingsService 应用设置服务
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    public SandboxPolicyHandler(AgentLoopProperties properties, AppSettingsService appSettingsService) {
         this.properties = properties;
+        this.appSettingsService = appSettingsService;
     }
 
     /**
@@ -49,7 +64,9 @@ public class SandboxPolicyHandler implements JsonRpcMethodHandler {
      */
     @Override
     public Object handle(JsonNode params, WebSocketSession session) {
-        SandboxMode mode = properties.sandboxMode();
+        SandboxMode mode = appSettingsService == null
+                ? properties.sandboxMode()
+                : SandboxMode.valueOf(appSettingsService.get().sandboxMode());
         return Map.of(
                 "mode", mode.name(),
                 "label", labelOf(mode)

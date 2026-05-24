@@ -36,4 +36,22 @@ public record ModelProviderConfig(
     public String displayName() {
         return (name == null || name.isBlank()) ? id : name;
     }
+
+    /**
+     * 避免 record 默认 toString 泄露 API Key。
+     *
+     * <p>Provider 设置服务会把密钥放入 SecretStore，但运行期 ModelProviderConfig 仍需要携带明文
+     * 给 Spring AI ProviderFactory 构建客户端。因此这里必须覆盖 toString，防止日志或测试输出误带密钥。</p>
+     */
+    @Override
+    public String toString() {
+        return "ModelProviderConfig[id=" + id
+                + ", name=" + name
+                + ", type=" + type
+                + ", model=" + model
+                + ", apiKey=<hidden>"
+                + ", baseUrl=" + baseUrl
+                + ", contextWindow=" + contextWindow
+                + "]";
+    }
 }

@@ -27,8 +27,9 @@ data class ApprovalRequestPayload(
  *
  * @property threadId 审批所属会话，后端用它找到待恢复的 HITL 暂停点。
  * @property turnId 审批所属轮次，后端用它更新 turn 状态。
- * @property decision `approve`、`deny` 或 `edit`。
+ * @property decision `approve`、`deny`、`edit` 或 `always`。
  * @property editedArgs 只有 decision 为 `edit` 时才携带修改后的工具参数。
+ * @property scope `always` 的作用域；P2-3 只发送 session，避免跨会话永久放行。
  */
 @Serializable
 data class ApprovalRespondParams(
@@ -36,4 +37,5 @@ data class ApprovalRespondParams(
 	val turnId: String,
 	val decision: String,
 	val editedArgs: String? = null,
+	val scope: String? = null,
 )

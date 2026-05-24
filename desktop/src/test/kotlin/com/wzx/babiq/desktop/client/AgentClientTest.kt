@@ -1,8 +1,12 @@
 package com.wzx.babiq.desktop.client
 
 import com.wzx.babiq.desktop.protocol.JsonRpcRequest
+import com.wzx.babiq.desktop.protocol.ProviderDeleteResult
+import com.wzx.babiq.desktop.protocol.ProviderSaveParams
+import com.wzx.babiq.desktop.protocol.ProviderTestResult
 import com.wzx.babiq.desktop.protocol.SandboxPolicyResult
 import com.wzx.babiq.desktop.protocol.ServerEvent
+import com.wzx.babiq.desktop.protocol.SettingsUpdateParams
 import com.wzx.babiq.desktop.protocol.ThreadItem
 import com.wzx.babiq.desktop.protocol.protocolJson
 import kotlin.test.Test
@@ -54,7 +58,7 @@ class AgentClientTest {
 	}
 
 	@Test
-	fun `approval respond 发送审批决策`() = runTest {
+	fun `approval respond 发送审批决策和 scope`() = runTest {
 		val transport = FakeAgentTransport()
 		val client = AgentClient(transport, backgroundScope)
 		client.connect()
@@ -62,13 +66,15 @@ class AgentClientTest {
 		val delivered = client.respondApproval(
 			threadId = "thread-1",
 			turnId = "turn-1",
-			decision = "approve",
+			decision = "always",
+			scope = "session",
 		)
 
 		val request = transport.sent.single()
 		assertTrue(delivered)
 		assertEquals("approval/respond", request.method)
-		assertEquals("approve", request.paramsText("decision"))
+		assertEquals("always", request.paramsText("decision"))
+		assertEquals("session", request.paramsText("scope"))
 	}
 
 	@Test
@@ -79,12 +85,13 @@ class AgentClientTest {
 
 		val providers = client.listProviders()
 
+		assertEquals("provider/list", transport.sent.single().method)
 		assertEquals("mock-provider", providers.providers.single().id)
 		assertEquals("Mock (P1-1 placeholder)", providers.providers.single().label)
 	}
 
 	@Test
-	fun `setActiveProvider 发送切换请求`() = runTest {
+	fun `setActiveProvider 通过 settings update 持久化切换请求`() = runTest {
 		val transport = FakeAgentTransport()
 		val client = AgentClient(transport, backgroundScope)
 		client.connect()
@@ -93,9 +100,59 @@ class AgentClientTest {
 
 		val request = transport.sent.single()
 		assertTrue(ok)
-		assertEquals("model/providers/set-active", request.method)
-		assertEquals("qwen", request.paramsText("providerId"))
-		assertEquals("qwen-plus", request.paramsText("modelId"))
+		assertEquals("settings/update", request.method)
+		assertEquals("qwen", request.paramsText("activeProviderId"))
+	}
+
+	@Test
+	fun `settings get 和 update 使用本地设置协议`() = runTest {
+		val transport = FakeAgentTransport()
+		val client = AgentClient(transport, backgroundScope)
+		client.connect()
+
+		val settings = client.getSettings()
+		val updated = client.updateSettings(SettingsUpdateParams(sandboxMode = "READ_ONLY"))
+
+		assertEquals("settings/get", transport.sent[0].method)
+		assertEquals("settings/update", transport.sent[1].method)
+		assertEquals("DANGER_FULL_ACCESS", settings.sandboxMode)
+		assertEquals("READ_ONLY", updated.sandboxMode)
+	}
+
+	@Test
+	fun `provider create delete test 使用 provider 协议且不回显 apiKey`() = runTest {
+		val transport = FakeAgentTransport()
+		val client = AgentClient(transport, backgroundScope)
+		client.connect()
+
+		val created = client.createProvider(sampleProviderSaveParams())
+		val tested: ProviderTestResult = client.testProvider("custom-openai")
+		val deleted: ProviderDeleteResult = client.deleteProvider("custom-openai")
+
+		assertEquals("provider/create", transport.sent[0].method)
+		assertEquals("sk-secret", transport.sent[0].paramsText("apiKey"))
+		assertEquals("custom-openai", created.id)
+		assertEquals(true, created.hasApiKey)
+		assertEquals(null, created.apiKey)
+		assertEquals("provider/test", transport.sent[1].method)
+		assertTrue(tested.ok)
+		assertEquals("provider/delete", transport.sent[2].method)
+		assertTrue(deleted.archived || deleted.ok)
+	}
+
+	@Test
+	fun `sandbox 和 approval policy 可以写入后端`() = runTest {
+		val transport = FakeAgentTransport()
+		val client = AgentClient(transport, backgroundScope)
+		client.connect()
+
+		val sandbox = client.setSandboxPolicy("WORKSPACE_WRITE")
+		val approval = client.setApprovalPolicy("NEVER")
+
+		assertEquals("sandbox/policy/set", transport.sent[0].method)
+		assertEquals("WORKSPACE_WRITE", sandbox.mode)
+		assertEquals("approval/policy/set", transport.sent[1].method)
+		assertEquals("NEVER", approval.approvalPolicy)
 	}
 
 	@Test
@@ -188,7 +245,7 @@ class AgentClientTest {
 		assertIs<ServerEvent.TurnStarted>(event)
 	}
 
-	private class FakeAgentTransport(
+	private inner class FakeAgentTransport(
 		private val errorMethods: Set<String> = emptySet(),
 	) : AgentTransport {
 		override val incoming = MutableSharedFlow<String>(extraBufferCapacity = 16)
@@ -216,7 +273,7 @@ class AgentClientTest {
 				"thread/create" -> buildJsonObject { put("threadId", "thread-1") }
 				"turn/start" -> buildJsonObject { put("turnId", "turn-1") }
 				"approval/respond" -> buildJsonObject { put("delivered", true) }
-				"model/providers/list" -> buildJsonObject {
+				"provider/list" -> buildJsonObject {
 					put(
 						"providers",
 						buildJsonArray {
@@ -224,12 +281,42 @@ class AgentClientTest {
 								buildJsonObject {
 									put("id", "mock-provider")
 									put("label", "Mock (P1-1 placeholder)")
+									put("displayName", "Mock (P1-1 placeholder)")
+									put("type", "OPENAI_COMPATIBLE")
+									put("baseUrl", "https://relay.example.com/v1")
+									put("model", "mock-model")
+									put("contextWindow", 64000)
+									put("enabled", true)
+									put("hasApiKey", true)
 								},
 							)
 						},
 					)
 				}
-				"model/providers/set-active" -> buildJsonObject { put("ok", true) }
+				"settings/get" -> settingsResult()
+				"settings/update" -> settingsResult(
+					activeProviderId = request.params.jsonObject["activeProviderId"]?.jsonPrimitive?.content ?: "deepseek-official",
+					sandboxMode = request.params.jsonObject["sandboxMode"]?.jsonPrimitive?.content ?: "READ_ONLY",
+					approvalPolicy = request.params.jsonObject["approvalPolicy"]?.jsonPrimitive?.content ?: "ON_REQUEST",
+				)
+				"provider/create" -> providerMutationResult()
+				"provider/delete" -> buildJsonObject {
+					put("ok", true)
+					put("providerId", "custom-openai")
+					put("archived", true)
+				}
+				"provider/test" -> buildJsonObject {
+					put("ok", true)
+					put("providerId", "custom-openai")
+					put("message", "Provider 配置可用")
+				}
+				"sandbox/policy/set" -> buildJsonObject {
+					put("mode", request.paramsText("mode"))
+					put("label", "工作区可写")
+				}
+				"approval/policy/set" -> buildJsonObject {
+					put("approvalPolicy", request.paramsText("approvalPolicy"))
+				}
 				"sandbox/policy" -> buildJsonObject {
 					put("mode", "DANGER_FULL_ACCESS")
 					put("label", "完全访问权限")
@@ -291,6 +378,41 @@ class AgentClientTest {
 				},
 			)
 		}
+	}
+
+	private fun sampleProviderSaveParams() = ProviderSaveParams(
+		providerId = "custom-openai",
+		displayName = "自定义 OpenAI",
+		type = "OPENAI_COMPATIBLE",
+		baseUrl = "https://relay.example.com/v1",
+		model = "deepseek-chat",
+		apiKey = "sk-secret",
+		contextWindow = 128000,
+		enabled = true,
+	)
+
+	private fun settingsResult(
+		activeProviderId: String = "deepseek-official",
+		sandboxMode: String = "DANGER_FULL_ACCESS",
+		approvalPolicy: String = "ON_REQUEST",
+	) = buildJsonObject {
+		put("activeProviderId", activeProviderId)
+		put("sandboxMode", sandboxMode)
+		put("approvalPolicy", approvalPolicy)
+		put("defaultCwd", "E:\\BaBiQ")
+	}
+
+	private fun providerMutationResult() = buildJsonObject {
+		put("id", "custom-openai")
+		put("label", "自定义 OpenAI")
+		put("displayName", "自定义 OpenAI")
+		put("type", "OPENAI_COMPATIBLE")
+		put("baseUrl", "https://relay.example.com/v1")
+		put("model", "deepseek-chat")
+		put("contextWindow", 128000)
+		put("enabled", true)
+		put("hasApiKey", true)
+		put("active", false)
 	}
 
 	private fun JsonRpcRequest.paramsText(name: String): String =

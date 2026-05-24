@@ -28,6 +28,20 @@ public interface SecretStore {
     Optional<String> load(String secretRef);
 
     /**
+     * 按引用读取明文密钥，读取不到时直接抛出明确异常。
+     *
+     * <p>Provider 构建 ChatClient 时不能静默降级为空 key，否则真实调用失败会变成更难排查的
+     * 401/403。本方法把“密钥不存在”提前暴露成 BaBiQ 自己的配置错误。</p>
+     *
+     * @param secretRef `save` 返回的引用
+     * @return 明文密钥
+     */
+    default String require(String secretRef) {
+        return load(secretRef)
+                .orElseThrow(() -> new IllegalStateException("密钥不存在: " + secretRef));
+    }
+
+    /**
      * 删除引用对应的密钥。
      *
      * @param secretRef `save` 返回的引用

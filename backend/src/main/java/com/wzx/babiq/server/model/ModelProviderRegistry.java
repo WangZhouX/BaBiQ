@@ -3,7 +3,6 @@ package com.wzx.babiq.server.model;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -14,7 +13,8 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * <p>该组件把 {@link BaBiQProperties#providers()} 转换为按 id 查询的只读索引,
  * 并在启动期校验 providers 非空、id 不重复、active-provider 必须存在。
- * 运行期只允许切换 active id,不允许动态增删 provider,避免配置源和内存状态分叉。</p>
+ * P2-3 以后，设置服务会把 SQLite 中的 Provider 同步进该注册中心，因此这里提供受控的
+ * register/disable 方法，但所有写入仍必须先经过 settings service。</p>
  */
 @Component
 public class ModelProviderRegistry {
@@ -39,8 +39,8 @@ public class ModelProviderRegistry {
                             + checkedProviders.keySet());
         }
 
-        // Map.copyOf 不承诺保留插入顺序;这里显式包装 LinkedHashMap,确保 REST 列表顺序和 yml 一致。
-        this.providersById = Collections.unmodifiableMap(new LinkedHashMap<>(checkedProviders));
+        // LinkedHashMap 保留展示顺序；后续动态 Provider 也会按创建顺序追加。
+        this.providersById = new LinkedHashMap<>(checkedProviders);
         this.activeProviderId = new AtomicReference<>(configuredActiveProvider);
     }
 
@@ -51,7 +51,7 @@ public class ModelProviderRegistry {
      * @return 对应 provider 配置
      * @throws IllegalArgumentException providerId 不存在时抛出
      */
-    public ModelProviderConfig get(String providerId) {
+    public synchronized ModelProviderConfig get(String providerId) {
         ModelProviderConfig providerConfig = providersById.get(providerId);
         if (providerConfig == null) {
             throw new IllegalArgumentException(
@@ -65,7 +65,7 @@ public class ModelProviderRegistry {
      *
      * @return 当前 active-provider 指向的配置
      */
-    public ModelProviderConfig active() {
+    public synchronized ModelProviderConfig active() {
         return get(activeProviderId.get());
     }
 
@@ -75,7 +75,7 @@ public class ModelProviderRegistry {
      * @param providerId 目标 provider id
      * @throws IllegalArgumentException providerId 不存在时抛出
      */
-    public void setActive(String providerId) {
+    public synchronized void setActive(String providerId) {
         get(providerId);
         activeProviderId.set(providerId);
     }
@@ -85,8 +85,35 @@ public class ModelProviderRegistry {
      *
      * @return 按配置文件顺序排列的 provider 列表
      */
-    public List<ModelProviderConfig> list() {
+    public synchronized List<ModelProviderConfig> list() {
         return new ArrayList<>(providersById.values());
+    }
+
+    /**
+     * 注册或更新运行期 Provider 配置。
+     *
+     * <p>只有 settings service 可以调用该方法。这样 ChatClientFactory 读取到的配置和 SQLite
+     * 中的 Provider 设置保持一致，同时避免 JSON-RPC handler 绕过安全校验直接改内存状态。</p>
+     *
+     * @param providerConfig 已通过校验、密钥已由 SecretStore 解析出的 Provider 配置
+     */
+    public synchronized void registerOrUpdate(ModelProviderConfig providerConfig) {
+        providersById.put(providerConfig.id(), providerConfig);
+        if (activeProviderId.get() == null || !providersById.containsKey(activeProviderId.get())) {
+            activeProviderId.set(providerConfig.id());
+        }
+    }
+
+    /**
+     * 从运行期可选列表移除 Provider。
+     *
+     * @param providerId Provider 标识
+     */
+    public synchronized void disable(String providerId) {
+        providersById.remove(providerId);
+        if (providerId.equals(activeProviderId.get())) {
+            activeProviderId.set(providersById.keySet().stream().findFirst().orElse(null));
+        }
     }
 
     private static Map<String, ModelProviderConfig> indexProviders(List<ModelProviderConfig> providers) {

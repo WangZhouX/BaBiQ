@@ -1,0 +1,145 @@
+package com.wzx.babiq.server.api.method;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
+import com.wzx.babiq.server.api.error.JsonRpcException;
+import com.wzx.babiq.server.model.BaBiQProperties;
+import com.wzx.babiq.server.model.ModelProviderConfig;
+import com.wzx.babiq.server.model.ModelProviderRegistry;
+import com.wzx.babiq.server.model.ProviderType;
+import com.wzx.babiq.server.settings.AppSettingsService;
+import com.wzx.babiq.server.settings.ProviderSettingsService;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+/**
+ * Provider 设置 JSON-RPC handler 测试。
+ *
+ * <p>这些 handler 是桌面设置页的协议边界：它们只负责参数校验和 DTO 转换，
+ * 不能回显 API Key，也不能直接访问 MyBatis Mapper。</p>
+ */
+class ProviderSettingsHandlersTest {
+
+    /** 测试用 JSON 转换器，和生产 handler 使用相同 Jackson 行为。 */
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    @Test
+    @DisplayName("provider/create 缺少必填字段时返回 INVALID_PARAMS")
+    void provider_create_should_reject_missing_required_fields() {
+        ProviderCreateHandler handler = new ProviderCreateHandler(mock(ProviderSettingsService.class), objectMapper);
+
+        assertThatThrownBy(() -> handler.handle(objectMapper.valueToTree(Map.of(
+                "providerId", "p1",
+                "type", "OPENAI_COMPATIBLE"
+        )), null))
+                .isInstanceOfSatisfying(JsonRpcException.class, exception ->
+                        assertThat(exception.errorCode()).isEqualTo(JsonRpcErrorCode.INVALID_PARAMS));
+    }
+
+    @Test
+    @DisplayName("provider/create 保存后不回显 API Key")
+    void provider_create_should_not_echo_api_key() {
+        ProviderSettingsService service = mock(ProviderSettingsService.class);
+        when(service.create(any())).thenReturn(providerView("p1", true));
+        ProviderCreateHandler handler = new ProviderCreateHandler(service, objectMapper);
+
+        Map<String, Object> response = responseFrom(handler.handle(objectMapper.valueToTree(Map.of(
+                "providerId", "p1",
+                "displayName", "Provider 1",
+                "type", "OPENAI_COMPATIBLE",
+                "baseUrl", "https://relay.example.com/v1",
+                "model", "gpt-4o-mini",
+                "apiKey", "sk-secret"
+        )), null));
+
+        assertThat(response)
+                .containsEntry("id", "p1")
+                .containsEntry("hasApiKey", true);
+        assertThat(response).doesNotContainKey("apiKey");
+    }
+
+    @Test
+    @DisplayName("provider/list 只返回 service 暴露的非敏感视图")
+    void provider_list_should_return_provider_views() {
+        ProviderSettingsService service = mock(ProviderSettingsService.class);
+        when(service.listEnabled()).thenReturn(List.of(providerView("p1", true)));
+        ProviderListHandler handler = new ProviderListHandler(service);
+
+        Map<String, Object> response = responseFrom(handler.handle(null, null));
+
+        assertThat(response).containsKey("providers");
+        assertThat(response.toString()).doesNotContain("sk-");
+    }
+
+    @Test
+    @DisplayName("provider/delete 委托服务禁用 Provider")
+    void provider_delete_should_delegate_to_service() {
+        ProviderSettingsService service = mock(ProviderSettingsService.class);
+        ProviderDeleteHandler handler = new ProviderDeleteHandler(service);
+
+        Map<String, Object> response = responseFrom(handler.handle(objectMapper.valueToTree(Map.of(
+                "providerId", "p1"
+        )), null));
+
+        verify(service).delete("p1");
+        assertThat(response)
+                .containsEntry("ok", true)
+                .containsEntry("providerId", "p1");
+    }
+
+    @Test
+    @DisplayName("provider/set-active 作为新协议别名持久化 active provider")
+    void provider_set_active_should_delegate_to_legacy_handler() {
+        AppSettingsService appSettingsService = mock(AppSettingsService.class);
+        ModelProviderRegistry registry = new ModelProviderRegistry(new BaBiQProperties(
+                "p1",
+                List.of(new ModelProviderConfig(
+                        "p1",
+                        "Provider 1",
+                        ProviderType.OPENAI_COMPATIBLE,
+                        "gpt-4o-mini",
+                        "sk-test",
+                        "https://relay.example.com/v1",
+                        128000)),
+                null));
+        ProviderSetActiveHandler handler = new ProviderSetActiveHandler(
+                new ProvidersSetActiveHandler(registry, appSettingsService));
+
+        Map<String, Object> response = responseFrom(handler.handle(objectMapper.valueToTree(Map.of(
+                "providerId", "p1"
+        )), null));
+
+        assertThat(handler.method()).isEqualTo("provider/set-active");
+        assertThat(response).containsEntry("ok", true);
+        verify(appSettingsService).update(any());
+    }
+
+    private static ProviderSettingsService.ProviderView providerView(String id, boolean hasApiKey) {
+        return new ProviderSettingsService.ProviderView(
+                id,
+                "Provider 1",
+                "OPENAI_COMPATIBLE",
+                "https://relay.example.com/v1",
+                "gpt-4o-mini",
+                128000,
+                true,
+                hasApiKey,
+                true,
+                null);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> responseFrom(Object payload) {
+        return (Map<String, Object>) payload;
+    }
+}

@@ -17,6 +17,7 @@ import com.wzx.babiq.server.interceptor.SpotlightingToolInterceptor;
 import com.wzx.babiq.server.interceptor.ToolObservationInterceptor;
 import com.wzx.babiq.server.model.ChatClientFactory;
 import com.wzx.babiq.server.observability.TurnObservationContext;
+import com.wzx.babiq.server.approval.ApprovalRuleService;
 import com.wzx.babiq.server.security.SystemPromptSecurityRule;
 import com.wzx.babiq.server.tool.ToolRegistry;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -29,6 +30,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -57,6 +59,8 @@ public class ReActStrategy {
     private final BaBiQTokenUsageHook tokenUsageHook;
     /** Spring AI Alibaba Graph 的内存检查点，HITL 暂停和恢复需要依赖它保存图状态。 */
     private final MemorySaver memorySaver = new MemorySaver();
+    /** Always 规则服务，用于把重复审批自动转成 approve。 */
+    private final ApprovalRuleService approvalRuleService;
 
     /**
      * 创建 ReAct 装配策略。
@@ -68,6 +72,7 @@ public class ReActStrategy {
      * @param toolObservationInterceptor 工具调用观测拦截器
      * @param spotlightingInterceptor 工具结果不可信数据标注拦截器
      * @param tokenUsageHook token 累计 Hook
+     * @param approvalRuleService Always 审批规则服务
      */
     public ReActStrategy(ChatClientFactory chatClientFactory,
                          ToolRegistry toolRegistry,
@@ -75,7 +80,8 @@ public class ReActStrategy {
                          BaBiQSandboxInterceptor sandboxInterceptor,
                          ToolObservationInterceptor toolObservationInterceptor,
                          SpotlightingToolInterceptor spotlightingInterceptor,
-                         BaBiQTokenUsageHook tokenUsageHook) {
+                         BaBiQTokenUsageHook tokenUsageHook,
+                         ApprovalRuleService approvalRuleService) {
         this.chatClientFactory = chatClientFactory;
         this.toolRegistry = toolRegistry;
         this.properties = properties;
@@ -83,6 +89,7 @@ public class ReActStrategy {
         this.toolObservationInterceptor = toolObservationInterceptor;
         this.spotlightingInterceptor = spotlightingInterceptor;
         this.tokenUsageHook = tokenUsageHook;
+        this.approvalRuleService = approvalRuleService;
     }
 
     /**
@@ -212,6 +219,36 @@ public class ReActStrategy {
                     feedback.getDescription());
             emitter.emitApprovalRequest(payload);
         }
+    }
+
+    /**
+     * 如果所有工具调用都命中 session always 规则，就构造自动 approve 的 HITL 反馈。
+     *
+     * @param threadId 当前会话 id
+     * @param metadata SAA 返回的 HITL 中断元数据
+     * @return 命中时返回 approved feedback；否则为空，继续展示审批弹窗
+     */
+    public Optional<InterruptionMetadata> autoApprovedFeedback(String threadId, InterruptionMetadata metadata) {
+        if (metadata.toolFeedbacks().isEmpty()) {
+            return Optional.empty();
+        }
+        boolean allAllowed = metadata.toolFeedbacks().stream()
+                .allMatch(feedback -> approvalRuleService.isAlwaysAllowed(
+                        threadId,
+                        feedback.getName(),
+                        feedback.getArguments()));
+        if (!allAllowed) {
+            return Optional.empty();
+        }
+
+        InterruptionMetadata.Builder builder = InterruptionMetadata.builder(metadata);
+        builder.toolFeedbacks(List.of());
+        for (InterruptionMetadata.ToolFeedback feedback : metadata.toolFeedbacks()) {
+            builder.addToolFeedback(InterruptionMetadata.ToolFeedback.builder(feedback)
+                    .result(InterruptionMetadata.ToolFeedback.FeedbackResult.APPROVED)
+                    .build());
+        }
+        return Optional.of(builder.build());
     }
 
     /**

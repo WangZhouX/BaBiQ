@@ -54,7 +54,7 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
   - `docs/superpowers/plans/p2-master.md`
   - P2 技术主线为 SQLite + MyBatis-Plus + Flyway/migration + Java 常见分层结构。
   - P1 总体验收已由用户在 2026-05-24 确认通过，`P2-0` 仅保留验收记录。
-  - P2 正在按用户 goal 全量执行；P2-1、P2-2 已完成，当前下一步为 P2-3。
+  - P2 正在按用户 goal 全量执行；P2-1、P2-2、P2-3 已完成，当前下一步为 P2-4。
   - P2-1 到 P2-6 的详细计划已全部写出；后续实现必须逐阶段核对对应 `plan.md`。
 - P2 任务文档已创建：
   - `docs/superpowers/plans/p2-task-index.md`
@@ -88,7 +88,18 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
   - `cd desktop; .\gradlew.bat run --no-daemon` 已进入 `:run` 并在受控烟测中保持运行。
   - P2-2 额外验证：`cd backend; .\mvnw.cmd "-Dtest=ThreadCreateHandlerTest,TurnStartHandlerTest,ApprovalRespondHandlerTest,ThreadListHandlerTest,ThreadLoadHandlerTest,ThreadArchiveHandlerTest,ConversationEventRecorderTest,ConversationHistoryIT" test`
   - P2-2 额外验证：`cd desktop; .\gradlew.bat test --tests "*AgentClientTest" --tests "*ThreadHistoryModelsTest"`、`cd desktop; .\gradlew.bat test --tests "*ChatControllerTest"`
-- 下一步进入 `P2-3 Provider / API Key / 沙箱 / 审批设置系统`。
+- P2-3 Provider / API Key / 沙箱 / 审批设置系统已完成：
+  - 后端新增 `settings/*`、`provider/*`、`sandbox/policy/set`、`approval/policy*` JSON-RPC 方法。
+  - `ProviderSettingsService` 已把 Provider 配置写入 SQLite，API Key 写入 JDK `JCEKS` KeyStore，数据库和 API 响应只暴露 `secretRef` / `hasApiKey`。
+  - `AppSettingsService`、`SandboxSettingsService`、`ApprovalPolicyService` 已支持 active provider、默认 cwd、sandbox mode、approval policy 的本地持久化。
+  - `approval/respond` 已支持 `decision=always`，并通过 `ApprovalRuleService` 做 session scope、tool name、args fingerprint 匹配，不实现永久全局放行。
+  - 桌面端设置页已支持 Provider 新增、编辑、删除、测试连接、切换当前 Provider，以及沙箱/审批策略修改；审批弹窗“始终允许”已接真实协议。
+  - P2-3 额外验证：`cd backend; .\mvnw.cmd "-Dtest=ProviderSettingsServiceTest,LocalKeyStoreSecretStoreTest,AppSettingsServiceTest,ProviderSettingsHandlersTest,SettingsHandlersTest,ApprovalRuleServiceTest,ApprovalRespondHandlerTest" test`
+  - P2-3 额外验证：`cd backend; .\mvnw.cmd "-Dtest=AgentLoopLineCountTest,ProviderTestControllerIntegrationTest" test`
+  - P2-3 全量验证：`cd backend; .\mvnw.cmd clean verify`
+  - P2-3 额外验证：`cd desktop; .\gradlew.bat test --tests "*SettingsModelsTest" --tests "*AgentClientTest" --tests "*ChatControllerTest"`
+  - P2-3 全量验证：`cd desktop; .\gradlew.bat test`
+- 下一步进入 `P2-4 持久化后的恢复语义和运行记录`。
 
 如果仓库状态发生变化，不要盲信本检查点；必须重新核对代码、文档、测试和 `git status`。
 
@@ -116,9 +127,9 @@ P1-4 已完成范围：
 
 下一阶段边界：
 
-- P2-1 和 P2-2 已完成；当前应进入 P2-3，不要跳过设置系统直接做 P2-4/P2-5/P2-6。
-- P2-3 允许实现 Provider 配置、API Key SecretStore 接入、沙箱模式设置、审批策略设置，以及对应桌面设置 UI。
-- P2-3 不做 MCP Client、运行记录详情页、Prometheus/Langfuse/OpenTelemetry 或跨设备同步。
+- P2-1、P2-2、P2-3 已完成；当前应进入 P2-4，不要跳过恢复语义和运行记录直接做 P2-5/P2-6。
+- P2-4 允许实现启动时遗留 running/waiting turn 收束、运行记录查询、工具调用记录、审批 pending/resolved/expired 状态持久化和桌面端运行详情真实数据展示。
+- P2-4 不做跨进程恢复正在执行的 Spring AI Alibaba ReactAgent checkpoint，不做 Prometheus/Langfuse/OpenTelemetry，不做 MCP Client。
 - P2 范围内 SQLite 使用 MyBatis-Plus 和 Java 常见分层，但 Agent 核心不得直接依赖 Mapper；必须通过 repository/adapter 或 application service 隔离。
 - 后续任何新增业务表或业务字段都必须同步 SQL 中文注释、`bq_schema_comments` 元数据和覆盖测试。
 

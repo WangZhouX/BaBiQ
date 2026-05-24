@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wzx.babiq.server.agent.PendingApprovals;
 import com.wzx.babiq.server.agent.TurnExecutor;
+import com.wzx.babiq.server.approval.ApprovalRuleService;
 import com.wzx.babiq.server.api.JsonRpcMethodHandler;
 import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
 import com.wzx.babiq.server.api.error.JsonRpcException;
@@ -41,6 +42,8 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
     private final BaBiQMetrics metrics;
     /** 运行事件记录器，审批恢复后的新 item 也必须进入历史数据库。 */
     private final ConversationEventRecorder eventRecorder;
+    /** Always 规则服务；为空时表示旧单元测试环境不启用 always 持久化。 */
+    private final ApprovalRuleService approvalRuleService;
 
     /**
      * 创建 approval/respond handler。
@@ -56,7 +59,7 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
                                   ObjectMapper objectMapper,
                                   TurnExecutor turnExecutor,
                                   BaBiQMetrics metrics) {
-        this(pendingApprovals, conversationService, objectMapper, turnExecutor, metrics, null);
+        this(pendingApprovals, conversationService, objectMapper, turnExecutor, metrics, null, null);
     }
 
     /**
@@ -68,6 +71,7 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
      * @param turnExecutor Agent 异步执行器
      * @param metrics P1 可观测指标聚合器
      * @param eventRecorder 运行事件记录器
+     * @param approvalRuleService Always 规则服务
      */
     @org.springframework.beans.factory.annotation.Autowired
     public ApprovalRespondHandler(PendingApprovals pendingApprovals,
@@ -75,13 +79,15 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
                                   ObjectMapper objectMapper,
                                   TurnExecutor turnExecutor,
                                   BaBiQMetrics metrics,
-                                  ConversationEventRecorder eventRecorder) {
+                                  ConversationEventRecorder eventRecorder,
+                                  ApprovalRuleService approvalRuleService) {
         this.pendingApprovals = pendingApprovals;
         this.conversationService = conversationService;
         this.objectMapper = objectMapper;
         this.turnExecutor = turnExecutor;
         this.metrics = metrics;
         this.eventRecorder = eventRecorder;
+        this.approvalRuleService = approvalRuleService;
     }
 
     /**
@@ -107,6 +113,7 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
         String turnId = requiredText(params, "turnId");
         String decision = requiredText(params, "decision");
         String editedArgs = optionalText(params, "editedArgs");
+        String scope = optionalText(params, "scope");
         InterruptionMetadata original = pendingApprovals.take(threadId);
         if (original == null) {
             throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "没有待审批请求: " + threadId);
@@ -119,6 +126,7 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
         turn.resume();
         ItemEmitter emitter = new ItemEmitter(session, objectMapper, threadId, turnId, eventRecorder);
         InterruptionMetadata feedback = buildFeedback(original, decision, editedArgs);
+        rememberAlwaysRulesIfNeeded(threadId, decision, scope, original);
         metrics.recordApprovalDecision(canonicalDecision(decision));
         turnExecutor.submitResume(turn, feedback, thread.cwd(), emitter);
         return Map.of("delivered", true);
@@ -145,7 +153,7 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
             InterruptionMetadata.ToolFeedback feedback, String decision, String editedArgs) {
         InterruptionMetadata.ToolFeedback.Builder builder = InterruptionMetadata.ToolFeedback.builder(feedback);
         return switch (decision.toLowerCase()) {
-            case "approve", "approved" -> builder
+            case "approve", "approved", "always" -> builder
                     .result(InterruptionMetadata.ToolFeedback.FeedbackResult.APPROVED)
                     .build();
             case "deny", "denied", "reject", "rejected" -> builder
@@ -165,8 +173,24 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
             case "approve", "approved" -> "approved";
             case "deny", "denied", "reject", "rejected" -> "denied";
             case "edit", "edited" -> "edited";
+            case "always" -> "always";
             default -> throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "未知审批决策: " + decision);
         };
+    }
+
+    private void rememberAlwaysRulesIfNeeded(String threadId, String decision, String requestedScope,
+                                             InterruptionMetadata original) {
+        if (!"always".equalsIgnoreCase(decision)) {
+            return;
+        }
+        if (approvalRuleService == null) {
+            throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "当前后端未启用 always 审批规则");
+        }
+        String scope = requestedScope == null ? ApprovalRuleService.SCOPE_SESSION : requestedScope;
+        for (InterruptionMetadata.ToolFeedback feedback : original.toolFeedbacks()) {
+            // Always 的安全边界由 ApprovalRuleService 保证：只绑定当前 thread、tool 和参数指纹。
+            approvalRuleService.rememberAlways(threadId, feedback.getName(), feedback.getArguments(), scope);
+        }
     }
 
     private String requiredText(JsonNode params, String fieldName) {

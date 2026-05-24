@@ -7,6 +7,8 @@ import com.wzx.babiq.server.persistence.mapper.ProviderConfigMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -57,6 +59,41 @@ public class ProviderPersistenceService {
         return Optional.ofNullable(providerConfigMapper.selectOne(Wrappers.<ProviderConfigEntity>lambdaQuery()
                         .eq(ProviderConfigEntity::getProviderId, providerId)))
                 .map(this::toRecord);
+    }
+
+    /**
+     * 查询 Provider 配置列表。
+     *
+     * @param enabledOnly true 时只返回启用配置
+     * @return 按更新时间倒序排列的 Provider 配置
+     */
+    public List<ProviderConfigRecord> listProviders(boolean enabledOnly) {
+        var query = Wrappers.<ProviderConfigEntity>lambdaQuery()
+                .orderByDesc(ProviderConfigEntity::getUpdatedAt);
+        if (enabledOnly) {
+            query.eq(ProviderConfigEntity::getEnabled, true);
+        }
+        return providerConfigMapper.selectList(query).stream()
+                .map(this::toRecord)
+                .toList();
+    }
+
+    /**
+     * 软删除 Provider：保留配置和历史 turn，只把 enabled 置为 false。
+     *
+     * @param providerId Provider 标识
+     * @param now 更新时间
+     */
+    @Transactional
+    public void disableProvider(String providerId, Instant now) {
+        ProviderConfigEntity existing = providerConfigMapper.selectOne(Wrappers.<ProviderConfigEntity>lambdaQuery()
+                .eq(ProviderConfigEntity::getProviderId, providerId));
+        if (existing == null) {
+            return;
+        }
+        existing.setEnabled(false);
+        existing.setUpdatedAt(PersistenceTime.write(now));
+        providerConfigMapper.updateById(existing);
     }
 
     private ProviderConfigEntity toEntity(ProviderConfigRecord record) {

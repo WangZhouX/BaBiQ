@@ -51,6 +51,11 @@ fun BaBiQDesktopApp() {
 			onSelectProvider = { providerId, modelId ->
 				scope.launch { controller.selectProvider(providerId, modelId) }
 			},
+			onCreateProvider = { params -> scope.launch { controller.createProvider(params) } },
+			onDeleteProvider = { providerId -> scope.launch { controller.deleteProvider(providerId) } },
+			onTestProvider = { providerId -> scope.launch { controller.testProvider(providerId) } },
+			onSaveSandboxMode = { mode -> scope.launch { controller.saveSandboxMode(mode) } },
+			onSaveApprovalPolicy = { policy -> scope.launch { controller.saveApprovalPolicy(policy) } },
 			onToggleRuntime = { controller.toggleRuntimeDetails() },
 		)
 		ApprovalDialog(
@@ -58,7 +63,7 @@ fun BaBiQDesktopApp() {
 			canSubmit = state.canApprove,
 			onDismiss = { },
 			onDecision = { decision, editedArgs ->
-				scope.launch { controller.respondApproval(decision, editedArgs) }
+				scope.launch { controller.respondApproval(decision, editedArgs, scope = if (decision == "always") "session" else null) }
 			},
 		)
 	}

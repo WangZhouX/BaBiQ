@@ -15,6 +15,8 @@ import com.wzx.babiq.server.conversation.Turn;
 import com.wzx.babiq.server.agent.AgentLoopProperties;
 import com.wzx.babiq.server.model.ModelProviderConfig;
 import com.wzx.babiq.server.model.ModelProviderRegistry;
+import com.wzx.babiq.server.settings.AppSettings;
+import com.wzx.babiq.server.settings.AppSettingsService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,6 +49,8 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
     private final AgentLoopProperties agentLoopProperties;
     /** 运行事件记录器，会被传给 ItemEmitter，实现先落库再推送。 */
     private final ConversationEventRecorder eventRecorder;
+    /** 应用设置服务，用来读取下一轮 turn 生效的沙箱和审批策略。 */
+    private final AppSettingsService appSettingsService;
 
     /**
      * 创建 turn/start handler。
@@ -59,7 +63,7 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
             ConversationService conversationService,
             ObjectMapper objectMapper,
             TurnExecutor turnExecutor) {
-        this(conversationService, objectMapper, turnExecutor, null, null, null);
+        this(conversationService, objectMapper, turnExecutor, null, null, null, null);
     }
 
     /**
@@ -71,6 +75,7 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
      * @param providerRegistry 模型 Provider 注册表
      * @param agentLoopProperties Agent 配置
      * @param eventRecorder 运行事件记录器
+     * @param appSettingsService 应用设置服务
      */
     @Autowired
     public TurnStartHandler(
@@ -79,13 +84,15 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
             TurnExecutor turnExecutor,
             ModelProviderRegistry providerRegistry,
             AgentLoopProperties agentLoopProperties,
-            ConversationEventRecorder eventRecorder) {
+            ConversationEventRecorder eventRecorder,
+            AppSettingsService appSettingsService) {
         this.conversationService = conversationService;
         this.objectMapper = objectMapper;
         this.turnExecutor = turnExecutor;
         this.providerRegistry = providerRegistry;
         this.agentLoopProperties = agentLoopProperties;
         this.eventRecorder = eventRecorder;
+        this.appSettingsService = appSettingsService;
     }
 
     /**
@@ -121,14 +128,15 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
         Turn turn = conversationService.startTurn(threadId);
         turn.start();
         ModelProviderConfig provider = resolveProvider(providerId);
+        AppSettings settings = appSettingsService == null ? null : appSettingsService.get();
         conversationService.persistTurnStarted(
                 turn,
                 userText,
                 provider == null ? providerId : provider.id(),
                 provider == null ? null : provider.model(),
                 thread.cwd(),
-                agentLoopProperties == null ? null : agentLoopProperties.sandboxMode().name(),
-                agentLoopProperties == null ? null : agentLoopProperties.approvalPolicy().name());
+                settings == null ? defaultSandboxMode() : settings.sandboxMode(),
+                settings == null ? defaultApprovalPolicy() : settings.approvalPolicy());
         log.info("turn/start 已创建 Turn: threadId={}, turnId={}, cwd={}, providerId={}",
                 threadId,
                 turn.id(),
@@ -154,6 +162,14 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
             return null;
         }
         return providerId == null ? providerRegistry.active() : providerRegistry.get(providerId);
+    }
+
+    private String defaultSandboxMode() {
+        return agentLoopProperties == null ? null : agentLoopProperties.sandboxMode().name();
+    }
+
+    private String defaultApprovalPolicy() {
+        return agentLoopProperties == null ? null : agentLoopProperties.approvalPolicy().name();
     }
 
     private String requiredText(JsonNode params, String fieldName) {

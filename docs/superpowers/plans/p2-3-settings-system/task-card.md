@@ -4,6 +4,11 @@
 
 把 P1 的只读 Provider 和权限展示升级为可编辑设置系统，并让设置影响下一轮 turn。
 
+## 状态
+
+- 已完成代码实现和自动化验收。
+- 详情见 `docs/superpowers/plans/p2-3-settings-system/codex-handoff.md`。
+
 ## 依赖
 
 - 必须等待 P2-1 完成。
@@ -29,4 +34,4 @@
 
 ## 下一步
 
-在实现前写 `docs/superpowers/plans/p2-3-settings-system/plan.md` 并等待用户确认。
+进入 `P2-4 持久化后的恢复语义和运行记录`。

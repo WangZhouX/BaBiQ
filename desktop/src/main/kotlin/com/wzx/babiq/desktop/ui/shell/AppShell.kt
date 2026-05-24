@@ -10,6 +10,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.wzx.babiq.desktop.state.AppState
 import com.wzx.babiq.desktop.state.Screen
+import com.wzx.babiq.desktop.protocol.ProviderSaveParams
 import com.wzx.babiq.desktop.ui.chat.ChatScreen
 import com.wzx.babiq.desktop.ui.runtime.RuntimeDetailsPanel
 import com.wzx.babiq.desktop.ui.settings.SettingsPanel
@@ -31,6 +32,11 @@ fun AppShell(
 	onArchiveThread: (String) -> Unit,
 	onSelectWorkspace: (String) -> Unit,
 	onSelectProvider: (String, String?) -> Unit,
+	onCreateProvider: (ProviderSaveParams) -> Unit,
+	onDeleteProvider: (String) -> Unit,
+	onTestProvider: (String) -> Unit,
+	onSaveSandboxMode: (String) -> Unit,
+	onSaveApprovalPolicy: (String) -> Unit,
 	onToggleRuntime: () -> Unit,
 ) {
 	Row(
@@ -60,6 +66,12 @@ fun AppShell(
 				Screen.Settings -> SettingsPanel(
 					state = state,
 					onSelectWorkspace = onSelectWorkspace,
+					onSelectProvider = { providerId -> onSelectProvider(providerId, null) },
+					onCreateProvider = onCreateProvider,
+					onDeleteProvider = onDeleteProvider,
+					onTestProvider = onTestProvider,
+					onSaveSandboxMode = onSaveSandboxMode,
+					onSaveApprovalPolicy = onSaveApprovalPolicy,
 				)
 			}
 		}

@@ -17,6 +17,13 @@ data class ProviderListResult(
  *
  * @property id 后端唯一 provider id，切换模型时要把它传回后端。
  * @property label 给用户看的供应商名称。
+ * @property displayName 设置页展示名称；旧协议没有该字段时默认等于 label。
+ * @property type Provider 类型，例如 OPENAI_COMPATIBLE。
+ * @property baseUrl API Base URL；不需要该字段的 Provider 会返回空字符串或 null。
+ * @property model Provider 默认模型。
+ * @property contextWindow 上下文窗口大小，0 表示未知或使用默认值。
+ * @property enabled 是否启用。
+ * @property hasApiKey 后端是否已保存 API Key，UI 只显示状态，不读取明文。
  * @property active 后端当前是否把它作为默认 provider。
  * @property models 该 provider 下可选择的具体模型。
  */
@@ -24,6 +31,13 @@ data class ProviderListResult(
 data class ProviderInfo(
 	val id: String,
 	val label: String,
+	val displayName: String = label,
+	val type: String? = null,
+	val baseUrl: String? = null,
+	val model: String? = null,
+	val contextWindow: Int = 0,
+	val enabled: Boolean = true,
+	val hasApiKey: Boolean = false,
 	val active: Boolean = false,
 	val models: List<ModelInfo> = emptyList(),
 )

@@ -1,7 +1,9 @@
 package com.wzx.babiq.desktop.state
 
 import com.wzx.babiq.desktop.client.AgentGateway
+import com.wzx.babiq.desktop.protocol.AppSettingsResult
 import com.wzx.babiq.desktop.protocol.ProviderInfo
+import com.wzx.babiq.desktop.protocol.ProviderSaveParams
 import com.wzx.babiq.desktop.protocol.ServerEvent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -138,7 +140,7 @@ class ChatController(
 		}
 	}
 
-	suspend fun respondApproval(decision: String, editedArgs: String? = null) {
+	suspend fun respondApproval(decision: String, editedArgs: String? = null, scope: String? = null) {
 		val approval = state.value.pendingApproval
 		if (state.value.connectionState != ConnectionState.Connected) {
 			_state.update {
@@ -160,6 +162,7 @@ class ChatController(
 				turnId = approval.turnId,
 				decision = decision,
 				editedArgs = editedArgs,
+				scope = scope,
 			)
 			_state.update {
 				it.copy(
@@ -188,6 +191,11 @@ class ChatController(
 						active = ProviderSelection(providerId, modelId, modelId ?: providerId),
 						error = null,
 					),
+					settingsState = it.settingsState.copy(
+						settings = it.settingsState.settings?.copy(activeProviderId = providerId),
+						notice = "Provider 已切换，下一轮 turn 生效",
+						error = null,
+					),
 				)
 			}
 		} catch (exception: Exception) {
@@ -197,6 +205,112 @@ class ChatController(
 					lastError = exception.message,
 				)
 			}
+		}
+	}
+
+	/**
+	 * 新增 Provider，并在成功后刷新 Provider 列表。
+	 *
+	 * API Key 不会写入 AppState，只存在于 params 这个局部对象和发往后端的 JSON-RPC 请求中。
+	 */
+	suspend fun createProvider(params: ProviderSaveParams) {
+		saveProvider(params, updateExisting = false)
+	}
+
+	/**
+	 * 编辑 Provider，并在成功后刷新 Provider 列表。
+	 */
+	suspend fun updateProvider(params: ProviderSaveParams) {
+		saveProvider(params, updateExisting = true)
+	}
+
+	/**
+	 * 删除或禁用 Provider，随后刷新列表。
+	 */
+	suspend fun deleteProvider(providerId: String) {
+		_state.update { it.copy(settingsState = it.settingsState.copy(saving = true, error = null, notice = null)) }
+		try {
+			gateway.deleteProvider(providerId)
+			loadProviders()
+			_state.update {
+				it.copy(
+					settingsState = it.settingsState.copy(
+						saving = false,
+						error = null,
+						notice = "Provider 已删除",
+					),
+				)
+			}
+		} catch (exception: Exception) {
+			setSettingsError(exception.message ?: "删除 Provider 失败")
+		}
+	}
+
+	/**
+	 * 测试 Provider 配置，不修改当前 active provider。
+	 */
+	suspend fun testProvider(providerId: String) {
+		_state.update { it.copy(settingsState = it.settingsState.copy(saving = true, error = null, notice = null)) }
+		try {
+			val result = gateway.testProvider(providerId)
+			_state.update {
+				it.copy(
+					settingsState = it.settingsState.copy(
+						saving = false,
+						error = if (result.ok) null else result.message,
+						notice = result.message,
+					),
+				)
+			}
+		} catch (exception: Exception) {
+			setSettingsError(exception.message ?: "测试 Provider 失败")
+		}
+	}
+
+	/**
+	 * 保存默认沙箱模式，并立即刷新输入框上下文条；真实执行边界仍从下一轮 turn 开始生效。
+	 */
+	suspend fun saveSandboxMode(mode: String) {
+		_state.update { it.copy(settingsState = it.settingsState.copy(saving = true, error = null, notice = null)) }
+		try {
+			val policy = gateway.setSandboxPolicy(mode)
+			_state.update {
+				val previousSettings = it.settingsState.settings ?: defaultSettings(it)
+				it.copy(
+					workspace = it.workspace.copy(permissionMode = policy.mode, permissionLabel = policy.label),
+					settingsState = it.settingsState.copy(
+						saving = false,
+						settings = previousSettings.copy(sandboxMode = policy.mode),
+						error = null,
+						notice = "沙箱策略已保存，下一轮 turn 生效",
+					),
+				)
+			}
+		} catch (exception: Exception) {
+			setSettingsError(exception.message ?: "保存沙箱策略失败")
+		}
+	}
+
+	/**
+	 * 保存默认审批策略；当前运行中的 turn 继续使用启动快照。
+	 */
+	suspend fun saveApprovalPolicy(policy: String) {
+		_state.update { it.copy(settingsState = it.settingsState.copy(saving = true, error = null, notice = null)) }
+		try {
+			val result = gateway.setApprovalPolicy(policy)
+			_state.update {
+				val previousSettings = it.settingsState.settings ?: defaultSettings(it)
+				it.copy(
+					settingsState = it.settingsState.copy(
+						saving = false,
+						settings = previousSettings.copy(approvalPolicy = result.approvalPolicy),
+						error = null,
+						notice = "审批策略已保存，下一轮 turn 生效",
+					),
+				)
+			}
+		} catch (exception: Exception) {
+			setSettingsError(exception.message ?: "保存审批策略失败")
 		}
 	}
 
@@ -358,11 +472,12 @@ class ChatController(
 	}
 
 	private suspend fun connectOnce() {
-		// 一次连接尝试只做四件事：建立 WebSocket、订阅事件、读取 Provider 列表、读取权限策略。
+		// 一次连接尝试只做五件事：建立 WebSocket、订阅事件、读取设置、读取 Provider 列表、读取权限策略。
 		// 失败处理和重试节奏放在外层，避免这个函数同时承担太多职责。
 		gateway.connect()
 		applyEvent(AgentEvent.ConnectionChanged(ConnectionState.Connected))
 		startCollectingEvents()
+		loadSettings()
 		loadProviders()
 		loadSandboxPolicy()
 		loadThreadHistory(state.value.workspace.cwd)
@@ -451,6 +566,53 @@ class ChatController(
 		}
 	}
 
+	private suspend fun loadSettings() {
+		_state.update { it.copy(settingsState = it.settingsState.copy(loading = true, error = null)) }
+		try {
+			val settings = gateway.getSettings()
+			_state.update {
+				it.copy(
+					settingsState = it.settingsState.copy(
+						loading = false,
+						settings = settings,
+						error = null,
+					),
+				)
+			}
+		} catch (exception: Exception) {
+			_state.update {
+				it.copy(
+					settingsState = it.settingsState.copy(loading = false, error = exception.message),
+					lastError = exception.message,
+				)
+			}
+		}
+	}
+
+	private suspend fun saveProvider(params: ProviderSaveParams, updateExisting: Boolean) {
+		_state.update { it.copy(settingsState = it.settingsState.copy(saving = true, error = null, notice = null)) }
+		try {
+			if (updateExisting) {
+				gateway.updateProvider(params)
+			} else {
+				gateway.createProvider(params)
+			}
+			loadProviders()
+			_state.update {
+				it.copy(
+					settingsState = it.settingsState.copy(
+						saving = false,
+						error = null,
+						notice = "Provider 已保存，下一轮 turn 生效",
+						providerDraft = ProviderEditorState(),
+					),
+				)
+			}
+		} catch (exception: Exception) {
+			setSettingsError(exception.message ?: "保存 Provider 失败")
+		}
+	}
+
 	private suspend fun loadProviders() {
 		_state.update { it.copy(providerState = it.providerState.copy(loading = true, error = null)) }
 		try {
@@ -495,6 +657,15 @@ class ChatController(
 		}
 	}
 
+	private fun setSettingsError(message: String) {
+		_state.update {
+			it.copy(
+				settingsState = it.settingsState.copy(saving = false, error = message),
+				lastError = message,
+			)
+		}
+	}
+
 	private fun List<ProviderInfo>.activeSelection(): ProviderSelection? {
 		val provider = firstOrNull { it.active } ?: firstOrNull() ?: return null
 		val model = provider.models.firstOrNull { it.active } ?: provider.models.firstOrNull()
@@ -504,6 +675,14 @@ class ChatController(
 			label = model?.label ?: provider.label,
 		)
 	}
+
+	private fun defaultSettings(state: AppState): AppSettingsResult =
+		AppSettingsResult(
+			activeProviderId = state.providerState.active.providerId.takeIf { it.isNotBlank() },
+			sandboxMode = state.workspace.permissionMode ?: "WORKSPACE_WRITE",
+			approvalPolicy = "ON_REQUEST",
+			defaultCwd = state.workspace.cwd,
+		)
 
 	private fun normalizeWorkspace(cwd: String): String? =
 		try {

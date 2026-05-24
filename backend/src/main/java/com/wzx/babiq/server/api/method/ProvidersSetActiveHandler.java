@@ -6,6 +6,7 @@ import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
 import com.wzx.babiq.server.api.error.JsonRpcException;
 import com.wzx.babiq.server.model.ModelProviderConfig;
 import com.wzx.babiq.server.model.ModelProviderRegistry;
+import com.wzx.babiq.server.settings.AppSettingsService;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.WebSocketSession;
 
@@ -22,6 +23,8 @@ public class ProvidersSetActiveHandler implements JsonRpcMethodHandler {
 
     /** 模型 Provider 注册表，UI 切换模型时最终会更新这里的 active provider。 */
     private final ModelProviderRegistry registry;
+    /** 应用设置服务；存在时把 active provider 同步持久化，保证重启后仍生效。 */
+    private final AppSettingsService appSettingsService;
 
     /**
      * 创建 active provider 切换处理器。
@@ -29,7 +32,19 @@ public class ProvidersSetActiveHandler implements JsonRpcMethodHandler {
      * @param registry 模型 Provider 注册中心
      */
     public ProvidersSetActiveHandler(ModelProviderRegistry registry) {
+        this(registry, null);
+    }
+
+    /**
+     * 创建可持久化 active provider 的切换处理器。
+     *
+     * @param registry 模型 Provider 注册中心
+     * @param appSettingsService 应用设置服务
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    public ProvidersSetActiveHandler(ModelProviderRegistry registry, AppSettingsService appSettingsService) {
         this.registry = registry;
+        this.appSettingsService = appSettingsService;
     }
 
     /**
@@ -60,7 +75,11 @@ public class ProvidersSetActiveHandler implements JsonRpcMethodHandler {
 
         ModelProviderConfig selectedProvider = providerConfig(providerId);
         validateRequestedModel(requestedModelId, selectedProvider);
-        registry.setActive(providerId);
+        if (appSettingsService == null) {
+            registry.setActive(providerId);
+        } else {
+            appSettingsService.update(new AppSettingsService.AppSettingsUpdate(providerId, null, null, null));
+        }
 
         return Map.of(
                 "ok", true,

@@ -13,6 +13,7 @@ import com.wzx.babiq.desktop.protocol.ThreadItem
  * @property turnState 当前 turn 的生命周期状态，决定发送、取消、审批按钮是否可用。
  * @property workspace 当前工作区上下文，包含 cwd 和后端返回的权限模式等输入框上下文条信息。
  * @property providerState 后端可用模型列表、当前选中模型以及加载/错误状态。
+ * @property settingsState 设置页需要的本地设置快照、保存状态和表单草稿。
  * @property threadHistory Sidebar 最近会话列表的真实后端数据。
  * @property currentThreadId 后端 thread id；为空表示还没有为当前工作区创建会话。
  * @property currentThreadTitle 当前打开会话的标题；新对话或未加载历史时为空。
@@ -32,6 +33,7 @@ data class AppState(
 	val turnState: TurnState = TurnState.Idle,
 	val workspace: WorkspaceContext = WorkspaceContext(),
 	val providerState: ProviderState = ProviderState(),
+	val settingsState: SettingsState = SettingsState(),
 	val threadHistory: ThreadHistoryState = ThreadHistoryState(),
 	val currentThreadId: String? = null,
 	val currentThreadTitle: String? = null,
@@ -66,6 +68,13 @@ data class AppState(
 	 */
 	val canApprove: Boolean
 		get() = connectionState == ConnectionState.Connected && pendingApproval != null
+
+	/**
+	 * 设置写入会影响下一轮 turn 的默认值；运行中或等待审批时先禁止编辑，避免用户误会当前 turn 会立即改变。
+	 */
+	val canEditSettings: Boolean
+		get() = connectionState == ConnectionState.Connected &&
+			turnState !in setOf(TurnState.Sending, TurnState.Running, TurnState.WaitingApproval)
 
 	companion object {
 		fun empty(): AppState = AppState()
