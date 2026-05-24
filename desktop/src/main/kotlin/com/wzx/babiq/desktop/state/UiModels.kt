@@ -4,6 +4,9 @@ import com.wzx.babiq.desktop.protocol.ApprovalRequestPayload
 import com.wzx.babiq.desktop.protocol.AppSettingsResult
 import com.wzx.babiq.desktop.protocol.ProviderInfo
 import com.wzx.babiq.desktop.protocol.ProviderSaveParams
+import com.wzx.babiq.desktop.protocol.RunRecoveryStatusResult
+import com.wzx.babiq.desktop.protocol.RunTurnDetailResult
+import com.wzx.babiq.desktop.protocol.RunTurnSummaryInfo
 import com.wzx.babiq.desktop.protocol.ThreadItem
 import com.wzx.babiq.desktop.protocol.ThreadSummaryInfo
 import kotlinx.serialization.json.JsonElement
@@ -127,6 +130,89 @@ data class RuntimeEvent(
 	val detail: String,
 	val raw: JsonElement? = null,
 )
+
+/**
+ * 运行详情面板里的持久化运行记录状态。
+ *
+ * P1-4 的 runtimeEvents 只代表“当前内存里刚收到的事件”，P2-4 增加这一层后，
+ * 用户重新打开历史会话也能看到 SQLite 中保存过的 turn、审批和工具调用。
+ *
+ * @property loading true 表示正在读取 run/turns/list 或 run/turn/get。
+ * @property error 最近一次读取运行记录失败的错误信息。
+ * @property turns 当前会话的历史 turn 摘要，来自 run/turns/list。
+ * @property selectedTurnId 当前详情面板选中的历史 turn id；为空时表示还没有可展示详情。
+ * @property selectedDetail 当前选中 turn 的完整详情，来自 run/turn/get。
+ * @property recoveryStatus 后端最近一次启动恢复报告，用于解释 interrupted/expired 状态。
+ */
+data class RunRecordState(
+	val loading: Boolean = false,
+	val error: String? = null,
+	val turns: List<RunTurnListItem> = emptyList(),
+	val selectedTurnId: String? = null,
+	val selectedDetail: RunTurnDetailResult? = null,
+	val recoveryStatus: RunRecoveryStatusResult? = null,
+)
+
+/**
+ * 运行记录列表的 UI 友好模型。
+ *
+ * 它从协议 DTO 裁剪出列表需要的字段，让 Composable 不直接关心后端字段裁剪和空值兜底。
+ *
+ * @property turnId 后端 turn id，点击时用于 run/turn/get。
+ * @property statusLabel 面向用户展示的状态文案。
+ * @property inputPreview 用户输入摘要，避免长 prompt 撑开右侧面板。
+ * @property modelLabel 本轮模型展示名，缺失时显示“未记录模型”。
+ * @property timeLabel 开始到结束的简短时间文本。
+ * @property recoveryReason 恢复收束原因；非恢复记录为空。
+ */
+data class RunTurnListItem(
+	val turnId: String,
+	val statusLabel: String,
+	val inputPreview: String,
+	val modelLabel: String,
+	val timeLabel: String,
+	val recoveryReason: String? = null,
+) {
+	companion object {
+		/**
+		 * 把后端运行摘要转换成右侧列表项。
+		 */
+		fun from(summary: RunTurnSummaryInfo): RunTurnListItem =
+			RunTurnListItem(
+				turnId = summary.turnId,
+				statusLabel = summary.status.statusLabel(),
+				inputPreview = summary.inputText.ifBlank { "空输入" }.take(80),
+				modelLabel = summary.model ?: summary.providerId ?: "未记录模型",
+				timeLabel = buildString {
+					append(summary.startedAt.shortIsoTime())
+					summary.completedAt?.let { append(" -> ").append(it.shortIsoTime()) }
+				},
+				recoveryReason = summary.recoveryReason,
+			)
+	}
+}
+
+/**
+ * 将后端状态枚举映射成用户能读懂的中文标签。
+ */
+private fun String.statusLabel(): String =
+	when (uppercase()) {
+		"COMPLETED" -> "已完成"
+		"FAILED" -> "失败"
+		"CANCELED" -> "已取消"
+		"INTERRUPTED" -> "已中断"
+		"EXPIRED" -> "已过期"
+		"RUNNING" -> "运行中"
+		"WAITING_APPROVAL" -> "等待审批"
+		"SENDING" -> "发送中"
+		else -> this
+	}
+
+/**
+ * 裁剪 ISO 时间字符串，保持列表紧凑。
+ */
+private fun String.shortIsoTime(): String =
+	take(19).replace("T", " ")
 
 /**
  * 当前工作区上下文。

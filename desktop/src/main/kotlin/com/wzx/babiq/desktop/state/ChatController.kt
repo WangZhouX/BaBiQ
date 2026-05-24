@@ -330,6 +330,7 @@ class ChatController(
 				runtimeEvents = emptyList(),
 				latestSummary = null,
 				pendingApproval = null,
+				runRecordState = RunRecordState(),
 				threadHistory = it.threadHistory.copy(selectedThreadId = null),
 				bannerMessage = null,
 				lastError = null,
@@ -359,6 +360,11 @@ class ChatController(
 					runtimeEvents = emptyList(),
 					latestSummary = loaded.latestSummary ?: ChatReducer.latestSummaryFromItems(loaded.items),
 					pendingApproval = null,
+					runRecordState = if (it.runtimeExpanded) {
+						it.runRecordState.copy(loading = true, error = null)
+					} else {
+						RunRecordState()
+					},
 					threadHistory = it.threadHistory.copy(
 						loading = false,
 						error = null,
@@ -367,6 +373,9 @@ class ChatController(
 					bannerMessage = null,
 					lastError = null,
 				)
+			}
+			if (state.value.runtimeExpanded) {
+				loadRunRecords(loaded.thread.threadId)
 			}
 		} catch (exception: Exception) {
 			_state.update {
@@ -392,6 +401,7 @@ class ChatController(
 					currentTurnId = if (wasCurrentThread) null else it.currentTurnId,
 					messages = if (wasCurrentThread) emptyList() else it.messages,
 					latestSummary = if (wasCurrentThread) null else it.latestSummary,
+					runRecordState = if (wasCurrentThread) RunRecordState() else it.runRecordState,
 					threadHistory = it.threadHistory.copy(
 						items = it.threadHistory.items.filterNot { item -> item.threadId == threadId },
 						selectedThreadId = it.threadHistory.selectedThreadId?.takeUnless { selected -> selected == threadId },
@@ -450,6 +460,7 @@ class ChatController(
 				runtimeEvents = emptyList(),
 				latestSummary = null,
 				pendingApproval = null,
+				runRecordState = RunRecordState(),
 				lastError = null,
 				bannerMessage = "已切换工作目录: $selected",
 			)
@@ -464,7 +475,27 @@ class ChatController(
 	}
 
 	fun toggleRuntimeDetails() {
-		_state.update { it.copy(runtimeExpanded = !it.runtimeExpanded) }
+		val shouldExpand = !state.value.runtimeExpanded
+		_state.update { it.copy(runtimeExpanded = shouldExpand) }
+		if (shouldExpand) {
+			// 运行详情展开后才拉历史记录，避免常规聊天路径承担额外数据库查询。
+			state.value.currentThreadId?.let { threadId ->
+				scope.launch(start = CoroutineStart.UNDISPATCHED) {
+					loadRunRecords(threadId)
+				}
+			}
+		}
+	}
+
+	/**
+	 * 选择右侧运行详情中的某一轮历史 turn。
+	 *
+	 * UI 只传 turnId，Controller 负责调用后端并更新 selectedDetail，保持 Composable 仍然是纯展示层。
+	 */
+	fun selectRunTurn(turnId: String) {
+		scope.launch(start = CoroutineStart.UNDISPATCHED) {
+			loadRunTurnDetail(turnId)
+		}
 	}
 
 	fun applyEvent(event: AgentEvent) {
@@ -538,8 +569,88 @@ class ChatController(
 				applyEvent(AgentEvent.Server(event))
 				if (event.shouldRefreshThreadHistory()) {
 					loadThreadHistory(state.value.workspace.cwd)
+					refreshRunRecordsIfVisible()
 				}
 			}
+		}
+	}
+
+	/**
+	 * 读取当前 thread 的运行记录列表、恢复报告，并默认选中最近一轮 turn。
+	 */
+	private suspend fun loadRunRecords(threadId: String) {
+		_state.update {
+			it.copy(runRecordState = it.runRecordState.copy(loading = true, error = null))
+		}
+		try {
+			val recovery = gateway.getRecoveryStatus()
+			val result = gateway.listRunTurns(threadId)
+			val turns = result.turns.map(RunTurnListItem::from)
+			val firstTurnId = turns.firstOrNull()?.turnId
+			val detail = firstTurnId?.let { gateway.getRunTurn(it) }
+			_state.update {
+				// 用户可能在异步请求期间切换了会话；threadId 不匹配时丢弃旧结果，避免详情串台。
+				if (it.currentThreadId != threadId) {
+					it
+				} else {
+					it.copy(
+						runRecordState = it.runRecordState.copy(
+							loading = false,
+							error = null,
+							turns = turns,
+							selectedTurnId = firstTurnId,
+							selectedDetail = detail,
+							recoveryStatus = recovery,
+						),
+					)
+				}
+			}
+		} catch (exception: Exception) {
+			_state.update {
+				it.copy(
+					runRecordState = it.runRecordState.copy(loading = false, error = exception.message),
+					lastError = exception.message,
+				)
+			}
+		}
+	}
+
+	/**
+	 * 只刷新某一轮详情，供右侧运行记录列表点击时调用。
+	 */
+	private suspend fun loadRunTurnDetail(turnId: String) {
+		_state.update {
+			it.copy(runRecordState = it.runRecordState.copy(loading = true, error = null, selectedTurnId = turnId))
+		}
+		try {
+			val detail = gateway.getRunTurn(turnId)
+			_state.update {
+				it.copy(
+					runRecordState = it.runRecordState.copy(
+						loading = false,
+						error = null,
+						selectedTurnId = turnId,
+						selectedDetail = detail,
+					),
+				)
+			}
+		} catch (exception: Exception) {
+			_state.update {
+				it.copy(
+					runRecordState = it.runRecordState.copy(loading = false, error = exception.message),
+					lastError = exception.message,
+				)
+			}
+		}
+	}
+
+	/**
+	 * 当前详情面板可见时，turn 完成或失败事件会触发一次运行记录刷新。
+	 */
+	private suspend fun refreshRunRecordsIfVisible() {
+		val current = state.value
+		if (current.runtimeExpanded) {
+			current.currentThreadId?.let { loadRunRecords(it) }
 		}
 	}
 

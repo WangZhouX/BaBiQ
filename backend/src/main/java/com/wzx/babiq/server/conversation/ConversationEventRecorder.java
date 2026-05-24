@@ -7,6 +7,8 @@ import com.wzx.babiq.server.conversation.items.TurnSummaryItem;
 import com.wzx.babiq.server.conversation.repository.ConversationRepository;
 import com.wzx.babiq.server.conversation.repository.ItemRecord;
 import com.wzx.babiq.server.conversation.repository.TurnSummaryRecord;
+import com.wzx.babiq.server.agent.ApprovalRequestPayload;
+import com.wzx.babiq.server.persistence.service.ApprovalPersistenceService;
 import com.wzx.babiq.server.persistence.service.TurnPersistenceService;
 import org.springframework.stereotype.Component;
 
@@ -26,6 +28,8 @@ public class ConversationEventRecorder {
     private final ConversationRepository repository;
     /** turn 表服务，负责更新 turn 的最终状态。 */
     private final TurnPersistenceService turnPersistenceService;
+    /** 审批持久化服务，负责把 approval/request 和用户决策写入 bq_approvals。 */
+    private final ApprovalPersistenceService approvalPersistenceService;
     /** 和 WebSocket 协议共用的 JSON 序列化器，保证 payload_json 字段保持协议原文。 */
     private final ObjectMapper objectMapper;
 
@@ -40,8 +44,26 @@ public class ConversationEventRecorder {
             ConversationRepository repository,
             TurnPersistenceService turnPersistenceService,
             ObjectMapper objectMapper) {
+        this(repository, turnPersistenceService, null, objectMapper);
+    }
+
+    /**
+     * 创建带审批持久化能力的运行事件记录器。
+     *
+     * @param repository 对话持久化仓库
+     * @param turnPersistenceService turn 表持久化服务
+     * @param approvalPersistenceService 审批表持久化服务；测试旧构造器可为空
+     * @param objectMapper JSON 序列化器
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    public ConversationEventRecorder(
+            ConversationRepository repository,
+            TurnPersistenceService turnPersistenceService,
+            ApprovalPersistenceService approvalPersistenceService,
+            ObjectMapper objectMapper) {
         this.repository = repository;
         this.turnPersistenceService = turnPersistenceService;
+        this.approvalPersistenceService = approvalPersistenceService;
         this.objectMapper = objectMapper;
     }
 
@@ -106,6 +128,24 @@ public class ConversationEventRecorder {
      */
     public void recordTurnFinished(String turnId, String status, String failureReason) {
         turnPersistenceService.updateTurnStatus(turnId, status, failureReason);
+    }
+
+    /**
+     * 记录审批请求。
+     *
+     * @param payload 即将发送给桌面端的 approval/request payload
+     */
+    public void recordApprovalRequest(ApprovalRequestPayload payload) {
+        if (approvalPersistenceService == null) {
+            return;
+        }
+        approvalPersistenceService.savePending(
+                payload.itemId(),
+                payload.threadId(),
+                payload.turnId(),
+                payload.toolName(),
+                payload.arguments(),
+                Instant.now());
     }
 
     private void saveItem(String threadId, String turnId, ThreadItem item, String status) {

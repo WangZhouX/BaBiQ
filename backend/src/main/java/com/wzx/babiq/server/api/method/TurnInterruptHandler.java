@@ -5,6 +5,7 @@ import com.wzx.babiq.server.agent.TurnExecutor;
 import com.wzx.babiq.server.api.JsonRpcMethodHandler;
 import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
 import com.wzx.babiq.server.api.error.JsonRpcException;
+import com.wzx.babiq.server.persistence.service.TurnPersistenceService;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.WebSocketSession;
 
@@ -21,6 +22,8 @@ public class TurnInterruptHandler implements JsonRpcMethodHandler {
 
     /** 正在运行 turn 的调度器，interrupt 请求会通过它取消后台 Future。 */
     private final TurnExecutor turnExecutor;
+    /** 可选 turn 持久化服务，生产环境把主动中断写入 bq_turns。 */
+    private final TurnPersistenceService turnPersistenceService;
 
     /**
      * 创建 turn/interrupt handler。
@@ -28,7 +31,19 @@ public class TurnInterruptHandler implements JsonRpcMethodHandler {
      * @param turnExecutor Agent 异步执行器
      */
     public TurnInterruptHandler(TurnExecutor turnExecutor) {
+        this(turnExecutor, null);
+    }
+
+    /**
+     * 创建带持久化能力的 turn/interrupt handler。
+     *
+     * @param turnExecutor Agent 异步执行器
+     * @param turnPersistenceService turn 持久化服务；为空时只取消后台任务
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    public TurnInterruptHandler(TurnExecutor turnExecutor, TurnPersistenceService turnPersistenceService) {
         this.turnExecutor = turnExecutor;
+        this.turnPersistenceService = turnPersistenceService;
     }
 
     /**
@@ -54,6 +69,9 @@ public class TurnInterruptHandler implements JsonRpcMethodHandler {
         boolean accepted = turnExecutor.interrupt(turnId);
         if (!accepted) {
             throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "turnId 不存在或已结束: " + turnId);
+        }
+        if (turnPersistenceService != null) {
+            turnPersistenceService.markCanceled(turnId, "INTERRUPTED", "user_interrupted");
         }
         return Map.of("accepted", true);
     }

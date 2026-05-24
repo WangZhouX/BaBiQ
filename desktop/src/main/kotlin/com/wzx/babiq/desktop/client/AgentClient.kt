@@ -14,6 +14,9 @@ import com.wzx.babiq.desktop.protocol.ProviderMutationResult
 import com.wzx.babiq.desktop.protocol.ProviderSaveParams
 import com.wzx.babiq.desktop.protocol.ProviderTestParams
 import com.wzx.babiq.desktop.protocol.ProviderTestResult
+import com.wzx.babiq.desktop.protocol.RunRecoveryStatusResult
+import com.wzx.babiq.desktop.protocol.RunTurnDetailResult
+import com.wzx.babiq.desktop.protocol.RunTurnListResult
 import com.wzx.babiq.desktop.protocol.SandboxPolicySetParams
 import com.wzx.babiq.desktop.protocol.SandboxPolicyResult
 import com.wzx.babiq.desktop.protocol.ServerEvent
@@ -110,6 +113,15 @@ interface AgentGateway {
 
 	/** 软归档会话，让默认最近列表隐藏它但不删除历史数据。 */
 	suspend fun archiveThread(threadId: String): ThreadArchiveResult
+
+	/** 按会话读取历史 turn 运行记录，运行详情面板展开时使用。 */
+	suspend fun listRunTurns(threadId: String, limit: Int = 20, cursor: String? = null): RunTurnListResult
+
+	/** 读取单个历史 turn 的 item、审批、工具调用和摘要详情。 */
+	suspend fun getRunTurn(turnId: String): RunTurnDetailResult
+
+	/** 读取后端最近一次启动恢复报告，帮助 UI 说明 interrupted/expired 的来源。 */
+	suspend fun getRecoveryStatus(): RunRecoveryStatusResult
 }
 
 /**
@@ -360,6 +372,46 @@ class AgentClient(
 			params = buildJsonObject { put("threadId", threadId) },
 		)
 		return protocolJson.decodeFromJsonElement(ThreadArchiveResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `run/turns/list`，读取当前会话的历史运行记录。
+	 *
+	 * @param threadId 当前打开的会话 id。
+	 * @param limit 本次最多读取多少条摘要，P2-4 默认只拉最近 20 条，避免详情面板一次过重。
+	 * @param cursor 后续分页游标；P2-4 暂时传 null。
+	 */
+	override suspend fun listRunTurns(threadId: String, limit: Int, cursor: String?): RunTurnListResult {
+		val response = request(
+			method = "run/turns/list",
+			params = buildJsonObject {
+				put("threadId", threadId)
+				put("limit", limit)
+				if (!cursor.isNullOrBlank()) {
+					put("cursor", cursor)
+				}
+			},
+		)
+		return protocolJson.decodeFromJsonElement(RunTurnListResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `run/turn/get`，读取单个 turn 的完整运行详情。
+	 */
+	override suspend fun getRunTurn(turnId: String): RunTurnDetailResult {
+		val response = request(
+			method = "run/turn/get",
+			params = buildJsonObject { put("turnId", turnId) },
+		)
+		return protocolJson.decodeFromJsonElement(RunTurnDetailResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `run/recovery/status`，读取启动恢复的最近报告。
+	 */
+	override suspend fun getRecoveryStatus(): RunRecoveryStatusResult {
+		val response = request("run/recovery/status", buildJsonObject {})
+		return protocolJson.decodeFromJsonElement(RunRecoveryStatusResult.serializer(), response.requireResult())
 	}
 
 	/**

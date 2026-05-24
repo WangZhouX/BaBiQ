@@ -57,6 +57,7 @@ fun BaBiQDesktopApp() {
 			onSaveSandboxMode = { mode -> scope.launch { controller.saveSandboxMode(mode) } },
 			onSaveApprovalPolicy = { policy -> scope.launch { controller.saveApprovalPolicy(policy) } },
 			onToggleRuntime = { controller.toggleRuntimeDetails() },
+			onSelectRunTurn = { turnId -> controller.selectRunTurn(turnId) },
 		)
 		ApprovalDialog(
 			approval = state.pendingApproval,

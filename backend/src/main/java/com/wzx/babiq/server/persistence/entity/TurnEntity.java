@@ -70,4 +70,16 @@ public class TurnEntity {
     /** 失败原因；仅失败或恢复诊断时写入。 */
     @TableField("failure_reason")
     private String failureReason;
+
+    /** 恢复原因；服务端启动时把遗留非终态 turn 收口后写入，方便运行记录解释。 */
+    @TableField("recovery_reason")
+    private String recoveryReason;
+
+    /** 恢复收口时间；为空表示该 turn 不是由启动恢复流程关闭的。 */
+    @TableField("recovered_at")
+    private String recoveredAt;
+
+    /** 取消原因；用户取消或主动中断时写入，和失败原因区分开。 */
+    @TableField("cancel_reason")
+    private String cancelReason;
 }

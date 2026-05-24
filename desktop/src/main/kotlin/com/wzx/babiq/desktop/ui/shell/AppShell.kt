@@ -38,6 +38,7 @@ fun AppShell(
 	onSaveSandboxMode: (String) -> Unit,
 	onSaveApprovalPolicy: (String) -> Unit,
 	onToggleRuntime: () -> Unit,
+	onSelectRunTurn: (String) -> Unit,
 ) {
 	Row(
 		modifier = Modifier
@@ -81,6 +82,7 @@ fun AppShell(
 				state = state,
 				modifier = Modifier.width(320.dp),
 				onClose = onToggleRuntime,
+				onSelectRunTurn = onSelectRunTurn,
 			)
 		}
 	}

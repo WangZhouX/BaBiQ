@@ -200,6 +200,9 @@ public class ItemEmitter {
      * @throws IOException WebSocket 写入失败时抛出
      */
     public void emitApprovalRequest(ApprovalRequestPayload payload) throws IOException {
+        if (recorder != null) {
+            recorder.recordApprovalRequest(payload);
+        }
         sendNotification("approval/request", payload);
     }
 
@@ -244,7 +247,9 @@ public class ItemEmitter {
     private String databaseTurnStatus(String protocolStatus) {
         String normalized = protocolStatus == null ? "completed" : protocolStatus.toLowerCase();
         return switch (normalized) {
-            case "canceled", "cancelled", "interrupted" -> "CANCELED";
+            case "canceled", "cancelled" -> "CANCELED";
+            case "interrupted" -> "INTERRUPTED";
+            case "expired" -> "EXPIRED";
             case "failed" -> "FAILED";
             default -> "COMPLETED";
         };

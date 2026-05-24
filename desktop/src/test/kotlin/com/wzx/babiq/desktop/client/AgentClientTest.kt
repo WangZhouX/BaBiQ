@@ -4,6 +4,9 @@ import com.wzx.babiq.desktop.protocol.JsonRpcRequest
 import com.wzx.babiq.desktop.protocol.ProviderDeleteResult
 import com.wzx.babiq.desktop.protocol.ProviderSaveParams
 import com.wzx.babiq.desktop.protocol.ProviderTestResult
+import com.wzx.babiq.desktop.protocol.RunRecoveryStatusResult
+import com.wzx.babiq.desktop.protocol.RunTurnDetailResult
+import com.wzx.babiq.desktop.protocol.RunTurnListResult
 import com.wzx.babiq.desktop.protocol.SandboxPolicyResult
 import com.wzx.babiq.desktop.protocol.ServerEvent
 import com.wzx.babiq.desktop.protocol.SettingsUpdateParams
@@ -212,6 +215,26 @@ class AgentClientTest {
 	}
 
 	@Test
+	fun `运行记录接口可以读取列表 详情和恢复状态`() = runTest {
+		val transport = FakeAgentTransport()
+		val client = AgentClient(transport, backgroundScope)
+		client.connect()
+
+		val turns: RunTurnListResult = client.listRunTurns("thr_1")
+		val detail: RunTurnDetailResult = client.getRunTurn("turn_1")
+		val recovery: RunRecoveryStatusResult = client.getRecoveryStatus()
+
+		assertEquals("run/turns/list", transport.sent[0].method)
+		assertEquals("thr_1", transport.sent[0].paramsText("threadId"))
+		assertEquals("turn_1", turns.turns.single().turnId)
+		assertEquals("run/turn/get", transport.sent[1].method)
+		assertEquals("turn_1", detail.turn.turnId)
+		assertEquals("cmd", detail.toolCalls.single().toolName)
+		assertEquals("run/recovery/status", transport.sent[2].method)
+		assertEquals(1, recovery.interruptedTurns)
+	}
+
+	@Test
 	fun `json rpc error 会转成 AgentClientException`() = runTest {
 		val transport = FakeAgentTransport(errorMethods = setOf("thread/create"))
 		val client = AgentClient(transport, backgroundScope)
@@ -367,6 +390,75 @@ class AgentClientTest {
 					put("threadId", "thr_1")
 					put("archived", true)
 				}
+				"run/turns/list" -> buildJsonObject {
+					put(
+						"turns",
+						buildJsonArray {
+							add(runTurnSummary())
+						},
+					)
+				}
+				"run/turn/get" -> buildJsonObject {
+					put("turn", runTurnSummary())
+					put(
+						"items",
+						buildJsonArray {
+							add(buildJsonObject {
+								put("id", "it_user")
+								put("type", "userMessage")
+								put("text", "分析项目")
+							})
+						},
+					)
+					put(
+						"summary",
+						buildJsonObject {
+							put("id", "summary-1")
+							put("type", "turnSummary")
+							put("status", "COMPLETED")
+							put("model", "deepseek-v4-pro")
+							put("promptTokens", 12)
+							put("completionTokens", 8)
+							put("totalTokens", 20)
+							put("toolCalls", 1)
+							put("durationMs", 2000)
+						},
+					)
+					put(
+						"approvals",
+						buildJsonArray {
+							add(buildJsonObject {
+								put("approvalId", "approval-1")
+								put("toolName", "cmd")
+								put("argsJson", "{}")
+								put("decision", "approve")
+								put("status", "resolved")
+								put("createdAt", "2026-05-24T08:00:00Z")
+								put("resolvedAt", "2026-05-24T08:00:01Z")
+							})
+						},
+					)
+					put(
+						"toolCalls",
+						buildJsonArray {
+							add(buildJsonObject {
+								put("toolCallId", "tool-1")
+								put("toolName", "cmd")
+								put("argsJson", "{}")
+								put("status", "completed")
+								put("resultPreview", "ok")
+								put("startedAt", "2026-05-24T08:00:01Z")
+								put("completedAt", "2026-05-24T08:00:02Z")
+							})
+						},
+					)
+				}
+				"run/recovery/status" -> buildJsonObject {
+					put("lastRecoveredAt", "2026-05-24T08:10:00Z")
+					put("interruptedTurns", 1)
+					put("expiredTurns", 0)
+					put("expiredApprovals", 0)
+				}
 				else -> buildJsonObject { put("ok", true) }
 			}
 			return protocolJson.encodeToString(
@@ -413,6 +505,18 @@ class AgentClientTest {
 		put("enabled", true)
 		put("hasApiKey", true)
 		put("active", false)
+	}
+
+	private fun runTurnSummary() = buildJsonObject {
+		put("turnId", "turn_1")
+		put("threadId", "thr_1")
+		put("status", "COMPLETED")
+		put("inputText", "分析项目")
+		put("cwd", "E:\\BaBiQ")
+		put("providerId", "deepseek")
+		put("model", "deepseek-v4-pro")
+		put("startedAt", "2026-05-24T08:00:00Z")
+		put("completedAt", "2026-05-24T08:00:03Z")
 	}
 
 	private fun JsonRpcRequest.paramsText(name: String): String =

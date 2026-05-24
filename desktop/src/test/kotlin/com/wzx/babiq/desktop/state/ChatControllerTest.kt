@@ -8,6 +8,10 @@ import com.wzx.babiq.desktop.protocol.ProviderMutationResult
 import com.wzx.babiq.desktop.protocol.ProviderDeleteResult
 import com.wzx.babiq.desktop.protocol.ProviderSaveParams
 import com.wzx.babiq.desktop.protocol.ProviderTestResult
+import com.wzx.babiq.desktop.protocol.RunRecoveryStatusResult
+import com.wzx.babiq.desktop.protocol.RunTurnDetailResult
+import com.wzx.babiq.desktop.protocol.RunTurnListResult
+import com.wzx.babiq.desktop.protocol.RunTurnSummaryInfo
 import com.wzx.babiq.desktop.protocol.SandboxPolicyResult
 import com.wzx.babiq.desktop.protocol.ServerEvent
 import com.wzx.babiq.desktop.protocol.SettingsUpdateParams
@@ -295,6 +299,42 @@ class ChatControllerTest {
 	}
 
 	@Test
+	fun `展开运行详情后加载恢复状态和历史 turn 详情`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(
+			gateway,
+			backgroundScope,
+			initialState = AppState(
+				connectionState = ConnectionState.Connected,
+				currentThreadId = "thr_history",
+			),
+		)
+
+		controller.toggleRuntimeDetails()
+
+		assertEquals(listOf("getRecoveryStatus", "listRunTurns:thr_history", "getRunTurn:turn-1"), gateway.calls)
+		assertEquals("turn-1", controller.state.value.runRecordState.selectedTurnId)
+		assertEquals(1, controller.state.value.runRecordState.turns.size)
+		assertEquals("cmd", controller.state.value.runRecordState.selectedDetail?.toolCalls?.single()?.toolName)
+	}
+
+	@Test
+	fun `点击历史 turn 后只刷新选中 turn 详情`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(
+			gateway,
+			backgroundScope,
+			initialState = AppState(connectionState = ConnectionState.Connected),
+		)
+
+		controller.selectRunTurn("turn-2")
+
+		assertEquals(listOf("getRunTurn:turn-2"), gateway.calls)
+		assertEquals("turn-2", controller.state.value.runRecordState.selectedTurnId)
+		assertEquals("turn-2", controller.state.value.runRecordState.selectedDetail?.turn?.turnId)
+	}
+
+	@Test
 	fun `connect 失败会进入 reconnecting 并显示错误`() = runTest {
 		val gateway = FakeGateway(connectFails = true)
 		val controller = ChatController(gateway, backgroundScope)
@@ -366,6 +406,13 @@ class ChatControllerTest {
 		private val history: ThreadListResult = ThreadListResult(),
 		private val loadedThread: ThreadLoadResult = ThreadLoadResult(
 			ThreadMetaInfo("thread-1", "测试会话", "E:\\BaBiQ", "active"),
+		),
+		private val runTurns: RunTurnListResult = RunTurnListResult(
+			turns = listOf(sampleRunTurn("turn-1")),
+		),
+		private val recoveryStatus: RunRecoveryStatusResult = RunRecoveryStatusResult(
+			lastRecoveredAt = "2026-05-24T08:10:00Z",
+			interruptedTurns = 1,
 		),
 	) : AgentGateway {
 		override val events = MutableSharedFlow<ServerEvent>()
@@ -474,5 +521,45 @@ class ChatControllerTest {
 			calls += "archiveThread:$threadId"
 			return ThreadArchiveResult(ok = true, threadId = threadId, archived = true)
 		}
+
+		override suspend fun listRunTurns(threadId: String, limit: Int, cursor: String?): RunTurnListResult {
+			calls += "listRunTurns:$threadId"
+			return runTurns
+		}
+
+		override suspend fun getRunTurn(turnId: String): RunTurnDetailResult {
+			calls += "getRunTurn:$turnId"
+			return RunTurnDetailResult(
+				turn = sampleRunTurn(turnId),
+				toolCalls = listOf(
+					com.wzx.babiq.desktop.protocol.RunToolCallInfo(
+						toolCallId = "tool-$turnId",
+						toolName = "cmd",
+						argsJson = "{}",
+						status = "completed",
+						startedAt = "2026-05-24T08:00:01Z",
+						completedAt = "2026-05-24T08:00:02Z",
+					),
+				),
+			)
+		}
+
+		override suspend fun getRecoveryStatus(): RunRecoveryStatusResult {
+			calls += "getRecoveryStatus"
+			return recoveryStatus
+		}
 	}
+
+	private fun sampleRunTurn(turnId: String): RunTurnSummaryInfo =
+		RunTurnSummaryInfo(
+			turnId = turnId,
+			threadId = "thr_history",
+			status = "COMPLETED",
+			inputText = "分析项目",
+			cwd = "E:\\BaBiQ",
+			providerId = "deepseek",
+			model = "deepseek-v4-pro",
+			startedAt = "2026-05-24T08:00:00Z",
+			completedAt = "2026-05-24T08:00:03Z",
+		)
 }

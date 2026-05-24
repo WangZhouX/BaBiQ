@@ -5,7 +5,8 @@ package com.wzx.babiq.server.conversation;
  *
  * <p>Turn 表示用户一次输入到 Agent 一次完整响应的执行过程。协议层需要明确
  * 知道当前 Turn 能否继续输出、能否等待审批、能否取消,因此状态集合必须小而
- * 稳定。P1-1 固定为 3 个非终态和 3 个终态。</p>
+ * 稳定。P2-4 增加了重启恢复语义：服务端启动时发现历史 RUNNING 会转为 INTERRUPTED，
+ * 发现历史 WAITING_APPROVAL 会转为 EXPIRED，避免 UI 一直显示不可恢复的运行中状态。</p>
  */
 public enum TurnStatus {
 
@@ -25,7 +26,13 @@ public enum TurnStatus {
     FAILED,
 
     /** 用户主动取消或中断后结束。 */
-    CANCELED;
+    CANCELED,
+
+    /** 进程重启或用户中断导致 turn 没有自然完成；属于可解释终态。 */
+    INTERRUPTED,
+
+    /** 等待审批的暂停点已经失效；P2 不恢复 SAA 内存检查点，因此审批也必须过期。 */
+    EXPIRED;
 
     /**
      * 判断当前状态是否为终态。
@@ -33,7 +40,8 @@ public enum TurnStatus {
      * @return true 表示状态已经结束,不能再迁移到其他状态
      */
     public boolean isTerminal() {
-        return this == COMPLETED || this == FAILED || this == CANCELED;
+        return this == COMPLETED || this == FAILED || this == CANCELED
+                || this == INTERRUPTED || this == EXPIRED;
     }
 
     /**
@@ -53,11 +61,13 @@ public enum TurnStatus {
             case RUNNING -> target == WAITING_APPROVAL
                     || target == COMPLETED
                     || target == FAILED
-                    || target == CANCELED;
+                    || target == CANCELED
+                    || target == INTERRUPTED;
             case WAITING_APPROVAL -> target == RUNNING
                     || target == FAILED
-                    || target == CANCELED;
-            case COMPLETED, FAILED, CANCELED -> false;
+                    || target == CANCELED
+                    || target == EXPIRED;
+            case COMPLETED, FAILED, CANCELED, INTERRUPTED, EXPIRED -> false;
         };
     }
 }

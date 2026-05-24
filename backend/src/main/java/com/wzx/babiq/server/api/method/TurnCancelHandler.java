@@ -6,6 +6,7 @@ import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
 import com.wzx.babiq.server.api.error.JsonRpcException;
 import com.wzx.babiq.server.conversation.ConversationService;
 import com.wzx.babiq.server.conversation.Turn;
+import com.wzx.babiq.server.persistence.service.TurnPersistenceService;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.WebSocketSession;
 
@@ -22,6 +23,8 @@ public class TurnCancelHandler implements JsonRpcMethodHandler {
 
     /** 会话服务，用来找到 turn 并把它标记为 cancelled。 */
     private final ConversationService conversationService;
+    /** 可选 turn 持久化服务，生产环境取消时同步 bq_turns。 */
+    private final TurnPersistenceService turnPersistenceService;
 
     /**
      * 创建 turn/cancel handler。
@@ -29,7 +32,19 @@ public class TurnCancelHandler implements JsonRpcMethodHandler {
      * @param conversationService 对话生命周期服务
      */
     public TurnCancelHandler(ConversationService conversationService) {
+        this(conversationService, null);
+    }
+
+    /**
+     * 创建带持久化能力的 turn/cancel handler。
+     *
+     * @param conversationService 对话生命周期服务
+     * @param turnPersistenceService turn 持久化服务；为空时只更新内存状态
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    public TurnCancelHandler(ConversationService conversationService, TurnPersistenceService turnPersistenceService) {
         this.conversationService = conversationService;
+        this.turnPersistenceService = turnPersistenceService;
     }
 
     /**
@@ -62,6 +77,9 @@ public class TurnCancelHandler implements JsonRpcMethodHandler {
             turn.cancel();
         } catch (IllegalStateException exception) {
             throw new JsonRpcException(JsonRpcErrorCode.SERVER_ERROR, exception.getMessage());
+        }
+        if (turnPersistenceService != null) {
+            turnPersistenceService.markCanceled(turnId, "CANCELED", "user_cancelled");
         }
         return Map.of("ok", true);
     }

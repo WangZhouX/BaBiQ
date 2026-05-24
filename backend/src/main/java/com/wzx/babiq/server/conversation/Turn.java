@@ -125,6 +125,26 @@ public final class Turn {
     }
 
     /**
+     * 把运行中的 turn 标记为被中断。
+     *
+     * @param reason 中断原因，通常来自用户主动中断或服务端恢复诊断
+     */
+    public void interrupt(String reason) {
+        transitionTo(TurnStatus.INTERRUPTED);
+        this.failureReason = reason;
+    }
+
+    /**
+     * 把等待审批的 turn 标记为过期。
+     *
+     * @param reason 过期原因，通常来自服务端重启后无法恢复内存检查点
+     */
+    public void expire(String reason) {
+        transitionTo(TurnStatus.EXPIRED);
+        this.failureReason = reason;
+    }
+
+    /**
      * 将 Turn 标记为失败。
      *
      * @param reason 失败原因,会写入 failureReason 供日志和协议错误使用

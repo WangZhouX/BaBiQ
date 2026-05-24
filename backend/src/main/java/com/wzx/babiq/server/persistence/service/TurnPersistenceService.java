@@ -8,6 +8,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.List;
+import java.util.Optional;
 
 /**
  * Turn 表的持久化服务。
@@ -68,6 +70,112 @@ public class TurnPersistenceService {
         existing.setCompletedAt(PersistenceTime.write(Instant.now()));
         existing.setFailureReason(failureReason);
         turnMapper.updateById(existing);
+    }
+
+    /**
+     * 把 turn 标记为等待审批，但不写 completedAt。
+     *
+     * <p>WAITING_APPROVAL 不是终态，用户稍后仍可能通过 approval/respond 恢复执行，
+     * 因此它只更新状态，不应让运行记录误以为 turn 已结束。</p>
+     *
+     * @param turnId 协议层 turn id
+     */
+    @Transactional
+    public void markWaitingApproval(String turnId) {
+        TurnEntity existing = findTurn(turnId).orElse(null);
+        if (existing == null) {
+            return;
+        }
+        existing.setStatus("WAITING_APPROVAL");
+        turnMapper.updateById(existing);
+    }
+
+    /**
+     * 把被恢复流程收口的 turn 写成可解释终态。
+     *
+     * @param turnId 协议层 turn id
+     * @param status 恢复后的终态，例如 INTERRUPTED 或 EXPIRED
+     * @param reason 恢复原因，会同时写入 recoveryReason 和 failureReason
+     * @param recoveredAt 恢复发生时间
+     */
+    @Transactional
+    public void markRecovered(String turnId, String status, String reason, Instant recoveredAt) {
+        TurnEntity existing = findTurn(turnId).orElse(null);
+        if (existing == null) {
+            return;
+        }
+        String timestamp = PersistenceTime.write(recoveredAt);
+        existing.setStatus(status);
+        existing.setFailureReason(reason);
+        existing.setRecoveryReason(reason);
+        existing.setRecoveredAt(timestamp);
+        existing.setCompletedAt(timestamp);
+        turnMapper.updateById(existing);
+    }
+
+    /**
+     * 把用户主动取消或中断写入 turn 记录。
+     *
+     * @param turnId 协议层 turn id
+     * @param status 取消后的状态，通常是 CANCELED 或 INTERRUPTED
+     * @param cancelReason 取消原因
+     */
+    @Transactional
+    public void markCanceled(String turnId, String status, String cancelReason) {
+        TurnEntity existing = findTurn(turnId).orElse(null);
+        if (existing == null) {
+            return;
+        }
+        existing.setStatus(status);
+        existing.setCancelReason(cancelReason);
+        existing.setCompletedAt(PersistenceTime.write(Instant.now()));
+        turnMapper.updateById(existing);
+    }
+
+    /**
+     * 按 turnId 查询持久化记录。
+     *
+     * @param turnId 协议层 turn id
+     * @return 找到时返回实体
+     */
+    public Optional<TurnEntity> findTurn(String turnId) {
+        return Optional.ofNullable(turnMapper.selectOne(Wrappers.<TurnEntity>lambdaQuery()
+                .eq(TurnEntity::getTurnId, turnId)));
+    }
+
+    /**
+     * 查询指定状态集合内的 turn，恢复服务用它找出上次进程遗留的非终态记录。
+     *
+     * @param statuses 状态集合
+     * @return 匹配的 turn 列表
+     */
+    public List<TurnEntity> findByStatuses(List<String> statuses) {
+        if (statuses == null || statuses.isEmpty()) {
+            return List.of();
+        }
+        return turnMapper.selectList(Wrappers.<TurnEntity>lambdaQuery()
+                .in(TurnEntity::getStatus, statuses)
+                .orderByAsc(TurnEntity::getStartedAt));
+    }
+
+    /**
+     * 查询某个 thread 下的运行回合，按 startedAt 倒序返回。
+     *
+     * @param threadId 会话 id
+     * @param limit 最大数量
+     * @param beforeTurnId 可选游标；非空时读取该 turn 之前的更早记录
+     * @return turn 实体列表
+     */
+    public List<TurnEntity> listTurns(String threadId, int limit, String beforeTurnId) {
+        int safeLimit = Math.max(1, Math.min(limit, 200));
+        var query = Wrappers.<TurnEntity>lambdaQuery()
+                .eq(TurnEntity::getThreadId, threadId)
+                .orderByDesc(TurnEntity::getStartedAt)
+                .last("LIMIT " + safeLimit);
+        if (beforeTurnId != null && !beforeTurnId.isBlank()) {
+            findTurn(beforeTurnId).ifPresent(before -> query.lt(TurnEntity::getStartedAt, before.getStartedAt()));
+        }
+        return turnMapper.selectList(query);
     }
 
     private TurnEntity toEntity(TurnRecord record) {

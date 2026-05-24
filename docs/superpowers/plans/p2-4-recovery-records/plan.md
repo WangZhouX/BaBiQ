@@ -4,6 +4,8 @@
 
 **Goal:** 为持久化后的 Thread/Turn 建立明确恢复语义和运行记录查询能力，让失败、取消、中断、审批、工具调用和 TurnSummary 都可追溯。
 
+**Status:** 已完成实现并通过自动化验收；P2-4 不做跨进程 ReactAgent checkpoint resume，只做诚实的 interrupted/expired 收束。
+
 **Architecture:** 后端启动时由 recovery service 扫描 SQLite 中遗留的 running/waiting turn，并按 P2 规则标记为 interrupted/expired，而不是尝试恢复 Spring AI Alibaba ReactAgent checkpoint。运行记录查询从持久化表聚合，桌面端运行详情面板从“当前内存事件”升级为“当前 + 历史”视图。
 
 **Tech Stack:** Java 21, Spring Boot 3.5.14, MyBatis-Plus 3.5.16, SQLite JDBC 3.53.1.0, Flyway 12.6.2, Kotlin 2.3.21, Compose Multiplatform 1.11.0, Ktor Client 3.5.0, kotlinx.serialization 1.11.0, JSON-RPC 2.0.
@@ -468,3 +470,12 @@ git commit -m "feat(p2-4): 补齐恢复语义和运行记录"
 - 不做分布式任务恢复。
 - 不做 Langfuse/OTel UI。
 - 不做复杂统计图表。
+
+## 8. 实施记录
+
+- 后端恢复语义已落地：`TurnRecoveryService`、`RecoveryStartupRunner`、`RecoveryReport`。
+- 后端运行记录查询已落地：`RunRecordService`、`RunTurnsListHandler`、`RunTurnGetHandler`、`RunRecoveryStatusHandler`。
+- 工具调用持久化已落地：`ToolCallEntity`、`ToolCallMapper`、`ToolCallPersistenceService`、`V4__recovery_run_records.sql`。
+- 桌面端运行详情历史已落地：`RunRecordModels.kt`、`AgentClient` 运行记录方法、`RunRecordState`、`RuntimeDetailsPanel`。
+- 已通过目标测试：`TurnRecoveryServiceTest`、`RunRecordServiceTest`、`ToolCallRecordTest`、`AgentClientTest`、`ChatControllerTest`、`RunRecordModelsTest`。
+- 已通过全量验证：`backend` 的 `clean verify` 和 `desktop` 的 `test`。

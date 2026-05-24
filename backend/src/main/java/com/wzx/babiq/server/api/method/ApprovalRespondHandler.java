@@ -15,6 +15,7 @@ import com.wzx.babiq.server.conversation.ItemEmitter;
 import com.wzx.babiq.server.conversation.Thread;
 import com.wzx.babiq.server.conversation.Turn;
 import com.wzx.babiq.server.observability.BaBiQMetrics;
+import com.wzx.babiq.server.persistence.service.ApprovalPersistenceService;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.WebSocketSession;
 
@@ -44,6 +45,8 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
     private final ConversationEventRecorder eventRecorder;
     /** Always 规则服务；为空时表示旧单元测试环境不启用 always 持久化。 */
     private final ApprovalRuleService approvalRuleService;
+    /** 审批表服务；为空时表示旧单元测试环境不落审批历史。 */
+    private final ApprovalPersistenceService approvalPersistenceService;
 
     /**
      * 创建 approval/respond handler。
@@ -59,7 +62,7 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
                                   ObjectMapper objectMapper,
                                   TurnExecutor turnExecutor,
                                   BaBiQMetrics metrics) {
-        this(pendingApprovals, conversationService, objectMapper, turnExecutor, metrics, null, null);
+        this(pendingApprovals, conversationService, objectMapper, turnExecutor, metrics, null, null, null);
     }
 
     /**
@@ -73,7 +76,6 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
      * @param eventRecorder 运行事件记录器
      * @param approvalRuleService Always 规则服务
      */
-    @org.springframework.beans.factory.annotation.Autowired
     public ApprovalRespondHandler(PendingApprovals pendingApprovals,
                                   ConversationService conversationService,
                                   ObjectMapper objectMapper,
@@ -81,6 +83,31 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
                                   BaBiQMetrics metrics,
                                   ConversationEventRecorder eventRecorder,
                                   ApprovalRuleService approvalRuleService) {
+        this(pendingApprovals, conversationService, objectMapper, turnExecutor,
+                metrics, eventRecorder, approvalRuleService, null);
+    }
+
+    /**
+     * 创建带审批持久化服务的 approval/respond handler。
+     *
+     * @param pendingApprovals 待审批元数据缓存
+     * @param conversationService 对话生命周期服务
+     * @param objectMapper JSON 序列化器
+     * @param turnExecutor Agent 异步执行器
+     * @param metrics P1 可观测指标聚合器
+     * @param eventRecorder 运行事件记录器
+     * @param approvalRuleService Always 规则服务
+     * @param approvalPersistenceService 审批持久化服务
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    public ApprovalRespondHandler(PendingApprovals pendingApprovals,
+                                  ConversationService conversationService,
+                                  ObjectMapper objectMapper,
+                                  TurnExecutor turnExecutor,
+                                  BaBiQMetrics metrics,
+                                  ConversationEventRecorder eventRecorder,
+                                  ApprovalRuleService approvalRuleService,
+                                  ApprovalPersistenceService approvalPersistenceService) {
         this.pendingApprovals = pendingApprovals;
         this.conversationService = conversationService;
         this.objectMapper = objectMapper;
@@ -88,6 +115,7 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
         this.metrics = metrics;
         this.eventRecorder = eventRecorder;
         this.approvalRuleService = approvalRuleService;
+        this.approvalPersistenceService = approvalPersistenceService;
     }
 
     /**
@@ -127,6 +155,7 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
         ItemEmitter emitter = new ItemEmitter(session, objectMapper, threadId, turnId, eventRecorder);
         InterruptionMetadata feedback = buildFeedback(original, decision, editedArgs);
         rememberAlwaysRulesIfNeeded(threadId, decision, scope, original);
+        resolveApprovalIfPossible(threadId, turnId, decision, scope, editedArgs);
         metrics.recordApprovalDecision(canonicalDecision(decision));
         turnExecutor.submitResume(turn, feedback, thread.cwd(), emitter);
         return Map.of("delivered", true);
@@ -191,6 +220,20 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
             // Always 的安全边界由 ApprovalRuleService 保证：只绑定当前 thread、tool 和参数指纹。
             approvalRuleService.rememberAlways(threadId, feedback.getName(), feedback.getArguments(), scope);
         }
+    }
+
+    private void resolveApprovalIfPossible(String threadId, String turnId, String decision,
+                                           String scope, String editedArgs) {
+        if (approvalPersistenceService == null) {
+            return;
+        }
+        approvalPersistenceService.resolvePending(
+                threadId,
+                turnId,
+                canonicalDecision(decision),
+                scope,
+                editedArgs,
+                java.time.Instant.now());
     }
 
     private String requiredText(JsonNode params, String fieldName) {

@@ -15,6 +15,7 @@ import com.wzx.babiq.desktop.protocol.ThreadItem
  * @property providerState 后端可用模型列表、当前选中模型以及加载/错误状态。
  * @property settingsState 设置页需要的本地设置快照、保存状态和表单草稿。
  * @property threadHistory Sidebar 最近会话列表的真实后端数据。
+ * @property runRecordState 右侧运行详情面板读取到的持久化 turn、审批、工具调用和恢复报告。
  * @property currentThreadId 后端 thread id；为空表示还没有为当前工作区创建会话。
  * @property currentThreadTitle 当前打开会话的标题；新对话或未加载历史时为空。
  * @property currentTurnId 当前正在执行或刚结束的 turn id，用于取消、审批和事件归属。
@@ -35,6 +36,7 @@ data class AppState(
 	val providerState: ProviderState = ProviderState(),
 	val settingsState: SettingsState = SettingsState(),
 	val threadHistory: ThreadHistoryState = ThreadHistoryState(),
+	val runRecordState: RunRecordState = RunRecordState(),
 	val currentThreadId: String? = null,
 	val currentThreadTitle: String? = null,
 	val currentTurnId: String? = null,

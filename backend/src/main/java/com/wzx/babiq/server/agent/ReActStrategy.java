@@ -18,6 +18,7 @@ import com.wzx.babiq.server.interceptor.ToolObservationInterceptor;
 import com.wzx.babiq.server.model.ChatClientFactory;
 import com.wzx.babiq.server.observability.TurnObservationContext;
 import com.wzx.babiq.server.approval.ApprovalRuleService;
+import com.wzx.babiq.server.persistence.service.TurnPersistenceService;
 import com.wzx.babiq.server.security.SystemPromptSecurityRule;
 import com.wzx.babiq.server.tool.ToolRegistry;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -61,6 +62,8 @@ public class ReActStrategy {
     private final MemorySaver memorySaver = new MemorySaver();
     /** Always 规则服务，用于把重复审批自动转成 approve。 */
     private final ApprovalRuleService approvalRuleService;
+    /** turn 持久化服务，HITL 进入等待态时用它同步数据库状态。 */
+    private final TurnPersistenceService turnPersistenceService;
 
     /**
      * 创建 ReAct 装配策略。
@@ -81,7 +84,8 @@ public class ReActStrategy {
                          ToolObservationInterceptor toolObservationInterceptor,
                          SpotlightingToolInterceptor spotlightingInterceptor,
                          BaBiQTokenUsageHook tokenUsageHook,
-                         ApprovalRuleService approvalRuleService) {
+                         ApprovalRuleService approvalRuleService,
+                         TurnPersistenceService turnPersistenceService) {
         this.chatClientFactory = chatClientFactory;
         this.toolRegistry = toolRegistry;
         this.properties = properties;
@@ -90,6 +94,7 @@ public class ReActStrategy {
         this.spotlightingInterceptor = spotlightingInterceptor;
         this.tokenUsageHook = tokenUsageHook;
         this.approvalRuleService = approvalRuleService;
+        this.turnPersistenceService = turnPersistenceService;
     }
 
     /**
@@ -208,6 +213,7 @@ public class ReActStrategy {
      * @throws Exception notification 发送失败时抛出
      */
     public void emitApprovalRequests(Turn turn, ItemEmitter emitter, InterruptionMetadata metadata) throws Exception {
+        turnPersistenceService.markWaitingApproval(turn.id());
         for (InterruptionMetadata.ToolFeedback feedback : metadata.toolFeedbacks()) {
             // P1 阶段按一个 toolFeedback 生成一个 approval/request，后续如果 SAA 返回 batch 再扩展 UI。
             ApprovalRequestPayload payload = new ApprovalRequestPayload(
