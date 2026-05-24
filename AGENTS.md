@@ -53,13 +53,24 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
 - P2 master plan 已创建：
   - `docs/superpowers/plans/p2-master.md`
   - P2 技术主线为 SQLite + MyBatis-Plus + Flyway/migration + Java 常见分层结构。
-  - P2 必须先走 `P2-0 P1 总体验收和收口`，再进入 `P2-1 SQLite + MyBatis-Plus 持久化底座`。
+  - P1 总体验收已由用户在 2026-05-24 确认通过，`P2-0` 仅保留验收记录。
+  - P2 正式入口为 `P2-1 SQLite + MyBatis-Plus 持久化底座`。
   - P2 子计划必须逐个编写、用户确认、再实现；不要直接从 master plan 跳到代码。
+- P2 任务文档已创建：
+  - `docs/superpowers/plans/p2-task-index.md`
+  - `docs/superpowers/plans/p2-0-final-acceptance/codex-handoff.md`
+  - `docs/superpowers/plans/p2-1-sqlite-persistence/plan.md`
+  - `docs/superpowers/plans/p2-1-sqlite-persistence/codex-handoff.md`
+  - `docs/superpowers/plans/p2-2-thread-history/task-card.md`
+  - `docs/superpowers/plans/p2-3-settings-system/task-card.md`
+  - `docs/superpowers/plans/p2-4-recovery-records/task-card.md`
+  - `docs/superpowers/plans/p2-5-local-observability/task-card.md`
+  - `docs/superpowers/plans/p2-6-mcp-client/task-card.md`
 - 已验证：
   - `cd desktop; .\gradlew.bat test`
   - `cd backend; .\mvnw.cmd clean verify`
   - `cd desktop; .\gradlew.bat run --no-daemon` 已进入 `:run` 并在受控烟测中保持运行。
-- 下一步建议先写 `docs/superpowers/plans/p2-0-final-acceptance/plan.md`，做 P1 总体验收和真实 Provider 环境人工视觉复验；P2-0 通过后再写 P2-1 详细计划。
+- 下一步建议先由用户确认 `docs/superpowers/plans/p2-1-sqlite-persistence/plan.md`，确认后再开始实现 P2-1。
 
 如果仓库状态发生变化，不要盲信本检查点；必须重新核对代码、文档、测试和 `git status`。
 
@@ -88,7 +99,8 @@ P1-4 已完成范围：
 下一阶段边界：
 
 - P2 master plan 已存在，但 P2 实现尚未开始。
-- 先做 P2-0 P1 总体验收和收口；P2-0 通过后再进入 P2-1 SQLite + MyBatis-Plus 持久化。
+- P1 总体验收已通过，P2-0 不再阻塞。
+- P2-1 SQLite + MyBatis-Plus 持久化详细计划已存在，但尚未实现；必须等用户确认后再编码。
 - 未经对应 P2 子计划确认，不要直接引入 SQLite 持久化、KeyStore/SecretStore、Provider 编辑、MCP、Actuator、Prometheus、Langfuse、OpenTelemetry 或多工作区 pinning。
 - P2 范围内 SQLite 使用 MyBatis-Plus 和 Java 常见分层，但 Agent 核心不得直接依赖 Mapper；必须通过 repository/adapter 隔离。
 
@@ -103,7 +115,7 @@ P1-4 已完成范围：
 - 优先沿用仓库现有模式，不随意创造新抽象。
 - 修改范围必须贴合当前 issue 或阶段。
 - 不做无关重构。
-- P1 收口期间，不引入 P2+ 功能。
+- P2 执行期间，严格按已确认子计划实施；未确认的后续 P2/P3 功能不得提前混入当前阶段。
 - 新增或修改生产代码时，必须同步补充中文教学型注释：
   - 类、接口、record、data class、enum、Composable、public 方法和重要 private 方法必须有方法级/类型级中文注释，说明“它负责什么、为什么这样设计、和上下游怎么协作”。
   - 重要字段、构造参数、data class 属性、状态字段和协议字段必须有字段级/参数级中文注释，说明“这个值代表什么、由谁写入、被谁读取、为空或默认值意味着什么”。

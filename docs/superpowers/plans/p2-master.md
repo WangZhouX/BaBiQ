@@ -39,13 +39,13 @@ P1-0 到 P1-4 已完成主要代码实现。当前 P1 能力包括:
 - 工作目录切换。
 - 后端真实沙箱权限展示。
 
-P1 尚未完全收口的人工验收点:
+P1 总体验收状态:
 
-- 真实 Provider/API Key 环境下，从桌面端完整执行“分析 `E:\BaBiQ` 项目结构并写总结”。
-- 手动确认 Provider 切换、工作目录切换、审批弹窗、TurnSummary、断线重连在真实任务中都正常。
-- 把用户验收中发现的 UI、日志、权限语义问题统一收口。
+- 用户已在 2026-05-24 确认 P1 验收通过。
+- `docs/superpowers/plans/p2-0-final-acceptance/codex-handoff.md` 已记录该前置状态。
+- P2 正式入口改为 `P2-1 SQLite + MyBatis-Plus 持久化底座`。
 
-P2 不能跳过 P1 总体验收。若 P1 验收发现 bug，应先进入 `p2-0-final-acceptance` 或 P1 收口计划，不要把 bug 混入 P2 持久化主体。
+若后续又发现 P1 遗留 bug，应单独开 P1 收口 bugfix，不要把 bug 混入 P2 持久化主体。
 
 ---
 
@@ -55,7 +55,7 @@ P2 不能跳过 P1 总体验收。若 P1 验收发现 bug，应先进入 `p2-0-f
 
 | 类别 | 内容 |
 |---|---|
-| P1 总体验收 | 用真实模型环境完成一次端到端桌面端业务验收，并补齐手测发现的问题 |
+| P1 总体验收 | 已由用户确认通过，P2-0 仅保留验收记录 |
 | SQLite 持久化 | 本地单文件数据库，保存 thread、turn、item、summary、approval、provider config、app setting |
 | MyBatis-Plus 分层 | 采用 `entity / mapper / persistence service / repository adapter / application service` 分层 |
 | Migration | 使用 migration 脚本创建和升级表结构，禁止手动建表或依赖 `ddl-auto` |
@@ -334,26 +334,13 @@ P2 子计划必须先写 migration，再写 mapper/entity。表名和字段可�
 
 ### P2-0: P1 总体验收和收口
 
-**目标:** 在真实 Provider/API Key 环境下完成 P1 端到端验收，并把手测发现的问题集中收口。
+**状态:** 已通过，作为 P2 前置完成项保留记录。
 
-**必须验收:**
+**记录:**
 
-- 后端真实启动。
-- 桌面端真实启动。
-- Provider/模型切换真实生效。
-- 工作目录切换真实生效。
-- 沙箱权限展示真实来自后端。
-- 审批弹窗 approve/deny/edit 可用。
-- TurnSummary 显示 tokens、成本、耗时、工具数。
-- 断线重连、草稿保留、禁用发送正常。
-- 后端日志能定位 thread、turn、provider、cwd、sandbox、approval、tool 调用。
+- `docs/superpowers/plans/p2-0-final-acceptance/codex-handoff.md`
 
-**输出:**
-
-- `docs/superpowers/plans/p2-0-final-acceptance/plan.md`
-- P1 验收记录。
-- P1 收口 bugfix。
-- `AGENTS.md` / `CLAUDE.md` / P1 master 状态更新。
+**说明:** P2-0 不再阻塞 P2-1。若后续发现 P1 遗留 bug，单独开 bugfix 处理。
 
 ### P2-1: SQLite + MyBatis-Plus 持久化底座
 
@@ -550,28 +537,31 @@ P2 完成必须满足以下验收:
 子计划路径:
 
 ```
-docs/superpowers/plans/p2-0-final-acceptance/plan.md
+docs/superpowers/plans/p2-0-final-acceptance/codex-handoff.md
 docs/superpowers/plans/p2-1-sqlite-persistence/plan.md
-docs/superpowers/plans/p2-2-thread-history/plan.md
-docs/superpowers/plans/p2-3-settings-system/plan.md
-docs/superpowers/plans/p2-4-recovery-records/plan.md
-docs/superpowers/plans/p2-5-local-observability/plan.md
-docs/superpowers/plans/p2-6-mcp-client/plan.md
+docs/superpowers/plans/p2-2-thread-history/task-card.md
+docs/superpowers/plans/p2-3-settings-system/task-card.md
+docs/superpowers/plans/p2-4-recovery-records/task-card.md
+docs/superpowers/plans/p2-5-local-observability/task-card.md
+docs/superpowers/plans/p2-6-mcp-client/task-card.md
 ```
+
+其中 P2-2 到 P2-6 当前先保留任务卡，等进入对应子阶段时再升级为详细 `plan.md`。
 
 ---
 
 ## 11. 立即下一步
 
-1. 先创建 `docs/superpowers/plans/p2-0-final-acceptance/plan.md`，把 P1 总体验收和当前手测发现的问题集中收口。
-2. P1 总体验收通过后，创建 `docs/superpowers/plans/p2-1-sqlite-persistence/plan.md`。
-3. 每个子计划都必须先由用户确认，再开始实现。
-4. 每个子计划完成后必须验证、更新文档、中文 commit，不主动 push。
+1. 用户确认 P1 验收已通过，`P2-0` 已记录为前置完成。
+2. 已创建 `docs/superpowers/plans/p2-1-sqlite-persistence/plan.md`。
+3. 下一步应先请用户确认 P2-1 计划，再开始实现。
+4. 每个子计划都必须先由用户确认，再开始实现。
+5. 每个子计划完成后必须验证、更新文档、中文 commit，不主动 push。
 
 推荐下一条用户指令:
 
 ```text
-先写 P2-0 P1 总体验收和收口详细计划。
+确认 P2-1 计划，开始实现 SQLite + MyBatis-Plus 持久化底座。
 ```
 
 ---
