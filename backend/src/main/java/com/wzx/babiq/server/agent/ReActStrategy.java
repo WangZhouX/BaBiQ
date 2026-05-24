@@ -13,6 +13,7 @@ import com.wzx.babiq.server.conversation.ItemEmitter;
 import com.wzx.babiq.server.conversation.Turn;
 import com.wzx.babiq.server.hook.BaBiQTokenUsageHook;
 import com.wzx.babiq.server.interceptor.BaBiQSandboxInterceptor;
+import com.wzx.babiq.server.interceptor.BaBiQStreamingTokenUsageInterceptor;
 import com.wzx.babiq.server.interceptor.SpotlightingToolInterceptor;
 import com.wzx.babiq.server.interceptor.ToolObservationInterceptor;
 import com.wzx.babiq.server.model.ChatClientFactory;
@@ -58,6 +59,8 @@ public class ReActStrategy {
     private final SpotlightingToolInterceptor spotlightingInterceptor;
     /** Spring AI Alibaba token hook，用于从模型响应里累计 prompt/completion token。 */
     private final BaBiQTokenUsageHook tokenUsageHook;
+    /** 流式模型 token 拦截器，用于在不关闭 streaming 的前提下读取最终 usage。 */
+    private final BaBiQStreamingTokenUsageInterceptor streamingTokenUsageInterceptor;
     /** Spring AI Alibaba Graph 的内存检查点，HITL 暂停和恢复需要依赖它保存图状态。 */
     private final MemorySaver memorySaver = new MemorySaver();
     /** Always 规则服务，用于把重复审批自动转成 approve。 */
@@ -75,6 +78,7 @@ public class ReActStrategy {
      * @param toolObservationInterceptor 工具调用观测拦截器
      * @param spotlightingInterceptor 工具结果不可信数据标注拦截器
      * @param tokenUsageHook token 累计 Hook
+     * @param streamingTokenUsageInterceptor 流式 token usage 拦截器
      * @param approvalRuleService Always 审批规则服务
      */
     public ReActStrategy(ChatClientFactory chatClientFactory,
@@ -84,6 +88,7 @@ public class ReActStrategy {
                          ToolObservationInterceptor toolObservationInterceptor,
                          SpotlightingToolInterceptor spotlightingInterceptor,
                          BaBiQTokenUsageHook tokenUsageHook,
+                         BaBiQStreamingTokenUsageInterceptor streamingTokenUsageInterceptor,
                          ApprovalRuleService approvalRuleService,
                          TurnPersistenceService turnPersistenceService) {
         this.chatClientFactory = chatClientFactory;
@@ -93,6 +98,7 @@ public class ReActStrategy {
         this.toolObservationInterceptor = toolObservationInterceptor;
         this.spotlightingInterceptor = spotlightingInterceptor;
         this.tokenUsageHook = tokenUsageHook;
+        this.streamingTokenUsageInterceptor = streamingTokenUsageInterceptor;
         this.approvalRuleService = approvalRuleService;
         this.turnPersistenceService = turnPersistenceService;
     }
@@ -149,6 +155,7 @@ public class ReActStrategy {
                 .tools(callbacks)
                 .toolContext(toolContext)
                 .hooks(hitlHook, limitHook, tokenUsageHook)
+                .streamingInterceptors(streamingTokenUsageInterceptor)
                 .interceptors(sandboxInterceptor, toolObservationInterceptor, spotlightingInterceptor, evictionInterceptor)
                 .saver(memorySaver)
                 .build();

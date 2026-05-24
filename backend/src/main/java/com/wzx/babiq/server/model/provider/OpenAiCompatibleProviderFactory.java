@@ -46,6 +46,8 @@ public class OpenAiCompatibleProviderFactory implements ProviderFactory {
                 .build();
         OpenAiChatOptions chatOptions = OpenAiChatOptions.builder()
                 .model(config.model())
+                // OpenAI-compatible 流式接口默认不一定返回 usage；开启后 Provider 才会在最后一个 chunk 带回 token 统计。
+                .streamUsage(true)
                 .build();
 
         return OpenAiChatModel.builder()

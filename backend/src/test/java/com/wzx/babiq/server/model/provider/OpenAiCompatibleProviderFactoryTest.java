@@ -4,6 +4,8 @@ import com.wzx.babiq.server.model.ModelProviderConfig;
 import com.wzx.babiq.server.model.ProviderType;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.openai.OpenAiChatModel;
+import org.springframework.ai.openai.OpenAiChatOptions;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -38,6 +40,25 @@ class OpenAiCompatibleProviderFactoryTest {
         );
 
         assertThat(factory.build(config)).isNotNull();
+    }
+
+    @Test
+    @DisplayName("OpenAI 兼容流式调用必须请求 usage")
+    void build_should_enable_stream_usage_for_openai_compatible_provider() {
+        ModelProviderConfig config = new ModelProviderConfig(
+                "deepseek-official",
+                "DeepSeek 官方",
+                ProviderType.OPENAI_COMPATIBLE,
+                "deepseek-v4-pro",
+                "sk-fake-key",
+                "https://api.deepseek.com",
+                null
+        );
+
+        OpenAiChatModel chatModel = (OpenAiChatModel) factory.build(config);
+        OpenAiChatOptions options = (OpenAiChatOptions) chatModel.getDefaultOptions();
+
+        assertThat(options.getStreamUsage()).isTrue();
     }
 
     @Test
