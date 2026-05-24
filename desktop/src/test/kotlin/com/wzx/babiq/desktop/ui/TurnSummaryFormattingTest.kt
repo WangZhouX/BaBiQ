@@ -24,7 +24,6 @@ class TurnSummaryFormattingTest {
 			completionTokens = 386,
 			totalTokens = 2210,
 			toolCalls = 5,
-			estimatedCostUsd = 0.0021,
 			durationMs = 8200,
 		)
 

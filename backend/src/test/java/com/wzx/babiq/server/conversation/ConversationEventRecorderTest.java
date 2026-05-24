@@ -10,8 +10,6 @@ import com.wzx.babiq.server.persistence.service.TurnPersistenceService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
-import java.math.BigDecimal;
-
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -60,7 +58,6 @@ class ConversationEventRecorderTest {
                 20,
                 30,
                 2,
-                new BigDecimal("0.0003"),
                 1500);
 
         recorder.recordTurnSummary("thr_1", "turn_1", item);
@@ -68,6 +65,7 @@ class ConversationEventRecorderTest {
         ArgumentCaptor<TurnSummaryRecord> captor = ArgumentCaptor.forClass(TurnSummaryRecord.class);
         verify(repository).saveTurnSummary(captor.capture());
         assertThat(captor.getValue().turnId()).isEqualTo("turn_1");
+        assertThat(captor.getValue().totalTokens()).isEqualTo(30L);
         assertThat(captor.getValue().toolCount()).isEqualTo(2);
         verify(repository).saveItem(org.mockito.ArgumentMatchers.any(ItemRecord.class));
     }

@@ -1,6 +1,5 @@
 package com.wzx.babiq.server.conversation.repository;
 
-import java.math.BigDecimal;
 import java.time.Instant;
 
 /**
@@ -12,7 +11,7 @@ import java.time.Instant;
  * @param turnId 所属 turnId
  * @param promptTokens 输入 token 数
  * @param completionTokens 输出 token 数
- * @param costUsd 美元成本估算
+ * @param totalTokens 总 token 数
  * @param durationMs 本轮耗时毫秒数
  * @param toolCount 工具调用次数
  * @param createdAt 摘要生成时间
@@ -21,7 +20,7 @@ public record TurnSummaryRecord(
         String turnId,
         long promptTokens,
         long completionTokens,
-        BigDecimal costUsd,
+        long totalTokens,
         long durationMs,
         int toolCount,
         Instant createdAt
@@ -36,11 +35,11 @@ public record TurnSummaryRecord(
             String turnId,
             long promptTokens,
             long completionTokens,
-            BigDecimal costUsd,
+            long totalTokens,
             long durationMs,
             int toolCount,
             Instant createdAt) {
-        return new TurnSummaryRecord(turnId, promptTokens, completionTokens, costUsd,
+        return new TurnSummaryRecord(turnId, promptTokens, completionTokens, totalTokens,
                 durationMs, toolCount, createdAt);
     }
 }

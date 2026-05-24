@@ -13,7 +13,6 @@ import com.wzx.babiq.server.agent.AgentLoopProperties;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import java.math.BigDecimal;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.Map;
@@ -287,7 +286,6 @@ public class ConversationService {
      * @param completionTokens completion token 数
      * @param totalTokens 总 token 数
      * @param toolCalls 工具调用次数
-     * @param estimatedCostUsd 估算美元成本
      * @param durationMs 本轮耗时毫秒
      * @return turnSummary item
      */
@@ -297,10 +295,9 @@ public class ConversationService {
                                            long completionTokens,
                                            long totalTokens,
                                            int toolCalls,
-                                           BigDecimal estimatedCostUsd,
                                            long durationMs) {
         return new TurnSummaryItem(newId("it_"), "turnSummary", status, model,
-                promptTokens, completionTokens, totalTokens, toolCalls, estimatedCostUsd, durationMs);
+                promptTokens, completionTokens, totalTokens, toolCalls, durationMs);
     }
 
     private String newId(String prefix) {

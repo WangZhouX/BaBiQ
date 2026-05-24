@@ -10,13 +10,13 @@ import org.springframework.web.socket.WebSocketSession;
 /**
  * observability/costs 方法处理器。
  *
- * <p>该接口把 Provider/Model 成本聚合单独暴露出来，后续可以支撑设置页或成本面板。
- * 目前仍然沿用 P2-5 的本地 SQLite 聚合，不接入外部观测平台。</p>
+ * <p>方法名保留 P2-5 旧协议兼容性，但返回内容已经改为 Provider/Model token 用量聚合。
+ * 目前仍然沿用本地 SQLite 聚合，不接入外部观测平台。</p>
  */
 @Component
 public class ObservabilityCostsHandler implements JsonRpcMethodHandler {
 
-    /** 本地统计服务，负责模型成本聚合。 */
+    /** 本地统计服务，负责模型 token 用量聚合。 */
     private final LocalObservabilityService observabilityService;
 
     /**

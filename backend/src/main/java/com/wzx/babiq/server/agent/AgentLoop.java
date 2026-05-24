@@ -22,7 +22,7 @@ public class AgentLoop {
     private final ReActStrategy strategy;
     /** 保存当前 thread 正在等待的 HITL 审批元数据，用户点击审批按钮后会从这里取回恢复点。 */
     private final PendingApprovals pendingApprovals;
-    /** 在 turn 完成或失败时发出 token、耗时、工具次数、估算成本等摘要 item。 */
+    /** 在 turn 完成或失败时发出 token、耗时、工具次数等摘要 item。 */
     private final TurnSummaryEmitter summaryEmitter;
     /** 保存每个 turn 的观测上下文，保证模型调用、工具调用和最终摘要使用同一份计数数据。 */
     private final TurnObservationRegistry observationRegistry;
@@ -89,7 +89,7 @@ public class AgentLoop {
         AssistantMessage assistantMessage = strategy.extractAssistantMessage(node);
         AgentLoopDiagnostics.assistantMessageExtracted(turn, assistantMessage);
         emitter.emitItemAdded(AgentMessageItem.full(AgentLoopSupport.newItemId(), assistantMessage.getText()));
-        // summary 必须在 observationRegistry.remove 前发出，否则 token/成本上下文会丢。
+        // summary 必须在 observationRegistry.remove 前发出，否则 token 和工具计数上下文会丢。
         summaryEmitter.emit(context, emitter, "completed");
         observationRegistry.remove(turn.id());
         turn.complete();

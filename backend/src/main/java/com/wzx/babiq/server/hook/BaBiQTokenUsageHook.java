@@ -18,7 +18,7 @@ import java.util.concurrent.atomic.LongAdder;
  *
  * <p>这是 P1-3a 保留的唯一自写 ModelHook：D21 要求横切关注点离开 AgentLoop，
  * 因此每次模型调用后的 Usage 由本类累计。P1-3a 只记录 prompt/completion token，
- * P1-3b 再结合 ModelMetadata 计算成本并展示。</p>
+ * 后续 TurnSummaryEmitter 只把这些 token 写入协议和数据库，不再计算价格。</p>
  */
 @Component
 @HookPositions({HookPosition.AFTER_MODEL})

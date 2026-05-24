@@ -122,7 +122,6 @@ sealed interface ThreadItem {
 	 * @property completionTokens 输出 token 数。
 	 * @property totalTokens 输入和输出 token 总数。
 	 * @property toolCalls 本轮工具调用次数。
-	 * @property estimatedCostUsd 后端兼容字段；当前桌面端不展示价格，只展示 token 用量。
 	 * @property durationMs 本轮耗时，单位毫秒。
 	 */
 	data class TurnSummary(
@@ -134,7 +133,6 @@ sealed interface ThreadItem {
 		val completionTokens: Long = 0,
 		val totalTokens: Long = 0,
 		val toolCalls: Int = 0,
-		val estimatedCostUsd: Double? = null,
 		val durationMs: Long = 0,
 	) : ThreadItem
 

@@ -15,7 +15,6 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
-import java.math.BigDecimal;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.UUID;
@@ -64,7 +63,7 @@ class RunRecordServiceTest {
                 "it_user", "thr_record", "turn_record", "userMessage", 1,
                 "{\"id\":\"it_user\",\"type\":\"userMessage\",\"text\":\"总结项目\"}", "completed", now));
         conversationRepository.saveTurnSummary(TurnSummaryRecord.of(
-                "turn_record", 12, 8, BigDecimal.valueOf(0.0002), 3000, 1, now));
+                "turn_record", 12, 8, 20, 3000, 1, now));
         toolCallPersistenceService.recordStarted("call_1", "thr_record", "turn_record",
                 "read_file", "{\"path\":\"README.md\"}", now);
         toolCallPersistenceService.recordFinished("call_1", "completed", "ok", null, now.plusMillis(20));
@@ -76,6 +75,8 @@ class RunRecordServiceTest {
         assertThat(detail.turn().turnId()).isEqualTo("turn_record");
         assertThat(detail.items()).hasSize(1);
         assertThat(detail.summary().get("type").asText()).isEqualTo("turnSummary");
+        assertThat(detail.summary().get("totalTokens").asLong()).isEqualTo(20L);
+        assertThat(detail.summary().has("estimatedCostUsd")).isFalse();
         assertThat(detail.toolCalls()).extracting("toolName").containsExactly("read_file");
     }
 }

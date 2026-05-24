@@ -61,14 +61,3 @@ babiq:
     allowed-origins: "*"
   protocol:
     mock-agent-text: "hello from babiq"
-  observability:
-    pricing:
-      qwen-plus:
-        prompt-per-million-tokens: 0.20
-        completion-per-million-tokens: 0.60
-      deepseek-chat:
-        prompt-per-million-tokens: 0.14
-        completion-per-million-tokens: 0.28
-      gpt-4o:
-        prompt-per-million-tokens: 2.50
-        completion-per-million-tokens: 10.00

@@ -101,8 +101,7 @@ private fun ObservabilitySection(
 		state.error?.let { DetailCard("统计错误", it) }
 		state.snapshot?.let { snapshot ->
 			val totals = snapshot.totals
-			// 总 token 用输入和输出相加得到，避免 UI 依赖后端价格表或模型价格命名。
-			val totalTokens = totals.promptTokens + totals.completionTokens
+			// 总 token 由后端从数据库聚合后返回，桌面端只负责展示同一份事实数据。
 			DetailCard(
 				title = "统计总览",
 				detail = buildString {
@@ -110,7 +109,7 @@ private fun ObservabilitySection(
 					append("\n失败: ").append(totals.failedTurns)
 					append("\n输入 token: ").append(totals.promptTokens)
 					append("\n输出 token: ").append(totals.completionTokens)
-					append("\n总 token: ").append(totalTokens)
+					append("\n总 token: ").append(totals.totalTokens)
 				},
 			)
 			if (snapshot.byModel.isNotEmpty()) {
@@ -118,8 +117,7 @@ private fun ObservabilitySection(
 					title = "模型用量",
 					detail = snapshot.byModel.take(3).joinToString("\n") { model ->
 						// 模型维度同样只展示 token，用于排查哪类模型消耗最多上下文。
-						val modelTokens = model.promptTokens + model.completionTokens
-						"${model.model ?: model.providerId ?: "未知模型"} / ${model.turns} turn / ${modelTokens} token"
+						"${model.model ?: model.providerId ?: "未知模型"} / ${model.turns} turn / ${model.totalTokens} token"
 					},
 				)
 			}

@@ -21,14 +21,13 @@ import com.wzx.babiq.server.persistence.service.ToolCallPersistenceService;
 import com.wzx.babiq.server.persistence.service.TurnPersistenceService;
 import org.springframework.stereotype.Service;
 
-import java.math.BigDecimal;
 import java.util.List;
 
 /**
  * 运行记录聚合服务。
  *
  * <p>运行详情不是单表查询：turn 快照在 `bq_turns`，聊天协议 item 在 `bq_items`，
- * 成本摘要在 `bq_turn_summaries`，审批和工具调用也各自有表。本服务把这些数据聚合成
+ * 运行摘要在 `bq_turn_summaries`，审批和工具调用也各自有表。本服务把这些数据聚合成
  * run/* JSON-RPC 可以直接返回的 DTO，避免 handler 或 UI 理解数据库结构。</p>
  */
 @Service
@@ -136,9 +135,8 @@ public class RunRecordService {
         node.put("model", turn.getModel());
         node.put("promptTokens", summary.promptTokens());
         node.put("completionTokens", summary.completionTokens());
-        node.put("totalTokens", summary.promptTokens() + summary.completionTokens());
+        node.put("totalTokens", summary.totalTokens());
         node.put("toolCalls", summary.toolCount());
-        node.put("estimatedCostUsd", money(summary.costUsd()));
         node.put("durationMs", summary.durationMs());
         return node;
     }
@@ -183,7 +181,4 @@ public class RunRecordService {
                 record.completedAt() == null ? null : record.completedAt().toString());
     }
 
-    private BigDecimal money(BigDecimal value) {
-        return value == null ? BigDecimal.ZERO : value;
-    }
 }

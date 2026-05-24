@@ -19,7 +19,7 @@ public final class TurnObservationContext {
     private final String turnId;
     /** 本轮使用的 provider id；为空时表示使用后端 active provider。 */
     private final String providerId;
-    /** 实际调用的模型名称，前端成本条和日志都会展示它。 */
+    /** 实际调用的模型名称，运行反馈条和日志都会展示它。 */
     private final String model;
     /** turn 开始时的纳秒时间戳，用 nanoTime 计算耗时可以避免系统时钟回拨影响。 */
     private final long startedNanos;
@@ -27,7 +27,7 @@ public final class TurnObservationContext {
     private final LongSupplier nanoTime;
     /** 累计 prompt token；LongAdder 适合被 hook 和 worker 线程并发递增。 */
     private final LongAdder promptTokens = new LongAdder();
-    /** 累计 completion token，用于最终成本估算。 */
+    /** 累计 completion token，用于最终 turnSummary 和本地统计。 */
     private final LongAdder completionTokens = new LongAdder();
     /** 工具名 -> 调用次数，用于 turnSummary 的工具数量和后端指标。 */
     private final ConcurrentHashMap<String, LongAdder> toolCallsByName = new ConcurrentHashMap<>();

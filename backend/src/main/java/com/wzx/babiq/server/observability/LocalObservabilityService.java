@@ -4,8 +4,6 @@ import com.wzx.babiq.server.persistence.mapper.ToolCallMapper;
 import com.wzx.babiq.server.persistence.mapper.TurnMapper;
 import org.springframework.stereotype.Service;
 
-import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -16,7 +14,7 @@ import java.util.Map;
  * P2-5 本地可观测统计服务。
  *
  * <p>服务只读取 SQLite 持久化运行记录。P1 的 BaBiQMetrics 仍可作为实时短期计数器，
- * 但这里不读取它，避免后端重启后统计丢失。耗时、成本、工具分布都通过 mapper 聚合 SQL 完成，
+ * 但这里不读取它，避免后端重启后统计丢失。耗时、token、工具分布都通过 mapper 聚合 SQL 完成，
  * service 只负责把 Map 结果转换成稳定协议 DTO。</p>
  */
 @Service
@@ -71,13 +69,13 @@ public class LocalObservabilityService {
     }
 
     /**
-     * 查询 Provider/Model 成本聚合。
+     * 查询 Provider/Model token 用量聚合。
      *
      * @param range 统计窗口
      * @param cwd 可选工作目录过滤
-     * @return 模型成本统计列表
+     * @return 模型用量统计列表
      */
-    public List<ModelCostStats> costs(String range, String cwd) {
+    public List<ModelUsageStats> costs(String range, String cwd) {
         String normalizedRange = normalizeRange(range);
         return modelStats(turnMapper.selectObservabilityByModel(cutoffInstant(normalizedRange), blankToNull(cwd)));
     }
@@ -89,19 +87,19 @@ public class LocalObservabilityService {
                 longValue(row, "failedTurns"),
                 longValue(row, "promptTokens"),
                 longValue(row, "completionTokens"),
-                decimalValue(row, "estimatedCostUsd"));
+                longValue(row, "totalTokens"));
     }
 
-    private List<ModelCostStats> modelStats(List<Map<String, Object>> rows) {
+    private List<ModelUsageStats> modelStats(List<Map<String, Object>> rows) {
         return rows.stream()
-                .map(row -> new ModelCostStats(
+                .map(row -> new ModelUsageStats(
                         stringValue(row, "providerId"),
                         stringValue(row, "model"),
                         longValue(row, "turns"),
                         longValue(row, "failedTurns"),
                         longValue(row, "promptTokens"),
                         longValue(row, "completionTokens"),
-                        decimalValue(row, "estimatedCostUsd")))
+                        longValue(row, "totalTokens")))
                 .toList();
     }
 
@@ -153,17 +151,6 @@ public class LocalObservabilityService {
             return number.longValue();
         }
         return value == null ? 0L : Long.parseLong(value.toString());
-    }
-
-    private static BigDecimal decimalValue(Map<String, Object> row, String key) {
-        Object value = value(row, key);
-        if (value instanceof BigDecimal decimal) {
-            return decimal;
-        }
-        if (value instanceof Number number) {
-            return BigDecimal.valueOf(number.doubleValue()).setScale(8, RoundingMode.HALF_UP).stripTrailingZeros();
-        }
-        return value == null ? BigDecimal.ZERO : new BigDecimal(value.toString());
     }
 
     private static Object value(Map<String, Object> row, String key) {

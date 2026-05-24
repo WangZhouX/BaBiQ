@@ -19,7 +19,6 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
-import java.math.BigDecimal;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.UUID;
@@ -91,7 +90,7 @@ class RepositoryAdapterIT {
                 "it_user", "thr_repo", "turn_repo", "userMessage", 1,
                 "{\"id\":\"it_user\",\"type\":\"userMessage\",\"text\":\"你好\"}", "completed", now));
         conversationRepository.saveTurnSummary(TurnSummaryRecord.of(
-                "turn_repo", 10, 20, BigDecimal.valueOf(0.0001), 1200, 1, now));
+                "turn_repo", 10, 20, 30, 1200, 1, now));
 
         assertThat(conversationRepository.findThread("thr_repo")).isPresent();
         assertThat(conversationRepository.listRecentThreads("E:\\BaBiQ", false, 10))
@@ -102,8 +101,10 @@ class RepositoryAdapterIT {
                 .containsExactly("it_user");
         assertThat(conversationRepository.findTurnSummary("turn_repo"))
                 .get()
-                .extracting(TurnSummaryRecord::toolCount)
-                .isEqualTo(1);
+                .satisfies(summary -> {
+                    assertThat(summary.totalTokens()).isEqualTo(30L);
+                    assertThat(summary.toolCount()).isEqualTo(1);
+                });
     }
 
     @Test

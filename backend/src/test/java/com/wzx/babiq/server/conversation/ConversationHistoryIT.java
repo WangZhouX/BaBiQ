@@ -12,7 +12,6 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
-import java.math.BigDecimal;
 import java.nio.file.Path;
 import java.util.UUID;
 
@@ -56,7 +55,7 @@ class ConversationHistoryIT {
         recorder.recordItemAdded(thread.id(), turn.id(), AgentMessageItem.full("it_agent", "你好，有什么可以帮忙？"));
         recorder.recordTurnSummary(thread.id(), turn.id(), new TurnSummaryItem(
                 "it_summary", "turnSummary", "completed", "deepseek-v4-pro",
-                10, 20, 30, 0, new BigDecimal("0.0001"), 900));
+                10, 20, 30, 0, 900));
         recorder.recordTurnFinished(turn.id(), "COMPLETED", null);
 
         // 重新构造应用服务，模拟内存索引丢失后只从 SQLite 读取历史。

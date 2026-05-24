@@ -8,7 +8,7 @@ import com.wzx.babiq.desktop.protocol.McpServerRefreshResult
 import com.wzx.babiq.desktop.protocol.McpServersListResult
 import com.wzx.babiq.desktop.protocol.McpToolInfo
 import com.wzx.babiq.desktop.protocol.McpToolsListResult
-import com.wzx.babiq.desktop.protocol.ModelCostStatsInfo
+import com.wzx.babiq.desktop.protocol.ModelUsageStatsInfo
 import com.wzx.babiq.desktop.protocol.ObservabilityCostsResult
 import com.wzx.babiq.desktop.protocol.ObservabilitySnapshotResult
 import com.wzx.babiq.desktop.protocol.ObservabilityToolsResult
@@ -474,8 +474,8 @@ class ChatControllerTest {
 		),
 		private val observabilitySnapshot: ObservabilitySnapshotResult = ObservabilitySnapshotResult(
 			range = "7d",
-			totals = ObservabilityTotalsInfo(turns = 3, failedTurns = 1, promptTokens = 120, completionTokens = 80, estimatedCostUsd = 0.0021),
-			byModel = listOf(ModelCostStatsInfo(providerId = "deepseek", model = "deepseek-v4-pro", turns = 3, estimatedCostUsd = 0.0021)),
+			totals = ObservabilityTotalsInfo(turns = 3, failedTurns = 1, promptTokens = 120, completionTokens = 80, totalTokens = 200),
+			byModel = listOf(ModelUsageStatsInfo(providerId = "deepseek", model = "deepseek-v4-pro", turns = 3, totalTokens = 200)),
 		),
 		private val recoveryStatus: RunRecoveryStatusResult = RunRecoveryStatusResult(
 			lastRecoveredAt = "2026-05-24T08:10:00Z",

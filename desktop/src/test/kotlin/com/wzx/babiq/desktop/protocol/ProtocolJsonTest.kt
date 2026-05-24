@@ -28,7 +28,6 @@ class ProtocolJsonTest {
 			      "completionTokens": 386,
 			      "totalTokens": 2210,
 			      "toolCalls": 5,
-			      "estimatedCostUsd": 0.0021,
 			      "durationMs": 8200
 			    }
 			  }
@@ -44,7 +43,7 @@ class ProtocolJsonTest {
 		assertEquals("summary-1", summary.id)
 		assertEquals(1824, summary.promptTokens)
 		assertEquals(386, summary.completionTokens)
-		assertEquals(0.0021, summary.estimatedCostUsd)
+		assertEquals(2210, summary.totalTokens)
 	}
 
 	@Test

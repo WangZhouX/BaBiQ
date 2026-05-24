@@ -35,7 +35,6 @@ class ChatReducerTest {
 			completionTokens = 20,
 			totalTokens = 120,
 			toolCalls = 2,
-			estimatedCostUsd = 0.001,
 			durationMs = 1500,
 		)
 

@@ -16,7 +16,7 @@ import java.util.Map;
 public interface TurnMapper extends BaseMapper<TurnEntity> {
 
     /**
-     * 聚合统计窗口内的 turn 总量、失败数、token 和成本。
+     * 聚合统计窗口内的 turn 总量、失败数和 token。
      *
      * @param cutoff ISO-8601 时间字符串；为空时不做时间过滤
      * @param cwd 可选工作目录；为空时统计所有工作目录
@@ -28,7 +28,7 @@ public interface TurnMapper extends BaseMapper<TurnEntity> {
                 COALESCE(SUM(CASE WHEN UPPER(t.status) = 'FAILED' THEN 1 ELSE 0 END), 0) AS failedTurns,
                 COALESCE(SUM(COALESCE(s.prompt_tokens, 0)), 0) AS promptTokens,
                 COALESCE(SUM(COALESCE(s.completion_tokens, 0)), 0) AS completionTokens,
-                COALESCE(SUM(COALESCE(s.cost_usd, 0)), 0) AS estimatedCostUsd
+                COALESCE(SUM(COALESCE(s.total_tokens, 0)), 0) AS totalTokens
             FROM bq_turns t
             LEFT JOIN bq_turn_summaries s ON s.turn_id = t.turn_id
             WHERE (#{cutoff} IS NULL OR t.started_at >= #{cutoff})
@@ -37,7 +37,7 @@ public interface TurnMapper extends BaseMapper<TurnEntity> {
     Map<String, Object> selectObservabilityTotals(@Param("cutoff") String cutoff, @Param("cwd") String cwd);
 
     /**
-     * 按 Provider 聚合成本和 token。
+     * 按 Provider 聚合 token 用量。
      *
      * @param cutoff ISO-8601 时间字符串；为空时不做时间过滤
      * @param cwd 可选工作目录；为空时统计所有工作目录
@@ -51,18 +51,18 @@ public interface TurnMapper extends BaseMapper<TurnEntity> {
                 COALESCE(SUM(CASE WHEN UPPER(t.status) = 'FAILED' THEN 1 ELSE 0 END), 0) AS failedTurns,
                 COALESCE(SUM(COALESCE(s.prompt_tokens, 0)), 0) AS promptTokens,
                 COALESCE(SUM(COALESCE(s.completion_tokens, 0)), 0) AS completionTokens,
-                COALESCE(SUM(COALESCE(s.cost_usd, 0)), 0) AS estimatedCostUsd
+                COALESCE(SUM(COALESCE(s.total_tokens, 0)), 0) AS totalTokens
             FROM bq_turns t
             LEFT JOIN bq_turn_summaries s ON s.turn_id = t.turn_id
             WHERE (#{cutoff} IS NULL OR t.started_at >= #{cutoff})
               AND (#{cwd} IS NULL OR t.cwd = #{cwd})
             GROUP BY t.provider_id
-            ORDER BY estimatedCostUsd DESC, turns DESC, t.provider_id ASC
+            ORDER BY totalTokens DESC, turns DESC, t.provider_id ASC
             """)
     List<Map<String, Object>> selectObservabilityByProvider(@Param("cutoff") String cutoff, @Param("cwd") String cwd);
 
     /**
-     * 按 Provider/Model 聚合成本和 token。
+     * 按 Provider/Model 聚合 token 用量。
      *
      * @param cutoff ISO-8601 时间字符串；为空时不做时间过滤
      * @param cwd 可选工作目录；为空时统计所有工作目录
@@ -76,13 +76,13 @@ public interface TurnMapper extends BaseMapper<TurnEntity> {
                 COALESCE(SUM(CASE WHEN UPPER(t.status) = 'FAILED' THEN 1 ELSE 0 END), 0) AS failedTurns,
                 COALESCE(SUM(COALESCE(s.prompt_tokens, 0)), 0) AS promptTokens,
                 COALESCE(SUM(COALESCE(s.completion_tokens, 0)), 0) AS completionTokens,
-                COALESCE(SUM(COALESCE(s.cost_usd, 0)), 0) AS estimatedCostUsd
+                COALESCE(SUM(COALESCE(s.total_tokens, 0)), 0) AS totalTokens
             FROM bq_turns t
             LEFT JOIN bq_turn_summaries s ON s.turn_id = t.turn_id
             WHERE (#{cutoff} IS NULL OR t.started_at >= #{cutoff})
               AND (#{cwd} IS NULL OR t.cwd = #{cwd})
             GROUP BY t.provider_id, t.model
-            ORDER BY estimatedCostUsd DESC, turns DESC, t.provider_id ASC, t.model ASC
+            ORDER BY totalTokens DESC, turns DESC, t.provider_id ASC, t.model ASC
             """)
     List<Map<String, Object>> selectObservabilityByModel(@Param("cutoff") String cutoff, @Param("cwd") String cwd);
 

@@ -12,7 +12,6 @@ import com.wzx.babiq.server.persistence.service.ApprovalPersistenceService;
 import com.wzx.babiq.server.persistence.service.TurnPersistenceService;
 import org.springframework.stereotype.Component;
 
-import java.math.BigDecimal;
 import java.time.Instant;
 
 /**
@@ -113,7 +112,7 @@ public class ConversationEventRecorder {
                 turnId,
                 item.promptTokens(),
                 item.completionTokens(),
-                item.estimatedCostUsd() == null ? BigDecimal.ZERO : item.estimatedCostUsd(),
+                item.totalTokens(),
                 item.durationMs(),
                 item.toolCalls(),
                 Instant.now()));

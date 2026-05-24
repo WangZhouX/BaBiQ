@@ -18,8 +18,8 @@ import java.util.List;
 public record LocalObservabilitySnapshot(
         String range,
         ObservabilityTotals totals,
-        List<ModelCostStats> byProvider,
-        List<ModelCostStats> byModel,
+        List<ModelUsageStats> byProvider,
+        List<ModelUsageStats> byModel,
         List<ToolStats> byTool,
         List<StatusStats> byStatus) {
 }

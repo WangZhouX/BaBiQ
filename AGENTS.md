@@ -44,7 +44,7 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
   - 桌面端已从 skeleton 升级为 V2 Chat UI。
   - 已实现 JSON-RPC 协议模型、Ktor WebSocket 客户端、AgentClient、AppState、ChatReducer、ChatController。
   - 已实现聊天消息、工具/文件/TurnSummary 渲染、审批弹窗、Provider/模型下拉、只读设置页、连接断开提示和 1s-10s 自动重连。
-  - 成本只来自后端 `turnSummary`；首页/idle 状态和 `ComposerContextBar` 不展示成本 chip。
+  - `turnSummary` 只展示 token、耗时和工具次数；项目不再记录或展示价格/成本。
   - Sidebar 搜索、插件、自动化只作为 P1 禁用占位，不实现真实能力。
 - P1-4 计划、原型和交互材料仍保留在：
   - `docs/superpowers/plans/p1-4-compose-desktop-ui/plan.md`
@@ -75,6 +75,7 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
   - 后端已引入 SQLite JDBC、MyBatis-Plus、Flyway，并建立 `bq_*` 业务表。
   - 每张业务表和每个业务字段都在 SQL 注释和 `bq_schema_comments` 中保留中文说明。
   - 已建立 Thread、Turn、Item、TurnSummary、ProviderConfig、AppSetting、Approval、MetricsDaily 等 Entity / Mapper / Repository adapter。
+  - `bq_turn_summaries` 已在 `V6__turn_summary_token_only.sql` 收口为 token-only 结构，只保留 `prompt_tokens`、`completion_tokens`、`total_tokens`、耗时和工具次数，不再保留 `cost_usd`。
   - 已有 `SchemaCommentsCoverageTest` 校验所有业务字段中文说明不缺失。
   - 提交: `e149244 feat(p2-1): 建立 SQLite 持久化底座`。
 - P2-2 多会话历史和桌面端最近对话已完成：
@@ -112,7 +113,7 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
 - P2-5 基础可观测增强已完成：
   - 后端新增 `LocalObservabilityService`，只基于 SQLite 持久化运行记录聚合，不读取 P1 内存计数器。
   - 后端新增 `observability/snapshot`、`observability/tools`、`observability/costs` JSON-RPC 方法。
-  - 后端已支持按 range/cwd 聚合 turns、tokens、成本、状态分布、provider/model 分布和工具调用分布。
+  - 后端已支持按 range/cwd 聚合 turns、tokens、状态分布、provider/model token 用量和工具调用分布；不再聚合价格或成本。
   - 桌面端运行详情面板已接入本地统计展示，支持 `7d`、`30d`、`all` 三个范围切换。
   - P2-5 决策为不启用 Actuator/Micrometer；本阶段不暴露额外 HTTP 观测 endpoint。
   - P2-5 额外验证：`cd backend; .\mvnw.cmd "-Dtest=LocalObservabilityServiceTest" test`
@@ -145,7 +146,7 @@ P1-3B 已完成范围：
 - 工具输出 `<untrusted-data>` spotlighting。
 - system prompt 安全规则。
 - prompt injection smoke test。
-- `turnSummary` 协议 item、成本估算、结构化 turn JSON 日志。
+- `turnSummary` 协议 item、token 用量摘要、结构化 turn JSON 日志。
 - P1 内存级 counters: turn、tokens、tool calls、approval decisions。
 - 不引入 Actuator、Prometheus、OpenTelemetry、Langfuse UI、Lakera Guard、Dual LLM 或 OWASP 大数据集回归。
 
@@ -153,7 +154,7 @@ P1-4 已完成范围：
 
 - Compose Desktop UI。
 - 消费后端已经发出的 `turnSummary`、`approval/request`、`item/added`、`turn/completed` 等协议事件。
-- 完成 ChatScreen、ApprovalDialog、ProviderSelector、Provider 只读设置、成本反馈条和协议模型映射。
+- 完成 ChatScreen、ApprovalDialog、ProviderSelector、Provider 只读设置、token 反馈条和协议模型映射。
 - 采用用户审核通过的 V2 原型：上下文条和模型切换靠近输入框，右侧运行详情默认收起。
 - 不恢复 V1 原型，不把“文件上下文”做成独立右侧入口。
 - 不做 Provider 编辑、API Key 管理、KeyStore、多工作区文件 pinning 或 P2+ 可观测 UI。
@@ -186,7 +187,7 @@ P1-4 已完成范围：
     - `bq_schema_comments` 元数据表中写入每个表和字段的中文说明，后续 migration 新增字段时也必须同步补充。
     - Entity 字段必须有中文字段级注释，说明数据库字段含义、写入来源、读取方和空值语义。
     - 必须有测试用 `PRAGMA table_info` 校验所有 `bq_*` 业务表字段在 `bq_schema_comments` 中都有非空中文说明。
-  - 复杂、关键或容易误解的代码块必须补充行级中文注释，例如协议分发、Agent/HITL 恢复、沙箱路径校验、并发/协程、缓存、成本统计、Provider 切换、工作目录切换。
+  - 复杂、关键或容易误解的代码块必须补充行级中文注释，例如协议分发、Agent/HITL 恢复、沙箱路径校验、并发/协程、缓存、token 统计、Provider 切换、工作目录切换。
   - 简单字段、直观赋值和样板 getter/setter 不强行逐行注释；如果逐行注释会降低可读性，应使用方法级注释加关键行注释。
   - 注释必须解释意图和边界，不写“把 A 赋给 A”这类空注释。
 - 必需验收测试禁止用 `@Disabled` 占位。
@@ -214,7 +215,7 @@ P1-4 实现验收必须包含：
 - 后端 `clean verify` 通过。
 - 桌面端真实启动。
 - UI 能完成“分析 E:\BaBiQ 项目结构并写一个总结”的真实业务场景。
-- 审批弹窗、Provider/模型切换、TurnSummary 成本反馈、断线提示均可见可用。
+- 审批弹窗、Provider/模型切换、TurnSummary token 反馈、断线提示均可见可用。
 - 视觉对齐 V2 原型截图，不能出现文字溢出、控件重叠或 V1 旧设计回流。
 
 P1-4 当前自动化验收补充：

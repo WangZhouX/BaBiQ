@@ -9,13 +9,11 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 import lombok.ToString;
 
-import java.math.BigDecimal;
-
 /**
  * `bq_turn_summaries` 表对应的 MyBatis-Plus 实体。
  *
- * <p>该表只在 turn 结束后写入，用于恢复桌面端“本轮成本反馈”以及后续 P2-5 本地可观测统计。
- * 成本使用 BigDecimal 映射，避免 double 在金额展示上产生不必要的二进制误差。</p>
+ * <p>该表只在 turn 结束后写入，用于恢复桌面端“本轮运行反馈”以及后续 P2-5 本地可观测统计。
+ * 表内只保存 token、耗时和工具调用次数，不保存价格或成本，避免模型名和外部价格表变化影响历史数据。</p>
  */
 @Getter
 @Setter
@@ -40,9 +38,9 @@ public class TurnSummaryEntity {
     @TableField("completion_tokens")
     private Long completionTokens;
 
-    /** 美元成本估算。 */
-    @TableField("cost_usd")
-    private BigDecimal costUsd;
+    /** 总 token 数，等于输入 token 和输出 token 之和。 */
+    @TableField("total_tokens")
+    private Long totalTokens;
 
     /** 本轮耗时毫秒数。 */
     @TableField("duration_ms")

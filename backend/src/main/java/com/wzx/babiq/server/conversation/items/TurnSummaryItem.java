@@ -3,13 +3,11 @@ package com.wzx.babiq.server.conversation.items;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
-import java.math.BigDecimal;
-
 /**
  * 单轮 Agent 执行摘要 item。
  *
- * <p>该 item 在 turn 结束前发出,让桌面端可以展示本轮模型、token、工具调用、
- * 估算成本和耗时,同时作为 P1 可观测性的协议边界。</p>
+ * <p>该 item 在 turn 结束前发出，让桌面端可以展示本轮模型、token、工具调用和耗时。
+ * BaBiQ 当前只记录真实 token 用量，不在协议 item 中传输价格或成本。</p>
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record TurnSummaryItem(
@@ -21,7 +19,6 @@ public record TurnSummaryItem(
         long completionTokens,
         long totalTokens,
         int toolCalls,
-        BigDecimal estimatedCostUsd,
         long durationMs
 ) implements ThreadItem {
 }

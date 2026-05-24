@@ -40,7 +40,6 @@ public class StructuredTurnLogger {
         payload.put("completionTokens", item.completionTokens());
         payload.put("totalTokens", item.totalTokens());
         payload.put("toolCalls", item.toolCalls());
-        payload.put("estimatedCostUsd", item.estimatedCostUsd());
         payload.put("durationMs", item.durationMs());
         return objectMapper.writeValueAsString(payload);
     }

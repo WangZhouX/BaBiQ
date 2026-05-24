@@ -238,7 +238,7 @@ public class SQLiteConversationRepository implements ConversationRepository {
         entity.setTurnId(record.turnId());
         entity.setPromptTokens(record.promptTokens());
         entity.setCompletionTokens(record.completionTokens());
-        entity.setCostUsd(record.costUsd());
+        entity.setTotalTokens(record.totalTokens());
         entity.setDurationMs(record.durationMs());
         entity.setToolCount(record.toolCount());
         entity.setCreatedAt(PersistenceTime.write(record.createdAt()));
@@ -247,7 +247,7 @@ public class SQLiteConversationRepository implements ConversationRepository {
 
     private TurnSummaryRecord toRecord(TurnSummaryEntity entity) {
         return new TurnSummaryRecord(entity.getTurnId(), entity.getPromptTokens(), entity.getCompletionTokens(),
-                entity.getCostUsd(), entity.getDurationMs(), entity.getToolCount(),
+                entity.getTotalTokens(), entity.getDurationMs(), entity.getToolCount(),
                 PersistenceTime.read(entity.getCreatedAt()));
     }
 }

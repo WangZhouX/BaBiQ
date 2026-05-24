@@ -22,7 +22,7 @@ class ObservabilityModelsTest {
 			    "failedTurns": 1,
 			    "promptTokens": 120,
 			    "completionTokens": 80,
-			    "estimatedCostUsd": 0.0021
+			    "totalTokens": 200
 			  },
 			  "byProvider": [],
 			  "byModel": [
@@ -33,7 +33,7 @@ class ObservabilityModelsTest {
 			      "failedTurns": 1,
 			      "promptTokens": 120,
 			      "completionTokens": 80,
-			      "estimatedCostUsd": 0.0021
+			      "totalTokens": 200
 			    }
 			  ],
 			  "byTool": [
@@ -56,7 +56,9 @@ class ObservabilityModelsTest {
 
 		assertEquals("7d", result.range)
 		assertEquals(2L, result.totals.turns)
+		assertEquals(200L, result.totals.totalTokens)
 		assertEquals("deepseek-v4-pro", result.byModel.single().model)
+		assertEquals(200L, result.byModel.single().totalTokens)
 		assertEquals("read_file", result.byTool.single().toolName)
 		assertEquals("COMPLETED", result.byStatus.single().status)
 	}

@@ -19,8 +19,8 @@ import kotlinx.serialization.Serializable
 data class ObservabilitySnapshotResult(
 	val range: String = "7d",
 	val totals: ObservabilityTotalsInfo = ObservabilityTotalsInfo(),
-	val byProvider: List<ModelCostStatsInfo> = emptyList(),
-	val byModel: List<ModelCostStatsInfo> = emptyList(),
+	val byProvider: List<ModelUsageStatsInfo> = emptyList(),
+	val byModel: List<ModelUsageStatsInfo> = emptyList(),
 	val byTool: List<ToolStatsInfo> = emptyList(),
 	val byStatus: List<StatusStatsInfo> = emptyList(),
 )
@@ -32,7 +32,7 @@ data class ObservabilitySnapshotResult(
  * @property failedTurns 统计窗口内失败 turn 数。
  * @property promptTokens 输入 token 总数。
  * @property completionTokens 输出 token 总数。
- * @property estimatedCostUsd 后端兼容字段；当前桌面端不展示价格，只展示 token 用量。
+ * @property totalTokens 输入和输出 token 总数；由后端从 SQLite 聚合后返回，UI 不再计算或展示价格。
  */
 @Serializable
 data class ObservabilityTotalsInfo(
@@ -40,7 +40,7 @@ data class ObservabilityTotalsInfo(
 	val failedTurns: Long = 0,
 	val promptTokens: Long = 0,
 	val completionTokens: Long = 0,
-	val estimatedCostUsd: Double = 0.0,
+	val totalTokens: Long = 0,
 )
 
 /**
@@ -52,17 +52,17 @@ data class ObservabilityTotalsInfo(
  * @property failedTurns 该维度下的失败 turn 数。
  * @property promptTokens 输入 token 总数。
  * @property completionTokens 输出 token 总数。
- * @property estimatedCostUsd 后端兼容字段；当前桌面端不展示价格，只展示 token 用量。
+ * @property totalTokens 输入和输出 token 总数；用于模型用量排行，不依赖任何价格表。
  */
 @Serializable
-data class ModelCostStatsInfo(
+data class ModelUsageStatsInfo(
 	val providerId: String? = null,
 	val model: String? = null,
 	val turns: Long = 0,
 	val failedTurns: Long = 0,
 	val promptTokens: Long = 0,
 	val completionTokens: Long = 0,
-	val estimatedCostUsd: Double = 0.0,
+	val totalTokens: Long = 0,
 )
 
 /**
@@ -116,5 +116,5 @@ data class ObservabilityToolsResult(
 @Serializable
 data class ObservabilityCostsResult(
 	val range: String = "7d",
-	val models: List<ModelCostStatsInfo> = emptyList(),
+	val models: List<ModelUsageStatsInfo> = emptyList(),
 )

@@ -5,7 +5,7 @@ import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
 import com.wzx.babiq.server.api.error.JsonRpcException;
 import com.wzx.babiq.server.observability.LocalObservabilityService;
 import com.wzx.babiq.server.observability.LocalObservabilitySnapshot;
-import com.wzx.babiq.server.observability.ModelCostStats;
+import com.wzx.babiq.server.observability.ModelUsageStats;
 import com.wzx.babiq.server.observability.ObservabilityCostsResult;
 import com.wzx.babiq.server.observability.ObservabilityToolsResult;
 import com.wzx.babiq.server.observability.ObservabilityTotals;
@@ -14,7 +14,6 @@ import com.wzx.babiq.server.observability.ToolStats;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 
@@ -65,10 +64,10 @@ class ObservabilityHandlersTest {
     }
 
     @Test
-    @DisplayName("observability/costs 返回 range 和模型成本列表")
+    @DisplayName("observability/costs 返回 range 和模型 token 用量列表")
     void costs_should_wrap_model_cost_stats_with_range() {
         LocalObservabilityService service = mock(LocalObservabilityService.class);
-        List<ModelCostStats> models = List.of(sampleModel("deepseek", "deepseek-v4-pro"));
+        List<ModelUsageStats> models = List.of(sampleModel("deepseek", "deepseek-v4-pro"));
         when(service.costs("all", "E:\\BaBiQ")).thenReturn(models);
         ObservabilityCostsHandler handler = new ObservabilityCostsHandler(service);
 
@@ -93,17 +92,17 @@ class ObservabilityHandlersTest {
     }
 
     private static LocalObservabilitySnapshot sampleSnapshot(String range) {
-        ModelCostStats model = sampleModel("deepseek", "deepseek-v4-pro");
+        ModelUsageStats model = sampleModel("deepseek", "deepseek-v4-pro");
         return new LocalObservabilitySnapshot(
                 range,
-                new ObservabilityTotals(1, 0, 100, 40, new BigDecimal("0.0012")),
-                List.of(new ModelCostStats("deepseek", null, 1, 0, 100, 40, new BigDecimal("0.0012"))),
+                new ObservabilityTotals(1, 0, 100, 40, 140),
+                List.of(new ModelUsageStats("deepseek", null, 1, 0, 100, 40, 140)),
                 List.of(model),
                 List.of(new ToolStats("read_file", 1, 0, 300)),
                 List.of(new StatusStats("COMPLETED", 1)));
     }
 
-    private static ModelCostStats sampleModel(String providerId, String model) {
-        return new ModelCostStats(providerId, model, 1, 0, 100, 40, new BigDecimal("0.0012"));
+    private static ModelUsageStats sampleModel(String providerId, String model) {
+        return new ModelUsageStats(providerId, model, 1, 0, 100, 40, 140);
     }
 }

@@ -26,7 +26,7 @@ public class TurnEntity {
     @TableId(type = IdType.AUTO)
     private Long id;
 
-    /** 协议层 turnId；item、审批、成本摘要都通过它关联同一轮运行。 */
+    /** 协议层 turnId；item、审批、运行摘要都通过它关联同一轮运行。 */
     @TableField("turn_id")
     private String turnId;
 

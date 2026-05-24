@@ -12,7 +12,6 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
-import java.math.BigDecimal;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
@@ -49,20 +48,20 @@ class LocalObservabilityServiceTest {
     private LocalObservabilityService observabilityService;
 
     @Test
-    @DisplayName("统计快照按 range 和 cwd 聚合 turn、token、成本、模型、状态和工具")
+    @DisplayName("统计快照按 range 和 cwd 聚合 turn、token、模型、状态和工具")
     void snapshot_should_aggregate_persisted_run_records_by_range_and_cwd() {
         Instant now = Instant.now();
         seedTurn("turn_recent_ok", "thr_recent_ok", "E:\\BaBiQ", "deepseek", "deepseek-v4-pro",
-                "COMPLETED", now.minus(Duration.ofHours(2)), 100, 40, "0.0012", 1,
+                "COMPLETED", now.minus(Duration.ofHours(2)), 100, 40, 1,
                 "read_file", "completed", now.minus(Duration.ofHours(2)), now.minus(Duration.ofHours(2)).plusMillis(2000));
         seedTurn("turn_recent_failed", "thr_recent_failed", "E:\\BaBiQ", "deepseek", "deepseek-v4-pro",
-                "FAILED", now.minus(Duration.ofHours(1)), 50, 10, "0.0004", 1,
+                "FAILED", now.minus(Duration.ofHours(1)), 50, 10, 1,
                 "exec_shell", "failed", now.minus(Duration.ofHours(1)), now.minus(Duration.ofHours(1)).plusMillis(1000));
         seedTurn("turn_old", "thr_old", "E:\\BaBiQ", "dashscope", "qwen-plus",
-                "COMPLETED", now.minus(Duration.ofDays(40)), 999, 999, "9.9900", 0,
+                "COMPLETED", now.minus(Duration.ofDays(40)), 999, 999, 0,
                 null, null, null, null);
         seedTurn("turn_other_cwd", "thr_other_cwd", "H:\\Other", "deepseek", "deepseek-v4-pro",
-                "COMPLETED", now.minus(Duration.ofMinutes(30)), 500, 500, "1.0000", 0,
+                "COMPLETED", now.minus(Duration.ofMinutes(30)), 500, 500, 0,
                 null, null, null, null);
 
         LocalObservabilitySnapshot snapshot = observabilityService.snapshot("7d", "E:\\BaBiQ");
@@ -72,8 +71,8 @@ class LocalObservabilityServiceTest {
         assertThat(snapshot.totals().failedTurns()).isEqualTo(1);
         assertThat(snapshot.totals().promptTokens()).isEqualTo(150);
         assertThat(snapshot.totals().completionTokens()).isEqualTo(50);
-        assertThat(snapshot.totals().estimatedCostUsd()).isEqualByComparingTo("0.0016");
-        assertThat(snapshot.byModel()).extracting(ModelCostStats::model).containsExactly("deepseek-v4-pro");
+        assertThat(snapshot.totals().totalTokens()).isEqualTo(200);
+        assertThat(snapshot.byModel()).extracting(ModelUsageStats::model).containsExactly("deepseek-v4-pro");
         assertThat(snapshot.byStatus()).extracting(StatusStats::status).containsExactlyInAnyOrder("COMPLETED", "FAILED");
         assertThat(snapshot.byTool()).extracting(ToolStats::toolName).containsExactlyInAnyOrder("read_file", "exec_shell");
         assertThat(snapshot.byTool())
@@ -90,7 +89,7 @@ class LocalObservabilityServiceTest {
 
         assertThat(snapshot.totals().turns()).isZero();
         assertThat(snapshot.totals().failedTurns()).isZero();
-        assertThat(snapshot.totals().estimatedCostUsd()).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(snapshot.totals().totalTokens()).isZero();
         assertThat(snapshot.byProvider()).isEmpty();
         assertThat(snapshot.byModel()).isEmpty();
         assertThat(snapshot.byTool()).isEmpty();
@@ -102,13 +101,13 @@ class LocalObservabilityServiceTest {
     void snapshot_should_include_old_turns_when_range_is_all() {
         Instant oldTime = Instant.now().minus(Duration.ofDays(60));
         seedTurn("turn_all_old", "thr_all_old", "E:\\All", "dashscope", "qwen-plus",
-                "COMPLETED", oldTime, 10, 5, "0.0001", 0,
+                "COMPLETED", oldTime, 10, 5, 0,
                 null, null, null, null);
 
         LocalObservabilitySnapshot snapshot = observabilityService.snapshot("all", "E:\\All");
 
         assertThat(snapshot.totals().turns()).isEqualTo(1);
-        assertThat(snapshot.byProvider()).extracting(ModelCostStats::providerId).containsExactly("dashscope");
+        assertThat(snapshot.byProvider()).extracting(ModelUsageStats::providerId).containsExactly("dashscope");
     }
 
     private void seedTurn(
@@ -121,7 +120,6 @@ class LocalObservabilityServiceTest {
             Instant startedAt,
             long promptTokens,
             long completionTokens,
-            String costUsd,
             int toolCount,
             String toolName,
             String toolStatus,
@@ -134,7 +132,7 @@ class LocalObservabilityServiceTest {
                 "DANGER_FULL_ACCESS", "ON_REQUEST", startedAt));
         turnPersistenceService.updateTurnStatus(turnId, status, status.equals("FAILED") ? "测试失败" : null);
         conversationRepository.saveTurnSummary(TurnSummaryRecord.of(
-                turnId, promptTokens, completionTokens, new BigDecimal(costUsd),
+                turnId, promptTokens, completionTokens, promptTokens + completionTokens,
                 1200, toolCount, startedAt.plusMillis(1200)));
         if (toolName != null) {
             toolCallPersistenceService.recordStarted("call_" + turnId, threadId, turnId,

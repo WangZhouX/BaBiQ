@@ -71,6 +71,21 @@ class SQLiteMigrationIT {
         }
     }
 
+    @Test
+    @DisplayName("turnSummary 表只保存 token、耗时和工具统计，不再保存价格字段")
+    void turn_summary_schema_should_store_tokens_without_cost_column() throws Exception {
+        try (Connection connection = dataSource.getConnection();
+             Statement statement = connection.createStatement()) {
+            Set<String> columns = columns(statement, "bq_turn_summaries");
+
+            assertThat(columns).contains("prompt_tokens", "completion_tokens", "total_tokens");
+            assertThat(columns).doesNotContain("cost_usd");
+            assertThat(commentFor(statement, "bq_turn_summaries", "total_tokens"))
+                    .contains("总 token");
+            assertThat(commentExists(statement, "bq_turn_summaries", "cost_usd")).isFalse();
+        }
+    }
+
     private static Set<String> tableNames(Statement statement) throws Exception {
         try (ResultSet rs = statement.executeQuery(
                 "SELECT name FROM sqlite_master WHERE type='table'")) {
@@ -91,5 +106,38 @@ class SQLiteMigrationIT {
             values.add(rs.getString(1));
         }
         return values;
+    }
+
+    private static Set<String> columns(Statement statement, String tableName) throws Exception {
+        try (ResultSet rs = statement.executeQuery("PRAGMA table_info(" + tableName + ")")) {
+            java.util.LinkedHashSet<String> values = new java.util.LinkedHashSet<>();
+            while (rs.next()) {
+                values.add(rs.getString("name"));
+            }
+            return values;
+        }
+    }
+
+    private static String commentFor(Statement statement, String tableName, String columnName) throws Exception {
+        String sql = """
+                SELECT comment
+                FROM bq_schema_comments
+                WHERE table_name = '%s' AND column_name = '%s'
+                """.formatted(tableName, columnName);
+        try (ResultSet rs = statement.executeQuery(sql)) {
+            assertThat(rs.next()).isTrue();
+            return rs.getString(1);
+        }
+    }
+
+    private static boolean commentExists(Statement statement, String tableName, String columnName) throws Exception {
+        String sql = """
+                SELECT 1
+                FROM bq_schema_comments
+                WHERE table_name = '%s' AND column_name = '%s'
+                """.formatted(tableName, columnName);
+        try (ResultSet rs = statement.executeQuery(sql)) {
+            return rs.next();
+        }
     }
 }

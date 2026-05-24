@@ -241,7 +241,7 @@ class AgentClientTest {
 	}
 
 	@Test
-	fun `本地可观测接口可以读取统计快照 工具和成本`() = runTest {
+	fun `本地可观测接口可以读取统计快照 工具和模型用量`() = runTest {
 		val transport = FakeAgentTransport()
 		val client = AgentClient(transport, backgroundScope)
 		client.connect()
@@ -597,7 +597,7 @@ class AgentClientTest {
 				put("failedTurns", 1)
 				put("promptTokens", 120)
 				put("completionTokens", 80)
-				put("estimatedCostUsd", 0.0021)
+				put("totalTokens", 200)
 			},
 		)
 		put(
@@ -635,7 +635,7 @@ class AgentClientTest {
 		put("failedTurns", 1)
 		put("promptTokens", 120)
 		put("completionTokens", 80)
-		put("estimatedCostUsd", 0.0021)
+		put("totalTokens", 200)
 	}
 
 	private fun modelStats() = buildJsonObject {
@@ -645,7 +645,7 @@ class AgentClientTest {
 		put("failedTurns", 1)
 		put("promptTokens", 120)
 		put("completionTokens", 80)
-		put("estimatedCostUsd", 0.0021)
+		put("totalTokens", 200)
 	}
 
 	private fun toolStats() = buildJsonObject {
