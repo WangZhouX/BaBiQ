@@ -14,9 +14,15 @@ import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
 import reactor.core.publisher.Flux;
 
+import com.sun.net.httpserver.HttpServer;
+
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -186,6 +192,59 @@ class DeepSeekV4OpenAiChatModelTest {
         assertThat(assistantWireMessage.reasoningContent()).isEqualTo("我需要写入文件");
         assertThat(assistantWireMessage.content()).isEqualTo("");
         assertThat(assistantWireMessage.toolCalls()).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("真实 HTTP 请求体必须序列化 reasoning_content，避免对象层通过但 wire payload 丢字段")
+    void stream_should_serialize_reasoning_content_to_http_request_body() throws Exception {
+        AtomicReference<String> capturedBody = new AtomicReference<>("");
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/chat/completions", exchange -> {
+            capturedBody.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            byte[] response = """
+                    data: {"id":"chatcmpl-local","object":"chat.completion.chunk","created":1,"model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"role":"assistant","content":"完成"},"finish_reason":null}]}
+
+                    data: {"id":"chatcmpl-local","object":"chat.completion.chunk","created":1,"model":"deepseek-v4-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+                    data: [DONE]
+
+                    """.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "text/event-stream; charset=utf-8");
+            exchange.sendResponseHeaders(200, response.length);
+            exchange.getResponseBody().write(response);
+            exchange.close();
+        });
+        server.start();
+        try {
+            OpenAiApi openAiApi = OpenAiApi.builder()
+                    .baseUrl("http://127.0.0.1:" + server.getAddress().getPort())
+                    .apiKey("sk-test")
+                    .build();
+            DeepSeekV4OpenAiChatModel chatModel = new DeepSeekV4OpenAiChatModel(openAiApi, OpenAiChatOptions.builder()
+                    .model("deepseek-v4-pro")
+                    .toolChoice("auto")
+                    .streamUsage(true)
+                    .build());
+            Prompt prompt = new Prompt(List.of(
+                    new UserMessage("创建 hello.html"),
+                    assistantToolCall("我需要写入文件"),
+                    ToolResponseMessage.builder()
+                            .responses(List.of(new ToolResponseMessage.ToolResponse(
+                                    "call_write_file",
+                                    "write_file",
+                                    "ok")))
+                            .build()
+            ), chatModel.getDefaultOptions());
+
+            chatModel.stream(prompt).collectList().block(Duration.ofSeconds(5));
+
+            assertThat(capturedBody.get()).contains("\"reasoning_content\":\"我需要写入文件\"");
+            assertThat(capturedBody.get()).contains("\"thinking\":{\"type\":\"enabled\"}");
+            assertThat(capturedBody.get()).doesNotContain("\"tool_choice\"");
+        }
+        finally {
+            server.stop(0);
+        }
     }
 
     @Test

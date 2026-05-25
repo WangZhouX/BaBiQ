@@ -2,6 +2,8 @@ package com.wzx.babiq.server.model.provider;
 
 import com.wzx.babiq.server.model.ModelProviderConfig;
 import com.wzx.babiq.server.model.ProviderType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.openai.DeepSeekV4OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatModel;
@@ -22,6 +24,8 @@ import java.util.Map;
  */
 @Component
 public class OpenAiCompatibleProviderFactory implements ProviderFactory {
+    /** Provider 构建日志，排查线上是否真的命中 DeepSeek V4 专用适配器时使用。 */
+    private static final Logger log = LoggerFactory.getLogger(OpenAiCompatibleProviderFactory.class);
 
     /**
      * 返回 OpenAI 兼容工厂支持的 Provider 类型。
@@ -63,6 +67,11 @@ public class OpenAiCompatibleProviderFactory implements ProviderFactory {
         OpenAiChatOptions chatOptions = chatOptionsBuilder.build();
 
         if (deepSeekV4Official) {
+            // 2026-05-25 诊断记录：
+            // 用户环境多次重启后仍返回 DeepSeek 官方 400。这里仅打印脱敏后的路由信息，
+            // 不输出 api-key，方便确认真实进程是否加载并使用了 DeepSeek V4 专用适配器。
+            log.info("OpenAI-compatible provider [{}] 使用 DeepSeek V4 官方适配器: baseUrl={}, model={}, chatModel={}",
+                    config.id(), normalize(config.baseUrl()), config.model(), DeepSeekV4OpenAiChatModel.class.getName());
             return new DeepSeekV4OpenAiChatModel(openAiApi, chatOptions);
         }
 

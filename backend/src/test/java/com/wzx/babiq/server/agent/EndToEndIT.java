@@ -17,6 +17,8 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.openai.DeepSeekV4OpenAiChatModel;
+import org.springframework.ai.openai.OpenAiChatOptions;
+import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import reactor.core.publisher.Flux;
@@ -44,7 +46,8 @@ import static org.mockito.ArgumentMatchers.any;
         "babiq.providers[0].model=mock-react",
         "babiq.providers[0].api-key=sk-test",
         "babiq.agent.sandbox-mode=WORKSPACE_WRITE",
-        "babiq.agent.approval-policy=NEVER"
+        "babiq.agent.approval-policy=NEVER",
+        "babiq.persistence.database-path=target/test-db/end-to-end-it-${random.uuid}.db"
 })
 class EndToEndIT {
 
@@ -111,6 +114,70 @@ class EndToEndIT {
         assertThat(turn.status()).isEqualTo(TurnStatus.COMPLETED);
     }
 
+    @Test
+    void deepseek_v4_hitl_resume_should_send_reasoning_content_in_second_request() throws Exception {
+        OpenAiApi openAiApi = Mockito.mock(OpenAiApi.class);
+        List<OpenAiApi.ChatCompletionRequest> capturedRequests = new ArrayList<>();
+        Mockito.when(openAiApi.chatCompletionStream(any(OpenAiApi.ChatCompletionRequest.class), any()))
+                .thenAnswer(invocation -> {
+                    capturedRequests.add(invocation.getArgument(0));
+                    return Flux.just(
+                            chunk(null, message(null, OpenAiApi.ChatCompletionMessage.Role.ASSISTANT,
+                                    null, "我需要创建文件，所以先调用 write_file。")),
+                            chunk(OpenAiApi.ChatCompletionFinishReason.TOOL_CALLS, message("",
+                                    null,
+                                    List.of(new OpenAiApi.ChatCompletionMessage.ToolCall(
+                                            "call_write_file",
+                                            "function",
+                                            new OpenAiApi.ChatCompletionMessage.ChatCompletionFunction(
+                                                    "write_file",
+                                                    "{\"path\":\"target/deepseek-hitl-e2e/hello.txt\",\"content\":\"你好\"}"))),
+                                    null))
+                    );
+                })
+                .thenAnswer(invocation -> {
+                    capturedRequests.add(invocation.getArgument(0));
+                    return Flux.just(chunk(OpenAiApi.ChatCompletionFinishReason.STOP,
+                            message("文件已经创建。", OpenAiApi.ChatCompletionMessage.Role.ASSISTANT,
+                                    null, null)));
+                });
+        DeepSeekV4OpenAiChatModel model = new DeepSeekV4OpenAiChatModel(openAiApi,
+                OpenAiChatOptions.builder()
+                        .model("deepseek-v4-pro")
+                        .streamUsage(true)
+                        .build());
+        Mockito.when(chatClientFactory.resolveChatModel("e2e-provider")).thenReturn(model);
+        Mockito.when(chatClientFactory.resolveModelName("e2e-provider")).thenReturn("deepseek-v4-pro");
+        List<ThreadItem> emittedItems = new ArrayList<>();
+        ItemEmitter emitter = capturingEmitter(emittedItems);
+        Turn turn = new Turn("turn_deepseek_hitl", "thr_deepseek_hitl");
+        turn.start();
+
+        agentLoop.invoke(turn, "在当前工作目录创建 html 内容是你好", "e2e-provider", ".", emitter);
+
+        assertThat(turn.status()).isEqualTo(TurnStatus.WAITING_APPROVAL);
+        InterruptionMetadata pending = pendingApprovals.take("thr_deepseek_hitl");
+        assertThat(pending).isNotNull();
+
+        agentLoop.invokeResume(turn, approvedFeedback(pending), ".", emitter);
+
+        assertThat(turn.status()).isEqualTo(TurnStatus.COMPLETED);
+        assertThat(capturedRequests).hasSize(2);
+        OpenAiApi.ChatCompletionRequest resumeRequest = capturedRequests.get(1);
+        OpenAiApi.ChatCompletionMessage assistantToolCall = resumeRequest.messages().stream()
+                .filter(message -> message.role() == OpenAiApi.ChatCompletionMessage.Role.ASSISTANT)
+                .filter(message -> message.toolCalls() != null && !message.toolCalls().isEmpty())
+                .findFirst()
+                .orElseThrow();
+        assertThat(assistantToolCall.reasoningContent())
+                .as("DeepSeek V4 thinking mode 在审批恢复后的第二次请求必须回放 assistant.tool_calls 的 reasoning_content")
+                .isEqualTo("我需要创建文件，所以先调用 write_file。");
+        assertThat(resumeRequest.messages()).anySatisfy(message -> {
+            assertThat(message.role()).isEqualTo(OpenAiApi.ChatCompletionMessage.Role.TOOL);
+            assertThat(message.toolCallId()).isEqualTo("call_write_file");
+        });
+    }
+
     private ItemEmitter capturingEmitter(List<ThreadItem> emittedItems) throws Exception {
         ItemEmitter emitter = Mockito.mock(ItemEmitter.class);
         Mockito.doAnswer(invocation -> {
@@ -139,6 +206,33 @@ class EndToEndIT {
                     .build());
         }
         return builder.build();
+    }
+
+    /**
+     * 构造 DeepSeek V4 流式响应分片，避免测试访问真实网络。
+     */
+    private static OpenAiApi.ChatCompletionChunk chunk(OpenAiApi.ChatCompletionFinishReason finishReason,
+                                                       OpenAiApi.ChatCompletionMessage delta) {
+        return new OpenAiApi.ChatCompletionChunk(
+                "chatcmpl-test",
+                List.of(new OpenAiApi.ChatCompletionChunk.ChunkChoice(finishReason, 0, delta, null)),
+                1L,
+                "deepseek-v4-pro",
+                null,
+                null,
+                "chat.completion.chunk",
+                null);
+    }
+
+    /**
+     * 构造 OpenAI-compatible wire message，重点允许测试直接设置 reasoning_content。
+     */
+    private static OpenAiApi.ChatCompletionMessage message(Object content,
+                                                           OpenAiApi.ChatCompletionMessage.Role role,
+                                                           List<OpenAiApi.ChatCompletionMessage.ToolCall> toolCalls,
+                                                           String reasoningContent) {
+        return new OpenAiApi.ChatCompletionMessage(content, role, null, null, toolCalls, null, null, null,
+                reasoningContent);
     }
 
     /**

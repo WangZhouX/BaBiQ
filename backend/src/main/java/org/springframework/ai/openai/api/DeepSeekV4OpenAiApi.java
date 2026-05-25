@@ -1,8 +1,11 @@
 package org.springframework.ai.openai.api;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.model.NoopApiKey;
 import org.springframework.ai.retry.RetryUtils;
 import org.springframework.http.ResponseEntity;
+import org.springframework.util.CollectionUtils;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.util.StringUtils;
@@ -31,6 +34,18 @@ import java.util.Map;
  * reasoning_content。</p>
  */
 public final class DeepSeekV4OpenAiApi extends OpenAiApi {
+
+    /** DeepSeek V4 出站请求形态日志，只记录计数和开关，不记录用户内容、工具参数或密钥。 */
+    private static final Logger log = LoggerFactory.getLogger(DeepSeekV4OpenAiApi.class);
+
+    /** DeepSeek 官方 thinking 开关字段名称。 */
+    private static final String THINKING_EXTRA_BODY_KEY = "thinking";
+
+    /** DeepSeek 官方 thinking.type 字段名称。 */
+    private static final String THINKING_TYPE_KEY = "type";
+
+    /** DeepSeek thinking 关闭值。 */
+    private static final String THINKING_DISABLED = "disabled";
 
     /** 被包装的真实 OpenAI-compatible API 客户端，负责实际 HTTP 请求。 */
     private final OpenAiApi delegate;
@@ -100,9 +115,61 @@ public final class DeepSeekV4OpenAiApi extends OpenAiApi {
     @Override
     public Flux<ChatCompletionChunk> chatCompletionStream(ChatCompletionRequest chatRequest,
                                                           MultiValueMap<String, String> additionalHttpHeader) {
+        logRequestShape(chatRequest);
         DeepSeekReasoningChunkAccumulator accumulator = new DeepSeekReasoningChunkAccumulator();
         return delegate.chatCompletionStream(chatRequest, additionalHttpHeader)
                 .map(accumulator::preserve);
+    }
+
+    /**
+     * 记录 DeepSeek V4 出站请求形态。
+     *
+     * <p>这里故意只输出模型、消息数量、thinking 开关和 assistant tool_call/reasoning 计数。
+     * 如果用户现场再次报 400，这组日志能直接区分“进程没有命中适配器”和
+     * “命中了适配器但历史 assistant 缺 reasoning”两类问题，同时避免泄漏 prompt、工具参数或 api-key。</p>
+     *
+     * @param chatRequest 即将交给底层 OpenAI-compatible 客户端发送的请求体
+     */
+    private static void logRequestShape(ChatCompletionRequest chatRequest) {
+        if (chatRequest == null || !log.isInfoEnabled()) {
+            return;
+        }
+        List<ChatCompletionMessage> messages = chatRequest.messages() == null ? List.of() : chatRequest.messages();
+        long assistantToolCallMessages = messages.stream()
+                .filter(message -> message.role() == ChatCompletionMessage.Role.ASSISTANT)
+                .filter(message -> !CollectionUtils.isEmpty(message.toolCalls()))
+                .count();
+        long missingReasoningMessages = messages.stream()
+                .filter(message -> message.role() == ChatCompletionMessage.Role.ASSISTANT)
+                .filter(message -> !CollectionUtils.isEmpty(message.toolCalls()))
+                .filter(message -> !StringUtils.hasText(message.reasoningContent()))
+                .count();
+        boolean thinkingEnabled = isThinkingEnabled(chatRequest.extraBody());
+        log.info("DeepSeek V4 出站请求: model={}, messages={}, thinkingEnabled={}, assistantToolCallMessages={}, missingReasoningMessages={}, toolChoicePresent={}",
+                chatRequest.model(), messages.size(), thinkingEnabled, assistantToolCallMessages,
+                missingReasoningMessages, chatRequest.toolChoice() != null);
+        if (missingReasoningMessages > 0) {
+            log.warn("DeepSeek V4 出站请求存在缺少 reasoning_content 的 assistant tool_call 历史: model={}, missingReasoningMessages={}",
+                    chatRequest.model(), missingReasoningMessages);
+        }
+    }
+
+    /**
+     * 判断请求是否处于 DeepSeek thinking mode。
+     *
+     * @param extraBody OpenAI-compatible 请求的额外 body 字段
+     * @return 未显式设置 thinking.type=disabled 时都按启用处理
+     */
+    private static boolean isThinkingEnabled(Map<String, Object> extraBody) {
+        if (extraBody == null) {
+            return true;
+        }
+        Object thinking = extraBody.get(THINKING_EXTRA_BODY_KEY);
+        if (thinking instanceof Map<?, ?> thinkingMap) {
+            Object type = thinkingMap.get(THINKING_TYPE_KEY);
+            return !(type instanceof String typeText && THINKING_DISABLED.equalsIgnoreCase(typeText.trim()));
+        }
+        return true;
     }
 
     /**
