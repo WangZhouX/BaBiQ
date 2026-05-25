@@ -44,6 +44,16 @@ class SandboxModeRegressionTest {
     }
 
     @Test
+    void workspace_write_resolves_relative_write_path_against_cwd(@TempDir Path workspace) {
+        BaBiQSandboxInterceptor interceptor = newInterceptor(SandboxMode.WORKSPACE_WRITE);
+        Map<String, Object> context = context(workspace);
+
+        String rejection = interceptor.checkOrReject("write_file", "{\"path\":\"index.html\"}", context);
+
+        assertThat(rejection).isNull();
+    }
+
+    @Test
     void workspace_write_rejects_write_outside_cwd(@TempDir Path workspace) throws Exception {
         BaBiQSandboxInterceptor interceptor = newInterceptor(SandboxMode.WORKSPACE_WRITE);
         Path outside = Files.createTempDirectory("babiq-outside-");

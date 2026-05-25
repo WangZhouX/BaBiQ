@@ -23,6 +23,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import reactor.core.publisher.Flux;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -111,6 +113,34 @@ class EndToEndIT {
         assertThat(model.sawReasoningBeforeResumeModelCall())
                 .as("DeepSeek V4 thinking mode 的 tool_call assistant 在 HITL 恢复后必须保留 reasoningContent metadata")
                 .isTrue();
+        assertThat(turn.status()).isEqualTo(TurnStatus.COMPLETED);
+    }
+
+    @Test
+    void hitl_approval_should_execute_write_file_under_thread_cwd(@org.junit.jupiter.api.io.TempDir Path workspace) throws Exception {
+        HitlWriteFileChatModel model = new HitlWriteFileChatModel();
+        Mockito.when(chatClientFactory.resolveChatModel("e2e-provider")).thenReturn(model);
+        Mockito.when(chatClientFactory.resolveChatModel(null)).thenReturn(model);
+        Mockito.when(chatClientFactory.resolveModelName(null)).thenReturn("mock-react");
+        List<ThreadItem> emittedItems = new ArrayList<>();
+        ItemEmitter emitter = capturingEmitter(emittedItems);
+        Turn turn = new Turn("turn_hitl_write_cwd", "thr_hitl_write_cwd");
+        turn.start();
+
+        agentLoop.invoke(turn, "create index.html in the current directory", "e2e-provider", workspace.toString(), emitter);
+
+        assertThat(turn.status()).isEqualTo(TurnStatus.WAITING_APPROVAL);
+        InterruptionMetadata pending = pendingApprovals.take("thr_hitl_write_cwd");
+        assertThat(pending).isNotNull();
+
+        agentLoop.invokeResume(turn, approvedFeedback(pending), workspace.toString(), emitter);
+
+        Path writtenFile = workspace.resolve("index.html");
+        assertThat(writtenFile)
+                .as("approval resume must execute write_file against the thread cwd, not just produce a tool response")
+                .exists();
+        assertThat(Files.readString(writtenFile)).isEqualTo("hello-from-hitl");
+        assertThat(model.sawWriteToolResponseBeforeFinalModelCall()).isTrue();
         assertThat(turn.status()).isEqualTo(TurnStatus.COMPLETED);
     }
 
@@ -388,6 +418,56 @@ class EndToEndIT {
                 }
             }
             return names.toString();
+        }
+    }
+
+    /**
+     * 鎶婂鎵规仮澶嶅悗鐨勫啓鏂囦欢琛屼负閿佸畾鍒扮湡瀹炴枃浠剁郴缁熶笂銆?
+     */
+    private static final class HitlWriteFileChatModel implements ChatModel {
+
+        private final AtomicInteger callCounter = new AtomicInteger();
+
+        private boolean sawWriteToolResponseBeforeFinalModelCall;
+
+        @Override
+        public ChatResponse call(Prompt prompt) {
+            int currentCall = callCounter.incrementAndGet();
+            if (currentCall == 1) {
+                AssistantMessage toolCallMessage = AssistantMessage.builder()
+                        .content("I need to create a file.")
+                        .properties(Map.of(DeepSeekV4OpenAiChatModel.REASONING_METADATA_KEY, "Need to write the requested file."))
+                        .toolCalls(List.of(new AssistantMessage.ToolCall(
+                                "call_write_index", "function", "write_file",
+                                "{\"path\":\"index.html\",\"content\":\"hello-from-hitl\"}")))
+                        .build();
+                return new ChatResponse(List.of(new Generation(toolCallMessage)));
+            }
+            sawWriteToolResponseBeforeFinalModelCall = hasToolResponse(prompt.getInstructions(),
+                    "call_write_index", "write_file");
+            return new ChatResponse(List.of(new Generation(new AssistantMessage("file created"))));
+        }
+
+        @Override
+        public Flux<ChatResponse> stream(Prompt prompt) {
+            return Flux.just(call(prompt));
+        }
+
+        boolean sawWriteToolResponseBeforeFinalModelCall() {
+            return sawWriteToolResponseBeforeFinalModelCall;
+        }
+
+        private boolean hasToolResponse(List<Message> messages, String toolCallId, String toolName) {
+            for (Message message : messages) {
+                if (message instanceof ToolResponseMessage toolResponseMessage) {
+                    for (ToolResponseMessage.ToolResponse response : toolResponseMessage.getResponses()) {
+                        if (toolCallId.equals(response.id()) && toolName.equals(response.name())) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            return false;
         }
     }
 }

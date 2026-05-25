@@ -1,11 +1,13 @@
 package com.wzx.babiq.server.tool.impl;
 
 import com.wzx.babiq.server.tool.ToolResult;
+import org.springframework.ai.chat.model.ToolContext;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -36,6 +38,14 @@ class ApplyPatchToolTest {
     }
 
     @Test
+    void apply_patch_resolves_relative_path_against_tool_context_cwd() throws Exception {
+        ToolResult result = tool.applyPatch("index.html", "patched", toolContext(tempDir));
+
+        assertThat(result.ok()).isTrue();
+        assertThat(Files.readString(tempDir.resolve("index.html"))).isEqualTo("patched");
+    }
+
+    @Test
     void apply_patch_creates_parent_directories() throws Exception {
         Path file = tempDir.resolve("nested/target.txt");
 
@@ -51,5 +61,9 @@ class ApplyPatchToolTest {
 
         assertThat(result.ok()).isFalse();
         assertThat(result.error()).contains("blank");
+    }
+
+    private ToolContext toolContext(Path cwd) {
+        return new ToolContext(Map.of("babiq.cwd", cwd.toString()));
     }
 }

@@ -56,7 +56,7 @@ class AgentLoopTest {
         when(strategy.resolveModelName("provider-a")).thenReturn("mock-react");
         when(strategy.buildAgent(eq("provider-a"), eq("."), eq(emitter), any(TurnObservationContext.class)))
                 .thenReturn(agent);
-        when(strategy.buildConfig(eq("thr_1"), any(TurnObservationContext.class)))
+        when(strategy.buildConfig(eq("thr_1"), eq("."), eq(emitter), any(TurnObservationContext.class)))
                 .thenReturn(RunnableConfig.builder().threadId("thr_1").build());
         when(agent.stream(any(String.class), any())).thenReturn(Flux.just(output));
         when(strategy.extractAssistantMessage(output)).thenReturn(new AssistantMessage("done"));
@@ -81,7 +81,7 @@ class AgentLoopTest {
         when(strategy.resolveModelName(null)).thenReturn("mock-react");
         when(strategy.buildAgent(eq(null), eq("."), eq(emitter), any(TurnObservationContext.class)))
                 .thenReturn(agent);
-        when(strategy.buildConfig(eq("thr_1"), any(TurnObservationContext.class)))
+        when(strategy.buildConfig(eq("thr_1"), eq("."), eq(emitter), any(TurnObservationContext.class)))
                 .thenReturn(RunnableConfig.builder().threadId("thr_1").build());
         when(agent.stream(any(String.class), any())).thenThrow(new GraphRunnerException("model down"));
 
@@ -125,7 +125,7 @@ class AgentLoopTest {
         when(strategy.resolveModelName("provider-a")).thenReturn("mock-react");
         when(strategy.buildAgent(eq("provider-a"), eq("."), eq(emitter), any(TurnObservationContext.class)))
                 .thenReturn(agent);
-        when(strategy.buildConfig(eq("thr_1"), any(TurnObservationContext.class))).thenReturn(config);
+        when(strategy.buildConfig(eq("thr_1"), eq("."), eq(emitter), any(TurnObservationContext.class))).thenReturn(config);
         when(agent.invokeAndGetOutput(any(String.class), any()))
                 .thenThrow(new GraphRunnerException("不应再走非流式 Agent 调用"));
         when(agent.stream(eq("hello"), eq(config))).thenReturn(Flux.just(output));
@@ -156,7 +156,7 @@ class AgentLoopTest {
         when(strategy.resolveModelName("provider-a")).thenReturn("mock-react");
         when(strategy.buildAgent(eq("provider-a"), eq("."), eq(emitter), any(TurnObservationContext.class)))
                 .thenReturn(agent);
-        when(strategy.buildConfig(eq("thr_1"), any(TurnObservationContext.class))).thenReturn(config);
+        when(strategy.buildConfig(eq("thr_1"), eq("."), eq(emitter), any(TurnObservationContext.class))).thenReturn(config);
         when(agent.stream(eq("hello"), eq(config))).thenReturn(Flux.just(
                 streamingChunk("你"),
                 streamingChunk("好"),

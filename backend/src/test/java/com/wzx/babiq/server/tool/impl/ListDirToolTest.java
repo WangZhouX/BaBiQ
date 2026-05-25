@@ -1,11 +1,13 @@
 package com.wzx.babiq.server.tool.impl;
 
 import com.wzx.babiq.server.tool.ToolResult;
+import org.springframework.ai.chat.model.ToolContext;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -36,6 +38,16 @@ class ListDirToolTest {
     }
 
     @Test
+    void list_dir_resolves_relative_path_against_tool_context_cwd() throws Exception {
+        Files.writeString(tempDir.resolve("inside.txt"), "inside");
+
+        ToolResult result = tool.listDir(".", toolContext(tempDir));
+
+        assertThat(result.ok()).isTrue();
+        assertThat(result.output()).contains("[F] inside.txt");
+    }
+
+    @Test
     void list_dir_rejects_missing_directory() {
         ToolResult result = tool.listDir(tempDir.resolve("missing").toString());
 
@@ -52,5 +64,9 @@ class ListDirToolTest {
 
         assertThat(result.ok()).isFalse();
         assertThat(result.error()).contains("Not a directory");
+    }
+
+    private ToolContext toolContext(Path cwd) {
+        return new ToolContext(Map.of("babiq.cwd", cwd.toString()));
     }
 }

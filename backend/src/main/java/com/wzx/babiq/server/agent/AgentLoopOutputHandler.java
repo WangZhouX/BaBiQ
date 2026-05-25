@@ -87,7 +87,7 @@ final class AgentLoopOutputHandler {
     private void invokeResumeWithAgent(Turn turn, InterruptionMetadata feedback, String cwd,
                                        ItemEmitter emitter, TurnObservationContext context, ReactAgent agent) {
         try {
-            AgentStreamConsumer.StreamResult result = AgentLoopResumeSupport.resumeFromApproval(turn, feedback, emitter, context, agent, strategy);
+            AgentStreamConsumer.StreamResult result = AgentLoopResumeSupport.resumeFromApproval(turn, feedback, cwd, emitter, context, agent, strategy);
             handleOutput(turn, emitter, result, context, cwd, agent);
         } catch (Exception exception) {
             AgentLoopSupport.fail(log, turn, emitter, exception, summaryEmitter, context, observationRegistry);

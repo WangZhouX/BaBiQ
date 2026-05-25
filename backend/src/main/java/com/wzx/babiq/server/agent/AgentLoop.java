@@ -40,7 +40,7 @@ public class AgentLoop {
             ReactAgent agent = strategy.buildAgent(providerId, cwd, emitter, context);
             AgentLoopDiagnostics.modelCallStarted(turn, context);
             AgentStreamConsumer.StreamResult result = AgentStreamConsumer.consume(
-                    agent.stream(userText, strategy.buildConfig(turn.threadId(), context)), emitter);
+                    agent.stream(userText, strategy.buildConfig(turn.threadId(), cwd, emitter, context)), emitter);
             AgentLoopDiagnostics.modelCallReturned(turn, result.output(), startedNanos);
             outputHandler.handleOutput(turn, emitter, result, context, cwd, agent);
         } catch (Exception exception) {

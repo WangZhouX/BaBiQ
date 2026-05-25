@@ -179,11 +179,25 @@ public class ReActStrategy {
      * @param threadId 业务线程 id
      * @return SAA RunnableConfig
      */
-    public RunnableConfig buildConfig(String threadId, TurnObservationContext context) {
-        return RunnableConfig.builder()
+    public RunnableConfig buildConfig(String threadId, String cwd, ItemEmitter emitter, TurnObservationContext context) {
+        RunnableConfig.Builder builder = RunnableConfig.builder()
                 .threadId(threadId)
                 .addMetadata(TurnObservationContext.METADATA_KEY, context)
-                .build();
+                .addMetadata(BaBiQSandboxInterceptor.CONTEXT_WRITABLE_ROOTS, stringify(properties.writableRoots()));
+        if (cwd != null && !cwd.isBlank()) {
+            builder.addMetadata(BaBiQSandboxInterceptor.CONTEXT_CWD, cwd);
+        }
+        if (emitter != null) {
+            builder.addMetadata(BaBiQSandboxInterceptor.CONTEXT_ITEM_EMITTER, emitter);
+        }
+        return builder.build();
+    }
+
+    /**
+     * 兼容旧测试入口；真实 AgentLoop 必须调用带 cwd / emitter 的重载。
+     */
+    public RunnableConfig buildConfig(String threadId, TurnObservationContext context) {
+        return buildConfig(threadId, null, null, context);
     }
 
     /**
@@ -199,15 +213,33 @@ public class ReActStrategy {
      */
     public RunnableConfig buildResumeConfig(String threadId,
                                             InterruptionMetadata metadata,
+                                            String cwd,
+                                            ItemEmitter emitter,
                                             TurnObservationContext context) {
-        return RunnableConfig.builder()
+        RunnableConfig.Builder builder = RunnableConfig.builder()
                 .threadId(threadId)
                 .addMetadata(TurnObservationContext.METADATA_KEY, context)
+                .addMetadata(BaBiQSandboxInterceptor.CONTEXT_WRITABLE_ROOTS, stringify(properties.writableRoots()))
                 // 2026-05-25 Bug 修复记录：ReactAgent 恢复只需要真实审批反馈。
                 // 官方示例使用 addHumanFeedback(metadata)；额外 resume() 的占位标记没有业务信息，
                 // 对 BaBiQ 这种 HITL 恢复反而增加“占位值覆盖真实 InterruptionMetadata”的风险。
-                .addHumanFeedback(metadata)
-                .build();
+                .addHumanFeedback(metadata);
+        if (cwd != null && !cwd.isBlank()) {
+            builder.addMetadata(BaBiQSandboxInterceptor.CONTEXT_CWD, cwd);
+        }
+        if (emitter != null) {
+            builder.addMetadata(BaBiQSandboxInterceptor.CONTEXT_ITEM_EMITTER, emitter);
+        }
+        return builder.build();
+    }
+
+    /**
+     * 兼容旧测试入口；真实 approval/respond 恢复必须调用带 cwd / emitter 的重载。
+     */
+    public RunnableConfig buildResumeConfig(String threadId,
+                                            InterruptionMetadata metadata,
+                                            TurnObservationContext context) {
+        return buildResumeConfig(threadId, metadata, null, null, context);
     }
 
     /**
@@ -285,6 +317,9 @@ public class ReActStrategy {
      * 把配置里的 Path 列表转换为字符串列表，便于放入 SAA toolContext。
      */
     private List<String> stringify(List<Path> roots) {
+        if (roots == null || roots.isEmpty()) {
+            return List.of();
+        }
         List<String> paths = new ArrayList<>();
         for (Path root : roots) {
             paths.add(root.toString());

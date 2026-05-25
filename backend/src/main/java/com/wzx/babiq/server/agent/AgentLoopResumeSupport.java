@@ -38,12 +38,13 @@ final class AgentLoopResumeSupport {
      */
     static AgentStreamConsumer.StreamResult resumeFromApproval(Turn turn,
                                                                InterruptionMetadata feedback,
+                                                               String cwd,
                                                                ItemEmitter emitter,
                                                                TurnObservationContext context,
                                                                ReactAgent agent,
                                                                ReActStrategy strategy) throws Exception {
         return AgentStreamConsumer.consume(
-                agent.stream(Map.of("jump_to", JumpTo.tool), strategy.buildResumeConfig(turn.threadId(), feedback, context)),
+                agent.stream(Map.of("jump_to", JumpTo.tool), strategy.buildResumeConfig(turn.threadId(), feedback, cwd, emitter, context)),
                 emitter);
     }
 }

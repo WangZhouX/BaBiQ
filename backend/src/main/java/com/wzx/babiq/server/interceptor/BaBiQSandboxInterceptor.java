@@ -127,7 +127,7 @@ public final class BaBiQSandboxInterceptor extends ToolInterceptor {
         }
         try {
             // D31：PathGuard 内部用 toRealPath + Path.startsWith，不做裸字符串前缀比较。
-            new PathGuard(writableRoots(context)).checkWrite(path);
+            new PathGuard(writableRoots(context)).checkWrite(resolveAgainstCwd(path, context));
             return null;
         } catch (SandboxViolationException exception) {
             return "Sandbox violation: " + exception.getMessage();
@@ -140,6 +140,24 @@ public final class BaBiQSandboxInterceptor extends ToolInterceptor {
             return cwd == null ? null : cwd.toString();
         }
         return extractPathArgument(arguments);
+    }
+
+    /**
+     * 把模型传入的相对写路径按当前 turn 的 cwd 展开。
+     *
+     * <p>工具真正执行时也会读取 ToolContext 中的 cwd；沙箱必须使用同一套路径语义，
+     * 否则 `index.html` 会被 PathGuard 当成后端进程目录下的文件，从而误判为越界。</p>
+     */
+    private String resolveAgainstCwd(String rawPath, java.util.Map<String, Object> context) {
+        Path candidate = Path.of(rawPath);
+        if (candidate.isAbsolute()) {
+            return candidate.normalize().toString();
+        }
+        Object cwd = context == null ? null : context.get(CONTEXT_CWD);
+        if (cwd == null || cwd.toString().isBlank()) {
+            return rawPath;
+        }
+        return Path.of(cwd.toString()).resolve(candidate).normalize().toString();
     }
 
     @SuppressWarnings("unchecked")

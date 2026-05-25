@@ -33,13 +33,15 @@ class ReActStrategyTest {
         InterruptionMetadata feedback = approvedWriteFileFeedback();
         TurnObservationContext context = TurnObservationContext.start("thr_1", "turn_1", "provider-a", "qwen-plus", () -> 0L);
 
-        RunnableConfig config = strategy.buildResumeConfig("thr_1", feedback, context);
+        RunnableConfig config = strategy.buildResumeConfig("thr_1", feedback, "H:\\aaa", null, context);
 
         assertThat(config.threadId()).contains("thr_1");
         assertThat(config.metadata(RunnableConfig.HUMAN_FEEDBACK_METADATA_KEY).orElseThrow())
                 .isSameAs(feedback);
         assertThat(config.metadata(TurnObservationContext.METADATA_KEY).orElseThrow())
                 .isSameAs(context);
+        assertThat(config.metadata(BaBiQSandboxInterceptor.CONTEXT_CWD).orElseThrow())
+                .isEqualTo("H:\\aaa");
     }
 
     /**
