@@ -3,6 +3,7 @@ package com.wzx.babiq.server.agent;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.action.InterruptionMetadata;
+import com.wzx.babiq.server.approval.ApprovalPolicy;
 import com.wzx.babiq.server.approval.ApprovalRuleService;
 import com.wzx.babiq.server.hook.BaBiQTokenUsageHook;
 import com.wzx.babiq.server.hook.ResumeJumpCleanupHook;
@@ -13,6 +14,7 @@ import com.wzx.babiq.server.interceptor.ToolObservationInterceptor;
 import com.wzx.babiq.server.model.ChatClientFactory;
 import com.wzx.babiq.server.observability.TurnObservationContext;
 import com.wzx.babiq.server.persistence.service.TurnPersistenceService;
+import com.wzx.babiq.server.sandbox.SandboxMode;
 import com.wzx.babiq.server.tool.ToolRegistry;
 import org.junit.jupiter.api.Test;
 
@@ -32,8 +34,9 @@ class ReActStrategyTest {
         ReActStrategy strategy = newStrategy();
         InterruptionMetadata feedback = approvedWriteFileFeedback();
         TurnObservationContext context = TurnObservationContext.start("thr_1", "turn_1", "provider-a", "qwen-plus", () -> 0L);
+        AgentRunPolicy runPolicy = AgentRunPolicy.of(SandboxMode.READ_ONLY, ApprovalPolicy.ON_REQUEST);
 
-        RunnableConfig config = strategy.buildResumeConfig("thr_1", feedback, "H:\\aaa", null, context);
+        RunnableConfig config = strategy.buildResumeConfig("thr_1", feedback, "H:\\aaa", null, context, runPolicy);
 
         assertThat(config.threadId()).contains("thr_1");
         assertThat(config.metadata(RunnableConfig.HUMAN_FEEDBACK_METADATA_KEY).orElseThrow())
@@ -42,6 +45,21 @@ class ReActStrategyTest {
                 .isSameAs(context);
         assertThat(config.metadata(BaBiQSandboxInterceptor.CONTEXT_CWD).orElseThrow())
                 .isEqualTo("H:\\aaa");
+        assertThat(config.metadata(BaBiQSandboxInterceptor.CONTEXT_SANDBOX_MODE).orElseThrow())
+                .isEqualTo("READ_ONLY");
+    }
+
+    @Test
+    void build_config_should_carry_turn_runtime_sandbox_mode() {
+        ReActStrategy strategy = newStrategy();
+        TurnObservationContext context = TurnObservationContext.start("thr_1", "turn_1", "provider-a", "qwen-plus", () -> 0L);
+        AgentRunPolicy runPolicy = AgentRunPolicy.of(SandboxMode.DANGER_FULL_ACCESS, ApprovalPolicy.NEVER);
+
+        RunnableConfig config = strategy.buildConfig("thr_1", "H:\\aaa", null, context, runPolicy);
+
+        assertThat(config.metadata(BaBiQSandboxInterceptor.CONTEXT_SANDBOX_MODE).orElseThrow())
+                .as("工具节点只看 RunnableConfig/toolContext，必须能拿到本轮设置页切换后的沙箱模式")
+                .isEqualTo("DANGER_FULL_ACCESS");
     }
 
     /**

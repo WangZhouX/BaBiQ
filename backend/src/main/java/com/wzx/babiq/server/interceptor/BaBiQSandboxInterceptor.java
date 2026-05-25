@@ -41,6 +41,9 @@ public final class BaBiQSandboxInterceptor extends ToolInterceptor {
     /** ReActStrategy 放入 toolContext 的当前 ItemEmitter key。 */
     public static final String CONTEXT_ITEM_EMITTER = "babiq.itemEmitter";
 
+    /** ReActStrategy 放入 toolContext/RunnableConfig 的本轮沙箱模式 key。 */
+    public static final String CONTEXT_SANDBOX_MODE = "babiq.sandboxMode";
+
     private static final Logger log = LoggerFactory.getLogger(BaBiQSandboxInterceptor.class);
     /** 解析工具调用入参，提取 path/cwd 等需要做沙箱校验的字段。 */
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
@@ -115,10 +118,11 @@ public final class BaBiQSandboxInterceptor extends ToolInterceptor {
         if (!shouldEnforceSandbox(toolName)) {
             return null;
         }
-        if (properties.sandboxMode() == SandboxMode.READ_ONLY) {
+        SandboxMode mode = sandboxMode(context);
+        if (mode == SandboxMode.READ_ONLY) {
             return "Sandbox is read-only, " + toolName + " rejected";
         }
-        if (properties.sandboxMode() == SandboxMode.DANGER_FULL_ACCESS) {
+        if (mode == SandboxMode.DANGER_FULL_ACCESS) {
             return null;
         }
         String path = pathToCheck(toolName, arguments, context);
@@ -140,6 +144,27 @@ public final class BaBiQSandboxInterceptor extends ToolInterceptor {
             return cwd == null ? null : cwd.toString();
         }
         return extractPathArgument(arguments);
+    }
+
+    /**
+     * 读取本轮 turn 的沙箱模式。
+     *
+     * <p>P2 设置页允许用户切换下一轮权限，所以工具拦截器不能只看启动时的 yml。
+     * ReActStrategy 会把 turn/start 快照写入 toolContext；缺失时才回退到静态配置。</p>
+     */
+    private SandboxMode sandboxMode(java.util.Map<String, Object> context) {
+        Object configured = context == null ? null : context.get(CONTEXT_SANDBOX_MODE);
+        if (configured instanceof SandboxMode mode) {
+            return mode;
+        }
+        if (configured != null && !configured.toString().isBlank()) {
+            try {
+                return SandboxMode.valueOf(configured.toString());
+            } catch (IllegalArgumentException exception) {
+                log.warn("忽略无法识别的 turn 级沙箱模式: {}", configured);
+            }
+        }
+        return properties.sandboxMode();
     }
 
     /**

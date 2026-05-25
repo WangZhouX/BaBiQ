@@ -12,6 +12,7 @@ import com.wzx.babiq.server.conversation.ConversationEventRecorder;
 import com.wzx.babiq.server.conversation.ItemEmitter;
 import com.wzx.babiq.server.conversation.Thread;
 import com.wzx.babiq.server.conversation.Turn;
+import com.wzx.babiq.server.agent.AgentRunPolicy;
 import com.wzx.babiq.server.agent.AgentLoopProperties;
 import com.wzx.babiq.server.model.ModelProviderConfig;
 import com.wzx.babiq.server.model.ModelProviderRegistry;
@@ -129,14 +130,17 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
         turn.start();
         ModelProviderConfig provider = resolveProvider(providerId);
         AppSettings settings = appSettingsService == null ? null : appSettingsService.get();
+        String sandboxMode = settings == null ? defaultSandboxMode() : settings.sandboxMode();
+        String approvalPolicy = settings == null ? defaultApprovalPolicy() : settings.approvalPolicy();
+        AgentRunPolicy runPolicy = AgentRunPolicy.fromSnapshots(sandboxMode, approvalPolicy, agentLoopProperties);
         conversationService.persistTurnStarted(
                 turn,
                 userText,
                 provider == null ? providerId : provider.id(),
                 provider == null ? null : provider.model(),
                 thread.cwd(),
-                settings == null ? defaultSandboxMode() : settings.sandboxMode(),
-                settings == null ? defaultApprovalPolicy() : settings.approvalPolicy());
+                runPolicy.sandboxMode().name(),
+                runPolicy.approvalPolicy().name());
         log.info("turn/start 已创建 Turn: threadId={}, turnId={}, cwd={}, providerId={}",
                 threadId,
                 turn.id(),
@@ -149,7 +153,7 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
         } catch (Exception exception) {
             log.warn("发送 turn/started 失败 turnId={}", turn.id(), exception);
         }
-        turnExecutor.submit(turn, userText, providerId, thread.cwd(), emitter);
+        turnExecutor.submit(turn, userText, providerId, thread.cwd(), emitter, runPolicy);
         log.info("turn/start 已提交 AgentLoop: threadId={}, turnId={}, providerId={}",
                 threadId,
                 turn.id(),

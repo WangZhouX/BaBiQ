@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.wzx.babiq.server.api.JsonRpcMethodHandler;
 import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
 import com.wzx.babiq.server.api.error.JsonRpcException;
+import com.wzx.babiq.server.sandbox.SandboxMode;
 import com.wzx.babiq.server.settings.SandboxSettingsService;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.WebSocketSession;
@@ -31,7 +32,8 @@ public class SandboxPolicySetHandler implements JsonRpcMethodHandler {
     @Override
     public Object handle(JsonNode params, WebSocketSession session) {
         try {
-            return SettingsGetHandler.payload(sandboxSettingsService.setMode(requiredText(params, "mode")));
+            return SandboxPolicyHandler.payload(SandboxMode.valueOf(
+                    sandboxSettingsService.setMode(requiredText(params, "mode")).sandboxMode()));
         } catch (IllegalArgumentException exception) {
             throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, exception.getMessage());
         }

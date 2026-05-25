@@ -1,11 +1,13 @@
 package com.wzx.babiq.server.agent;
 
 import com.alibaba.cloud.ai.graph.action.InterruptionMetadata;
+import com.wzx.babiq.server.approval.ApprovalPolicy;
 import com.wzx.babiq.server.conversation.ItemEmitter;
 import com.wzx.babiq.server.conversation.Turn;
 import com.wzx.babiq.server.conversation.TurnStatus;
 import com.wzx.babiq.server.conversation.items.ThreadItem;
 import com.wzx.babiq.server.model.ChatClientFactory;
+import com.wzx.babiq.server.sandbox.SandboxMode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -98,14 +100,15 @@ class EndToEndIT {
         ItemEmitter emitter = capturingEmitter(emittedItems);
         Turn turn = new Turn("turn_hitl", "thr_hitl");
         turn.start();
+        AgentRunPolicy runPolicy = AgentRunPolicy.of(SandboxMode.WORKSPACE_WRITE, ApprovalPolicy.ON_REQUEST);
 
-        agentLoop.invoke(turn, "在当前目录执行 cd", "e2e-provider", ".", emitter);
+        agentLoop.invoke(turn, "在当前目录执行 cd", "e2e-provider", ".", emitter, runPolicy);
 
         assertThat(turn.status()).isEqualTo(TurnStatus.WAITING_APPROVAL);
         InterruptionMetadata pending = pendingApprovals.take("thr_hitl");
         assertThat(pending).isNotNull();
 
-        agentLoop.invokeResume(turn, approvedFeedback(pending), ".", emitter);
+        agentLoop.invokeResume(turn, approvedFeedback(pending), ".", emitter, runPolicy);
 
         assertThat(model.sawToolResponseBeforeResumeModelCall())
                 .as("HITL 审批恢复后，必须先执行工具并把 ToolResponseMessage 补到模型上下文里")
@@ -126,14 +129,15 @@ class EndToEndIT {
         ItemEmitter emitter = capturingEmitter(emittedItems);
         Turn turn = new Turn("turn_hitl_write_cwd", "thr_hitl_write_cwd");
         turn.start();
+        AgentRunPolicy runPolicy = AgentRunPolicy.of(SandboxMode.WORKSPACE_WRITE, ApprovalPolicy.ON_REQUEST);
 
-        agentLoop.invoke(turn, "create index.html in the current directory", "e2e-provider", workspace.toString(), emitter);
+        agentLoop.invoke(turn, "create index.html in the current directory", "e2e-provider", workspace.toString(), emitter, runPolicy);
 
         assertThat(turn.status()).isEqualTo(TurnStatus.WAITING_APPROVAL);
         InterruptionMetadata pending = pendingApprovals.take("thr_hitl_write_cwd");
         assertThat(pending).isNotNull();
 
-        agentLoop.invokeResume(turn, approvedFeedback(pending), workspace.toString(), emitter);
+        agentLoop.invokeResume(turn, approvedFeedback(pending), workspace.toString(), emitter, runPolicy);
 
         Path writtenFile = workspace.resolve("index.html");
         assertThat(writtenFile)
@@ -142,6 +146,26 @@ class EndToEndIT {
         assertThat(Files.readString(writtenFile)).isEqualTo("hello-from-hitl");
         assertThat(model.sawWriteToolResponseBeforeFinalModelCall()).isTrue();
         assertThat(turn.status()).isEqualTo(TurnStatus.COMPLETED);
+    }
+
+    @Test
+    void approval_policy_never_should_execute_write_file_without_hitl(@org.junit.jupiter.api.io.TempDir Path workspace) throws Exception {
+        HitlWriteFileChatModel model = new HitlWriteFileChatModel();
+        Mockito.when(chatClientFactory.resolveChatModel("e2e-provider")).thenReturn(model);
+        List<ThreadItem> emittedItems = new ArrayList<>();
+        ItemEmitter emitter = capturingEmitter(emittedItems);
+        Turn turn = new Turn("turn_never_write", "thr_never_write");
+        turn.start();
+
+        agentLoop.invoke(turn, "create index.html in the current directory", "e2e-provider", workspace.toString(), emitter);
+
+        assertThat(turn.status()).isEqualTo(TurnStatus.COMPLETED);
+        assertThat(pendingApprovals.take("thr_never_write"))
+                .as("审批策略为 NEVER 时，后端不应只改变 UI，而应完全跳过 HITL")
+                .isNull();
+        assertThat(workspace.resolve("index.html")).exists();
+        assertThat(Files.readString(workspace.resolve("index.html"))).isEqualTo("hello-from-hitl");
+        assertThat(model.sawWriteToolResponseBeforeFinalModelCall()).isTrue();
     }
 
     @Test
@@ -182,14 +206,15 @@ class EndToEndIT {
         ItemEmitter emitter = capturingEmitter(emittedItems);
         Turn turn = new Turn("turn_deepseek_hitl", "thr_deepseek_hitl");
         turn.start();
+        AgentRunPolicy runPolicy = AgentRunPolicy.of(SandboxMode.WORKSPACE_WRITE, ApprovalPolicy.ON_REQUEST);
 
-        agentLoop.invoke(turn, "在当前工作目录创建 html 内容是你好", "e2e-provider", ".", emitter);
+        agentLoop.invoke(turn, "在当前工作目录创建 html 内容是你好", "e2e-provider", ".", emitter, runPolicy);
 
         assertThat(turn.status()).isEqualTo(TurnStatus.WAITING_APPROVAL);
         InterruptionMetadata pending = pendingApprovals.take("thr_deepseek_hitl");
         assertThat(pending).isNotNull();
 
-        agentLoop.invokeResume(turn, approvedFeedback(pending), ".", emitter);
+        agentLoop.invokeResume(turn, approvedFeedback(pending), ".", emitter, runPolicy);
 
         assertThat(turn.status()).isEqualTo(TurnStatus.COMPLETED);
         assertThat(capturedRequests).hasSize(2);

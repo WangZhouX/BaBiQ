@@ -28,6 +28,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -54,9 +55,11 @@ class AgentLoopTest {
         ItemEmitter emitter = capturingEmitter(emitted);
 
         when(strategy.resolveModelName("provider-a")).thenReturn("mock-react");
-        when(strategy.buildAgent(eq("provider-a"), eq("."), eq(emitter), any(TurnObservationContext.class)))
+        when(strategy.buildAgent(eq("provider-a"), eq("."), eq(emitter), any(TurnObservationContext.class),
+                nullable(AgentRunPolicy.class)))
                 .thenReturn(agent);
-        when(strategy.buildConfig(eq("thr_1"), eq("."), eq(emitter), any(TurnObservationContext.class)))
+        when(strategy.buildConfig(eq("thr_1"), eq("."), eq(emitter), any(TurnObservationContext.class),
+                nullable(AgentRunPolicy.class)))
                 .thenReturn(RunnableConfig.builder().threadId("thr_1").build());
         when(agent.stream(any(String.class), any())).thenReturn(Flux.just(output));
         when(strategy.extractAssistantMessage(output)).thenReturn(new AssistantMessage("done"));
@@ -79,9 +82,11 @@ class AgentLoopTest {
         ItemEmitter emitter = mock(ItemEmitter.class);
 
         when(strategy.resolveModelName(null)).thenReturn("mock-react");
-        when(strategy.buildAgent(eq(null), eq("."), eq(emitter), any(TurnObservationContext.class)))
+        when(strategy.buildAgent(eq(null), eq("."), eq(emitter), any(TurnObservationContext.class),
+                nullable(AgentRunPolicy.class)))
                 .thenReturn(agent);
-        when(strategy.buildConfig(eq("thr_1"), eq("."), eq(emitter), any(TurnObservationContext.class)))
+        when(strategy.buildConfig(eq("thr_1"), eq("."), eq(emitter), any(TurnObservationContext.class),
+                nullable(AgentRunPolicy.class)))
                 .thenReturn(RunnableConfig.builder().threadId("thr_1").build());
         when(agent.stream(any(String.class), any())).thenThrow(new GraphRunnerException("model down"));
 
@@ -123,9 +128,11 @@ class AgentLoopTest {
         RunnableConfig config = RunnableConfig.builder().threadId("thr_1").build();
 
         when(strategy.resolveModelName("provider-a")).thenReturn("mock-react");
-        when(strategy.buildAgent(eq("provider-a"), eq("."), eq(emitter), any(TurnObservationContext.class)))
+        when(strategy.buildAgent(eq("provider-a"), eq("."), eq(emitter), any(TurnObservationContext.class),
+                nullable(AgentRunPolicy.class)))
                 .thenReturn(agent);
-        when(strategy.buildConfig(eq("thr_1"), eq("."), eq(emitter), any(TurnObservationContext.class))).thenReturn(config);
+        when(strategy.buildConfig(eq("thr_1"), eq("."), eq(emitter), any(TurnObservationContext.class),
+                nullable(AgentRunPolicy.class))).thenReturn(config);
         when(agent.invokeAndGetOutput(any(String.class), any()))
                 .thenThrow(new GraphRunnerException("不应再走非流式 Agent 调用"));
         when(agent.stream(eq("hello"), eq(config))).thenReturn(Flux.just(output));
@@ -154,9 +161,11 @@ class AgentLoopTest {
         RunnableConfig config = RunnableConfig.builder().threadId("thr_1").build();
 
         when(strategy.resolveModelName("provider-a")).thenReturn("mock-react");
-        when(strategy.buildAgent(eq("provider-a"), eq("."), eq(emitter), any(TurnObservationContext.class)))
+        when(strategy.buildAgent(eq("provider-a"), eq("."), eq(emitter), any(TurnObservationContext.class),
+                nullable(AgentRunPolicy.class)))
                 .thenReturn(agent);
-        when(strategy.buildConfig(eq("thr_1"), eq("."), eq(emitter), any(TurnObservationContext.class))).thenReturn(config);
+        when(strategy.buildConfig(eq("thr_1"), eq("."), eq(emitter), any(TurnObservationContext.class),
+                nullable(AgentRunPolicy.class))).thenReturn(config);
         when(agent.stream(eq("hello"), eq(config))).thenReturn(Flux.just(
                 streamingChunk("你"),
                 streamingChunk("好"),

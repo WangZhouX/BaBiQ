@@ -40,6 +40,7 @@ fun Composer(
 	onSend: (String) -> Unit,
 	onSelectWorkspace: (String) -> Unit,
 	onSelectProvider: (String, String?) -> Unit,
+	onChangeSandboxMode: (String) -> Unit,
 ) {
 	// 本地 text 是输入框即时状态；state.draft 变化时重新同步，保证断线保留草稿能回填到输入框。
 	var text by remember(state.draft) { mutableStateOf(state.draft) }
@@ -81,6 +82,7 @@ fun Composer(
 					state = state,
 					onSelectWorkspace = onSelectWorkspace,
 					onSelectProvider = onSelectProvider,
+					onChangeSandboxMode = onChangeSandboxMode,
 				)
 				Button(
 					enabled = state.canSend && text.isNotBlank(),

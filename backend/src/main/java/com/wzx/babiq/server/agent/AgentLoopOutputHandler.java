@@ -51,7 +51,8 @@ final class AgentLoopOutputHandler {
     }
 
     /** 处理审批响应：找回暂停中的 Agent，并从 SAA HITL 暂停点继续执行。 */
-    void invokeResume(Turn turn, InterruptionMetadata feedback, String cwd, ItemEmitter emitter) {
+    void invokeResume(Turn turn, InterruptionMetadata feedback, String cwd,
+                      ItemEmitter emitter, AgentRunPolicy runPolicy) {
         TurnObservationContext context = observationRegistry.getOrStart(turn.threadId(), turn.id(), null, strategy.resolveModelName(null));
         ReactAgent agent = pausedAgents.take(turn.threadId());
         if (agent == null) {
@@ -64,15 +65,16 @@ final class AgentLoopOutputHandler {
             // 2026-05-25 Bug 修复记录：内部测试可能绕过 approval/respond 直接调用恢复入口，需要在这里补齐状态迁移。
             turn.resume();
         }
-        invokeResumeWithAgent(turn, feedback, cwd, emitter, context, agent);
+        invokeResumeWithAgent(turn, feedback, cwd, emitter, context, agent, runPolicy);
     }
 
     /** 将 ReactAgent 的最终输出分流到 HITL 等待、流式消息完成或普通消息回退三条路径。 */
     void handleOutput(Turn turn, ItemEmitter emitter, AgentStreamConsumer.StreamResult result,
-                      TurnObservationContext context, String cwd, ReactAgent agent) throws Exception {
+                      TurnObservationContext context, String cwd, ReactAgent agent,
+                      AgentRunPolicy runPolicy) throws Exception {
         NodeOutput node = result.output().orElse(null);
         if (node instanceof InterruptionMetadata metadata) {
-            handleInterruption(turn, emitter, metadata, context, cwd, agent);
+            handleInterruption(turn, emitter, metadata, context, cwd, agent, runPolicy);
             return;
         }
         emitAssistantResult(turn, emitter, result, node);
@@ -85,10 +87,12 @@ final class AgentLoopOutputHandler {
 
     /** 使用同一个被暂停的 ReactAgent 实例继续执行 HITL 恢复。 */
     private void invokeResumeWithAgent(Turn turn, InterruptionMetadata feedback, String cwd,
-                                       ItemEmitter emitter, TurnObservationContext context, ReactAgent agent) {
+                                       ItemEmitter emitter, TurnObservationContext context,
+                                       ReactAgent agent, AgentRunPolicy runPolicy) {
         try {
-            AgentStreamConsumer.StreamResult result = AgentLoopResumeSupport.resumeFromApproval(turn, feedback, cwd, emitter, context, agent, strategy);
-            handleOutput(turn, emitter, result, context, cwd, agent);
+            AgentStreamConsumer.StreamResult result = AgentLoopResumeSupport.resumeFromApproval(
+                    turn, feedback, cwd, emitter, context, agent, strategy, runPolicy);
+            handleOutput(turn, emitter, result, context, cwd, agent, runPolicy);
         } catch (Exception exception) {
             AgentLoopSupport.fail(log, turn, emitter, exception, summaryEmitter, context, observationRegistry);
         }
@@ -96,10 +100,11 @@ final class AgentLoopOutputHandler {
 
     /** 处理 SAA HumanInTheLoopHook 返回的审批中断。 */
     private void handleInterruption(Turn turn, ItemEmitter emitter, InterruptionMetadata metadata,
-                                    TurnObservationContext context, String cwd, ReactAgent agent) throws Exception {
+                                    TurnObservationContext context, String cwd, ReactAgent agent,
+                                    AgentRunPolicy runPolicy) throws Exception {
         Optional<InterruptionMetadata> autoApproved = strategy.autoApprovedFeedback(turn.threadId(), metadata);
         if (autoApproved.isPresent()) {
-            invokeResumeWithAgent(turn, autoApproved.get(), cwd, emitter, context, agent);
+            invokeResumeWithAgent(turn, autoApproved.get(), cwd, emitter, context, agent, runPolicy);
             return;
         }
         AgentLoopDiagnostics.waitingApproval(turn, metadata);

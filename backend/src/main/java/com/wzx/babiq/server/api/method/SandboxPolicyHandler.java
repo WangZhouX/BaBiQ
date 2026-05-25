@@ -67,6 +67,19 @@ public class SandboxPolicyHandler implements JsonRpcMethodHandler {
         SandboxMode mode = appSettingsService == null
                 ? properties.sandboxMode()
                 : SandboxMode.valueOf(appSettingsService.get().sandboxMode());
+        return payload(mode);
+    }
+
+    /**
+     * 生成桌面端 SandboxPolicyResult 需要的响应结构。
+     *
+     * <p>set 和 get 两个 handler 必须返回同一份协议形状，否则 Kotlinx Serialization 会因为
+     * 缺少 mode/label 把设置页直接置为错误状态。</p>
+     *
+     * @param mode 后端沙箱模式
+     * @return 包含 mode/label 的响应对象
+     */
+    static Map<String, Object> payload(SandboxMode mode) {
         return Map.of(
                 "mode", mode.name(),
                 "label", labelOf(mode)

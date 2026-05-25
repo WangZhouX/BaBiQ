@@ -58,6 +58,22 @@ class BaBiQSandboxInterceptorTest {
     }
 
     @Test
+    void context_sandbox_mode_overrides_static_properties(@TempDir Path root) {
+        BaBiQSandboxInterceptor interceptor = newInterceptor(SandboxMode.WORKSPACE_WRITE);
+        Map<String, Object> context = Map.of(
+                BaBiQSandboxInterceptor.CONTEXT_CWD, root.toString(),
+                BaBiQSandboxInterceptor.CONTEXT_SANDBOX_MODE, SandboxMode.READ_ONLY.name());
+
+        String rejection = interceptor.checkOrReject("write_file",
+                "{\"path\":\"" + root.resolve("a.txt").toString().replace("\\", "\\\\") + "\"}",
+                context);
+
+        assertThat(rejection)
+                .as("同一个后端进程里，设置页切换后的 turn 级沙箱模式必须覆盖 yml 默认值")
+                .contains("read-only");
+    }
+
+    @Test
     void read_only_write_emits_file_change_denied(@TempDir Path root) throws Exception {
         BaBiQSandboxInterceptor interceptor = newInterceptor(SandboxMode.READ_ONLY);
         ItemEmitter emitter = capturingEmitter();

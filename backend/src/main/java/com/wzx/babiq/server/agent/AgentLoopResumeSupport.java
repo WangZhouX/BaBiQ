@@ -33,6 +33,7 @@ final class AgentLoopResumeSupport {
      * @param context 本轮观测上下文，用于 token 和工具调用统计
      * @param agent 被暂停的同一个 ReactAgent 实例
      * @param strategy ReAct 装配策略，用于生成恢复配置
+     * @param runPolicy 原 turn 启动时固定下来的沙箱和审批策略
      * @return 恢复执行后的流式消费结果
      * @throws Exception SAA Graph 或 WebSocket 流式消费失败时向上抛出，由 AgentLoopOutputHandler 统一收口
      */
@@ -42,9 +43,11 @@ final class AgentLoopResumeSupport {
                                                                ItemEmitter emitter,
                                                                TurnObservationContext context,
                                                                ReactAgent agent,
-                                                               ReActStrategy strategy) throws Exception {
+                                                               ReActStrategy strategy,
+                                                               AgentRunPolicy runPolicy) throws Exception {
         return AgentStreamConsumer.consume(
-                agent.stream(Map.of("jump_to", JumpTo.tool), strategy.buildResumeConfig(turn.threadId(), feedback, cwd, emitter, context)),
+                agent.stream(Map.of("jump_to", JumpTo.tool),
+                        strategy.buildResumeConfig(turn.threadId(), feedback, cwd, emitter, context, runPolicy)),
                 emitter);
     }
 }

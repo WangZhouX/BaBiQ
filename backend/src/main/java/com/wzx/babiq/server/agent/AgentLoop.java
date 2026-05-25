@@ -31,18 +31,24 @@ public class AgentLoop {
     }
     /** 执行普通用户输入：先发用户 item，再真正走流式 ReactAgent，最后处理完成或审批中断。 */
     public void invoke(Turn turn, String userText, String providerId, String cwd, ItemEmitter emitter) {
+        invoke(turn, userText, providerId, cwd, emitter, strategy.defaultRunPolicy());
+    }
+
+    /** 执行普通用户输入，并使用 turn/start 固定下来的权限快照。 */
+    public void invoke(Turn turn, String userText, String providerId, String cwd,
+                       ItemEmitter emitter, AgentRunPolicy runPolicy) {
         TurnObservationContext context = observationRegistry.start(turn.threadId(), turn.id(), providerId, strategy.resolveModelName(providerId));
         long startedNanos = System.nanoTime();
         AgentLoopDiagnostics.started(turn, context, cwd, userText);
         try {
             emitter.emitItemAdded(UserMessageItem.of(AgentLoopSupport.newItemId(), userText));
             AgentLoopDiagnostics.userItemEmitted(turn);
-            ReactAgent agent = strategy.buildAgent(providerId, cwd, emitter, context);
+            ReactAgent agent = strategy.buildAgent(providerId, cwd, emitter, context, runPolicy);
             AgentLoopDiagnostics.modelCallStarted(turn, context);
             AgentStreamConsumer.StreamResult result = AgentStreamConsumer.consume(
-                    agent.stream(userText, strategy.buildConfig(turn.threadId(), cwd, emitter, context)), emitter);
+                    agent.stream(userText, strategy.buildConfig(turn.threadId(), cwd, emitter, context, runPolicy)), emitter);
             AgentLoopDiagnostics.modelCallReturned(turn, result.output(), startedNanos);
-            outputHandler.handleOutput(turn, emitter, result, context, cwd, agent);
+            outputHandler.handleOutput(turn, emitter, result, context, cwd, agent, runPolicy);
         } catch (Exception exception) {
             outputHandler.forgetPaused(turn.threadId());
             AgentLoopDiagnostics.failureClosing(turn, context, exception);
@@ -51,6 +57,12 @@ public class AgentLoop {
     }
     /** 人工审批完成后，从 Spring AI Alibaba 的 HITL 暂停点继续流式执行同一个 turn。 */
     public void invokeResume(Turn turn, InterruptionMetadata feedback, String cwd, ItemEmitter emitter) {
-        outputHandler.invokeResume(turn, feedback, cwd, emitter);
+        invokeResume(turn, feedback, cwd, emitter, strategy.defaultRunPolicy());
+    }
+
+    /** 人工审批完成后，按原 turn 的权限快照恢复执行。 */
+    public void invokeResume(Turn turn, InterruptionMetadata feedback, String cwd,
+                             ItemEmitter emitter, AgentRunPolicy runPolicy) {
+        outputHandler.invokeResume(turn, feedback, cwd, emitter, runPolicy);
     }
 }

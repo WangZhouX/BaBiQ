@@ -3,6 +3,8 @@ package com.wzx.babiq.server.api.method;
 import com.wzx.babiq.server.agent.AgentLoopProperties;
 import com.wzx.babiq.server.approval.ApprovalPolicy;
 import com.wzx.babiq.server.sandbox.SandboxMode;
+import com.wzx.babiq.server.settings.AppSettings;
+import com.wzx.babiq.server.settings.SandboxSettingsService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -10,6 +12,8 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * sandbox/policy 协议测试。
@@ -41,6 +45,24 @@ class SandboxPolicyHandlerTest {
         assertThat(responseFrom(payload))
                 .containsEntry("mode", "WORKSPACE_WRITE")
                 .containsEntry("label", "工作区可写");
+    }
+
+    @Test
+    @DisplayName("设置沙箱模式后返回桌面端需要的 mode/label 结构")
+    void set_handler_should_return_sandbox_policy_shape() {
+        SandboxSettingsService service = mock(SandboxSettingsService.class);
+        when(service.setMode("READ_ONLY"))
+                .thenReturn(new AppSettings("deepseek", "READ_ONLY", "ON_REQUEST", "H:/aaa"));
+        SandboxPolicySetHandler handler = new SandboxPolicySetHandler(service);
+
+        Object payload = handler.handle(
+                new com.fasterxml.jackson.databind.ObjectMapper().valueToTree(Map.of("mode", "READ_ONLY")),
+                null);
+
+        assertThat(responseFrom(payload))
+                .containsEntry("mode", "READ_ONLY")
+                .containsEntry("label", "只读权限")
+                .doesNotContainKeys("sandboxMode", "approvalPolicy");
     }
 
     private static AgentLoopProperties properties(SandboxMode sandboxMode) {

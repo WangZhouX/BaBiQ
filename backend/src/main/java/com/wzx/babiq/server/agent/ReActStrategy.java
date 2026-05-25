@@ -19,6 +19,7 @@ import com.wzx.babiq.server.interceptor.SpotlightingToolInterceptor;
 import com.wzx.babiq.server.interceptor.ToolObservationInterceptor;
 import com.wzx.babiq.server.model.ChatClientFactory;
 import com.wzx.babiq.server.observability.TurnObservationContext;
+import com.wzx.babiq.server.approval.ApprovalPolicy;
 import com.wzx.babiq.server.approval.ApprovalRuleService;
 import com.wzx.babiq.server.persistence.service.TurnPersistenceService;
 import com.wzx.babiq.server.security.SystemPromptSecurityRule;
@@ -118,8 +119,24 @@ public class ReActStrategy {
      * @return 已装配工具、Hook、Interceptor 和 MemorySaver 的 ReactAgent
      */
     public ReactAgent buildAgent(String providerId, String cwd, ItemEmitter emitter, TurnObservationContext context) {
+        return buildAgent(providerId, cwd, emitter, context, defaultRunPolicy());
+    }
+
+    /**
+     * 为一次 turn 构建 ReactAgent，并使用本轮权限快照装配 HITL 与沙箱上下文。
+     *
+     * @param providerId provider id，传 null 时使用 active provider
+     * @param cwd 本轮 thread 工作目录
+     * @param emitter 当前 turn 的协议 item 发射器
+     * @param context 当前 turn 的观测上下文
+     * @param runPolicy turn/start 时固定下来的沙箱和审批策略
+     * @return 已装配工具、Hook、Interceptor 和 MemorySaver 的 ReactAgent
+     */
+    public ReactAgent buildAgent(String providerId, String cwd, ItemEmitter emitter,
+                                 TurnObservationContext context, AgentRunPolicy runPolicy) {
         ChatModel chatModel = chatClientFactory.resolveChatModel(providerId);
         ToolCallback[] callbacks = toolRegistry.allCallbacks();
+        AgentRunPolicy effectivePolicy = runPolicy == null ? defaultRunPolicy() : runPolicy;
 
         // toolContext 是 SAA 在工具调用和拦截器之间传递上下文的 Map。
         // BaBiQ 把 cwd、额外可写根、emitter 和观测上下文都放进去，避免工具自己依赖全局状态。
@@ -127,20 +144,9 @@ public class ReActStrategy {
         toolContext.put(BaBiQSandboxInterceptor.CONTEXT_CWD, cwd);
         toolContext.put(BaBiQSandboxInterceptor.CONTEXT_WRITABLE_ROOTS, stringify(properties.writableRoots()));
         toolContext.put(BaBiQSandboxInterceptor.CONTEXT_ITEM_EMITTER, emitter);
+        toolContext.put(BaBiQSandboxInterceptor.CONTEXT_SANDBOX_MODE, effectivePolicy.sandboxMode().name());
         toolContext.put(TurnObservationContext.METADATA_KEY, context);
 
-        // D23：写类工具和 MCP 动态工具都声明式触发 SAA 原生 HumanInTheLoopHook，不手写阻塞审批状态机。
-        HumanInTheLoopHook.Builder hitlBuilder = HumanInTheLoopHook.builder()
-                .approvalOn("write_file", ToolConfig.builder().description("写入文件需要确认").build())
-                .approvalOn("exec_shell", ToolConfig.builder().description("执行 Shell 命令需要确认").build())
-                .approvalOn("apply_patch", ToolConfig.builder().description("应用补丁需要确认").build());
-        for (String toolName : toolRegistry.names()) {
-            if (toolName.startsWith("mcp.")) {
-                // MCP 工具来自外部 server，即使只是读操作也必须先让用户确认，防止第三方工具越权访问本机数据。
-                hitlBuilder.approvalOn(toolName, ToolConfig.builder().description("调用 MCP 工具需要确认").build());
-            }
-        }
-        HumanInTheLoopHook hitlHook = hitlBuilder.build();
         ModelCallLimitHook limitHook = ModelCallLimitHook.builder()
                 .runLimit(properties.maxIterations())
                 .exitBehavior(ModelCallLimitHook.ExitBehavior.ERROR)
@@ -153,17 +159,22 @@ public class ReActStrategy {
 
         // tokenUsageHook 是按 turn 累计的，构建新 agent 前必须清空上一轮残留。
         tokenUsageHook.reset();
-        return ReactAgent.builder()
+        var builder = ReactAgent.builder()
                 .name("babiq_agent")
                 .model(chatModel)
                 .systemPrompt(SystemPromptSecurityRule.PROMPT)
                 .tools(callbacks)
                 .toolContext(toolContext)
-                .hooks(hitlHook, limitHook, resumeJumpCleanupHook, tokenUsageHook)
                 .streamingInterceptors(streamingTokenUsageInterceptor)
                 .interceptors(sandboxInterceptor, toolObservationInterceptor, spotlightingInterceptor, evictionInterceptor)
-                .saver(memorySaver)
-                .build();
+                .saver(memorySaver);
+        if (effectivePolicy.approvalPolicy() == ApprovalPolicy.NEVER) {
+            builder.hooks(limitHook, resumeJumpCleanupHook, tokenUsageHook);
+        } else {
+            // ON_REQUEST 和暂未单独实现的 ON_FAILURE 都保持需要确认的保守行为，避免权限设置解析异常时静默放行。
+            builder.hooks(buildHitlHook(), limitHook, resumeJumpCleanupHook, tokenUsageHook);
+        }
+        return builder.build();
     }
 
     /**
@@ -180,10 +191,23 @@ public class ReActStrategy {
      * @return SAA RunnableConfig
      */
     public RunnableConfig buildConfig(String threadId, String cwd, ItemEmitter emitter, TurnObservationContext context) {
+        return buildConfig(threadId, cwd, emitter, context, defaultRunPolicy());
+    }
+
+    /**
+     * 构建普通运行配置，并把本轮权限快照写入 metadata。
+     *
+     * <p>SAA 工具节点恢复上下文时会读取 RunnableConfig metadata。这里和 buildAgent 的
+     * toolContext 同时写入沙箱模式，确保普通执行和审批恢复都使用同一份 turn 快照。</p>
+     */
+    public RunnableConfig buildConfig(String threadId, String cwd, ItemEmitter emitter,
+                                      TurnObservationContext context, AgentRunPolicy runPolicy) {
+        AgentRunPolicy effectivePolicy = runPolicy == null ? defaultRunPolicy() : runPolicy;
         RunnableConfig.Builder builder = RunnableConfig.builder()
                 .threadId(threadId)
                 .addMetadata(TurnObservationContext.METADATA_KEY, context)
-                .addMetadata(BaBiQSandboxInterceptor.CONTEXT_WRITABLE_ROOTS, stringify(properties.writableRoots()));
+                .addMetadata(BaBiQSandboxInterceptor.CONTEXT_WRITABLE_ROOTS, stringify(properties.writableRoots()))
+                .addMetadata(BaBiQSandboxInterceptor.CONTEXT_SANDBOX_MODE, effectivePolicy.sandboxMode().name());
         if (cwd != null && !cwd.isBlank()) {
             builder.addMetadata(BaBiQSandboxInterceptor.CONTEXT_CWD, cwd);
         }
@@ -216,10 +240,32 @@ public class ReActStrategy {
                                             String cwd,
                                             ItemEmitter emitter,
                                             TurnObservationContext context) {
+        return buildResumeConfig(threadId, metadata, cwd, emitter, context, defaultRunPolicy());
+    }
+
+    /**
+     * 构建 HITL 续跑配置，并携带原 turn 的权限快照。
+     *
+     * @param threadId 业务线程 id
+     * @param metadata 用户审批后的真实 HITL 反馈元数据
+     * @param cwd 原 turn 工作目录
+     * @param emitter 当前 WebSocket item 发射器
+     * @param context 本轮观测上下文
+     * @param runPolicy 原 turn 启动时保存下来的运行策略
+     * @return 带 human feedback 和权限 metadata 的 RunnableConfig
+     */
+    public RunnableConfig buildResumeConfig(String threadId,
+                                            InterruptionMetadata metadata,
+                                            String cwd,
+                                            ItemEmitter emitter,
+                                            TurnObservationContext context,
+                                            AgentRunPolicy runPolicy) {
+        AgentRunPolicy effectivePolicy = runPolicy == null ? defaultRunPolicy() : runPolicy;
         RunnableConfig.Builder builder = RunnableConfig.builder()
                 .threadId(threadId)
                 .addMetadata(TurnObservationContext.METADATA_KEY, context)
                 .addMetadata(BaBiQSandboxInterceptor.CONTEXT_WRITABLE_ROOTS, stringify(properties.writableRoots()))
+                .addMetadata(BaBiQSandboxInterceptor.CONTEXT_SANDBOX_MODE, effectivePolicy.sandboxMode().name())
                 // 2026-05-25 Bug 修复记录：ReactAgent 恢复只需要真实审批反馈。
                 // 官方示例使用 addHumanFeedback(metadata)；额外 resume() 的占位标记没有业务信息，
                 // 对 BaBiQ 这种 HITL 恢复反而增加“占位值覆盖真实 InterruptionMetadata”的风险。
@@ -311,6 +357,35 @@ public class ReActStrategy {
                     .build());
         }
         return Optional.of(builder.build());
+    }
+
+    /**
+     * 返回 yml 静态配置对应的兼容运行策略。
+     *
+     * <p>真实 turn/start 会传入 AppSettings 快照；该方法只服务旧测试入口和缺失历史快照时的回退。</p>
+     */
+    public AgentRunPolicy defaultRunPolicy() {
+        return AgentRunPolicy.fromDefaults(properties);
+    }
+
+    /**
+     * 构建 SAA 原生 HITL hook。
+     *
+     * <p>只有审批策略不是 NEVER 时才安装该 hook；因此“从不询问”会真正影响后端 Agent，
+     * 而不只是改变桌面端按钮高亮。</p>
+     */
+    private HumanInTheLoopHook buildHitlHook() {
+        HumanInTheLoopHook.Builder hitlBuilder = HumanInTheLoopHook.builder()
+                .approvalOn("write_file", ToolConfig.builder().description("写入文件需要确认").build())
+                .approvalOn("exec_shell", ToolConfig.builder().description("执行 Shell 命令需要确认").build())
+                .approvalOn("apply_patch", ToolConfig.builder().description("应用补丁需要确认").build());
+        for (String toolName : toolRegistry.names()) {
+            if (toolName.startsWith("mcp.")) {
+                // MCP 工具来自外部 server，即使只是读操作也必须先让用户确认，防止第三方工具越权访问本机数据。
+                hitlBuilder.approvalOn(toolName, ToolConfig.builder().description("调用 MCP 工具需要确认").build());
+            }
+        }
+        return hitlBuilder.build();
     }
 
     /**

@@ -2,8 +2,16 @@ package com.wzx.babiq.desktop.ui.chat
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.wzx.babiq.desktop.state.AppState
@@ -22,6 +30,7 @@ fun ComposerContextBar(
 	state: AppState,
 	onSelectWorkspace: (String) -> Unit,
 	onSelectProvider: (String, String?) -> Unit,
+	onChangeSandboxMode: ((String) -> Unit)? = null,
 	modifier: Modifier = Modifier,
 ) {
 	FlowRow(
@@ -37,12 +46,89 @@ fun ComposerContextBar(
 			},
 		)
 		state.workspace.permissionLabel?.let { label ->
-			// 权限来自后端 sandbox/policy；未连接或拉取失败时不展示，避免回退到假数据。
-			StatusBadge(label, BadgeTone.Warning)
+			// 权限来自后端 sandbox/policy；点击后写回设置服务，下一轮 turn 会读取新的运行策略快照。
+			SandboxModeSelector(
+				label = label,
+				currentMode = state.workspace.permissionMode,
+				canEditSettings = state.canEditSettings,
+				onChangeSandboxMode = onChangeSandboxMode,
+			)
 		}
 		ProviderSelector(
 			providerState = state.providerState,
 			onSelectProvider = onSelectProvider,
 		)
+	}
+}
+
+/**
+ * 输入栏权限菜单中的一个选项。
+ *
+ * @property mode 后端 `SandboxMode` 枚举名，提交给 `sandbox/policy/set`。
+ * @property label 展示给用户看的中文权限名称，和后端查询接口保持一致。
+ */
+internal data class SandboxModeMenuOption(
+	val mode: String,
+	val label: String,
+)
+
+/**
+ * 聊天输入栏允许快速切换的沙箱权限。
+ *
+ * 这里刻意只放后端已经稳定支持的三种模式，避免 UI 出现后端无法识别的值。
+ */
+internal val sandboxModeMenuOptions = listOf(
+	SandboxModeMenuOption("READ_ONLY", "只读权限"),
+	SandboxModeMenuOption("WORKSPACE_WRITE", "工作区可写"),
+	SandboxModeMenuOption("DANGER_FULL_ACCESS", "完全访问权限"),
+)
+
+/**
+ * 判断聊天页权限 chip 是否应该响应点击。
+ *
+ * 运行中 turn 使用启动时策略快照，切换设置只影响下一轮；因此运行中禁用，避免用户误会当前工具调用会被中途放权。
+ */
+internal fun canOpenSandboxModeMenu(
+	canEditSettings: Boolean,
+	onChangeSandboxMode: ((String) -> Unit)?,
+): Boolean = canEditSettings && onChangeSandboxMode != null
+
+/**
+ * 权限 chip 下拉菜单。
+ */
+@Composable
+private fun SandboxModeSelector(
+	label: String,
+	currentMode: String?,
+	canEditSettings: Boolean,
+	onChangeSandboxMode: ((String) -> Unit)?,
+) {
+	var expanded by remember { mutableStateOf(false) }
+	val enabled = canOpenSandboxModeMenu(canEditSettings, onChangeSandboxMode)
+	Column {
+		StatusBadge(
+			text = label,
+			tone = BadgeTone.Warning,
+			modifier = Modifier.clickable(enabled = enabled) {
+				expanded = true
+			},
+		)
+		DropdownMenu(
+			expanded = expanded,
+			onDismissRequest = { expanded = false },
+		) {
+			sandboxModeMenuOptions.forEach { option ->
+				DropdownMenuItem(
+					text = {
+						val suffix = if (option.mode == currentMode) "（当前）" else ""
+						Text("${option.label}$suffix")
+					},
+					onClick = {
+						expanded = false
+						onChangeSandboxMode?.invoke(option.mode)
+					},
+				)
+			}
+		}
 	}
 }

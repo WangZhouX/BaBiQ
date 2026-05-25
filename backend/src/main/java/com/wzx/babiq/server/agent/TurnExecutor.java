@@ -53,10 +53,25 @@ public class TurnExecutor {
      * @param emitter 当前 WebSocket 发射器
      */
     public void submit(Turn turn, String userText, String providerId, String cwd, ItemEmitter emitter) {
+        submit(turn, userText, providerId, cwd, emitter, null);
+    }
+
+    /**
+     * 异步提交普通 turn，并携带 turn/start 的权限快照。
+     *
+     * @param turn 当前 turn
+     * @param userText 用户文本
+     * @param providerId provider id，可为 null
+     * @param cwd 本轮工作目录
+     * @param emitter 当前 WebSocket 发射器
+     * @param runPolicy 本轮 Agent 运行时权限；为空时 AgentLoop 回退到 yml 默认值
+     */
+    public void submit(Turn turn, String userText, String providerId, String cwd,
+                       ItemEmitter emitter, AgentRunPolicy runPolicy) {
         log.info("TurnExecutor 提交普通 turn: threadId={}, turnId={}, providerId={}, cwd={}",
                 turn.threadId(), turn.id(), providerId == null ? "<active-provider>" : providerId, cwd);
         Future<?> future = executor.submit(() -> run(turn.id(),
-                () -> agentLoop.invoke(turn, userText, providerId, cwd, emitter)));
+                () -> agentLoop.invoke(turn, userText, providerId, cwd, emitter, runPolicy)));
         // submit 之后再放入 running，interrupt 才能通过 turnId 找到后台任务。
         running.put(turn.id(), future);
         if (future.isDone()) {
@@ -73,10 +88,24 @@ public class TurnExecutor {
      * @param emitter 当前 WebSocket 发射器
      */
     public void submitResume(Turn turn, InterruptionMetadata feedback, String cwd, ItemEmitter emitter) {
+        submitResume(turn, feedback, cwd, emitter, null);
+    }
+
+    /**
+     * 异步提交 HITL resume，并继续使用原 turn 的权限快照。
+     *
+     * @param turn 当前 turn
+     * @param feedback 用户审批反馈
+     * @param cwd 本轮工作目录
+     * @param emitter 当前 WebSocket 发射器
+     * @param runPolicy 原 turn 的沙箱和审批策略快照
+     */
+    public void submitResume(Turn turn, InterruptionMetadata feedback, String cwd,
+                             ItemEmitter emitter, AgentRunPolicy runPolicy) {
         log.info("TurnExecutor 提交审批恢复 turn: threadId={}, turnId={}, cwd={}",
                 turn.threadId(), turn.id(), cwd);
         Future<?> future = executor.submit(() -> run(turn.id(),
-                () -> agentLoop.invokeResume(turn, feedback, cwd, emitter)));
+                () -> agentLoop.invokeResume(turn, feedback, cwd, emitter, runPolicy)));
         // resume 仍然属于同一个 turn，所以复用同一个 turnId 作为 running key。
         running.put(turn.id(), future);
         if (future.isDone()) {

@@ -3,6 +3,8 @@ package com.wzx.babiq.server.api.method;
 import com.alibaba.cloud.ai.graph.action.InterruptionMetadata;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wzx.babiq.server.agent.AgentLoopProperties;
+import com.wzx.babiq.server.agent.AgentRunPolicy;
 import com.wzx.babiq.server.agent.PendingApprovals;
 import com.wzx.babiq.server.agent.TurnExecutor;
 import com.wzx.babiq.server.approval.ApprovalRuleService;
@@ -15,7 +17,9 @@ import com.wzx.babiq.server.conversation.ItemEmitter;
 import com.wzx.babiq.server.conversation.Thread;
 import com.wzx.babiq.server.conversation.Turn;
 import com.wzx.babiq.server.observability.BaBiQMetrics;
+import com.wzx.babiq.server.persistence.entity.TurnEntity;
 import com.wzx.babiq.server.persistence.service.ApprovalPersistenceService;
+import com.wzx.babiq.server.persistence.service.TurnPersistenceService;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.WebSocketSession;
 
@@ -47,6 +51,10 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
     private final ApprovalRuleService approvalRuleService;
     /** 审批表服务；为空时表示旧单元测试环境不落审批历史。 */
     private final ApprovalPersistenceService approvalPersistenceService;
+    /** turn 持久化服务；用于审批恢复时取回原 turn 的权限快照。 */
+    private final TurnPersistenceService turnPersistenceService;
+    /** yml 默认配置；当历史 turn 缺少快照时作为兼容回退。 */
+    private final AgentLoopProperties agentLoopProperties;
 
     /**
      * 创建 approval/respond handler。
@@ -60,9 +68,10 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
     public ApprovalRespondHandler(PendingApprovals pendingApprovals,
                                   ConversationService conversationService,
                                   ObjectMapper objectMapper,
-                                  TurnExecutor turnExecutor,
-                                  BaBiQMetrics metrics) {
-        this(pendingApprovals, conversationService, objectMapper, turnExecutor, metrics, null, null, null);
+                                 TurnExecutor turnExecutor,
+                                 BaBiQMetrics metrics) {
+        this(pendingApprovals, conversationService, objectMapper, turnExecutor,
+                metrics, null, null, null, null, null);
     }
 
     /**
@@ -84,7 +93,7 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
                                   ConversationEventRecorder eventRecorder,
                                   ApprovalRuleService approvalRuleService) {
         this(pendingApprovals, conversationService, objectMapper, turnExecutor,
-                metrics, eventRecorder, approvalRuleService, null);
+                metrics, eventRecorder, approvalRuleService, null, null, null);
     }
 
     /**
@@ -99,7 +108,6 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
      * @param approvalRuleService Always 规则服务
      * @param approvalPersistenceService 审批持久化服务
      */
-    @org.springframework.beans.factory.annotation.Autowired
     public ApprovalRespondHandler(PendingApprovals pendingApprovals,
                                   ConversationService conversationService,
                                   ObjectMapper objectMapper,
@@ -108,6 +116,35 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
                                   ConversationEventRecorder eventRecorder,
                                   ApprovalRuleService approvalRuleService,
                                   ApprovalPersistenceService approvalPersistenceService) {
+        this(pendingApprovals, conversationService, objectMapper, turnExecutor,
+                metrics, eventRecorder, approvalRuleService, approvalPersistenceService, null, null);
+    }
+
+    /**
+     * 创建完整生产链路的 approval/respond handler。
+     *
+     * @param pendingApprovals 待审批元数据缓存
+     * @param conversationService 对话生命周期服务
+     * @param objectMapper JSON 序列化器
+     * @param turnExecutor Agent 异步执行器
+     * @param metrics P1 可观测指标聚合器
+     * @param eventRecorder 运行事件记录器
+     * @param approvalRuleService Always 规则服务
+     * @param approvalPersistenceService 审批持久化服务
+     * @param turnPersistenceService turn 持久化服务，用于恢复权限快照
+     * @param agentLoopProperties yml 默认 Agent 配置
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    public ApprovalRespondHandler(PendingApprovals pendingApprovals,
+                                  ConversationService conversationService,
+                                  ObjectMapper objectMapper,
+                                  TurnExecutor turnExecutor,
+                                  BaBiQMetrics metrics,
+                                  ConversationEventRecorder eventRecorder,
+                                  ApprovalRuleService approvalRuleService,
+                                  ApprovalPersistenceService approvalPersistenceService,
+                                  TurnPersistenceService turnPersistenceService,
+                                  AgentLoopProperties agentLoopProperties) {
         this.pendingApprovals = pendingApprovals;
         this.conversationService = conversationService;
         this.objectMapper = objectMapper;
@@ -116,6 +153,8 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
         this.eventRecorder = eventRecorder;
         this.approvalRuleService = approvalRuleService;
         this.approvalPersistenceService = approvalPersistenceService;
+        this.turnPersistenceService = turnPersistenceService;
+        this.agentLoopProperties = agentLoopProperties;
     }
 
     /**
@@ -157,7 +196,7 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
         rememberAlwaysRulesIfNeeded(threadId, decision, scope, original);
         resolveApprovalIfPossible(threadId, turnId, decision, scope, editedArgs);
         metrics.recordApprovalDecision(canonicalDecision(decision));
-        turnExecutor.submitResume(turn, feedback, thread.cwd(), emitter);
+        turnExecutor.submitResume(turn, feedback, thread.cwd(), emitter, runPolicyForTurn(turnId));
         return Map.of("delivered", true);
     }
 
@@ -234,6 +273,25 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
                 scope,
                 editedArgs,
                 java.time.Instant.now());
+    }
+
+    /**
+     * 读取原 turn 启动时保存的权限快照。
+     *
+     * <p>用户在审批弹窗停留期间可能又去设置页切换权限；恢复时必须沿用原 turn 的快照，
+     * 否则同一轮工具执行会在审批前后使用两套不同策略。</p>
+     */
+    private AgentRunPolicy runPolicyForTurn(String turnId) {
+        if (turnPersistenceService == null) {
+            return AgentRunPolicy.fromDefaults(agentLoopProperties);
+        }
+        return turnPersistenceService.findTurn(turnId)
+                .map(this::runPolicyFromEntity)
+                .orElseGet(() -> AgentRunPolicy.fromDefaults(agentLoopProperties));
+    }
+
+    private AgentRunPolicy runPolicyFromEntity(TurnEntity entity) {
+        return AgentRunPolicy.fromSnapshots(entity.getSandboxMode(), entity.getApprovalPolicy(), agentLoopProperties);
     }
 
     private String requiredText(JsonNode params, String fieldName) {

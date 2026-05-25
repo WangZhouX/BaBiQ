@@ -27,6 +27,7 @@ fun ChatScreen(
 	onRetryConnection: () -> Unit,
 	onSelectWorkspace: (String) -> Unit,
 	onSelectProvider: (String, String?) -> Unit,
+	onChangeSandboxMode: (String) -> Unit,
 	onToggleRuntime: () -> Unit,
 ) {
 	Column(
@@ -48,6 +49,7 @@ fun ChatScreen(
 			onSend = onSend,
 			onSelectWorkspace = onSelectWorkspace,
 			onSelectProvider = onSelectProvider,
+			onChangeSandboxMode = onChangeSandboxMode,
 		)
 	}
 }

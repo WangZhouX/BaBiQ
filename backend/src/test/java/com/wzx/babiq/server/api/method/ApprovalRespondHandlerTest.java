@@ -52,7 +52,7 @@ class ApprovalRespondHandlerTest {
         assertThat(((Map<?, ?>) payload).get("delivered")).isEqualTo(true);
         assertThat(turn.status()).isEqualTo(TurnStatus.RUNNING);
         assertThat(metrics.snapshot().approvalDecisionsByDecision()).containsEntry("approved", 1L);
-        verify(executor).submitResume(eq(turn), any(InterruptionMetadata.class), eq("."), any());
+        verify(executor).submitResume(eq(turn), any(InterruptionMetadata.class), eq("."), any(), any());
     }
 
     @Test
@@ -92,7 +92,7 @@ class ApprovalRespondHandlerTest {
         assertThat(((Map<?, ?>) payload).get("delivered")).isEqualTo(true);
         assertThat(metrics.snapshot().approvalDecisionsByDecision()).containsEntry("always", 1L);
         verify(approvalRuleService).rememberAlways(thread.id(), "write_file", "{\"path\":\"a.txt\"}", "session");
-        verify(executor).submitResume(eq(turn), any(InterruptionMetadata.class), eq("."), any());
+        verify(executor).submitResume(eq(turn), any(InterruptionMetadata.class), eq("."), any(), any());
     }
 
     private InterruptionMetadata metadata() {

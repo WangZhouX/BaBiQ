@@ -65,6 +65,7 @@ fun AppShell(
 					onRetryConnection = onRetryConnection,
 					onSelectWorkspace = onSelectWorkspace,
 					onSelectProvider = onSelectProvider,
+					onChangeSandboxMode = onSaveSandboxMode,
 					onToggleRuntime = onToggleRuntime,
 				)
 
