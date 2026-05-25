@@ -42,7 +42,11 @@ fun MessageBubble(message: ChatMessage) {
 				verticalArrangement = Arrangement.spacedBy(6.dp),
 				horizontalAlignment = Alignment.Start,
 			) {
-				Text(titleFor(message), style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
+				val title = titleFor(message)
+				if (title.isNotBlank()) {
+					// 普通聊天气泡不再显示“你 / BaBiQ”，只给工具和文件卡片保留语义标题，降低对话区噪音。
+					Text(title, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
+				}
 				Text(bodyFor(message), style = bodyStyleFor(message))
 			}
 		}
@@ -60,8 +64,8 @@ private fun backgroundFor(message: ChatMessage): Color =
 /** 根据消息类型选择气泡标题。 */
 private fun titleFor(message: ChatMessage): String =
 	when (message) {
-		is ChatMessage.User -> "你"
-		is ChatMessage.Agent -> if (message.streaming) "BaBiQ 正在输入" else "BaBiQ"
+		is ChatMessage.User -> ""
+		is ChatMessage.Agent -> ""
 		is ChatMessage.Tool -> "工具 · ${message.status}"
 		is ChatMessage.FileChange -> "文件 · ${message.status}"
 		is ChatMessage.TurnSummary -> "摘要"
