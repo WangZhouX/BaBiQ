@@ -184,6 +184,11 @@ public class ReActStrategy {
     /**
      * 构建 HITL 续跑配置。
      *
+     * <p>Bug 记录（2026-05-25）：用户批准 write_file 后，Agent 恢复执行时报
+     * “Human feedback metadata must be of type InterruptionMetadata”。根因是 SAA 的
+     * {@code resume()} 会先写入 HUMAN_FEEDBACK 占位字符串，如果它放在
+     * {@code addHumanFeedback(metadata)} 后面，就会覆盖真正的 InterruptionMetadata。</p>
+     *
      * @param threadId 业务线程 id
      * @param metadata 用户审批后的反馈元数据
      * @return 带 human feedback 和 resume 标记的 RunnableConfig
@@ -194,8 +199,9 @@ public class ReActStrategy {
         return RunnableConfig.builder()
                 .threadId(threadId)
                 .addMetadata(TurnObservationContext.METADATA_KEY, context)
-                .addHumanFeedback(metadata)
+                // 先调用 resume 写入 SAA 的占位标记，再写入真实审批反馈，避免占位字符串覆盖 InterruptionMetadata。
                 .resume()
+                .addHumanFeedback(metadata)
                 .build();
     }
 
