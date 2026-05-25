@@ -25,7 +25,6 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -248,8 +247,63 @@ class DeepSeekV4OpenAiChatModelTest {
     }
 
     @Test
-    @DisplayName("历史里 reasoning_content 丢失时，工具调用 assistant 消息直接 fail-fast")
-    void createRequest_should_fail_fast_when_tool_call_reasoning_is_missing() {
+    @DisplayName("HITL 恢复重建历史丢 metadata 时，仍应从同一工具调用的原始流缓存回填 reasoning_content")
+    void stream_should_recover_reasoning_from_cached_tool_call_when_resume_history_metadata_is_missing() {
+        OpenAiApi openAiApi = mock(OpenAiApi.class);
+        List<OpenAiApi.ChatCompletionRequest> capturedRequests = new ArrayList<>();
+        when(openAiApi.chatCompletionStream(any(OpenAiApi.ChatCompletionRequest.class), any()))
+                .thenAnswer(invocation -> {
+                    capturedRequests.add(invocation.getArgument(0));
+                    return Flux.just(
+                            chunk(null, message(null, OpenAiApi.ChatCompletionMessage.Role.ASSISTANT, null,
+                                    "我需要创建文件")),
+                            chunk(OpenAiApi.ChatCompletionFinishReason.TOOL_CALLS, message("",
+                                    null,
+                                    List.of(new OpenAiApi.ChatCompletionMessage.ToolCall(
+                                            "call_write_file",
+                                            "function",
+                                            new OpenAiApi.ChatCompletionMessage.ChatCompletionFunction(
+                                                    "write_file",
+                                                    "{\"path\":\"hello.html\"}"))),
+                                    null))
+                    );
+                })
+                .thenAnswer(invocation -> {
+                    capturedRequests.add(invocation.getArgument(0));
+                    return Flux.just(chunk(OpenAiApi.ChatCompletionFinishReason.STOP,
+                            message("已创建", OpenAiApi.ChatCompletionMessage.Role.ASSISTANT, null, null)));
+                });
+        DeepSeekV4OpenAiChatModel chatModel = new DeepSeekV4OpenAiChatModel(openAiApi, OpenAiChatOptions.builder()
+                .model("deepseek-v4-pro")
+                .streamUsage(true)
+                .internalToolExecutionEnabled(false)
+                .build());
+
+        chatModel.stream(new Prompt(List.of(new UserMessage("创建 hello.html")), chatModel.getDefaultOptions()))
+                .collectList()
+                .block();
+        Prompt resumePrompt = new Prompt(List.of(
+                new UserMessage("创建 hello.html"),
+                assistantToolCall(null),
+                ToolResponseMessage.builder()
+                        .responses(List.of(new ToolResponseMessage.ToolResponse(
+                                "call_write_file",
+                                "write_file",
+                                "ok")))
+                        .build()
+        ), chatModel.getDefaultOptions());
+
+        chatModel.stream(resumePrompt).collectList().block();
+
+        assertThat(capturedRequests).hasSize(2);
+        OpenAiApi.ChatCompletionMessage assistantWireMessage = capturedRequests.get(1).messages().get(1);
+        assertThat(assistantWireMessage.toolCalls()).hasSize(1);
+        assertThat(assistantWireMessage.reasoningContent()).isEqualTo("我需要创建文件");
+    }
+
+    @Test
+    @DisplayName("历史里 reasoning_content 丢失时，请求构建保留工具调用并交给 API 边界回填")
+    void createRequest_should_leave_missing_tool_call_reasoning_for_api_boundary_repair() {
         DeepSeekV4OpenAiChatModel chatModel = newModel(OpenAiChatOptions.builder()
                 .model("deepseek-v4-pro")
                 .streamUsage(true)
@@ -257,9 +311,12 @@ class DeepSeekV4OpenAiChatModelTest {
         AssistantMessage assistantMessage = assistantToolCall("");
         Prompt prompt = new Prompt(List.of(new UserMessage("创建文件"), assistantMessage), chatModel.getDefaultOptions());
 
-        assertThatThrownBy(() -> chatModel.createRequest(prompt, true))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("DeepSeek V4 thinking mode 缺少 reasoning_content");
+        OpenAiApi.ChatCompletionRequest request = chatModel.createRequest(prompt, true);
+        OpenAiApi.ChatCompletionMessage assistantWireMessage = request.messages().get(1);
+
+        assertThat(assistantWireMessage.toolCalls()).hasSize(1);
+        assertThat(assistantWireMessage.reasoningContent()).isNull();
+        assertThat(assistantWireMessage.content()).isEqualTo("");
     }
 
     @Test

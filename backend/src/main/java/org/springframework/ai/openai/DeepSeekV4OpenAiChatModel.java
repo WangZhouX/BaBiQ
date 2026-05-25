@@ -227,10 +227,19 @@ public class DeepSeekV4OpenAiChatModel extends OpenAiChatModel {
         if (!StringUtils.hasText(reasoningContent)) {
             // 2026-05-25 Bug 修复记录：
             // DeepSeek V4 官方 thinking mode 要求“原样回传”真实 reasoning_content。
-            // 空字符串占位会继续被 DeepSeek 判定为未回传，所以这里选择在本地 fail-fast，
-            // 让日志直接指向 BaBiQ 的流式 reasoning 保存链路，而不是再次发出必然失败的 HTTP 请求。
-            throw new IllegalStateException("DeepSeek V4 thinking mode 缺少 reasoning_content，"
-                    + "无法安全构造带 tool_calls 的历史 assistant 消息");
+            // 真实 HITL 恢复路径会重建历史 AssistantMessage，metadata 可能已经丢失；
+            // 这里不能提前 fail-fast，否则 API 边界就没有机会根据首轮流式响应缓存回填 reasoning。
+            Object content = message.rawContent() == null ? "" : message.rawContent();
+            return new ChatCompletionMessage(
+                    content,
+                    message.role(),
+                    message.name(),
+                    message.toolCallId(),
+                    message.toolCalls(),
+                    message.refusal(),
+                    message.audioOutput(),
+                    message.annotations(),
+                    null);
         }
         // Oh My Pi 官方集成文档也提示 assistant tool_call 需要非 null content；空字符串比 null 更稳定。
         Object content = message.rawContent() == null ? "" : message.rawContent();

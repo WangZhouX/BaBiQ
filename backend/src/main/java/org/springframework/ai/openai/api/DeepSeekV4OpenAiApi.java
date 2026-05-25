@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * DeepSeek V4 thinking mode 专用 OpenAI API 包装器。
@@ -49,6 +50,15 @@ public final class DeepSeekV4OpenAiApi extends OpenAiApi {
 
     /** 被包装的真实 OpenAI-compatible API 客户端，负责实际 HTTP 请求。 */
     private final OpenAiApi delegate;
+
+    /**
+     * 按工具调用指纹缓存 DeepSeek 首轮返回的完整 reasoning_content。
+     *
+     * <p>HITL 审批恢复时，Spring AI/agent-framework 可能只保留 tool_call 本体，
+     * 不再保留 AssistantMessage metadata。这个缓存绑定在同一个 API 包装器实例上，
+     * 让暂停前的流式响应和审批后的续轮请求可以在 HTTP 边界重新接上。</p>
+     */
+    private final Map<String, String> reasoningByToolCallFingerprint = new ConcurrentHashMap<>();
 
     /**
      * 创建 DeepSeek V4 API 包装器。
@@ -115,10 +125,171 @@ public final class DeepSeekV4OpenAiApi extends OpenAiApi {
     @Override
     public Flux<ChatCompletionChunk> chatCompletionStream(ChatCompletionRequest chatRequest,
                                                           MultiValueMap<String, String> additionalHttpHeader) {
-        logRequestShape(chatRequest);
+        ChatCompletionRequest repairedRequest = repairMissingReasoning(chatRequest);
+        logRequestShape(repairedRequest);
         DeepSeekReasoningChunkAccumulator accumulator = new DeepSeekReasoningChunkAccumulator();
-        return delegate.chatCompletionStream(chatRequest, additionalHttpHeader)
-                .map(accumulator::preserve);
+        return delegate.chatCompletionStream(repairedRequest, additionalHttpHeader)
+                .map(accumulator::preserve)
+                .doOnNext(this::rememberReasoningFromChunk);
+    }
+
+    /**
+     * 在真正发出 HTTP 前修补缺失的 reasoning_content。
+     *
+     * <p>这个位置比 {@code ChatModel#createRequest} 更靠近出站请求，也能覆盖
+     * agent-framework 在审批恢复时重新拼装历史消息导致 metadata 丢失的场景。</p>
+     *
+     * @param request Spring AI 已构造好的 OpenAI-compatible 请求
+     * @return 如果命中缓存则返回带 reasoning_content 的新请求，否则返回原请求
+     */
+    private ChatCompletionRequest repairMissingReasoning(ChatCompletionRequest request) {
+        if (request == null || !isThinkingEnabled(request.extraBody()) || CollectionUtils.isEmpty(request.messages())) {
+            return request;
+        }
+
+        List<ChatCompletionMessage> repairedMessages = new ArrayList<>(request.messages().size());
+        boolean changed = false;
+        for (ChatCompletionMessage message : request.messages()) {
+            if (message.role() != ChatCompletionMessage.Role.ASSISTANT
+                    || CollectionUtils.isEmpty(message.toolCalls())
+                    || StringUtils.hasText(message.reasoningContent())) {
+                repairedMessages.add(message);
+                continue;
+            }
+
+            String fingerprint = toolCallFingerprint(message.toolCalls());
+            String reasoningContent = reasoningByToolCallFingerprint.get(fingerprint);
+            if (StringUtils.hasText(reasoningContent)) {
+                repairedMessages.add(copyMessageWithReasoning(message, reasoningContent));
+                changed = true;
+            }
+            else {
+                repairedMessages.add(message);
+            }
+        }
+
+        if (!changed) {
+            return request;
+        }
+        log.info("DeepSeek V4 出站请求已从首轮工具调用缓存回填 reasoning_content: model={}", request.model());
+        return copyRequestWithMessages(request, List.copyOf(repairedMessages));
+    }
+
+    /**
+     * 从已经补齐 reasoning 的流式 chunk 中记住工具调用和 reasoning 的对应关系。
+     *
+     * <p>缓存只使用工具调用 id、type、函数名和参数做指纹，不记录到日志，避免把工具参数暴露到控制台。</p>
+     *
+     * @param chunk DeepSeek/Spring AI 解析出的流式响应分片
+     */
+    private void rememberReasoningFromChunk(ChatCompletionChunk chunk) {
+        if (chunk == null || CollectionUtils.isEmpty(chunk.choices())) {
+            return;
+        }
+        for (ChatCompletionChunk.ChunkChoice choice : chunk.choices()) {
+            ChatCompletionMessage delta = choice.delta();
+            if (delta == null || CollectionUtils.isEmpty(delta.toolCalls())
+                    || !StringUtils.hasText(delta.reasoningContent())) {
+                continue;
+            }
+            reasoningByToolCallFingerprint.put(toolCallFingerprint(delta.toolCalls()), delta.reasoningContent());
+        }
+    }
+
+    /**
+     * 复制 assistant 消息并只替换 reasoning_content。
+     *
+     * @param message 原始 assistant tool_call 消息
+     * @param reasoningContent 从首轮 DeepSeek 流式响应中缓存到的 reasoning_content
+     * @return 带 reasoning_content 的新消息
+     */
+    private static ChatCompletionMessage copyMessageWithReasoning(ChatCompletionMessage message,
+                                                                  String reasoningContent) {
+        Object content = message.rawContent() == null ? "" : message.rawContent();
+        return new ChatCompletionMessage(
+                content,
+                message.role(),
+                message.name(),
+                message.toolCallId(),
+                message.toolCalls(),
+                message.refusal(),
+                message.audioOutput(),
+                message.annotations(),
+                reasoningContent);
+    }
+
+    /**
+     * 复制请求并只替换 messages 字段，避免修改 Spring AI 原始不可变 record。
+     *
+     * @param source 原请求
+     * @param messages 修补后的消息列表
+     * @return 新的请求 record
+     */
+    private static ChatCompletionRequest copyRequestWithMessages(ChatCompletionRequest source,
+                                                                 List<ChatCompletionMessage> messages) {
+        return new ChatCompletionRequest(
+                messages,
+                source.model(),
+                source.store(),
+                source.metadata(),
+                source.frequencyPenalty(),
+                source.logitBias(),
+                source.logprobs(),
+                source.topLogprobs(),
+                source.maxTokens(),
+                source.maxCompletionTokens(),
+                source.n(),
+                source.outputModalities(),
+                source.audioParameters(),
+                source.presencePenalty(),
+                source.responseFormat(),
+                source.seed(),
+                source.serviceTier(),
+                source.stop(),
+                source.stream(),
+                source.streamOptions(),
+                source.temperature(),
+                source.topP(),
+                source.tools(),
+                source.toolChoice(),
+                source.parallelToolCalls(),
+                source.user(),
+                source.reasoningEffort(),
+                source.webSearchOptions(),
+                source.verbosity(),
+                source.promptCacheKey(),
+                source.safetyIdentifier(),
+                source.extraBody());
+    }
+
+    /**
+     * 为同一条工具调用生成稳定指纹，用于把首轮流式 tool_call 与审批后的历史 assistant 对齐。
+     *
+     * @param toolCalls assistant 消息携带的工具调用列表
+     * @return 不可逆但稳定的本地字符串指纹
+     */
+    private static String toolCallFingerprint(List<ChatCompletionMessage.ToolCall> toolCalls) {
+        StringBuilder fingerprint = new StringBuilder();
+        for (ChatCompletionMessage.ToolCall toolCall : toolCalls) {
+            ChatCompletionMessage.ChatCompletionFunction function = toolCall.function();
+            fingerprint.append(nullToEmpty(toolCall.index())).append('\u001F')
+                    .append(nullToEmpty(toolCall.id())).append('\u001F')
+                    .append(nullToEmpty(toolCall.type())).append('\u001F')
+                    .append(function == null ? "" : nullToEmpty(function.name())).append('\u001F')
+                    .append(function == null ? "" : nullToEmpty(function.arguments()))
+                    .append('\u001E');
+        }
+        return fingerprint.toString();
+    }
+
+    /**
+     * 把可空值归一为字符串，保证指纹逻辑不因为 null 抛异常。
+     *
+     * @param value 可空字段值
+     * @return null 对应空字符串，其余值使用 {@link String#valueOf(Object)}
+     */
+    private static String nullToEmpty(Object value) {
+        return value == null ? "" : String.valueOf(value);
     }
 
     /**
