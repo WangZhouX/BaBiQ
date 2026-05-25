@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="babiq-bg" x1="40" y1="28" x2="216" y2="228" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2F64A7"/>
+      <stop offset="1" stop-color="#183B68"/>
+    </linearGradient>
+  </defs>
+  <rect x="24" y="24" width="208" height="208" rx="48" fill="url(#babiq-bg)"/>
+  <path d="M78 66h64c30 0 51 17 51 43 0 15-8 28-21 35 17 7 27 22 27 42 0 28-22 44-57 44H78V66Zm50 68c19 0 31-8 31-23 0-14-11-22-31-22h-16v45h16Zm7 73c21 0 32-8 32-24 0-17-11-25-33-25h-22v49h23Z" fill="#FFFFFF"/>
+  <circle cx="190" cy="190" r="22" fill="#9DE0B6"/>
+</svg>
