@@ -6,13 +6,18 @@ import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.openai.api.OpenAiApi;
+import reactor.core.publisher.Flux;
 
 import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * DeepSeek V4 专用 OpenAI 兼容适配器测试。
@@ -22,6 +27,41 @@ import static org.assertj.core.api.Assertions.assertThat;
  * tool_calls，后续请求就必须把上一轮返回的 reasoning_content 原样带回去。</p>
  */
 class DeepSeekV4OpenAiChatModelTest {
+
+    @Test
+    @DisplayName("流式工具调用必须在工具 chunk 上保留已累计的 reasoning_content")
+    void stream_should_preserve_accumulated_reasoning_content_for_tool_call_chunks() {
+        OpenAiApi openAiApi = mock(OpenAiApi.class);
+        when(openAiApi.chatCompletionStream(any(OpenAiApi.ChatCompletionRequest.class), any()))
+                .thenReturn(Flux.just(
+                        chunk(null, message(null, OpenAiApi.ChatCompletionMessage.Role.ASSISTANT, null,
+                                "我需要创建文件")),
+                        chunk(OpenAiApi.ChatCompletionFinishReason.TOOL_CALLS, message("",
+                                null,
+                                List.of(new OpenAiApi.ChatCompletionMessage.ToolCall(
+                                        "call_write_file",
+                                        "function",
+                                        new OpenAiApi.ChatCompletionMessage.ChatCompletionFunction(
+                                                "write_file",
+                                                "{\"path\":\"hello.html\"}"))),
+                                null))
+                ));
+        DeepSeekV4OpenAiChatModel chatModel = new DeepSeekV4OpenAiChatModel(openAiApi, OpenAiChatOptions.builder()
+                .model("deepseek-v4-pro")
+                .streamUsage(true)
+                .internalToolExecutionEnabled(false)
+                .build());
+
+        List<ChatResponse> responses = chatModel.stream(new Prompt(List.of(new UserMessage("创建 hello.html")),
+                chatModel.getDefaultOptions())).collectList().block();
+
+        ChatResponse toolCallResponse = responses.stream()
+                .filter(ChatResponse::hasToolCalls)
+                .findFirst()
+                .orElseThrow();
+        assertThat(toolCallResponse.getResult().getOutput().getMetadata())
+                .containsEntry(DeepSeekV4OpenAiChatModel.REASONING_METADATA_KEY, "我需要创建文件");
+    }
 
     @Test
     @DisplayName("工具调用历史必须回放 reasoning_content，并移除 thinking mode 不支持的 tool_choice")
@@ -129,5 +169,26 @@ class DeepSeekV4OpenAiChatModelTest {
                         "write_file",
                         "{\"path\":\"hello.html\"}")))
                 .build();
+    }
+
+    private static OpenAiApi.ChatCompletionChunk chunk(OpenAiApi.ChatCompletionFinishReason finishReason,
+                                                       OpenAiApi.ChatCompletionMessage delta) {
+        return new OpenAiApi.ChatCompletionChunk(
+                "chatcmpl-test",
+                List.of(new OpenAiApi.ChatCompletionChunk.ChunkChoice(finishReason, 0, delta, null)),
+                1L,
+                "deepseek-v4-pro",
+                null,
+                null,
+                "chat.completion.chunk",
+                null);
+    }
+
+    private static OpenAiApi.ChatCompletionMessage message(Object content,
+                                                           OpenAiApi.ChatCompletionMessage.Role role,
+                                                           List<OpenAiApi.ChatCompletionMessage.ToolCall> toolCalls,
+                                                           String reasoningContent) {
+        return new OpenAiApi.ChatCompletionMessage(content, role, null, null, toolCalls, null, null, null,
+                reasoningContent);
     }
 }
