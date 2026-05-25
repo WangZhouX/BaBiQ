@@ -8,9 +8,13 @@ import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
+import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.definition.ToolDefinition;
 import reactor.core.publisher.Flux;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -61,6 +65,49 @@ class DeepSeekV4OpenAiChatModelTest {
                 .orElseThrow();
         assertThat(toolCallResponse.getResult().getOutput().getMetadata())
                 .containsEntry(DeepSeekV4OpenAiChatModel.REASONING_METADATA_KEY, "我需要创建文件");
+    }
+
+    @Test
+    @DisplayName("内部工具执行后的第二次请求必须回放第一次工具调用的 reasoning_content")
+    void stream_internal_tool_execution_should_replay_reasoning_content_in_followup_request() {
+        OpenAiApi openAiApi = mock(OpenAiApi.class);
+        List<OpenAiApi.ChatCompletionRequest> capturedRequests = new ArrayList<>();
+        when(openAiApi.chatCompletionStream(any(OpenAiApi.ChatCompletionRequest.class), any()))
+                .thenAnswer(invocation -> {
+                    capturedRequests.add(invocation.getArgument(0));
+                    return Flux.just(
+                            chunk(null, message(null, OpenAiApi.ChatCompletionMessage.Role.ASSISTANT, null,
+                                    "我需要创建文件")),
+                            chunk(OpenAiApi.ChatCompletionFinishReason.TOOL_CALLS, message("",
+                                    null,
+                                    List.of(new OpenAiApi.ChatCompletionMessage.ToolCall(
+                                            "call_write_file",
+                                            "function",
+                                            new OpenAiApi.ChatCompletionMessage.ChatCompletionFunction(
+                                                    "write_file",
+                                                    "{\"path\":\"hello.html\"}"))),
+                                    null))
+                    );
+                })
+                .thenAnswer(invocation -> {
+                    capturedRequests.add(invocation.getArgument(0));
+                    return Flux.just(chunk(OpenAiApi.ChatCompletionFinishReason.STOP,
+                            message("已创建", OpenAiApi.ChatCompletionMessage.Role.ASSISTANT, null, null)));
+                });
+        DeepSeekV4OpenAiChatModel chatModel = new DeepSeekV4OpenAiChatModel(openAiApi, OpenAiChatOptions.builder()
+                .model("deepseek-v4-pro")
+                .streamUsage(true)
+                .build());
+        ToolCallingChatOptions toolOptions = ToolCallingChatOptions.builder()
+                .toolCallbacks(fakeWriteFileTool())
+                .build();
+
+        chatModel.stream(new Prompt(List.of(new UserMessage("创建 hello.html")), toolOptions)).collectList().block();
+
+        assertThat(capturedRequests).hasSize(2);
+        OpenAiApi.ChatCompletionMessage assistantWireMessage = capturedRequests.get(1).messages().get(1);
+        assertThat(assistantWireMessage.toolCalls()).hasSize(1);
+        assertThat(assistantWireMessage.reasoningContent()).isEqualTo("我需要创建文件");
     }
 
     @Test
@@ -169,6 +216,30 @@ class DeepSeekV4OpenAiChatModelTest {
                         "write_file",
                         "{\"path\":\"hello.html\"}")))
                 .build();
+    }
+
+    /**
+     * 提供一个只服务测试的 write_file 工具，让 Spring AI 内部工具执行链真的跑起来。
+     *
+     * <p>这比直接构造历史消息更接近线上 bug：线上是 DeepSeek 返回 tool_call 后，
+     * Spring AI 先执行工具，再把工具结果和 assistant tool_call 历史拼成第二次请求。</p>
+     */
+    private static ToolCallback fakeWriteFileTool() {
+        return new ToolCallback() {
+            @Override
+            public ToolDefinition getToolDefinition() {
+                return ToolDefinition.builder()
+                        .name("write_file")
+                        .description("写入文件")
+                        .inputSchema("{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}")
+                        .build();
+            }
+
+            @Override
+            public String call(String toolInput) {
+                return "ok";
+            }
+        };
     }
 
     private static OpenAiApi.ChatCompletionChunk chunk(OpenAiApi.ChatCompletionFinishReason finishReason,

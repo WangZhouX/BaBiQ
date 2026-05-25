@@ -4,19 +4,17 @@ import io.micrometer.observation.ObservationRegistry;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.MessageType;
-import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.model.tool.ToolCallingManager;
 import org.springframework.ai.model.tool.ToolExecutionEligibilityPredicate;
 import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.ai.openai.api.OpenAiApi.ChatCompletionMessage;
 import org.springframework.ai.openai.api.OpenAiApi.ChatCompletionRequest;
+import org.springframework.ai.openai.api.DeepSeekV4OpenAiApi;
 import org.springframework.ai.retry.RetryUtils;
 import org.springframework.retry.support.RetryTemplate;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
-import reactor.core.publisher.Flux;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -37,6 +35,11 @@ import java.util.Map;
  * Spring AI OpenAI-compatible 能从流式响应里解析 reasoning_content，并保存到
  * AssistantMessage metadata，但再次构建请求时不会把它写回 JSON，导致 HITL 审批恢复后
  * DeepSeek 返回 400。该适配器在请求发出前补齐这一段历史。</p>
+ *
+ * <p>Bug 记录（2026-05-25 二次修复）：第一次修复只覆盖了 {@link #createRequest(Prompt, boolean)}
+ * 和 {@code ChatModel.stream()} 外层 metadata，但 Spring AI 会在外层 stream 返回给调用方之前，
+ * 于 {@code OpenAiChatModel.internalStream} 内部执行工具并递归发起第二次请求。真正的修复必须下沉到
+ * {@link DeepSeekV4OpenAiApi}，在原始 chunk 进入 Spring AI 工具调用判断之前保留 reasoning_content。</p>
  */
 public class DeepSeekV4OpenAiChatModel extends OpenAiChatModel {
 
@@ -65,7 +68,7 @@ public class DeepSeekV4OpenAiChatModel extends OpenAiChatModel {
      * @param defaultOptions 已绑定模型名、stream usage 和 DeepSeek thinking 参数的默认选项
      */
     public DeepSeekV4OpenAiChatModel(OpenAiApi openAiApi, OpenAiChatOptions defaultOptions) {
-        super(openAiApi,
+        super(new DeepSeekV4OpenAiApi(openAiApi),
                 defaultOptions,
                 ToolCallingManager.builder().build(),
                 RetryUtils.DEFAULT_RETRY_TEMPLATE,
@@ -88,32 +91,12 @@ public class DeepSeekV4OpenAiChatModel extends OpenAiChatModel {
                                      RetryTemplate retryTemplate,
                                      ObservationRegistry observationRegistry,
                                      ToolExecutionEligibilityPredicate toolExecutionEligibilityPredicate) {
-        super(openAiApi,
+        super(new DeepSeekV4OpenAiApi(openAiApi),
                 defaultOptions,
                 toolCallingManager,
                 retryTemplate,
                 observationRegistry,
                 toolExecutionEligibilityPredicate);
-    }
-
-    /**
-     * 流式调用 DeepSeek V4。
-     *
-     * <p>Bug 记录（2026-05-25）：Spring AI OpenAI 流式适配会把每个 chunk 的
-     * {@code reasoning_content} 放到 {@link AssistantMessage#getMetadata()} 的
-     * {@code reasoningContent} 中，但没有 reasoning 的后续 chunk 会写入空字符串。
-     * Spring AI 的聚合器随后用 {@code putAll} 合并 metadata，导致真正的 reasoning
-     * 被工具调用 chunk 或结束 chunk 覆盖为空。DeepSeek V4 官方要求 tool-call
-     * assistant 在后续请求里原样回传 reasoning_content，因此这里在流式边界维护一个
-     * 累计器，把已经收到的 reasoning 重新补回每一个后续 chunk。</p>
-     *
-     * @param prompt Spring AI 上游传入的模型请求
-     * @return 已保留 DeepSeek reasoning_content 的流式响应
-     */
-    @Override
-    public Flux<ChatResponse> stream(Prompt prompt) {
-        DeepSeekReasoningAccumulator accumulator = new DeepSeekReasoningAccumulator();
-        return super.stream(prompt).map(accumulator::preserve);
     }
 
     /**
@@ -344,84 +327,5 @@ public class DeepSeekV4OpenAiChatModel extends OpenAiChatModel {
             return !(type instanceof String typeText && THINKING_DISABLED.equalsIgnoreCase(typeText.trim()));
         }
         return true;
-    }
-
-    /**
-     * DeepSeek V4 流式 reasoning 累计器。
-     *
-     * <p>这个对象只服务一次 {@link #stream(Prompt)} 调用，不能做成静态全局状态。它把
-     * DeepSeek 分片返回的 reasoning_content 拼接成完整文本，并写回当前响应的
-     * AssistantMessage metadata，保证后续 SAA Graph、MessageAggregator 和 HITL 恢复
-     * 看到的是完整 reasoning，而不是最后一个 chunk 的空字符串。</p>
-     */
-    private static final class DeepSeekReasoningAccumulator {
-
-        /** 当前 HTTP 流里已经收到的 reasoning_content 片段，按 DeepSeek 返回顺序拼接。 */
-        private final StringBuilder reasoningContent = new StringBuilder();
-
-        /**
-         * 保留当前 chunk 之前累计到的 reasoning_content。
-         *
-         * @param response Spring AI 原始流式响应 chunk
-         * @return metadata 已补齐累计 reasoning_content 的响应；没有 reasoning 时原样返回
-         */
-        private ChatResponse preserve(ChatResponse response) {
-            if (response == null || CollectionUtils.isEmpty(response.getResults())) {
-                return response;
-            }
-
-            List<Generation> generations = new ArrayList<>(response.getResults().size());
-            boolean changed = false;
-            for (Generation generation : response.getResults()) {
-                AssistantMessage output = generation.getOutput();
-                appendReasoningDelta(output);
-                if (reasoningContent.length() == 0) {
-                    generations.add(generation);
-                    continue;
-                }
-
-                Generation preservedGeneration = preserveGeneration(generation, reasoningContent.toString());
-                generations.add(preservedGeneration);
-                changed = changed || preservedGeneration != generation;
-            }
-            return changed ? new ChatResponse(generations, response.getMetadata()) : response;
-        }
-
-        /**
-         * 从当前 AssistantMessage metadata 里读取本 chunk 新增的 reasoning_content。
-         *
-         * @param output Spring AI 当前 chunk 的 assistant 输出
-         */
-        private void appendReasoningDelta(AssistantMessage output) {
-            Object value = output.getMetadata().get(REASONING_METADATA_KEY);
-            if (value instanceof String delta && StringUtils.hasText(delta)) {
-                reasoningContent.append(delta);
-            }
-        }
-
-        /**
-         * 把累计 reasoning_content 写回 Generation。
-         *
-         * @param generation Spring AI 原始生成结果
-         * @param fullReasoning 当前流已经累计出的完整 reasoning_content
-         * @return metadata 已补齐的生成结果
-         */
-        private Generation preserveGeneration(Generation generation, String fullReasoning) {
-            AssistantMessage output = generation.getOutput();
-            Object existing = output.getMetadata().get(REASONING_METADATA_KEY);
-            if (fullReasoning.equals(existing)) {
-                return generation;
-            }
-
-            Map<String, Object> metadata = new LinkedHashMap<>(output.getMetadata());
-            metadata.put(REASONING_METADATA_KEY, fullReasoning);
-            AssistantMessage preservedMessage = AssistantMessage.builder()
-                    .content(output.getText())
-                    .properties(Map.copyOf(metadata))
-                    .toolCalls(output.getToolCalls())
-                    .media(output.getMedia())
-                    .build();
-            return new Generation(preservedMessage, generation.getMetadata());
-        }
     }
 }
