@@ -68,10 +68,12 @@ class BaBiQSandboxInterceptorTest {
         var request = new com.alibaba.cloud.ai.graph.agent.interceptor.ToolCallRequest(
                 "write_file", arguments, "call_1", context);
 
-        interceptor.interceptToolCall(request, ignored -> {
+        var response = interceptor.interceptToolCall(request, ignored -> {
             throw new AssertionError("沙箱拒绝时不应继续调用真实工具");
         });
 
+        assertThat(response.toToolResponse().id()).isEqualTo("call_1");
+        assertThat(response.toToolResponse().name()).isEqualTo("write_file");
         assertThat(emitted).hasSize(1);
         assertThat(emitted.get(0)).isInstanceOf(FileChangeItem.class);
         FileChangeItem item = (FileChangeItem) emitted.get(0);

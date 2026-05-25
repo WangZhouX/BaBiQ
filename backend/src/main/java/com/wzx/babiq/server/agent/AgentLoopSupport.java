@@ -6,6 +6,7 @@ import com.wzx.babiq.server.observability.TurnObservationContext;
 import com.wzx.babiq.server.observability.TurnObservationRegistry;
 import com.wzx.babiq.server.observability.TurnSummaryEmitter;
 import org.slf4j.Logger;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 
 import java.util.UUID;
 import java.util.concurrent.CancellationException;
@@ -48,7 +49,8 @@ final class AgentLoopSupport {
                      TurnSummaryEmitter summaryEmitter,
                      TurnObservationContext context,
                      TurnObservationRegistry observationRegistry) {
-        logger.error("AgentLoop 执行失败 turnId={}", turn.id(), exception);
+        String failureMessage = failureMessage(exception);
+        logger.error("AgentLoop 执行失败 turnId={},reason={}", turn.id(), failureMessage, exception);
         if (isInterrupted(exception) || Thread.currentThread().isInterrupted()) {
             try {
                 if (!turn.status().isTerminal()) {
@@ -63,12 +65,12 @@ final class AgentLoopSupport {
             return;
         }
         if (!turn.status().isTerminal()) {
-            turn.fail(exception.getMessage());
+            turn.fail(failureMessage);
         }
         try {
             emitSummary(logger, turn, emitter, summaryEmitter, context, "failed");
             observationRegistry.remove(turn.id());
-            emitter.emitTurnFailed(exception.getMessage());
+            emitter.emitTurnFailed(failureMessage);
         } catch (Exception sendException) {
             logger.error("发送 turn/failed 失败 turnId={}", turn.id(), sendException);
         }
@@ -85,6 +87,42 @@ final class AgentLoopSupport {
         } catch (Exception exception) {
             logger.warn("发送 turnSummary 失败 turnId={},status={}", turn.id(), status, exception);
         }
+    }
+
+    /**
+     * 把底层异常转换成用户和数据库都能看懂的失败原因。
+     *
+     * <p>2026-05-25 Bug 修复记录：DeepSeek/OpenAI 兼容接口返回 400 时，真正的协议原因在 HTTP
+     * response body 里；如果只保存 {@link Exception#getMessage()}，只能看到“400 Bad Request from POST ...”，
+     * 后续排查无法判断是缺少 tool response、reasoning_content，还是请求参数不被支持。</p>
+     *
+     * @param exception AgentLoop 捕获到的异常
+     * @return 带 HTTP 响应体的精简失败信息
+     */
+    static String failureMessage(Exception exception) {
+        WebClientResponseException webClientException = findCause(exception, WebClientResponseException.class);
+        if (webClientException == null) {
+            return exception.getMessage();
+        }
+        String responseBody = webClientException.getResponseBodyAsString();
+        if (responseBody == null || responseBody.isBlank()) {
+            return webClientException.getMessage();
+        }
+        return webClientException.getMessage() + " | responseBody=" + responseBody;
+    }
+
+    /**
+     * 沿异常 cause 链查找指定类型，避免 Reactor 包装异常后丢失真正的 HTTP 错误对象。
+     */
+    private static <T extends Throwable> T findCause(Throwable throwable, Class<T> type) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (type.isInstance(current)) {
+                return type.cast(current);
+            }
+            current = current.getCause();
+        }
+        return null;
     }
 
     /**

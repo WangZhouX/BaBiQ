@@ -47,7 +47,7 @@ class SpotlightingToolInterceptorTest {
                 .build();
 
         ToolCallResponse response = interceptor.interceptToolCall(request, ignored ->
-                ToolCallResponse.error("read_file", "call_1", "denied"));
+                ToolCallResponse.error("call_1", "read_file", "denied"));
 
         assertThat(response.isError()).isTrue();
         assertThat(response.getResult())

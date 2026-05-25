@@ -84,7 +84,11 @@ public final class BaBiQSandboxInterceptor extends ToolInterceptor {
         String rejection = checkOrReject(request.getToolName(), request.getArguments(), request.getContext());
         if (rejection != null) {
             emitDeniedFileChangeIfNeeded(request, rejection);
-            return ToolCallResponse.error(request.getToolName(), request.getToolCallId(), rejection);
+            // 2026-05-25 修复记录：SAA 的静态工厂方法参数顺序是 toolCallId、toolName、错误内容。
+            // 如果按“工具名、调用 id”的直觉顺序传参，最终生成的 ToolResponseMessage 会把
+            // tool_call_id 写成工具名，DeepSeek/OpenAI 兼容接口会认为 assistant.tool_calls
+            // 没有匹配的 tool 响应，从而在审批恢复后返回 400 Bad Request。
+            return ToolCallResponse.error(request.getToolCallId(), request.getToolName(), rejection);
         }
         return handler.call(request);
     }

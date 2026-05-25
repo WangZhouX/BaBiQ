@@ -69,7 +69,7 @@ class ToolCallRecordTest {
                 .build();
 
         ToolCallResponse response = interceptor.interceptToolCall(request,
-                ignored -> ToolCallResponse.of("read_file", "call_tool", "README"));
+                ignored -> ToolCallResponse.of("call_tool", "read_file", "README"));
 
         assertThat(response.getResult()).isEqualTo("README");
         assertThat(toolCallPersistenceService.listByTurnId("turn_tool"))

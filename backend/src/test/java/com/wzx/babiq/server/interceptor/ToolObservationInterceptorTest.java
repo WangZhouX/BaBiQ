@@ -31,7 +31,7 @@ class ToolObservationInterceptorTest {
                 .build();
 
         ToolCallResponse response = interceptor.interceptToolCall(request,
-                ignored -> ToolCallResponse.of("read_file", "call_1", "ok"));
+                ignored -> ToolCallResponse.of("call_1", "read_file", "ok"));
 
         assertThat(response.getResult()).isEqualTo("ok");
         assertThat(context.toolCalls()).isEqualTo(1);
@@ -56,7 +56,7 @@ class ToolObservationInterceptorTest {
                 .build();
 
         ToolCallResponse response = interceptor.interceptToolCall(request,
-                ignored -> ToolCallResponse.of("read_file", "call_legacy", "ok"));
+                ignored -> ToolCallResponse.of("call_legacy", "read_file", "ok"));
 
         assertThat(response.getResult()).isEqualTo("ok");
         assertThat(context.toolCalls()).isEqualTo(1);

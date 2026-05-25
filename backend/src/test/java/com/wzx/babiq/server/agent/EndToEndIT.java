@@ -1,5 +1,6 @@
 package com.wzx.babiq.server.agent;
 
+import com.alibaba.cloud.ai.graph.action.InterruptionMetadata;
 import com.wzx.babiq.server.conversation.ItemEmitter;
 import com.wzx.babiq.server.conversation.Turn;
 import com.wzx.babiq.server.conversation.TurnStatus;
@@ -9,6 +10,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
@@ -49,6 +52,9 @@ class EndToEndIT {
     @jakarta.annotation.Resource
     private AgentLoop agentLoop;
 
+    @jakarta.annotation.Resource
+    private PendingApprovals pendingApprovals;
+
     /**
      * 每个用例使用新的 mock ChatModel，避免调用次数在测试间串扰。
      */
@@ -75,6 +81,31 @@ class EndToEndIT {
         assertThat(emittedItems.get(emittedItems.size() - 1).type()).isEqualTo("turnSummary");
     }
 
+    @Test
+    void agent_loop_resume_after_hitl_approval_should_execute_tool_before_calling_model_again() throws Exception {
+        HitlToolCallingChatModel model = new HitlToolCallingChatModel();
+        Mockito.when(chatClientFactory.resolveChatModel("e2e-provider")).thenReturn(model);
+        Mockito.when(chatClientFactory.resolveChatModel(null)).thenReturn(model);
+        Mockito.when(chatClientFactory.resolveModelName(null)).thenReturn("mock-react");
+        List<ThreadItem> emittedItems = new ArrayList<>();
+        ItemEmitter emitter = capturingEmitter(emittedItems);
+        Turn turn = new Turn("turn_hitl", "thr_hitl");
+        turn.start();
+
+        agentLoop.invoke(turn, "在当前目录执行 cd", "e2e-provider", ".", emitter);
+
+        assertThat(turn.status()).isEqualTo(TurnStatus.WAITING_APPROVAL);
+        InterruptionMetadata pending = pendingApprovals.take("thr_hitl");
+        assertThat(pending).isNotNull();
+
+        agentLoop.invokeResume(turn, approvedFeedback(pending), ".", emitter);
+
+        assertThat(model.sawToolResponseBeforeResumeModelCall())
+                .as("HITL 审批恢复后，必须先执行工具并把 ToolResponseMessage 补到模型上下文里")
+                .isTrue();
+        assertThat(turn.status()).isEqualTo(TurnStatus.COMPLETED);
+    }
+
     private ItemEmitter capturingEmitter(List<ThreadItem> emittedItems) throws Exception {
         ItemEmitter emitter = Mockito.mock(ItemEmitter.class);
         Mockito.doAnswer(invocation -> {
@@ -86,6 +117,23 @@ class EndToEndIT {
             return null;
         }).when(emitter).emitTurnSummary(any(ThreadItem.class));
         return emitter;
+    }
+
+    /**
+     * 把 HumanInTheLoopHook 产生的暂停元数据转换成“用户已批准”的恢复元数据。
+     *
+     * <p>真实链路里这一步由 {@code approval/respond} 完成；集成测试直接构造它，
+     * 可以把关注点收窄到 AgentLoop 与 SAA Graph 的恢复顺序。</p>
+     */
+    private InterruptionMetadata approvedFeedback(InterruptionMetadata pending) {
+        InterruptionMetadata.Builder builder = InterruptionMetadata.builder(pending);
+        builder.toolFeedbacks(List.of());
+        for (InterruptionMetadata.ToolFeedback feedback : pending.toolFeedbacks()) {
+            builder.addToolFeedback(InterruptionMetadata.ToolFeedback.builder(feedback)
+                    .result(InterruptionMetadata.ToolFeedback.FeedbackResult.APPROVED)
+                    .build());
+        }
+        return builder.build();
     }
 
     /**
@@ -119,6 +167,95 @@ class EndToEndIT {
         @Override
         public Flux<ChatResponse> stream(Prompt prompt) {
             return Flux.just(call(prompt));
+        }
+    }
+
+    /**
+     * 专门复现 DeepSeek 400 的 HITL 测试模型。
+     *
+     * <p>DeepSeek 官方 OpenAI 兼容接口要求：一条带 {@code tool_calls} 的 assistant 消息后面，
+     * 必须紧跟同 {@code tool_call_id} 的 tool 响应。这个假模型在恢复后的第二次模型调用里做同样校验，
+     * 让“审批后没有先执行工具”这种协议错误可以在本地测试中稳定暴露。</p>
+     */
+    private static final class HitlToolCallingChatModel implements ChatModel {
+
+        /** 记录模型被调用到第几次，用来区分首轮 tool_call 和审批恢复后的最终回答。 */
+        private final AtomicInteger callCounter = new AtomicInteger();
+
+        /** 记录恢复后的模型调用是否已经看到了 exec_shell 对应的 ToolResponseMessage。 */
+        private boolean sawToolResponseBeforeResumeModelCall;
+
+        @Override
+        public ChatResponse call(Prompt prompt) {
+            int currentCall = callCounter.incrementAndGet();
+            if (currentCall == 1) {
+                AssistantMessage toolCallMessage = AssistantMessage.builder()
+                        .content("我需要先查看当前目录。")
+                        .toolCalls(List.of(new AssistantMessage.ToolCall(
+                                "call_cd", "function", "exec_shell", "{\"command\":\"cd\"}")))
+                        .build();
+                return new ChatResponse(List.of(new Generation(toolCallMessage)));
+            }
+
+            sawToolResponseBeforeResumeModelCall = hasToolResponse(prompt.getInstructions(), "call_cd", "exec_shell");
+            if (!sawToolResponseBeforeResumeModelCall) {
+                throw new AssertionError("HITL 恢复后缺少 exec_shell 的 ToolResponseMessage，当前消息链路="
+                        + describeMessages(prompt.getInstructions()));
+            }
+            return new ChatResponse(List.of(new Generation(new AssistantMessage("工具已执行，当前目录读取完成。"))));
+        }
+
+        @Override
+        public Flux<ChatResponse> stream(Prompt prompt) {
+            return Flux.just(call(prompt));
+        }
+
+        boolean sawToolResponseBeforeResumeModelCall() {
+            return sawToolResponseBeforeResumeModelCall;
+        }
+
+        /**
+         * 在 Prompt 历史里查找指定工具调用 id 的响应消息。
+         *
+         * <p>这里不关心工具输出内容，只关心协议顺序是否完整：assistant.tool_calls 之后必须出现
+         * 同 id、同工具名的 ToolResponseMessage。</p>
+         */
+        private boolean hasToolResponse(List<Message> messages, String toolCallId, String toolName) {
+            for (Message message : messages) {
+                if (message instanceof ToolResponseMessage toolResponseMessage) {
+                    for (ToolResponseMessage.ToolResponse response : toolResponseMessage.getResponses()) {
+                        if (toolCallId.equals(response.id()) && toolName.equals(response.name())) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            return false;
+        }
+
+        /**
+         * 把恢复时传给模型的消息类型压缩成一行文本，方便定位 Graph 到底有没有先进入工具节点。
+         */
+        private String describeMessages(List<Message> messages) {
+            List<String> names = new ArrayList<>();
+            for (Message message : messages) {
+                if (message instanceof ToolResponseMessage toolResponseMessage) {
+                    List<String> responses = new ArrayList<>();
+                    for (ToolResponseMessage.ToolResponse response : toolResponseMessage.getResponses()) {
+                        responses.add(response.id() + "/" + response.name());
+                    }
+                    names.add("ToolResponseMessage" + responses);
+                } else if (message instanceof AssistantMessage assistantMessage) {
+                    List<String> calls = new ArrayList<>();
+                    for (AssistantMessage.ToolCall call : assistantMessage.getToolCalls()) {
+                        calls.add(call.id() + "/" + call.name());
+                    }
+                    names.add("AssistantMessage" + calls);
+                } else {
+                    names.add(message.getClass().getSimpleName());
+                }
+            }
+            return names.toString();
         }
     }
 }

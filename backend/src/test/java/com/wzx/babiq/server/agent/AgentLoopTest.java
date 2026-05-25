@@ -16,8 +16,11 @@ import com.wzx.babiq.server.observability.TurnObservationRegistry;
 import com.wzx.babiq.server.observability.TurnSummaryEmitter;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.http.HttpHeaders;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Flux;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -87,6 +90,22 @@ class AgentLoopTest {
         assertThat(turn.status()).isEqualTo(TurnStatus.FAILED);
         assertThat(turn.failureReason()).contains("model down");
         verify(summaryEmitter).emit(any(TurnObservationContext.class), eq(emitter), eq("failed"));
+    }
+
+    @Test
+    void failure_message_should_include_deepseek_response_body() {
+        WebClientResponseException deepSeek400 = WebClientResponseException.create(
+                400,
+                "Bad Request",
+                HttpHeaders.EMPTY,
+                "{\"error\":{\"message\":\"missing tool response\"}}".getBytes(StandardCharsets.UTF_8),
+                StandardCharsets.UTF_8);
+
+        String message = AgentLoopSupport.failureMessage(new RuntimeException("wrapped", deepSeek400));
+
+        assertThat(message)
+                .contains("400 Bad Request")
+                .contains("missing tool response");
     }
 
     @Test

@@ -12,6 +12,7 @@ import com.alibaba.cloud.ai.graph.checkpoint.savers.MemorySaver;
 import com.wzx.babiq.server.conversation.ItemEmitter;
 import com.wzx.babiq.server.conversation.Turn;
 import com.wzx.babiq.server.hook.BaBiQTokenUsageHook;
+import com.wzx.babiq.server.hook.ResumeJumpCleanupHook;
 import com.wzx.babiq.server.interceptor.BaBiQSandboxInterceptor;
 import com.wzx.babiq.server.interceptor.BaBiQStreamingTokenUsageInterceptor;
 import com.wzx.babiq.server.interceptor.SpotlightingToolInterceptor;
@@ -59,6 +60,8 @@ public class ReActStrategy {
     private final SpotlightingToolInterceptor spotlightingInterceptor;
     /** Spring AI Alibaba token hook，用于从模型响应里累计 prompt/completion token。 */
     private final BaBiQTokenUsageHook tokenUsageHook;
+    /** 审批恢复后清理一次性 jump_to 标记，避免工具执行完以后继续被强制路由回工具节点。 */
+    private final ResumeJumpCleanupHook resumeJumpCleanupHook;
     /** 流式模型 token 拦截器，用于在不关闭 streaming 的前提下读取最终 usage。 */
     private final BaBiQStreamingTokenUsageInterceptor streamingTokenUsageInterceptor;
     /** Spring AI Alibaba Graph 的内存检查点，HITL 暂停和恢复需要依赖它保存图状态。 */
@@ -88,6 +91,7 @@ public class ReActStrategy {
                          ToolObservationInterceptor toolObservationInterceptor,
                          SpotlightingToolInterceptor spotlightingInterceptor,
                          BaBiQTokenUsageHook tokenUsageHook,
+                         ResumeJumpCleanupHook resumeJumpCleanupHook,
                          BaBiQStreamingTokenUsageInterceptor streamingTokenUsageInterceptor,
                          ApprovalRuleService approvalRuleService,
                          TurnPersistenceService turnPersistenceService) {
@@ -98,6 +102,7 @@ public class ReActStrategy {
         this.toolObservationInterceptor = toolObservationInterceptor;
         this.spotlightingInterceptor = spotlightingInterceptor;
         this.tokenUsageHook = tokenUsageHook;
+        this.resumeJumpCleanupHook = resumeJumpCleanupHook;
         this.streamingTokenUsageInterceptor = streamingTokenUsageInterceptor;
         this.approvalRuleService = approvalRuleService;
         this.turnPersistenceService = turnPersistenceService;
@@ -154,7 +159,7 @@ public class ReActStrategy {
                 .systemPrompt(SystemPromptSecurityRule.PROMPT)
                 .tools(callbacks)
                 .toolContext(toolContext)
-                .hooks(hitlHook, limitHook, tokenUsageHook)
+                .hooks(hitlHook, limitHook, resumeJumpCleanupHook, tokenUsageHook)
                 .streamingInterceptors(streamingTokenUsageInterceptor)
                 .interceptors(sandboxInterceptor, toolObservationInterceptor, spotlightingInterceptor, evictionInterceptor)
                 .saver(memorySaver)
@@ -184,14 +189,13 @@ public class ReActStrategy {
     /**
      * 构建 HITL 续跑配置。
      *
-     * <p>Bug 记录（2026-05-25）：用户批准 write_file 后，Agent 恢复执行时报
-     * “Human feedback metadata must be of type InterruptionMetadata”。根因是 SAA 的
-     * {@code resume()} 会先写入 HUMAN_FEEDBACK 占位字符串，如果它放在
-     * {@code addHumanFeedback(metadata)} 后面，就会覆盖真正的 InterruptionMetadata。</p>
+     * <p>Bug 记录（2026-05-25）：这里严格按 Spring AI Alibaba ReactAgent HITL 官方示例，
+     * 只写入真实 {@link InterruptionMetadata}，不再额外调用 {@code resume()}。
+     * {@code resume()} 只会写入占位 human feedback，容易在维护时因为调用顺序变化覆盖真实审批反馈。</p>
      *
      * @param threadId 业务线程 id
      * @param metadata 用户审批后的反馈元数据
-     * @return 带 human feedback 和 resume 标记的 RunnableConfig
+     * @return 带 human feedback 的 RunnableConfig
      */
     public RunnableConfig buildResumeConfig(String threadId,
                                             InterruptionMetadata metadata,
@@ -199,8 +203,9 @@ public class ReActStrategy {
         return RunnableConfig.builder()
                 .threadId(threadId)
                 .addMetadata(TurnObservationContext.METADATA_KEY, context)
-                // 先调用 resume 写入 SAA 的占位标记，再写入真实审批反馈，避免占位字符串覆盖 InterruptionMetadata。
-                .resume()
+                // 2026-05-25 Bug 修复记录：ReactAgent 恢复只需要真实审批反馈。
+                // 官方示例使用 addHumanFeedback(metadata)；额外 resume() 的占位标记没有业务信息，
+                // 对 BaBiQ 这种 HITL 恢复反而增加“占位值覆盖真实 InterruptionMetadata”的风险。
                 .addHumanFeedback(metadata)
                 .build();
     }

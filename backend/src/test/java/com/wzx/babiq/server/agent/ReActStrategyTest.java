@@ -5,6 +5,7 @@ import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.action.InterruptionMetadata;
 import com.wzx.babiq.server.approval.ApprovalRuleService;
 import com.wzx.babiq.server.hook.BaBiQTokenUsageHook;
+import com.wzx.babiq.server.hook.ResumeJumpCleanupHook;
 import com.wzx.babiq.server.interceptor.BaBiQSandboxInterceptor;
 import com.wzx.babiq.server.interceptor.BaBiQStreamingTokenUsageInterceptor;
 import com.wzx.babiq.server.interceptor.SpotlightingToolInterceptor;
@@ -56,6 +57,7 @@ class ReActStrategyTest {
                 mock(ToolObservationInterceptor.class),
                 mock(SpotlightingToolInterceptor.class),
                 mock(BaBiQTokenUsageHook.class),
+                mock(ResumeJumpCleanupHook.class),
                 mock(BaBiQStreamingTokenUsageInterceptor.class),
                 mock(ApprovalRuleService.class),
                 mock(TurnPersistenceService.class));
