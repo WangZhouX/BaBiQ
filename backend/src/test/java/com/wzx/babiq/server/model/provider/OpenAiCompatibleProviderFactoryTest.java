@@ -14,6 +14,8 @@ import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
 
 import java.lang.reflect.Method;
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -69,6 +71,26 @@ class OpenAiCompatibleProviderFactoryTest {
     }
 
     @Test
+    @DisplayName("DeepSeek V4 默认关闭 thinking，避免工具审批恢复时丢失 reasoning_content 导致 400")
+    void build_should_disable_deepseek_v4_thinking_for_openai_tool_compatibility() {
+        ModelProviderConfig config = new ModelProviderConfig(
+                "deepseek-official",
+                "DeepSeek 官方",
+                ProviderType.OPENAI_COMPATIBLE,
+                "deepseek-v4-pro",
+                "sk-fake-key",
+                "https://api.deepseek.com",
+                null
+        );
+
+        OpenAiChatModel chatModel = (OpenAiChatModel) factory.build(config);
+        OpenAiChatOptions options = (OpenAiChatOptions) chatModel.getDefaultOptions();
+
+        assertThat(options.getExtraBody())
+                .containsEntry("thinking", Map.of("type", "disabled"));
+    }
+
+    @Test
     @DisplayName("OpenAI 兼容流式工具调用必须保留 DeepSeek usage 请求参数")
     void build_should_keep_stream_usage_when_tool_options_are_merged() throws Exception {
         ModelProviderConfig config = new ModelProviderConfig(
@@ -92,6 +114,27 @@ class OpenAiCompatibleProviderFactoryTest {
 
         assertThat(request.streamOptions()).isNotNull();
         assertThat(request.streamOptions().includeUsage()).isTrue();
+        assertThat(request.extraBody())
+                .containsEntry("thinking", Map.of("type", "disabled"));
+    }
+
+    @Test
+    @DisplayName("非 DeepSeek V4 兼容端点不注入 DeepSeek 私有 thinking 参数")
+    void build_should_not_add_deepseek_extra_body_for_other_openai_compatible_models() {
+        ModelProviderConfig config = new ModelProviderConfig(
+                "oneapi-relay",
+                "我的中转",
+                ProviderType.OPENAI_COMPATIBLE,
+                "gpt-4o",
+                "sk-fake-key",
+                "https://relay.example.com/v1",
+                null
+        );
+
+        OpenAiChatModel chatModel = (OpenAiChatModel) factory.build(config);
+        OpenAiChatOptions options = (OpenAiChatOptions) chatModel.getDefaultOptions();
+
+        assertThat(options.getExtraBody()).isNull();
     }
 
     @Test

@@ -8,6 +8,9 @@ import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.stereotype.Component;
 
+import java.util.Locale;
+import java.util.Map;
+
 /**
  * OpenAI 协议兼容 Provider 工厂。
  *
@@ -44,11 +47,19 @@ public class OpenAiCompatibleProviderFactory implements ProviderFactory {
                 .baseUrl(config.baseUrl())
                 .apiKey(config.apiKey())
                 .build();
-        OpenAiChatOptions chatOptions = OpenAiChatOptions.builder()
+        OpenAiChatOptions.Builder chatOptionsBuilder = OpenAiChatOptions.builder()
                 .model(config.model())
                 // OpenAI-compatible 流式接口默认不一定返回 usage；开启后 Provider 才会在最后一个 chunk 带回 token 统计。
-                .streamUsage(true)
-                .build();
+                .streamUsage(true);
+        if (needsDeepSeekV4ThinkingDisabled(config)) {
+            // 2026-05-25 修复记录：
+            // DeepSeek V4 官方端点默认开启 thinking mode。官方文档要求“发生工具调用的后续请求”
+            // 必须原样回传 reasoning_content；Spring AI 1.1.6 的 OpenAI-compatible 工具链目前不会维护
+            // 这段私有字段，审批恢复后会在第二次 /chat/completions 请求触发 400。这里显式关闭 thinking，
+            // 让 BaBiQ 先走稳定的非思考工具调用协议，后续如果 Spring AI 原生支持 reasoning_content 再开启。
+            chatOptionsBuilder.extraBody(Map.of("thinking", Map.of("type", "disabled")));
+        }
+        OpenAiChatOptions chatOptions = chatOptionsBuilder.build();
 
         return OpenAiChatModel.builder()
                 .openAiApi(openAiApi)
@@ -62,5 +73,23 @@ public class OpenAiCompatibleProviderFactory implements ProviderFactory {
                     "Provider [" + config.id() + "] (type=OPENAI_COMPATIBLE) 缺少 " + fieldName
                             + ",请检查 babiq.providers 中的配置。");
         }
+    }
+
+    private static boolean needsDeepSeekV4ThinkingDisabled(ModelProviderConfig config) {
+        String baseUrl = normalize(config.baseUrl());
+        String model = normalize(config.model());
+        return baseUrl.equals("https://api.deepseek.com")
+                && (model.startsWith("deepseek-v4-pro") || model.startsWith("deepseek-v4-flash"));
+    }
+
+    private static String normalize(String value) {
+        if (value == null) {
+            return "";
+        }
+        String normalized = value.strip().toLowerCase(Locale.ROOT);
+        while (normalized.endsWith("/")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        return normalized;
     }
 }
