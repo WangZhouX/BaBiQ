@@ -16,12 +16,14 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.openai.DeepSeekV4OpenAiChatModel;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import reactor.core.publisher.Flux;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -102,6 +104,9 @@ class EndToEndIT {
 
         assertThat(model.sawToolResponseBeforeResumeModelCall())
                 .as("HITL 审批恢复后，必须先执行工具并把 ToolResponseMessage 补到模型上下文里")
+                .isTrue();
+        assertThat(model.sawReasoningBeforeResumeModelCall())
+                .as("DeepSeek V4 thinking mode 的 tool_call assistant 在 HITL 恢复后必须保留 reasoningContent metadata")
                 .isTrue();
         assertThat(turn.status()).isEqualTo(TurnStatus.COMPLETED);
     }
@@ -185,12 +190,19 @@ class EndToEndIT {
         /** 记录恢复后的模型调用是否已经看到了 exec_shell 对应的 ToolResponseMessage。 */
         private boolean sawToolResponseBeforeResumeModelCall;
 
+        /** 记录恢复后的模型调用是否仍然保留了 DeepSeek V4 tool_call 所需的 reasoningContent。 */
+        private boolean sawReasoningBeforeResumeModelCall;
+
         @Override
         public ChatResponse call(Prompt prompt) {
             int currentCall = callCounter.incrementAndGet();
             if (currentCall == 1) {
                 AssistantMessage toolCallMessage = AssistantMessage.builder()
                         .content("我需要先查看当前目录。")
+                        // 2026-05-25 Bug 回归测试记录：
+                        // DeepSeek V4 thinking mode 的 tool_call assistant 不能只保留工具调用，
+                        // 还必须把模型返回的 reasoning_content 存进 metadata，后续请求才能原样回传。
+                        .properties(Map.of(DeepSeekV4OpenAiChatModel.REASONING_METADATA_KEY, "我需要查看当前目录，所以先调用 cd。"))
                         .toolCalls(List.of(new AssistantMessage.ToolCall(
                                 "call_cd", "function", "exec_shell", "{\"command\":\"cd\"}")))
                         .build();
@@ -198,6 +210,7 @@ class EndToEndIT {
             }
 
             sawToolResponseBeforeResumeModelCall = hasToolResponse(prompt.getInstructions(), "call_cd", "exec_shell");
+            sawReasoningBeforeResumeModelCall = hasReasoning(prompt.getInstructions(), "call_cd");
             if (!sawToolResponseBeforeResumeModelCall) {
                 throw new AssertionError("HITL 恢复后缺少 exec_shell 的 ToolResponseMessage，当前消息链路="
                         + describeMessages(prompt.getInstructions()));
@@ -212,6 +225,31 @@ class EndToEndIT {
 
         boolean sawToolResponseBeforeResumeModelCall() {
             return sawToolResponseBeforeResumeModelCall;
+        }
+
+        boolean sawReasoningBeforeResumeModelCall() {
+            return sawReasoningBeforeResumeModelCall;
+        }
+
+        /**
+         * 检查恢复后的 Prompt 里，带指定工具调用 id 的 AssistantMessage 是否仍有 reasoningContent。
+         *
+         * <p>这不是 UI 展示内容，而是 DeepSeek V4 后续请求必须回传的协议字段来源；
+         * 如果这里为 false，后面的 OpenAI-compatible 请求即使有 tool_calls 也会缺少真实思考内容。</p>
+         */
+        private boolean hasReasoning(List<Message> messages, String toolCallId) {
+            for (Message message : messages) {
+                if (message instanceof AssistantMessage assistantMessage) {
+                    boolean hasTargetToolCall = assistantMessage.getToolCalls().stream()
+                            .anyMatch(call -> toolCallId.equals(call.id()));
+                    if (!hasTargetToolCall) {
+                        continue;
+                    }
+                    Object reasoning = assistantMessage.getMetadata().get(DeepSeekV4OpenAiChatModel.REASONING_METADATA_KEY);
+                    return reasoning instanceof String text && !text.isBlank();
+                }
+            }
+            return false;
         }
 
         /**

@@ -46,9 +46,6 @@ public class DeepSeekV4OpenAiChatModel extends OpenAiChatModel {
     /** Spring AI OpenAI-compatible 响应里保存 reasoning_content 的 metadata key。 */
     public static final String REASONING_METADATA_KEY = "reasoningContent";
 
-    /** DeepSeek V4 工具调用历史缺失 reasoning_content 时的兜底值；空字符串会被序列化为已存在字段。 */
-    public static final String REASONING_OMITTED_PLACEHOLDER = "";
-
     /** DeepSeek 官方 thinking 开关字段名称。 */
     private static final String THINKING_EXTRA_BODY_KEY = "thinking";
 
@@ -227,10 +224,14 @@ public class DeepSeekV4OpenAiChatModel extends OpenAiChatModel {
             return message;
         }
 
-        // DeepSeek 官方要求 tool_call assistant 后续必须回传 reasoning_content。
-        String effectiveReasoningContent = StringUtils.hasText(reasoningContent)
-                ? reasoningContent
-                : REASONING_OMITTED_PLACEHOLDER;
+        if (!StringUtils.hasText(reasoningContent)) {
+            // 2026-05-25 Bug 修复记录：
+            // DeepSeek V4 官方 thinking mode 要求“原样回传”真实 reasoning_content。
+            // 空字符串占位会继续被 DeepSeek 判定为未回传，所以这里选择在本地 fail-fast，
+            // 让日志直接指向 BaBiQ 的流式 reasoning 保存链路，而不是再次发出必然失败的 HTTP 请求。
+            throw new IllegalStateException("DeepSeek V4 thinking mode 缺少 reasoning_content，"
+                    + "无法安全构造带 tool_calls 的历史 assistant 消息");
+        }
         // Oh My Pi 官方集成文档也提示 assistant tool_call 需要非 null content；空字符串比 null 更稳定。
         Object content = message.rawContent() == null ? "" : message.rawContent();
         return new ChatCompletionMessage(
@@ -242,7 +243,7 @@ public class DeepSeekV4OpenAiChatModel extends OpenAiChatModel {
                 message.refusal(),
                 message.audioOutput(),
                 message.annotations(),
-                effectiveReasoningContent);
+                reasoningContent);
     }
 
     /**

@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -111,6 +112,53 @@ class DeepSeekV4OpenAiChatModelTest {
     }
 
     @Test
+    @DisplayName("工具调用 chunk 自身携带 reasoning 片段时，第二次请求必须回放完整 reasoning_content")
+    void stream_internal_tool_execution_should_replay_full_reasoning_when_tool_chunk_contains_reasoning_fragment() {
+        OpenAiApi openAiApi = mock(OpenAiApi.class);
+        List<OpenAiApi.ChatCompletionRequest> capturedRequests = new ArrayList<>();
+        when(openAiApi.chatCompletionStream(any(OpenAiApi.ChatCompletionRequest.class), any()))
+                .thenAnswer(invocation -> {
+                    capturedRequests.add(invocation.getArgument(0));
+                    return Flux.just(
+                            chunk(null, message(null, OpenAiApi.ChatCompletionMessage.Role.ASSISTANT, null,
+                                    "我需要")),
+                            // 2026-05-25 Bug 回归测试记录：
+                            // DeepSeek V4 可能在 tool_call chunk 自身继续输出 reasoning_content 片段。
+                            // 旧实现只把这个片段放行给 Spring AI，MessageAggregator 最终只保存“创建文件”，
+                            // 审批/工具恢复后的下一次请求就无法原样回放完整 reasoning_content。
+                            chunk(OpenAiApi.ChatCompletionFinishReason.TOOL_CALLS, message("",
+                                    null,
+                                    List.of(new OpenAiApi.ChatCompletionMessage.ToolCall(
+                                            "call_write_file",
+                                            "function",
+                                            new OpenAiApi.ChatCompletionMessage.ChatCompletionFunction(
+                                                    "write_file",
+                                                    "{\"path\":\"hello.html\"}"))),
+                                    "创建文件"))
+                    );
+                })
+                .thenAnswer(invocation -> {
+                    capturedRequests.add(invocation.getArgument(0));
+                    return Flux.just(chunk(OpenAiApi.ChatCompletionFinishReason.STOP,
+                            message("已创建", OpenAiApi.ChatCompletionMessage.Role.ASSISTANT, null, null)));
+                });
+        DeepSeekV4OpenAiChatModel chatModel = new DeepSeekV4OpenAiChatModel(openAiApi, OpenAiChatOptions.builder()
+                .model("deepseek-v4-pro")
+                .streamUsage(true)
+                .build());
+        ToolCallingChatOptions toolOptions = ToolCallingChatOptions.builder()
+                .toolCallbacks(fakeWriteFileTool())
+                .build();
+
+        chatModel.stream(new Prompt(List.of(new UserMessage("创建 hello.html")), toolOptions)).collectList().block();
+
+        assertThat(capturedRequests).hasSize(2);
+        OpenAiApi.ChatCompletionMessage assistantWireMessage = capturedRequests.get(1).messages().get(1);
+        assertThat(assistantWireMessage.toolCalls()).hasSize(1);
+        assertThat(assistantWireMessage.reasoningContent()).isEqualTo("我需要创建文件");
+    }
+
+    @Test
     @DisplayName("工具调用历史必须回放 reasoning_content，并移除 thinking mode 不支持的 tool_choice")
     void createRequest_should_replay_reasoning_content_for_assistant_tool_calls() {
         DeepSeekV4OpenAiChatModel chatModel = newModel(OpenAiChatOptions.builder()
@@ -141,8 +189,8 @@ class DeepSeekV4OpenAiChatModelTest {
     }
 
     @Test
-    @DisplayName("历史里 reasoning_content 丢失时，工具调用 assistant 消息使用占位值兜底")
-    void createRequest_should_add_placeholder_when_tool_call_reasoning_is_missing() {
+    @DisplayName("历史里 reasoning_content 丢失时，工具调用 assistant 消息直接 fail-fast")
+    void createRequest_should_fail_fast_when_tool_call_reasoning_is_missing() {
         DeepSeekV4OpenAiChatModel chatModel = newModel(OpenAiChatOptions.builder()
                 .model("deepseek-v4-pro")
                 .streamUsage(true)
@@ -150,11 +198,9 @@ class DeepSeekV4OpenAiChatModelTest {
         AssistantMessage assistantMessage = assistantToolCall("");
         Prompt prompt = new Prompt(List.of(new UserMessage("创建文件"), assistantMessage), chatModel.getDefaultOptions());
 
-        OpenAiApi.ChatCompletionRequest request = chatModel.createRequest(prompt, true);
-        OpenAiApi.ChatCompletionMessage assistantWireMessage = request.messages().get(1);
-
-        assertThat(assistantWireMessage.reasoningContent())
-                .isEqualTo(DeepSeekV4OpenAiChatModel.REASONING_OMITTED_PLACEHOLDER);
+        assertThatThrownBy(() -> chatModel.createRequest(prompt, true))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("DeepSeek V4 thinking mode 缺少 reasoning_content");
     }
 
     @Test

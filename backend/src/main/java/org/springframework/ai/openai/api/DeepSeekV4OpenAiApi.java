@@ -142,8 +142,6 @@ public final class DeepSeekV4OpenAiApi extends OpenAiApi {
 
                 if (StringUtils.hasText(delta.reasoningContent())) {
                     reasoningContent.append(delta.reasoningContent());
-                    choices.add(choice);
-                    continue;
                 }
 
                 if (reasoningContent.isEmpty()) {
@@ -151,6 +149,11 @@ public final class DeepSeekV4OpenAiApi extends OpenAiApi {
                     continue;
                 }
 
+                // 2026-05-25 Bug 修复记录：
+                // DeepSeek V4 可能在同一个 tool_call chunk 里继续输出 reasoning_content 片段。
+                // Spring AI 的 MessageAggregator 会用后到达的 chunk metadata 覆盖前一个 metadata；
+                // 如果这里只放行“当前片段”，最终 AssistantMessage 只会保存最后一小段 reasoning。
+                // 因此无论当前 chunk 是否自带 reasoning_content，都统一回填“已累计完整值”。
                 choices.add(copyChoiceWithReasoning(choice, delta, reasoningContent.toString()));
                 changed = true;
             }
