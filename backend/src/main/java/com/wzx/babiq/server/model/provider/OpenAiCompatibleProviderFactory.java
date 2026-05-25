@@ -3,6 +3,7 @@ package com.wzx.babiq.server.model.provider;
 import com.wzx.babiq.server.model.ModelProviderConfig;
 import com.wzx.babiq.server.model.ProviderType;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.openai.DeepSeekV4OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
@@ -14,9 +15,10 @@ import java.util.Map;
 /**
  * OpenAI 协议兼容 Provider 工厂。
  *
- * <p>DeepSeek 官方、OneAPI 中转、Ollama OpenAI 兼容端口都遵循同一套
- * chat/completions 协议,因此统一由该工厂构建 OpenAiChatModel。Ollama 这类
- * 本地服务不校验 key,仍要求配置一个占位字符串,让配置形态和远端 provider 保持一致。</p>
+ * <p>DeepSeek 官方、OneAPI 中转、Ollama OpenAI 兼容端口都遵循 OpenAI 风格
+ * chat/completions 协议,因此统一从这里构建 ChatModel。DeepSeek V4 thinking mode
+ * 对 tool_call 历史有额外的 reasoning_content 回放要求，会路由到专用适配器；
+ * 其他兼容端点继续使用 Spring AI 原生 OpenAiChatModel。</p>
  */
 @Component
 public class OpenAiCompatibleProviderFactory implements ProviderFactory {
@@ -47,19 +49,22 @@ public class OpenAiCompatibleProviderFactory implements ProviderFactory {
                 .baseUrl(config.baseUrl())
                 .apiKey(config.apiKey())
                 .build();
+        boolean deepSeekV4Official = isDeepSeekV4Official(config);
         OpenAiChatOptions.Builder chatOptionsBuilder = OpenAiChatOptions.builder()
                 .model(config.model())
                 // OpenAI-compatible 流式接口默认不一定返回 usage；开启后 Provider 才会在最后一个 chunk 带回 token 统计。
                 .streamUsage(true);
-        if (needsDeepSeekV4ThinkingDisabled(config)) {
+        if (deepSeekV4Official) {
             // 2026-05-25 修复记录：
-            // DeepSeek V4 官方端点默认开启 thinking mode。官方文档要求“发生工具调用的后续请求”
-            // 必须原样回传 reasoning_content；Spring AI 1.1.6 的 OpenAI-compatible 工具链目前不会维护
-            // 这段私有字段，审批恢复后会在第二次 /chat/completions 请求触发 400。这里显式关闭 thinking，
-            // 让 BaBiQ 先走稳定的非思考工具调用协议，后续如果 Spring AI 原生支持 reasoning_content 再开启。
-            chatOptionsBuilder.extraBody(Map.of("thinking", Map.of("type", "disabled")));
+            // 用户要求保留 DeepSeek V4 thinking mode，而不是用 thinking.disabled 绕过问题。
+            // 因此这里显式开启 thinking，并把后续 reasoning_content 回放交给 DeepSeekV4OpenAiChatModel。
+            chatOptionsBuilder.extraBody(Map.of("thinking", Map.of("type", "enabled")));
         }
         OpenAiChatOptions chatOptions = chatOptionsBuilder.build();
+
+        if (deepSeekV4Official) {
+            return new DeepSeekV4OpenAiChatModel(openAiApi, chatOptions);
+        }
 
         return OpenAiChatModel.builder()
                 .openAiApi(openAiApi)
@@ -75,7 +80,7 @@ public class OpenAiCompatibleProviderFactory implements ProviderFactory {
         }
     }
 
-    private static boolean needsDeepSeekV4ThinkingDisabled(ModelProviderConfig config) {
+    private static boolean isDeepSeekV4Official(ModelProviderConfig config) {
         String baseUrl = normalize(config.baseUrl());
         String model = normalize(config.model());
         return baseUrl.equals("https://api.deepseek.com")

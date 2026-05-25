@@ -5,8 +5,10 @@ import com.wzx.babiq.server.model.ProviderType;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
+import org.springframework.ai.openai.DeepSeekV4OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
@@ -71,8 +73,8 @@ class OpenAiCompatibleProviderFactoryTest {
     }
 
     @Test
-    @DisplayName("DeepSeek V4 默认关闭 thinking，避免工具审批恢复时丢失 reasoning_content 导致 400")
-    void build_should_disable_deepseek_v4_thinking_for_openai_tool_compatibility() {
+    @DisplayName("DeepSeek V4 官方端点使用专用适配器，不再用关闭 thinking 的方式绕过问题")
+    void build_should_use_deepseek_v4_adapter_for_official_endpoint() {
         ModelProviderConfig config = new ModelProviderConfig(
                 "deepseek-official",
                 "DeepSeek 官方",
@@ -83,11 +85,12 @@ class OpenAiCompatibleProviderFactoryTest {
                 null
         );
 
-        OpenAiChatModel chatModel = (OpenAiChatModel) factory.build(config);
+        ChatModel chatModel = factory.build(config);
         OpenAiChatOptions options = (OpenAiChatOptions) chatModel.getDefaultOptions();
 
+        assertThat(chatModel).isInstanceOf(DeepSeekV4OpenAiChatModel.class);
         assertThat(options.getExtraBody())
-                .containsEntry("thinking", Map.of("type", "disabled"));
+                .containsEntry("thinking", Map.of("type", "enabled"));
     }
 
     @Test
@@ -115,7 +118,7 @@ class OpenAiCompatibleProviderFactoryTest {
         assertThat(request.streamOptions()).isNotNull();
         assertThat(request.streamOptions().includeUsage()).isTrue();
         assertThat(request.extraBody())
-                .containsEntry("thinking", Map.of("type", "disabled"));
+                .containsEntry("thinking", Map.of("type", "enabled"));
     }
 
     @Test

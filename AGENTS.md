@@ -133,6 +133,12 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
   - P2-6 额外验证：`cd desktop; .\gradlew.bat test --tests "*McpModelsTest" --tests "*AgentClientTest" --tests "*ChatControllerTest"`
   - P2 全量验证：`cd backend; .\mvnw.cmd clean verify`
   - P2 全量验证：`cd desktop; .\gradlew.bat test`
+- P2 DeepSeek V4 官方端点工具恢复补丁已完成：
+  - `https://api.deepseek.com` + `deepseek-v4-pro` / `deepseek-v4-flash` 必须使用 `DeepSeekV4OpenAiChatModel` 专用适配器，不再用关闭 thinking 的临时绕法。
+  - 专用适配器会在工具调用恢复时回放 Spring AI 已解析到的 `reasoning_content`；如果历史里没有 reasoning，则写入明确的占位 reasoning，避免 DeepSeek V4 在 thinking + tool call 续轮时返回 400。
+  - 专用适配器只在 thinking 启用时移除 `tool_choice`，并保留 OpenAI-compatible 的 streaming usage 链路，用于继续统计 prompt/completion/total tokens。
+  - 已验证：`cd backend; .\mvnw.cmd -q -Dtest="DeepSeekV4OpenAiChatModelTest,OpenAiCompatibleProviderFactoryTest" test`
+  - 已验证：`cd backend; .\mvnw.cmd clean verify`
 - 下一步应做 P2 总体验收复盘；如果验收无新增缺口，再写 P3 或后续阶段详细计划。
 
 如果仓库状态发生变化，不要盲信本检查点；必须重新核对代码、文档、测试和 `git status`。
