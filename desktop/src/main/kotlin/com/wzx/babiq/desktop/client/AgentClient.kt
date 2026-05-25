@@ -112,8 +112,8 @@ interface AgentGateway {
 	/** 设置后端当前激活 Provider/Model，下一轮 turn 生效。 */
 	suspend fun setActiveProvider(providerId: String, modelId: String? = null): Boolean
 
-	/** 按工作目录读取最近会话列表，供 Sidebar 展示真实历史。 */
-	suspend fun listThreads(cwd: String, includeArchived: Boolean = false, limit: Int = 30): ThreadListResult
+	/** 按工作目录读取最近会话列表；cwd 为空时返回所有工作区，供 Sidebar 汇总项目列表。 */
+	suspend fun listThreads(cwd: String? = null, includeArchived: Boolean = false, limit: Int = 30): ThreadListResult
 
 	/** 加载指定会话的历史 item，供用户点击最近对话时恢复聊天流。 */
 	suspend fun loadThread(threadId: String, limit: Int = 200, beforeItemId: String? = null): ThreadLoadResult
@@ -359,11 +359,13 @@ class AgentClient(
 	/**
 	 * 调用后端 `thread/list`，读取当前工作目录下的真实最近会话。
 	 */
-	override suspend fun listThreads(cwd: String, includeArchived: Boolean, limit: Int): ThreadListResult {
+	override suspend fun listThreads(cwd: String?, includeArchived: Boolean, limit: Int): ThreadListResult {
 		val response = request(
 			method = "thread/list",
 			params = buildJsonObject {
-				put("cwd", cwd)
+				if (!cwd.isNullOrBlank()) {
+					put("cwd", cwd)
+				}
 				put("includeArchived", includeArchived)
 				put("limit", limit)
 			},

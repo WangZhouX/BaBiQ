@@ -5,6 +5,7 @@ import com.wzx.babiq.desktop.protocol.AppSettingsResult
 import com.wzx.babiq.desktop.protocol.ProviderInfo
 import com.wzx.babiq.desktop.protocol.ProviderSaveParams
 import com.wzx.babiq.desktop.protocol.ServerEvent
+import com.wzx.babiq.desktop.protocol.SettingsUpdateParams
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -17,6 +18,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.nio.file.InvalidPathException
 import java.nio.file.Path
+import java.util.Locale
 
 /**
  * 重连退避策略是一个很小的策略对象。
@@ -352,6 +354,9 @@ class ChatController(
 						projectName = projectNameFrom(loaded.thread.cwd),
 						cwd = loaded.thread.cwd,
 					),
+					workspaceProjects = it.workspaceProjects.copy(
+						items = workspaceProjectItems(it.workspaceProjects.items.map { project -> project.cwd } + loaded.thread.cwd, loaded.thread.cwd),
+					),
 					currentThreadId = loaded.thread.threadId,
 					currentThreadTitle = loaded.thread.title,
 					currentTurnId = null,
@@ -452,6 +457,9 @@ class ChatController(
 					projectName = projectNameFrom(selected),
 					cwd = selected,
 				),
+				workspaceProjects = it.workspaceProjects.copy(
+					items = workspaceProjectItems(it.workspaceProjects.items.map { project -> project.cwd } + selected, selected),
+				),
 				// 后端 Thread 与 cwd 绑定，切换目录后必须从新 Thread 开始，避免 UI 历史和后端上下文错位。
 				currentThreadId = null,
 				currentThreadTitle = null,
@@ -467,7 +475,11 @@ class ChatController(
 			)
 		}
 		scope.launch(start = CoroutineStart.UNDISPATCHED) {
+			if (current.connectionState == ConnectionState.Connected) {
+				persistDefaultWorkspace(selected)
+			}
 			loadThreadHistory(selected)
+			loadWorkspaceProjects(selected)
 		}
 	}
 
@@ -567,6 +579,7 @@ class ChatController(
 		loadSettings()
 		loadProviders()
 		loadSandboxPolicy()
+		loadWorkspaceProjects(state.value.workspace.cwd)
 		loadThreadHistory(state.value.workspace.cwd)
 	}
 
@@ -624,6 +637,7 @@ class ChatController(
 			gateway.events.collect { event ->
 				applyEvent(AgentEvent.Server(event))
 				if (event.shouldRefreshThreadHistory()) {
+					loadWorkspaceProjects(state.value.workspace.cwd)
 					loadThreadHistory(state.value.workspace.cwd)
 					refreshRunRecordsIfVisible()
 				}
@@ -781,12 +795,57 @@ class ChatController(
 		}
 	}
 
+	private suspend fun loadWorkspaceProjects(currentCwd: String = state.value.workspace.cwd) {
+		_state.update {
+			it.copy(workspaceProjects = it.workspaceProjects.copy(loading = true, error = null))
+		}
+		try {
+			val result = gateway.listThreads(cwd = null, limit = 100)
+			_state.update { current ->
+				val knownCwds = result.threads.map { it.cwd } +
+					current.workspace.cwd +
+					listOfNotNull(current.settingsState.settings?.defaultCwd) +
+					currentCwd
+				current.copy(
+					workspaceProjects = current.workspaceProjects.copy(
+						loading = false,
+						error = null,
+						items = workspaceProjectItems(knownCwds, current.workspace.cwd),
+					),
+				)
+			}
+		} catch (exception: Exception) {
+			_state.update {
+				it.copy(
+					workspaceProjects = it.workspaceProjects.copy(loading = false, error = exception.message),
+					lastError = exception.message,
+				)
+			}
+		}
+	}
+
 	private suspend fun loadSettings() {
 		_state.update { it.copy(settingsState = it.settingsState.copy(loading = true, error = null)) }
 		try {
 			val settings = gateway.getSettings()
 			_state.update {
+				val defaultCwd = settings.defaultCwd?.let(::normalizeWorkspace)
+				val workspace = if (defaultCwd.isNullOrBlank()) {
+					it.workspace
+				} else {
+					it.workspace.copy(
+						projectName = projectNameFrom(defaultCwd),
+						cwd = defaultCwd,
+					)
+				}
 				it.copy(
+					workspace = workspace,
+					workspaceProjects = it.workspaceProjects.copy(
+						items = workspaceProjectItems(
+							it.workspaceProjects.items.map { project -> project.cwd } + workspace.cwd,
+							workspace.cwd,
+						),
+					),
 					settingsState = it.settingsState.copy(
 						loading = false,
 						settings = settings,
@@ -798,6 +857,24 @@ class ChatController(
 			_state.update {
 				it.copy(
 					settingsState = it.settingsState.copy(loading = false, error = exception.message),
+					lastError = exception.message,
+				)
+			}
+		}
+	}
+
+	private suspend fun persistDefaultWorkspace(cwd: String) {
+		try {
+			val updated = gateway.updateSettings(SettingsUpdateParams(defaultCwd = cwd))
+			_state.update {
+				it.copy(
+					settingsState = it.settingsState.copy(settings = updated, error = null),
+				)
+			}
+		} catch (exception: Exception) {
+			_state.update {
+				it.copy(
+					settingsState = it.settingsState.copy(error = "工作目录已切换，但默认目录保存失败: ${exception.message}"),
 					lastError = exception.message,
 				)
 			}
@@ -939,6 +1016,26 @@ class ChatController(
 		} catch (_: InvalidPathException) {
 			null
 		}
+
+	private fun workspaceProjectItems(cwds: List<String>, currentCwd: String): List<WorkspaceProjectItem> {
+		val current = normalizeWorkspace(currentCwd) ?: currentCwd.trim()
+		val normalized = (cwds + current)
+			.asSequence()
+			.mapNotNull { normalizeWorkspace(it) }
+			.filter { it.isNotBlank() }
+			.distinctBy { workspaceKey(it) }
+			.toList()
+		return normalized.map {
+			WorkspaceProjectItem(
+				projectName = projectNameFrom(it),
+				cwd = it,
+				current = workspaceKey(it) == workspaceKey(current),
+			)
+		}
+	}
+
+	private fun workspaceKey(cwd: String): String =
+		cwd.lowercase(Locale.ROOT)
 
 	private fun projectNameFrom(cwd: String): String =
 		Path.of(cwd).fileName?.toString()?.ifBlank { null } ?: cwd

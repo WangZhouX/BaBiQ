@@ -12,6 +12,7 @@ import com.wzx.babiq.desktop.protocol.ThreadItem
  * @property connectionState 桌面端与后端 WebSocket 的连接状态。
  * @property turnState 当前 turn 的生命周期状态，决定发送、取消、审批按钮是否可用。
  * @property workspace 当前工作区上下文，包含 cwd 和后端返回的权限模式等输入框上下文条信息。
+ * @property workspaceProjects 左侧项目列表状态，由历史会话 cwd 和当前工作区合并而来。
  * @property providerState 后端可用模型列表、当前选中模型以及加载/错误状态。
  * @property settingsState 设置页需要的本地设置快照、保存状态和表单草稿。
  * @property mcpState 本地 MCP server 状态和工具列表。
@@ -34,6 +35,7 @@ data class AppState(
 	val connectionState: ConnectionState = ConnectionState.Disconnected,
 	val turnState: TurnState = TurnState.Idle,
 	val workspace: WorkspaceContext = WorkspaceContext(),
+	val workspaceProjects: WorkspaceProjectState = WorkspaceProjectState(),
 	val providerState: ProviderState = ProviderState(),
 	val settingsState: SettingsState = SettingsState(),
 	val mcpState: McpState = McpState(),

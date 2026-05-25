@@ -59,6 +59,7 @@ class ChatControllerTest {
 				"getSettings",
 				"listProviders",
 				"getSandboxPolicy",
+				"listThreads:<all>",
 				"listThreads:E:\\BaBiQ",
 				"createThread:E:\\BaBiQ",
 				"startTurn:thread-1:分析项目:null",
@@ -77,7 +78,7 @@ class ChatControllerTest {
 
 		controller.connect()
 
-		assertEquals(listOf("connect", "getSettings", "listProviders", "getSandboxPolicy", "listThreads:E:\\BaBiQ"), gateway.calls)
+		assertEquals(listOf("connect", "getSettings", "listProviders", "getSandboxPolicy", "listThreads:<all>", "listThreads:E:\\BaBiQ"), gateway.calls)
 		assertEquals("DANGER_FULL_ACCESS", controller.state.value.workspace.permissionMode)
 		assertEquals("完全访问权限", controller.state.value.workspace.permissionLabel)
 	}
@@ -91,6 +92,52 @@ class ChatControllerTest {
 
 		assertEquals("deepseek-official", controller.state.value.settingsState.settings?.activeProviderId)
 		assertEquals("ON_REQUEST", controller.state.value.settingsState.settings?.approvalPolicy)
+	}
+
+	@Test
+	fun `connect applies default cwd and builds workspace project list`() = runTest {
+		val gateway = FakeGateway(
+			settings = AppSettingsResult("deepseek-official", "WORKSPACE_WRITE", "ON_REQUEST", "H:\\aaa"),
+			history = ThreadListResult(
+				threads = listOf(
+					ThreadSummaryInfo(
+						threadId = "thr_aaa",
+						title = "aaa 新对话",
+						cwd = "H:\\aaa",
+						updatedAt = "2026-05-25T08:00:00Z",
+						messageCount = 3,
+					),
+				),
+			),
+			allHistory = ThreadListResult(
+				threads = listOf(
+					ThreadSummaryInfo(
+						threadId = "thr_aaa",
+						title = "aaa 新对话",
+						cwd = "H:\\aaa",
+						updatedAt = "2026-05-25T08:00:00Z",
+						messageCount = 3,
+					),
+					ThreadSummaryInfo(
+						threadId = "thr_repo",
+						title = "BaBiQ 新对话",
+						cwd = "E:\\BaBiQ",
+						updatedAt = "2026-05-24T08:00:00Z",
+						messageCount = 2,
+					),
+				),
+			),
+		)
+		val controller = ChatController(gateway, backgroundScope)
+
+		controller.connect()
+
+		assertEquals("H:\\aaa", controller.state.value.workspace.cwd)
+		assertEquals("aaa", controller.state.value.workspace.projectName)
+		assertEquals(listOf("H:\\aaa", "E:\\BaBiQ"), controller.state.value.workspaceProjects.items.map { it.cwd })
+		assertEquals("H:\\aaa", controller.state.value.workspaceProjects.items.single { it.current }.cwd)
+		assertTrue(gateway.calls.contains("listThreads:<all>"))
+		assertTrue(gateway.calls.contains("listThreads:H:\\aaa"))
 	}
 
 	@Test
@@ -215,7 +262,37 @@ class ChatControllerTest {
 
 	@Test
 	fun `selectWorkspace 切换工作目录后下一轮使用新 cwd 创建 thread`() = runTest {
-		val gateway = FakeGateway()
+		val gateway = FakeGateway(
+			history = ThreadListResult(
+				threads = listOf(
+					ThreadSummaryInfo(
+						threadId = "thr_other",
+						title = "Other 新对话",
+						cwd = "D:\\Projects\\Other",
+						updatedAt = "2026-05-25T08:00:00Z",
+						messageCount = 1,
+					),
+				),
+			),
+			allHistory = ThreadListResult(
+				threads = listOf(
+					ThreadSummaryInfo(
+						threadId = "thr_other",
+						title = "Other 新对话",
+						cwd = "D:\\Projects\\Other",
+						updatedAt = "2026-05-25T08:00:00Z",
+						messageCount = 1,
+					),
+					ThreadSummaryInfo(
+						threadId = "thr_babiq",
+						title = "BaBiQ 新对话",
+						cwd = "E:\\BaBiQ",
+						updatedAt = "2026-05-24T08:00:00Z",
+						messageCount = 1,
+					),
+				),
+			),
+		)
 		val controller = ChatController(
 			gateway,
 			backgroundScope,
@@ -234,8 +311,10 @@ class ChatControllerTest {
 		assertEquals("D:\\Projects\\Other", controller.state.value.workspace.cwd)
 		assertEquals(
 			listOf("listThreads:D:\\Projects\\Other", "createThread:D:\\Projects\\Other", "startTurn:thread-1:分析新目录:null"),
-			gateway.calls,
+			gateway.calls.filterNot { it == "updateSettings:D:\\Projects\\Other" || it == "listThreads:<all>" },
 		)
+		assertTrue(gateway.calls.contains("updateSettings:D:\\Projects\\Other"))
+		assertEquals(listOf("D:\\Projects\\Other", "E:\\BaBiQ"), controller.state.value.workspaceProjects.items.map { it.cwd })
 		assertFalse(controller.state.value.messages.any { it.id == "old-user" })
 	}
 
@@ -466,6 +545,7 @@ class ChatControllerTest {
 		private val settings: AppSettingsResult = AppSettingsResult("deepseek-official", "WORKSPACE_WRITE", "ON_REQUEST", "E:\\BaBiQ"),
 		private val policy: SandboxPolicyResult = SandboxPolicyResult("WORKSPACE_WRITE", "工作区可写"),
 		private val history: ThreadListResult = ThreadListResult(),
+		private val allHistory: ThreadListResult = history,
 		private val loadedThread: ThreadLoadResult = ThreadLoadResult(
 			ThreadMetaInfo("thread-1", "测试会话", "E:\\BaBiQ", "active"),
 		),
@@ -527,7 +607,7 @@ class ChatControllerTest {
 		}
 
 		override suspend fun updateSettings(update: SettingsUpdateParams): AppSettingsResult {
-			calls += "updateSettings"
+			calls += update.defaultCwd?.let { "updateSettings:$it" } ?: "updateSettings"
 			return settings.copy(
 				activeProviderId = update.activeProviderId ?: settings.activeProviderId,
 				sandboxMode = update.sandboxMode ?: settings.sandboxMode,
@@ -581,9 +661,9 @@ class ChatControllerTest {
 			return true
 		}
 
-		override suspend fun listThreads(cwd: String, includeArchived: Boolean, limit: Int): ThreadListResult {
-			calls += "listThreads:$cwd"
-			return history
+		override suspend fun listThreads(cwd: String?, includeArchived: Boolean, limit: Int): ThreadListResult {
+			calls += "listThreads:${cwd ?: "<all>"}"
+			return if (cwd == null) allHistory else history
 		}
 
 		override suspend fun loadThread(threadId: String, limit: Int, beforeItemId: String?): ThreadLoadResult {

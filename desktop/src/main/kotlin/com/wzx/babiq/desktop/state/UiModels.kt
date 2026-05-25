@@ -257,6 +257,32 @@ data class WorkspaceContext(
 )
 
 /**
+ * 左侧项目列表中的一个工作区。
+ *
+ * @property projectName 从 cwd 末级目录推导出的显示名，由 ChatController 生成并被 Sidebar 读取。
+ * @property cwd 后端 thread 绑定的真实工作目录，点击项目时会作为下一轮 turn 的执行边界。
+ * @property current true 表示这是当前输入框和新建会话正在使用的工作目录。
+ */
+data class WorkspaceProjectItem(
+	val projectName: String,
+	val cwd: String,
+	val current: Boolean = false,
+)
+
+/**
+ * 左侧项目列表状态。
+ *
+ * @property loading true 表示正在从后端全局 thread/list 汇总历史 cwd。
+ * @property error 最近一次读取工作区列表失败的错误；失败不阻塞当前聊天。
+ * @property items 已知工作区，包含当前工作区以及 SQLite 历史会话里出现过的 cwd。
+ */
+data class WorkspaceProjectState(
+	val loading: Boolean = false,
+	val error: String? = null,
+	val items: List<WorkspaceProjectItem> = emptyList(),
+)
+
+/**
  * UI 当前选择的 provider/model。
  *
  * @property providerId 后端 provider id，例如 dashscope-default。

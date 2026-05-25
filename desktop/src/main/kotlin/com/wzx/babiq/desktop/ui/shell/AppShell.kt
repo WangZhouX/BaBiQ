@@ -54,6 +54,7 @@ fun AppShell(
 			onNewChat = onNewChat,
 			onOpenThread = onOpenThread,
 			onArchiveThread = onArchiveThread,
+			onSelectWorkspace = onSelectWorkspace,
 		)
 		// 中间区域占满剩余空间，Chat 和 Settings 互斥显示。
 		Box(modifier = Modifier.weight(1f)) {

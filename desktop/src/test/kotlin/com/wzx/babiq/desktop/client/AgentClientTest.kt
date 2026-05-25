@@ -21,6 +21,7 @@ import com.wzx.babiq.desktop.protocol.protocolJson
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -189,6 +190,21 @@ class AgentClientTest {
 		val request = transport.sent.single()
 		assertEquals("thread/list", request.method)
 		assertEquals("E:\\BaBiQ", request.paramsText("cwd"))
+		assertEquals("thr_1", result.threads.single().threadId)
+	}
+
+	@Test
+	fun `listThreads 不传 cwd 时请求所有工作区历史`() = runTest {
+		val transport = FakeAgentTransport()
+		val client = AgentClient(transport, backgroundScope)
+		client.connect()
+
+		val result = client.listThreads(cwd = null, limit = 100)
+
+		val request = transport.sent.single()
+		assertEquals("thread/list", request.method)
+		assertFalse(request.params.jsonObject.containsKey("cwd"))
+		assertEquals("100", request.paramsText("limit"))
 		assertEquals("thr_1", result.threads.single().threadId)
 	}
 
