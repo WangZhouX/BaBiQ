@@ -20,10 +20,11 @@ P3-4 要补齐的是长期记忆，不是再做短期压缩。
 
 ## 设计结论
 
-- BaBiQ 长期记忆采用 Codex 风格两阶段异步流水线。
+- BaBiQ 长期记忆采用 Codex 风格两阶段异步流水线；Phase 1 由启动扫描和周期扫描挑选 idle thread，不在每个 turn 完成后立刻调用模型。
 - SQLite 是事实源，Markdown 是用户可读镜像。
 - Phase 1 用 Spring AI structured output 提取候选。
-- Phase 2 首版用受控 Java artifact writer + structured consolidation strategy 归并，不让模型直接写任意文件。
+- Phase 2 支持候选阈值自动触发、每日兜底扫描和手动 `memory/consolidate`，job 使用 `phase2:{generation}` 保留归并历史。
+- Phase 2 首版用受控 Java artifact writer + structured consolidation strategy 归并，不让模型直接写任意文件；`raw_memories.md` 和 `rollout_summaries/` 由 Java 机械生成，模型只生成 `memory_summary.md` 和 `MEMORY.md`。
 - Spring AI Alibaba ReactAgent 可作为后续归并策略实现，但不能绕过 SQLite 审计和 artifact lifecycle。
 - Read path 默认只注入 `memory_summary`，完整 `MEMORY.md` 和 VectorStore/RAG 放到后续阶段。
 - P3-4 必须有用户开关、thread mode、secret redaction 和污染模式。
@@ -60,6 +61,7 @@ P3-4 要补齐的是长期记忆，不是再做短期压缩。
 - 不要把完整长期记忆每轮塞进模型。
 - 不要把 VectorStore/RAG 提前混进 P3-4。
 - 不要只做 UI 开关；后端 AgentLoop 和 ContextAssembler 必须真实按设置变化。
+- 不要恢复每轮 turn completed 立即模型抽取；必须遵守 idle scan、batch limit 和 provider/model 独立配置。
 
 ## 验证命令
 
@@ -68,6 +70,7 @@ P3-4 要补齐的是长期记忆，不是再做短期压缩。
 ```powershell
 cd backend
 .\mvnw.cmd "-Dtest=SchemaCommentsCoverageTest,MemoryRepositoryTest,MemorySettingsServiceTest,MemoryPollutionServiceTest,MemorySecretRedactorTest,LongTermMemoryPipelineTest,MemoryConsolidationServiceTest,ContextAssemblerLongTermMemoryTest,MemoryHandlersTest" test
+.\mvnw.cmd "-Dtest=ContextAssemblerCompactionTest" test
 .\mvnw.cmd clean verify
 
 cd ..\desktop

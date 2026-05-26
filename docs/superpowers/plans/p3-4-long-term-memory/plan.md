@@ -65,10 +65,10 @@ BaBiQ 不照搬 Codex 的 Rust 状态机和文件布局，但吸收它的系统�
 - 新增长期记忆数据库迁移 `V10__long_term_memory_pipeline.sql`。
 - 新增 memory 领域模型、repository、persistence adapter 和 application service。
 - 新增长期记忆全局开关、生成开关、thread 级 mode 和污染状态。
-- 在 turn 完成后异步创建 Phase 1 job，提取长期记忆候选。
+- turn 完成后只更新 thread 记忆水位；Phase 1 由启动扫描和周期扫描挑选满足 idle 条件的 thread，避免每轮对话都立刻消耗一次模型调用。
 - Phase 1 使用 Spring AI structured output，输出受 Java record 约束的候选结果。
 - 提取前后执行 secret redaction，保证 API Key、token、Authorization header、URL credential 等不会进入 memory artifact。
-- Phase 2 使用 DB lease 和全局 singleton job 归并候选，生成 `MEMORY.md`、`memory_summary.md`、`raw_memories.md` 和 `rollout_summaries/` 的镜像文件。
+- Phase 2 使用 DB lease 和全局单运行约束归并候选，每次归并保留独立 generation job 历史，并生成 `MEMORY.md`、`memory_summary.md`、`raw_memories.md` 和 `rollout_summaries/` 的镜像文件。
 - `ContextAssembler` 在下一轮上下文中注入短小的长期记忆 summary，并把注入来源写进 `ContextSnapshot`。
 - 新增最小 JSON-RPC：`memory/status`、`memory/settings/set`、`memory/jobs/list`、`memory/artifacts/list`、`memory/consolidate`。
 - 桌面端设置页和输入框 context chip 展示长期记忆开启、关闭、暂停或污染状态。
@@ -110,21 +110,23 @@ Create:
 
 - `job_id`: 任务 id，后端生成。
 - `job_type`: `PHASE1_EXTRACT`、`PHASE2_CONSOLIDATE`。
-- `job_key`: 去重键，例如 `phase1:{threadId}:{turnId}` 或 `phase2:global`。
-- `thread_id`: 关联 thread。Phase 2 global job 可为空。
+- `job_key`: 去重键，例如 `phase1:{threadId}:{sourceUpdatedAt}` 或 `phase2:{generation}`。
+- `generation`: Phase 2 归并代次。Phase 1 可为空；Phase 2 必填，用于保留每次归并历史。
+- `thread_id`: 关联 thread。Phase 2 归并 job 可为空。
 - `turn_id`: Phase 1 对应 turn。Phase 2 可为空。
 - `status`: `PENDING`、`RUNNING`、`SUCCEEDED`、`FAILED`、`NO_OUTPUT`、`CANCELLED`、`SKIPPED_POLLUTED`。
 - `worker_id`: 当前持有 lease 的 worker。
 - `lease_until`: lease 过期时间。
 - `retry_count`: 已重试次数。
 - `max_retries`: 最大重试次数。
-- `input_watermark`: 本次处理输入水位，例如 turn completed 时间或候选最大更新时间。
+- `input_watermark`: 本次处理输入水位。Phase 1 使用 thread 最新 completed turn 时间；Phase 2 使用候选最大更新时间。
 - `error_message`: 最近错误摘要。
 - `created_at`、`started_at`、`completed_at`、`updated_at`。
 
 约束：
 
-- `job_key` 唯一，避免重复提取同一个 turn。
+- `job_key` 唯一，避免重复提取同一 thread 的同一输入水位。
+- Phase 2 不使用固定 `phase2:global` 作为历史 job key；`MemoryJobService` 在 `BEGIN IMMEDIATE` 事务中分配下一代 `phase2:{generation}`，同时保证同一时间只有一个 Phase 2 处于 `PENDING` / `RUNNING`。
 - `status + lease_until` 建索引，便于 worker 拉取可执行任务。
 - `thread_id + turn_id` 建索引，便于运行详情追踪。
 
@@ -270,10 +272,21 @@ Fields:
 - `generateEnabled`: 是否生成长期记忆，默认 `true`。
 - `readEnabled`: 是否注入长期记忆，默认 `true`。
 - `rootDir`: Markdown mirror 根目录，默认 `${user.home}/.babiq/memories`。
-- `phase1BatchSize`: 单次 Phase 1 拉取任务数，默认 `4`。
-- `phase2BatchSize`: 单次 Phase 2 归并候选数，默认 `20`。
-- `phase1IdleMillis`: turn 完成后等待多久再提取，默认 `30000`。
+- `phase1ScanIntervalMillis`: Phase 1 周期扫描间隔，默认 `3600000`，即 1 小时。
+- `phase1MinIdleMillis`: thread 最新 turn 完成后至少空闲多久才允许提取，默认 `300000`，即 5 分钟；生产配置可提高到 Codex 默认的 6 小时级别。
+- `phase1MaxThreadsPerScan`: 单次 Phase 1 扫描最多提取多少个 thread，默认 `4`。
+- `phase1OnStartup`: 后端启动后是否做一次 Phase 1 扫描，默认 `true`。
+- `phase1InputWindowPercent`: Phase 1 输入最多使用模型窗口的比例，默认 `70`。
+- `phase1FallbackTokenLimit`: 缺少模型窗口元数据时的 Phase 1 输入兜底 token 上限，默认 `150000`。
+- `phase2MaxCandidates`: 单次 Phase 2 选择候选上限，默认 `256`。
+- `phase2TriggerOnCandidateCount`: 未归并 `CLEAN` candidate 累计到多少后自动触发 Phase 2，默认 `5`。
+- `phase2ScanIntervalMillis`: Phase 2 兜底扫描间隔，默认 `86400000`，即 24 小时。
+- `phase2MinIntervalMillis`: 两次 Phase 2 成功或启动之间的最小间隔，默认 `3600000`，即 1 小时。
 - `summaryTokenBudget`: read path 注入 summary 预算，默认 `2500`。
+- `extractProviderId`: Phase 1 提取使用的 provider，默认当前 active provider。
+- `extractModel`: Phase 1 提取使用的模型，默认 provider 默认模型，建议可配置为便宜小模型。
+- `consolidationProviderId`: Phase 2 语义归并使用的 provider，默认当前 active provider。
+- `consolidationModel`: Phase 2 语义归并使用的模型，默认 provider 默认模型。
 - `maxRetries`: job 最大重试，默认 `3`。
 
 #### `MemorySettingsService`
@@ -293,17 +306,19 @@ Fields:
 
 职责：
 
-- turn completed 后幂等创建 `PHASE1_EXTRACT` job。
+- 后端启动或周期扫描时挑选满足 idle 条件的 thread 并创建 `PHASE1_EXTRACT` job。
 - worker 拉取待执行任务并写入 lease。
 - job 成功、失败、跳过、无输出时统一更新状态。
-- Phase 2 使用 `job_key=phase2:global` 保证同时只有一个归并任务。
+- Phase 1 成功落库后检查未归并 `CLEAN` candidate 数量，达到阈值时创建下一代 Phase 2 job。
+- Phase 2 使用 `generation` 保留历史 job，同时通过事务和运行中状态保证同一时间只有一个归并任务。
 
 关键方法：
 
 ```java
-void enqueuePhase1(String threadId, String turnId);
+int scanAndEnqueuePhase1(Instant now);
 Optional<MemoryJob> claimNext(String workerId, Instant now);
-MemoryJob claimOrCreatePhase2(String workerId, Instant now);
+Optional<MemoryJob> enqueuePhase2IfThresholdReached(Instant now);
+Optional<MemoryJob> enqueuePhase2ForScheduledScan(Instant now);
 void markSucceeded(String jobId, Instant now);
 void markNoOutput(String jobId, Instant now);
 void markFailed(String jobId, String message, Instant now);
@@ -323,6 +338,7 @@ Default implementation:
 
 职责：
 
+- 按 `phase1InputWindowPercent` 和 `phase1FallbackTokenLimit` 计算 Phase 1 输入预算，超长时按时间倒序保留最近 items，再按时间正序提交给模型。
 - 读取 thread 的最近 items、turn summary、tool calls、context snapshot。
 - 构造短 prompt，要求模型只输出结构化 JSON。
 - 使用 Spring AI `ChatClient.call().entity(MemoryStageOnePayload.class)`。
@@ -352,7 +368,7 @@ record MemoryStageOnePayload(
 
 - 对 Phase 1 输入和输出做 secret redaction。
 - 产出 redaction count 和命中类型。
-- 命中高风险 secret 时可把 candidate 标记为 `SECRET_RISK`，默认不进入 Phase 2。
+- redaction 命中次数大于等于 3，或命中 `PRIVATE_KEY`、`URL_CREDENTIAL`、`AUTHORIZATION_HEADER` 等高风险类型时，把 candidate 标记为 `SECRET_RISK`，默认不进入 Phase 2。
 
 首批规则：
 
@@ -380,7 +396,7 @@ record MemoryStageOnePayload(
 
 - 如果 turn 中存在 MCP tool result 且 tool metadata 标记为 untrusted，Phase 1 默认跳过。
 - 如果用户消息包含“不要记住”“不要保存到记忆”“仅本次对话”等中文/英文指令，Phase 1 跳过。
-- 如果 redaction 命中高风险 secret，candidate 标记 `SECRET_RISK`，不进入 Phase 2。
+- 如果 redaction 命中次数大于等于 3，或命中 `PRIVATE_KEY`、`URL_CREDENTIAL`、`AUTHORIZATION_HEADER` 等高风险类型，candidate 标记 `SECRET_RISK`，不进入 Phase 2。
 
 #### `MemoryArtifactMirror`
 
@@ -412,7 +428,8 @@ record MemoryStageOnePayload(
 接口：
 
 ```java
-MemoryConsolidationResult consolidate(MemoryConsolidationRequest request);
+String generateMemorySummary(MemoryConsolidationRequest request);
+String generateMemoryHandbook(MemoryConsolidationRequest request);
 ```
 
 首版默认实现：
@@ -421,14 +438,17 @@ MemoryConsolidationResult consolidate(MemoryConsolidationRequest request);
 
 职责：
 
-- 读取上一版 artifact 和本批 candidates。
-- 使用 Spring AI structured output 产出新的 `MEMORY.md`、`memory_summary.md`、`raw_memories.md` 和 rollout summary 内容。
-- Java 服务负责写文件和落库。
+- 读取上一版 `MEMORY.md` / `memory_summary.md` 和本批 candidates。
+- 使用 Spring AI structured output 分两次生成新的 `memory_summary.md` 和 `MEMORY.md`。
+- `raw_memories.md` 由 Java 按 selected candidates 机械拼接，稳定排序，不调用模型。
+- `rollout_summaries/` 由 Java 从 candidate 的 `rollout_summary` 直接写入，按 slug 生成文件，不调用模型。
+- Java 服务负责写所有文件和落库。
 
 为什么首版不用通用工具型 agent 直接写文件：
 
 - P3-4 的核心是长期记忆事实源和安全边界，不能让模型直接获得任意文件写权限。
 - structured output 更容易测试、审计和回滚。
+- 机械 artifact 不走模型，可降低成本和输出长度风险。
 - 后续如果需要 Codex 式内部 agent，可新增 `SpringAiAlibabaRestrictedAgentMemoryConsolidationStrategy`，但也必须只通过受控 memory artifact writer 写入。
 
 Spring AI Alibaba 复用点：
@@ -442,7 +462,7 @@ Spring AI Alibaba 复用点：
 职责：
 
 - 在 `ContextAssembler` 组装前读取最新 `MEMORY_SUMMARY_MD` artifact。
-- 按 `summaryTokenBudget` 截断或拒绝注入。
+- 使用 `ApproximateContextTokenEstimator` 按 `summaryTokenBudget` 估算注入长度，优先按段落边界截断；单段超长时再硬截断并追加省略标记。
 - 写入 `bq_memory_references`。
 - 返回 `LongTermMemoryReference` 列表给 `ContextEnvelope`。
 
@@ -457,7 +477,7 @@ Spring AI Alibaba 复用点：
 
 ```mermaid
 sequenceDiagram
-    participant Turn as "Turn completed"
+    participant Scan as "Startup / scheduled scan"
     participant Job as "MemoryJobService"
     participant P1 as "Phase1 worker"
     participant Redact as "Secret redactor"
@@ -466,12 +486,13 @@ sequenceDiagram
     participant Files as "Markdown mirror"
     participant Ctx as "ContextAssembler"
 
-    Turn->>Job: enqueuePhase1(threadId, turnId)
+    Scan->>Job: scan idle threads and enqueue Phase1
     Job->>P1: claim PHASE1_EXTRACT
     P1->>Redact: sanitize input/output
     P1->>DB: insert bq_memory_candidates
     P1->>Job: mark succeeded or no_output
-    P2->>Job: claim phase2:global
+    Job->>Job: enqueue Phase2 when threshold reached
+    P2->>Job: claim phase2:{generation}
     P2->>DB: select clean unmerged candidates
     P2->>Files: write MEMORY.md and summary
     P2->>DB: insert artifacts and references
@@ -540,7 +561,7 @@ Notes:
 
 #### `memory/consolidate`
 
-手动触发 Phase 2 global job，用于调试和用户主动归并。
+手动创建下一代 Phase 2 归并 job，用于调试和用户主动归并；正常情况下 Phase 1 候选阈值和每日兜底扫描也会自动触发。
 
 ### 5.2 Desktop changes
 
@@ -610,7 +631,29 @@ cd backend
 .\mvnw.cmd "-Dtest=MemorySettingsServiceTest,MemoryPollutionServiceTest" test
 ```
 
-### Task 3: Phase 1 候选提取
+### Task 3: Secret redaction
+
+Files:
+
+- Add `backend/src/main/java/com/wzx/babiq/server/memory/redaction/MemorySecretRedactor.java`
+- Add `MemorySecretRedactionRule.java`
+- Add `MemorySecretRedactionResult.java`
+
+Steps:
+
+1. 建立规则列表，覆盖 header、env var、URL credential、常见 key pattern。
+2. Phase 1 输入和输出都走 redaction。
+3. redaction count 和命中类型写入 candidate。
+4. redaction 命中次数大于等于 3，或命中 `PRIVATE_KEY`、`URL_CREDENTIAL`、`AUTHORIZATION_HEADER` 等高风险类型时，将 candidate 标记 `SECRET_RISK`。
+
+Test:
+
+```powershell
+cd backend
+.\mvnw.cmd "-Dtest=MemorySecretRedactorTest" test
+```
+
+### Task 4: Phase 1 候选提取
 
 Files:
 
@@ -623,38 +666,18 @@ Files:
 Steps:
 
 1. 从 `ConversationRepository`、`RunRecordService`、`ContextSnapshotRepository` 读取候选来源。
-2. 构造最小 prompt，声明只基于给定证据提取，不允许杜撰。
-3. 使用 Spring AI structured output 生成 `MemoryStageOnePayload`。
-4. 验证 source item id 必须来自输入。
-5. 对 empty/no reusable learning 返回 `NO_OUTPUT`。
+2. 使用 `ApproximateContextTokenEstimator` 和 `phase1InputWindowPercent` 控制 Phase 1 输入长度。
+3. 调用 `MemorySecretRedactor` 清洗输入，再构造最小 prompt，声明只基于给定证据提取，不允许杜撰。
+4. 使用 Spring AI structured output 生成 `MemoryStageOnePayload`。
+5. 调用 `MemorySecretRedactor` 清洗模型输出，重新计算 redaction count 和污染状态。
+6. 验证 source item id 必须来自输入。
+7. 对 empty/no reusable learning 返回 `NO_OUTPUT`。
 
 Test:
 
 ```powershell
 cd backend
-.\mvnw.cmd "-Dtest=SpringAiMemoryStageOneExtractorTest,MemoryStageOnePromptTest" test
-```
-
-### Task 4: Secret redaction
-
-Files:
-
-- Add `backend/src/main/java/com/wzx/babiq/server/memory/redaction/MemorySecretRedactor.java`
-- Add `MemorySecretRedactionRule.java`
-- Add `MemorySecretRedactionResult.java`
-
-Steps:
-
-1. 建立规则列表，覆盖 header、env var、URL credential、常见 key pattern。
-2. Phase 1 输入和输出都走 redaction。
-3. redaction count 写入 candidate。
-4. 高风险命中时将 candidate 标记 `SECRET_RISK`。
-
-Test:
-
-```powershell
-cd backend
-.\mvnw.cmd "-Dtest=MemorySecretRedactorTest" test
+.\mvnw.cmd "-Dtest=SpringAiMemoryStageOneExtractorTest,MemoryStageOnePromptTest,MemorySecretRedactorTest" test
 ```
 
 ### Task 5: Job worker 和调度
@@ -664,15 +687,18 @@ Files:
 - Add `backend/src/main/java/com/wzx/babiq/server/memory/pipeline/LongTermMemoryPipeline.java`
 - Add `MemoryJobWorker.java`
 - Add `MemoryJobScheduler.java`
-- Modify turn completion recording path to call `MemoryJobService.enqueuePhase1(...)`.
+- Modify turn completion recording path only to update memory dirty watermark; do not enqueue a model job immediately.
 
 Steps:
 
-1. turn completed 后幂等 enqueue Phase 1。
-2. Spring Scheduling 拉取 `PENDING` 或 lease expired job。
-3. worker 执行 Phase 1 并落库 candidate。
-4. job 失败只更新 memory job，不影响原用户 turn。
-5. 达到 retry 上限后标记 `FAILED`。
+1. turn completed 后只更新 thread 记忆输入水位，不直接调用模型。
+2. 后端启动后执行一次 Phase 1 scan；之后按 `phase1ScanIntervalMillis` 周期扫描。
+3. scanner 只挑选最新 turn 已空闲超过 `phase1MinIdleMillis` 的 thread，并受 `phase1MaxThreadsPerScan` 限制。
+4. Spring Scheduling 拉取 `PENDING` 或 lease expired job。
+5. worker 执行 Phase 1 并落库 candidate。
+6. Phase 1 成功后，如果未归并 `CLEAN` candidate 数量大于等于 `phase2TriggerOnCandidateCount`，则入队下一代 Phase 2 job。
+7. job 失败只更新 memory job，不影响原用户 turn。
+8. 达到 retry 上限后标记 `FAILED`。
 
 Test:
 
@@ -692,12 +718,14 @@ Files:
 
 Steps:
 
-1. `memory/consolidate` 或调度器创建/claim `phase2:global`。
-2. 选择 `CLEAN` 且未归并的 candidates。
-3. 读取上一版 artifact。
-4. 调用 structured consolidation strategy 生成新 artifact 内容。
-5. `MemoryArtifactMirror` 原子写文件。
-6. 成功后写 `bq_memory_artifacts`，并标记 candidates selected。
+1. `memory/consolidate`、Phase 1 阈值触发或 `phase2ScanIntervalMillis` 兜底扫描创建下一代 `phase2:{generation}` job。
+2. 创建 Phase 2 时遵守 `phase2MinIntervalMillis` 防抖。
+3. 选择 `CLEAN` 且未归并的 candidates，排序规则为 `usage_count DESC, COALESCE(last_used_at, created_at) DESC, created_at DESC, candidate_id DESC LIMIT phase2MaxCandidates`。
+4. 读取上一版 artifact。
+5. Java 直接生成 `raw_memories.md` 和 `rollout_summaries/`。
+6. 调用 structured consolidation strategy 分别生成 `memory_summary.md` 和 `MEMORY.md`。
+7. `MemoryArtifactMirror` 原子写文件。
+8. 成功后写 `bq_memory_artifacts`，并标记 candidates selected。
 
 Test:
 
@@ -729,6 +757,7 @@ Test:
 ```powershell
 cd backend
 .\mvnw.cmd "-Dtest=ContextAssemblerLongTermMemoryTest,ContextWindowRuntimeMemoryTest,MemoryReadServiceTest" test
+.\mvnw.cmd "-Dtest=ContextAssemblerCompactionTest" test
 ```
 
 ### Task 8: JSON-RPC 和桌面最小接入
@@ -771,6 +800,7 @@ Validation:
 ```powershell
 cd backend
 .\mvnw.cmd "-Dtest=SchemaCommentsCoverageTest,MemoryRepositoryTest,MemorySettingsServiceTest,MemoryPollutionServiceTest,MemorySecretRedactorTest,LongTermMemoryPipelineTest,MemoryConsolidationServiceTest,ContextAssemblerLongTermMemoryTest,MemoryHandlersTest" test
+.\mvnw.cmd "-Dtest=ContextAssemblerCompactionTest" test
 .\mvnw.cmd clean verify
 
 cd ..\desktop
@@ -782,7 +812,7 @@ Manual smoke:
 
 1. 启动 backend 和 desktop。
 2. 在可写工作区完成一次含工具调用的会话。
-3. 等待或手动触发 `memory/consolidate`。
+3. 等待 Phase 1 idle 扫描，或在测试配置中缩短 `phase1ScanIntervalMillis` 后触发扫描。
 4. 确认 `memory_summary.md` 生成。
 5. 新开一轮对话，确认 context snapshot 中有长期记忆引用，且 UI chip 显示长期记忆开启。
 6. 关闭读取开关，再次发送消息，确认没有长期记忆注入。
@@ -805,7 +835,7 @@ Manual smoke:
 处理：
 
 - 输入和输出双向 redaction。
-- 高风险 secret 命中时 candidate 不进入 Phase 2。
+- redaction 命中次数大于等于 3，或命中 `PRIVATE_KEY`、`URL_CREDENTIAL`、`AUTHORIZATION_HEADER` 等高风险类型时，candidate 不进入 Phase 2。
 - 测试覆盖常见 key、URL、header 和 env var。
 
 ### 风险 3: 外部工具结果污染用户长期偏好
@@ -841,7 +871,7 @@ P3-4 只有满足以下条件才可声明完成：
 
 - `V10__long_term_memory_pipeline.sql` 和所有新增实体具备中文注释。
 - `SchemaCommentsCoverageTest` 覆盖新增表和字段。
-- Phase 1 可在 turn completed 后异步生成 candidate，且支持 no-output。
+- Phase 1 可在启动扫描或周期扫描中挑选 idle thread 生成 candidate，且支持 no-output。
 - secret redaction 对输入和输出生效。
 - Phase 2 可生成 Markdown mirror 和 `bq_memory_artifacts`。
 - `ContextAssembler` 可注入最新 `memory_summary`，并写入 `bq_memory_references`。
@@ -855,7 +885,7 @@ P3-4 只有满足以下条件才可声明完成：
 ## 9. 执行顺序建议
 
 1. 先做 Task 1 和 Task 2，确保事实源、开关和模式边界稳定。
-2. 再做 Task 3 到 Task 5，让 Phase 1 能稳定产出或跳过候选。
+2. 再做 Task 3 到 Task 5，先建立 redaction，再让 Phase 1 扫描式地产出或跳过候选。
 3. 接着做 Task 6，完成 Phase 2 artifact 归并。
 4. 然后做 Task 7，把长期记忆接入真实模型上下文。
 5. 最后做 Task 8 和 Task 9，收口协议、桌面、文档和全量验证。
