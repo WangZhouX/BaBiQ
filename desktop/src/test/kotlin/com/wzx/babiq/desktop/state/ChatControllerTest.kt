@@ -10,6 +10,14 @@ import com.wzx.babiq.desktop.protocol.McpServerRefreshResult
 import com.wzx.babiq.desktop.protocol.McpServersListResult
 import com.wzx.babiq.desktop.protocol.McpToolInfo
 import com.wzx.babiq.desktop.protocol.McpToolsListResult
+import com.wzx.babiq.desktop.protocol.MemoryArtifactsListResult
+import com.wzx.babiq.desktop.protocol.MemoryArtifactInfo
+import com.wzx.babiq.desktop.protocol.MemoryConsolidateResult
+import com.wzx.babiq.desktop.protocol.MemoryJobInfo
+import com.wzx.babiq.desktop.protocol.MemoryJobsListResult
+import com.wzx.babiq.desktop.protocol.MemorySettingsSetParams
+import com.wzx.babiq.desktop.protocol.MemorySettingsSetResult
+import com.wzx.babiq.desktop.protocol.MemoryStatusResult
 import com.wzx.babiq.desktop.protocol.ModelUsageStatsInfo
 import com.wzx.babiq.desktop.protocol.ObservabilityCostsResult
 import com.wzx.babiq.desktop.protocol.ObservabilitySnapshotResult
@@ -63,6 +71,7 @@ class ChatControllerTest {
 				"getSandboxPolicy",
 				"listThreads:<all>",
 				"listThreads:E:\\BaBiQ",
+				"getMemoryStatus",
 				"createThread:E:\\BaBiQ",
 				"startTurn:thread-1:分析项目:null",
 			),
@@ -80,7 +89,7 @@ class ChatControllerTest {
 
 		controller.connect()
 
-		assertEquals(listOf("connect", "getSettings", "listProviders", "getSandboxPolicy", "listThreads:<all>", "listThreads:E:\\BaBiQ"), gateway.calls)
+		assertEquals(listOf("connect", "getSettings", "listProviders", "getSandboxPolicy", "listThreads:<all>", "listThreads:E:\\BaBiQ", "getMemoryStatus"), gateway.calls)
 		assertEquals("DANGER_FULL_ACCESS", controller.state.value.workspace.permissionMode)
 		assertEquals("完全访问权限", controller.state.value.workspace.permissionLabel)
 	}
@@ -208,7 +217,7 @@ class ChatControllerTest {
 
 		controller.openThread("thr_history")
 
-		assertEquals(listOf("loadThread:thr_history", "getContextStatus:thr_history"), gateway.calls)
+		assertEquals(listOf("loadThread:thr_history", "getContextStatus:thr_history", "getMemoryStatus"), gateway.calls)
 		assertEquals("thr_history", controller.state.value.currentThreadId)
 		assertEquals("历史会话", controller.state.value.currentThreadTitle)
 		assertEquals("thr_history", controller.state.value.threadHistory.selectedThreadId)
@@ -417,6 +426,46 @@ class ChatControllerTest {
 		assertEquals("只读模式", controller.state.value.workspace.permissionLabel)
 		assertEquals("NEVER", controller.state.value.settingsState.settings?.approvalPolicy)
 		assertEquals(listOf("setSandbox:READ_ONLY", "setApproval:NEVER"), gateway.calls)
+	}
+
+	@Test
+	fun `打开设置页时加载长期记忆状态和审计列表`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(gateway, backgroundScope, initialState = AppState(connectionState = ConnectionState.Connected))
+
+		controller.showScreen(Screen.Settings)
+		advanceUntilIdle()
+
+		assertEquals(listOf("getMemoryStatus", "listMemoryJobs:20", "listMemoryArtifacts:20"), gateway.calls)
+		assertEquals(5, controller.state.value.memoryState.status?.cleanCandidateCount)
+		assertEquals("phase2:1", controller.state.value.memoryState.jobs.single().jobKey)
+		assertEquals("memory_summary.md", controller.state.value.memoryState.artifacts.single().artifactPath)
+	}
+
+	@Test
+	fun `保存长期记忆设置会调用后端并刷新审计状态`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(gateway, backgroundScope, initialState = AppState(connectionState = ConnectionState.Connected))
+
+		controller.saveMemorySettings(readEnabled = false)
+		advanceUntilIdle()
+
+		assertEquals(listOf("setMemorySettings", "getMemoryStatus", "listMemoryJobs:20", "listMemoryArtifacts:20"), gateway.calls)
+		assertEquals("长期记忆设置已保存，下一轮上下文组装生效", controller.state.value.memoryState.notice)
+		assertEquals("memjob_1", controller.state.value.memoryState.jobs.single().jobId)
+	}
+
+	@Test
+	fun `手动触发长期记忆归并会调用后端并刷新审计状态`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(gateway, backgroundScope, initialState = AppState(connectionState = ConnectionState.Connected))
+
+		controller.consolidateMemory(force = true)
+		advanceUntilIdle()
+
+		assertEquals(listOf("consolidateMemory:true", "getMemoryStatus", "listMemoryJobs:20", "listMemoryArtifacts:20"), gateway.calls)
+		assertEquals("长期记忆归并已入队：memjob_1", controller.state.value.memoryState.notice)
+		assertEquals("memart_1", controller.state.value.memoryState.artifacts.single().artifactId)
 	}
 
 	@Test
@@ -744,6 +793,66 @@ class ChatControllerTest {
 		override suspend fun refreshMcpServer(serverId: String): McpServerRefreshResult {
 			calls += "refreshMcp:$serverId"
 			return McpServerRefreshResult(sampleMcpServer(status = "connected", toolCount = 1))
+		}
+
+		override suspend fun getMemoryStatus(): MemoryStatusResult {
+			calls += "getMemoryStatus"
+			return MemoryStatusResult(
+				enabled = true,
+				generateEnabled = true,
+				readEnabled = true,
+				rootDir = "E:\\BaBiQ\\.babiq\\memories",
+				pendingJobs = 1,
+				cleanCandidateCount = 5,
+				lastSummaryArtifactId = "memart_1",
+				phase2Generation = 1,
+			)
+		}
+
+		override suspend fun setMemorySettings(params: MemorySettingsSetParams): MemorySettingsSetResult {
+			calls += "setMemorySettings"
+			return MemorySettingsSetResult(
+				enabled = params.enabled ?: true,
+				generateEnabled = params.generateEnabled ?: true,
+				readEnabled = params.readEnabled ?: true,
+			)
+		}
+
+		override suspend fun listMemoryJobs(limit: Int): MemoryJobsListResult {
+			calls += "listMemoryJobs:$limit"
+			return MemoryJobsListResult(
+				jobs = listOf(
+					MemoryJobInfo(
+						jobId = "memjob_1",
+						jobType = "PHASE2_CONSOLIDATE",
+						jobKey = "phase2:1",
+						generation = 1,
+						status = "PENDING",
+						createdAt = "2026-05-27T00:00:00Z",
+					),
+				),
+			)
+		}
+
+		override suspend fun listMemoryArtifacts(limit: Int): MemoryArtifactsListResult {
+			calls += "listMemoryArtifacts:$limit"
+			return MemoryArtifactsListResult(
+				artifacts = listOf(
+					MemoryArtifactInfo(
+						artifactId = "memart_1",
+						artifactType = "MEMORY_SUMMARY_MD",
+						artifactPath = "memory_summary.md",
+						version = 1,
+						tokenEstimate = 120,
+						createdAt = "2026-05-27T00:00:00Z",
+					),
+				),
+			)
+		}
+
+		override suspend fun consolidateMemory(force: Boolean): MemoryConsolidateResult {
+			calls += "consolidateMemory:$force"
+			return MemoryConsolidateResult(queued = true, jobId = "memjob_1", generation = 1, status = "QUEUED")
 		}
 	}
 

@@ -56,6 +56,18 @@ public class ThreadEntity {
     /** 会话状态；active 表示默认可见，archived 表示软归档。 */
     private String status;
 
+    /** 长期记忆模式；ENABLED 允许该会话参与长期记忆，DISABLED 表示关闭。 */
+    @TableField("memory_mode")
+    private String memoryMode;
+
+    /** 会话被标记为上下文污染的原因；为空表示未标记污染。 */
+    @TableField("memory_polluted_reason")
+    private String memoryPollutedReason;
+
+    /** 会话被标记为上下文污染的时间；为空表示未标记污染。 */
+    @TableField("memory_polluted_at")
+    private String memoryPollutedAt;
+
     /** 创建时间，使用 Instant 字符串保存，避免 SQLite 时区转换歧义。 */
     @TableField("created_at")
     private String createdAt;
@@ -100,6 +112,7 @@ public class ThreadEntity {
         entity.setSandboxMode(sandboxMode);
         entity.setApprovalPolicy(approvalPolicy);
         entity.setStatus("active");
+        entity.setMemoryMode("ENABLED");
         entity.setCreatedAt(timestamp);
         entity.setUpdatedAt(timestamp);
         return entity;

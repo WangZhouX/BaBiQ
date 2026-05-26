@@ -5,6 +5,9 @@ import com.wzx.babiq.desktop.protocol.AppSettingsResult
 import com.wzx.babiq.desktop.protocol.ContextStatusResult
 import com.wzx.babiq.desktop.protocol.McpServerInfo
 import com.wzx.babiq.desktop.protocol.McpToolInfo
+import com.wzx.babiq.desktop.protocol.MemoryArtifactInfo
+import com.wzx.babiq.desktop.protocol.MemoryJobInfo
+import com.wzx.babiq.desktop.protocol.MemoryStatusResult
 import com.wzx.babiq.desktop.protocol.ObservabilitySnapshotResult
 import com.wzx.babiq.desktop.protocol.ProviderInfo
 import com.wzx.babiq.desktop.protocol.ProviderSaveParams
@@ -174,6 +177,28 @@ data class ContextWindowUiState(
 	val loading: Boolean = false,
 	val status: ContextStatusResult? = null,
 	val error: String? = null,
+)
+
+/**
+ * 长期记忆流水线的桌面端状态。
+ *
+ * 这层状态只展示后端 memory 系列接口返回的审计摘要，不把长期记忆正文塞进聊天消息列表；
+ * 真正会注入模型的内容仍由后端 ContextWindowRuntime 在 read path 中按预算安装。
+ *
+ * @property loading true 表示正在读取 memory/status、memory/jobs/list 或 memory/artifacts/list。
+ * @property status 后端长期记忆开关、候选数量和最新 generation 摘要；为空表示尚未加载。
+ * @property jobs 最近后台任务，设置页用于审计 Phase1/Phase2 是否在推进。
+ * @property artifacts 最近 Markdown 产物，设置页用于确认 read path 可用的 summary 版本。
+ * @property error 最近一次读取或写入长期记忆设置失败的错误。
+ * @property notice 最近一次长期记忆操作的短提示。
+ */
+data class MemoryUiState(
+	val loading: Boolean = false,
+	val status: MemoryStatusResult? = null,
+	val jobs: List<MemoryJobInfo> = emptyList(),
+	val artifacts: List<MemoryArtifactInfo> = emptyList(),
+	val error: String? = null,
+	val notice: String? = null,
 )
 
 /**

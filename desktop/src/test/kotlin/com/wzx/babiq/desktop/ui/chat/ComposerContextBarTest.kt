@@ -1,7 +1,9 @@
 package com.wzx.babiq.desktop.ui.chat
 
 import com.wzx.babiq.desktop.protocol.ContextStatusResult
+import com.wzx.babiq.desktop.protocol.MemoryStatusResult
 import com.wzx.babiq.desktop.state.ContextWindowUiState
+import com.wzx.babiq.desktop.state.MemoryUiState
 import com.wzx.babiq.desktop.ui.common.BadgeTone
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -64,5 +66,37 @@ class ComposerContextBarTest {
 
 		assertEquals("已压缩 2 次", contextWindowChipLabel(ContextWindowUiState(status = status)))
 		assertEquals(BadgeTone.Success, contextWindowChipTone(ContextWindowUiState(status = status)))
+	}
+
+	@Test
+	fun `长期记忆 chip 根据后端状态展示注入语义`() {
+		assertEquals("长期记忆 未加载", memoryChipLabel(MemoryUiState()))
+		assertEquals(BadgeTone.Info, memoryChipTone(MemoryUiState()))
+
+		val withSummary = MemoryUiState(
+			status = MemoryStatusResult(
+				enabled = true,
+				generateEnabled = true,
+				readEnabled = true,
+				rootDir = "E:\\BaBiQ\\.babiq\\memories",
+				cleanCandidateCount = 0,
+				lastSummaryArtifactId = "memart_1",
+				phase2Generation = 2,
+			),
+		)
+		assertEquals("长期记忆 G2", memoryChipLabel(withSummary))
+		assertEquals(BadgeTone.Success, memoryChipTone(withSummary))
+
+		val readDisabled = MemoryUiState(
+			status = MemoryStatusResult(
+				enabled = true,
+				generateEnabled = true,
+				readEnabled = false,
+				rootDir = "E:\\BaBiQ\\.babiq\\memories",
+			),
+		)
+		assertEquals("长期记忆 不注入", memoryChipLabel(readDisabled))
+		assertEquals(BadgeTone.Warning, memoryChipTone(readDisabled))
+		assertEquals(BadgeTone.Danger, memoryChipTone(MemoryUiState(error = "boom")))
 	}
 }

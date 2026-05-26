@@ -2,6 +2,7 @@ package com.wzx.babiq.desktop.state
 
 import com.wzx.babiq.desktop.client.AgentGateway
 import com.wzx.babiq.desktop.protocol.AppSettingsResult
+import com.wzx.babiq.desktop.protocol.MemorySettingsSetParams
 import com.wzx.babiq.desktop.protocol.ProviderInfo
 import com.wzx.babiq.desktop.protocol.ProviderSaveParams
 import com.wzx.babiq.desktop.protocol.ServerEvent
@@ -332,9 +333,10 @@ class ChatController(
 				runtimeEvents = emptyList(),
 				latestSummary = null,
 				pendingApproval = null,
-				runRecordState = RunRecordState(),
-				contextWindowState = ContextWindowUiState(),
-				threadHistory = it.threadHistory.copy(selectedThreadId = null),
+					runRecordState = RunRecordState(),
+					contextWindowState = ContextWindowUiState(),
+					memoryState = it.memoryState.copy(notice = null, error = null),
+					threadHistory = it.threadHistory.copy(selectedThreadId = null),
 				bannerMessage = null,
 				lastError = null,
 			)
@@ -382,6 +384,7 @@ class ChatController(
 				)
 			}
 			loadContextStatus(loaded.thread.threadId)
+			loadMemoryStatus(loadAudit = false)
 			if (state.value.runtimeExpanded) {
 				loadRunRecords(loaded.thread.threadId)
 				loadObservabilitySnapshot(state.value.runRecordState.observability.range)
@@ -495,6 +498,76 @@ class ChatController(
 				loadMcpServers()
 			}
 		}
+		if (screen == Screen.Settings) {
+			scope.launch(start = CoroutineStart.UNDISPATCHED) {
+				loadMemoryStatus(loadAudit = true)
+			}
+		}
+	}
+
+	/**
+	 * 保存长期记忆开关。
+	 *
+	 * 这里调用后端 `memory/settings/set`，因此不是单纯 UI 状态切换；下一轮 context read path 和后台 worker
+	 * 都会读取后端的运行时开关，保持“设置页变化”和“Agent 实际行为”一致。
+	 */
+	suspend fun saveMemorySettings(enabled: Boolean? = null, generateEnabled: Boolean? = null, readEnabled: Boolean? = null) {
+		_state.update { it.copy(memoryState = it.memoryState.copy(loading = true, error = null, notice = null)) }
+		try {
+			val result = gateway.setMemorySettings(MemorySettingsSetParams(enabled, generateEnabled, readEnabled))
+			_state.update {
+				val previousStatus = it.memoryState.status
+				it.copy(
+					memoryState = it.memoryState.copy(
+						loading = false,
+						status = previousStatus?.copy(
+							enabled = result.enabled,
+							generateEnabled = result.generateEnabled,
+							readEnabled = result.readEnabled,
+						),
+						error = null,
+						notice = "长期记忆设置已保存，下一轮上下文组装生效",
+					),
+				)
+			}
+			loadMemoryStatus(loadAudit = true)
+		} catch (exception: Exception) {
+			_state.update {
+				it.copy(
+					memoryState = it.memoryState.copy(loading = false, error = exception.message ?: "保存长期记忆设置失败"),
+					lastError = exception.message,
+				)
+			}
+		}
+	}
+
+	/**
+	 * 手动触发一次长期记忆 Phase2 归并。
+	 */
+	fun consolidateMemory(force: Boolean = true) {
+		scope.launch(start = CoroutineStart.UNDISPATCHED) {
+			_state.update { it.copy(memoryState = it.memoryState.copy(loading = true, error = null, notice = null)) }
+			try {
+				val result = gateway.consolidateMemory(force)
+				_state.update {
+					it.copy(
+						memoryState = it.memoryState.copy(
+							loading = false,
+							error = null,
+							notice = if (result.queued) "长期记忆归并已入队：${result.jobId}" else "当前没有满足条件的归并任务",
+						),
+					)
+				}
+				loadMemoryStatus(loadAudit = true)
+			} catch (exception: Exception) {
+				_state.update {
+					it.copy(
+						memoryState = it.memoryState.copy(loading = false, error = exception.message ?: "触发长期记忆归并失败"),
+						lastError = exception.message,
+					)
+				}
+			}
+		}
 	}
 
 	/**
@@ -587,6 +660,7 @@ class ChatController(
 		loadWorkspaceProjects(state.value.workspace.cwd)
 		loadThreadHistory(state.value.workspace.cwd)
 		refreshContextStatusIfAvailable()
+		loadMemoryStatus(loadAudit = false)
 	}
 
 	private fun handleConnectionFailure(exception: Exception) {
@@ -686,6 +760,40 @@ class ChatController(
 	 */
 	private suspend fun refreshContextStatusIfAvailable() {
 		state.value.currentThreadId?.let { loadContextStatus(it) }
+	}
+
+	/**
+	 * 读取长期记忆状态。
+	 *
+	 * @param loadAudit true 时同时拉取 jobs/artifacts，适合设置页；聊天页只需要轻量 status chip。
+	 */
+	private suspend fun loadMemoryStatus(loadAudit: Boolean) {
+		_state.update {
+			it.copy(memoryState = it.memoryState.copy(loading = true, error = null))
+		}
+		try {
+			val status = gateway.getMemoryStatus()
+			val jobs = if (loadAudit) gateway.listMemoryJobs(20).jobs else state.value.memoryState.jobs
+			val artifacts = if (loadAudit) gateway.listMemoryArtifacts(20).artifacts else state.value.memoryState.artifacts
+			_state.update {
+				it.copy(
+					memoryState = it.memoryState.copy(
+						loading = false,
+						status = status,
+						jobs = jobs,
+						artifacts = artifacts,
+						error = null,
+					),
+				)
+			}
+		} catch (exception: Exception) {
+			_state.update {
+				it.copy(
+					memoryState = it.memoryState.copy(loading = false, error = exception.message ?: "读取长期记忆状态失败"),
+					lastError = exception.message,
+				)
+			}
+		}
 	}
 
 	/**

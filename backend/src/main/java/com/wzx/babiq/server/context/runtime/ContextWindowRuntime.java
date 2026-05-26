@@ -13,6 +13,7 @@ import com.wzx.babiq.server.context.compaction.WindowInstallRequest;
 import com.wzx.babiq.server.context.model.CapabilityCatalog;
 import com.wzx.babiq.server.context.model.ContextAssemblyInput;
 import com.wzx.babiq.server.context.model.ContextAssemblyResult;
+import com.wzx.babiq.server.context.model.LongTermMemoryReference;
 import com.wzx.babiq.server.context.model.ShortTermSummary;
 import com.wzx.babiq.server.context.repository.ContextSummaryRecord;
 import com.wzx.babiq.server.context.repository.ContextSummaryRepository;
@@ -24,6 +25,8 @@ import com.wzx.babiq.server.conversation.items.ContextCompactionItem;
 import com.wzx.babiq.server.conversation.items.ThreadItem;
 import com.wzx.babiq.server.conversation.repository.ConversationRepository;
 import com.wzx.babiq.server.conversation.repository.ItemRecord;
+import com.wzx.babiq.server.memory.LongTermMemoryReadResult;
+import com.wzx.babiq.server.memory.LongTermMemoryReadService;
 import com.wzx.babiq.server.observability.TurnObservationContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -64,6 +67,8 @@ public class ContextWindowRuntime {
     private final ContextCompactionService compactionService;
     /** 摘要仓库，用于根据 activeSummaryId 还原当前窗口摘要。 */
     private final ContextSummaryRepository summaryRepository;
+    /** 长期记忆读取服务；为空时保持 P3-3 之前不注入长期记忆的行为。 */
+    private final LongTermMemoryReadService longTermMemoryReadService;
     /** 默认预算策略，主要服务测试或未启用压缩服务的场景。 */
     private final ContextBudgetPolicy fallbackBudgetPolicy;
     /** snake_case JSON mapper，保证 envelope/snapshot JSON 和 P3-1 结构一致。 */
@@ -80,7 +85,7 @@ public class ContextWindowRuntime {
                                 ContextSnapshotRepository snapshotRepository,
                                 ObjectMapper objectMapper) {
         this(conversationRepository, contextAssembler, capabilityCatalogAssembler, promptRenderer,
-                windowRepository, snapshotRepository, objectMapper, null, null);
+                windowRepository, snapshotRepository, objectMapper, null, null, null);
     }
 
     /**
@@ -95,7 +100,7 @@ public class ContextWindowRuntime {
                                 ObjectMapper objectMapper,
                                 ContextCompactionService compactionService) {
         this(conversationRepository, contextAssembler, capabilityCatalogAssembler, promptRenderer,
-                windowRepository, snapshotRepository, objectMapper, compactionService, null);
+                windowRepository, snapshotRepository, objectMapper, compactionService, null, null);
     }
 
     /**
@@ -110,7 +115,8 @@ public class ContextWindowRuntime {
                                 ContextSnapshotRepository snapshotRepository,
                                 ObjectMapper objectMapper,
                                 ContextCompactionService compactionService,
-                                ContextSummaryRepository summaryRepository) {
+                                ContextSummaryRepository summaryRepository,
+                                LongTermMemoryReadService longTermMemoryReadService) {
         this.conversationRepository = conversationRepository;
         this.contextAssembler = contextAssembler;
         this.capabilityCatalogAssembler = capabilityCatalogAssembler;
@@ -119,6 +125,7 @@ public class ContextWindowRuntime {
         this.snapshotRepository = snapshotRepository;
         this.compactionService = compactionService;
         this.summaryRepository = summaryRepository;
+        this.longTermMemoryReadService = longTermMemoryReadService;
         this.fallbackBudgetPolicy = new ContextBudgetPolicy();
         ObjectMapper base = objectMapper == null ? new ObjectMapper() : objectMapper;
         this.objectMapper = base.copy().setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
@@ -139,8 +146,10 @@ public class ContextWindowRuntime {
         CapabilityCatalog capabilityCatalog = capabilityCatalogAssembler.assemble(input.toolCallbacks());
         List<ThreadItem> historyItems = historyItems(input);
         ShortTermSummary activeSummary = activeSummary(existingWindow).orElse(null);
-        ContextAssemblyResult assemblyResult = assemble(input, historyItems, activeSummary, capabilityCatalog);
         String snapshotId = newSnapshotId();
+        LongTermMemoryReadResult memoryReadResult = readLongTermMemory(input, snapshotId);
+        ContextAssemblyResult assemblyResult = assemble(input, historyItems, activeSummary,
+                capabilityCatalog, memoryReadResult.references());
         ContextCompactionOutcome compactionOutcome = compactIfNeeded(input, historyItems, activeSummary,
                 assemblyResult, existingWindow, modelWindow, threshold, snapshotId);
         int windowOrdinal = existingWindow == null ? 0 : existingWindow.windowOrdinal();
@@ -151,13 +160,18 @@ public class ContextWindowRuntime {
                     : windowOrdinal + 1;
             activeSummary = toShortTermSummary(compactionOutcome.summaryRecord());
             emitCompactionItem(input, compactionOutcome, windowOrdinal);
-            assemblyResult = assemble(input, historyItems, activeSummary, capabilityCatalog);
+            assemblyResult = assemble(input, historyItems, activeSummary, capabilityCatalog,
+                    memoryReadResult.references());
         }
         ContextSnapshotRecord snapshot = snapshotRecord(input, assemblyResult, capabilityCatalog,
-                snapshotId, windowOrdinal, modelWindow, threshold, now);
+                snapshotId, windowOrdinal, modelWindow, threshold, memoryReadResult, now);
         String modelInputText = promptRenderer.render(assemblyResult);
         try {
             snapshotRepository.save(snapshot);
+            if (longTermMemoryReadService != null) {
+                longTermMemoryReadService.recordReferences(input.threadId(), input.turnId(), snapshotId,
+                        memoryReadResult.references());
+            }
             if (!compactionOutcome.compacted()) {
                 windowRepository.upsert(windowRecord(input, existingWindow, snapshotId, modelWindow, threshold,
                         windowOrdinal, activeSummary == null ? null : activeSummary.summaryId(), now));
@@ -207,6 +221,7 @@ public class ContextWindowRuntime {
                                                  int windowOrdinal,
                                                  int modelWindow,
                                                  int threshold,
+                                                 LongTermMemoryReadResult memoryReadResult,
                                                  Instant now) {
         long included = assemblyResult.snapshot().items().stream().filter(item -> item.included()).count();
         return new ContextSnapshotRecord(
@@ -227,6 +242,8 @@ public class ContextWindowRuntime {
                 envelopeJson(assemblyResult),
                 writeJson(assemblyResult.snapshot().items()),
                 writeJson(capabilityCatalog),
+                writeJson(memoryReadResult.references()),
+                memoryReadResult.tokenEstimate(),
                 preview(input.userText()),
                 now);
     }
@@ -294,7 +311,8 @@ public class ContextWindowRuntime {
     private ContextAssemblyResult assemble(ContextWindowRuntimeInput input,
                                            List<ThreadItem> historyItems,
                                            ShortTermSummary activeSummary,
-                                           CapabilityCatalog capabilityCatalog) {
+                                           CapabilityCatalog capabilityCatalog,
+                                           List<LongTermMemoryReference> longTermMemoryReferences) {
         return contextAssembler.assemble(new ContextAssemblyInput(
                 input.threadId(),
                 input.turnId(),
@@ -305,9 +323,22 @@ public class ContextWindowRuntime {
                 input.runPolicy().approvalPolicy().name(),
                 historyItems,
                 activeSummary,
-                List.of(),
+                longTermMemoryReferences,
                 workspaceFacts(input.cwd()),
                 capabilityCatalog));
+    }
+
+    private LongTermMemoryReadResult readLongTermMemory(ContextWindowRuntimeInput input, String snapshotId) {
+        if (longTermMemoryReadService == null) {
+            return LongTermMemoryReadResult.empty();
+        }
+        try {
+            return longTermMemoryReadService.readForTurn(input.threadId(), input.turnId(), snapshotId);
+        } catch (RuntimeException exception) {
+            log.warn("长期记忆读取失败，本轮继续使用无长期记忆上下文: threadId={}, turnId={}, reason={}: {}",
+                    input.threadId(), input.turnId(), exception.getClass().getSimpleName(), exception.getMessage());
+            return LongTermMemoryReadResult.empty();
+        }
     }
 
     private ContextBudget budget(int modelWindow) {

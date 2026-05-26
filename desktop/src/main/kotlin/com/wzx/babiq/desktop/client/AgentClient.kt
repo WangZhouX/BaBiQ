@@ -13,6 +13,12 @@ import com.wzx.babiq.desktop.protocol.McpServerRefreshParams
 import com.wzx.babiq.desktop.protocol.McpServerRefreshResult
 import com.wzx.babiq.desktop.protocol.McpServersListResult
 import com.wzx.babiq.desktop.protocol.McpToolsListResult
+import com.wzx.babiq.desktop.protocol.MemoryArtifactsListResult
+import com.wzx.babiq.desktop.protocol.MemoryConsolidateResult
+import com.wzx.babiq.desktop.protocol.MemoryJobsListResult
+import com.wzx.babiq.desktop.protocol.MemorySettingsSetParams
+import com.wzx.babiq.desktop.protocol.MemorySettingsSetResult
+import com.wzx.babiq.desktop.protocol.MemoryStatusResult
 import com.wzx.babiq.desktop.protocol.ObservabilityCostsResult
 import com.wzx.babiq.desktop.protocol.ObservabilitySnapshotResult
 import com.wzx.babiq.desktop.protocol.ObservabilityToolsResult
@@ -155,6 +161,21 @@ interface AgentGateway {
 
 	/** 手动刷新指定 MCP server 的连接和工具目录。 */
 	suspend fun refreshMcpServer(serverId: String): McpServerRefreshResult
+
+	/** 读取长期记忆流水线状态，供设置页和后续审计入口展示。 */
+	suspend fun getMemoryStatus(): MemoryStatusResult
+
+	/** 局部更新长期记忆开关。 */
+	suspend fun setMemorySettings(params: MemorySettingsSetParams): MemorySettingsSetResult
+
+	/** 读取最近长期记忆后台任务。 */
+	suspend fun listMemoryJobs(limit: Int = 20): MemoryJobsListResult
+
+	/** 读取最近长期记忆产物。 */
+	suspend fun listMemoryArtifacts(limit: Int = 20): MemoryArtifactsListResult
+
+	/** 手动触发长期记忆 Phase2 归并。 */
+	suspend fun consolidateMemory(force: Boolean = false): MemoryConsolidateResult
 }
 
 /**
@@ -525,6 +546,49 @@ class AgentClient(
 			),
 		)
 		return protocolJson.decodeFromJsonElement(McpServerRefreshResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `memory/status`，读取长期记忆流水线状态。
+	 */
+	override suspend fun getMemoryStatus(): MemoryStatusResult {
+		val response = request("memory/status", buildJsonObject {})
+		return protocolJson.decodeFromJsonElement(MemoryStatusResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `memory/settings/set`，局部更新长期记忆开关。
+	 */
+	override suspend fun setMemorySettings(params: MemorySettingsSetParams): MemorySettingsSetResult {
+		val response = request(
+			method = "memory/settings/set",
+			params = protocolJson.encodeToJsonElement(MemorySettingsSetParams.serializer(), params),
+		)
+		return protocolJson.decodeFromJsonElement(MemorySettingsSetResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `memory/jobs/list`，读取后台任务审计列表。
+	 */
+	override suspend fun listMemoryJobs(limit: Int): MemoryJobsListResult {
+		val response = request("memory/jobs/list", buildJsonObject { put("limit", limit) })
+		return protocolJson.decodeFromJsonElement(MemoryJobsListResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `memory/artifacts/list`，读取长期记忆产物列表。
+	 */
+	override suspend fun listMemoryArtifacts(limit: Int): MemoryArtifactsListResult {
+		val response = request("memory/artifacts/list", buildJsonObject { put("limit", limit) })
+		return protocolJson.decodeFromJsonElement(MemoryArtifactsListResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `memory/consolidate`，手动触发 Phase2。
+	 */
+	override suspend fun consolidateMemory(force: Boolean): MemoryConsolidateResult {
+		val response = request("memory/consolidate", buildJsonObject { put("force", force) })
+		return protocolJson.decodeFromJsonElement(MemoryConsolidateResult.serializer(), response.requireResult())
 	}
 
 	/**

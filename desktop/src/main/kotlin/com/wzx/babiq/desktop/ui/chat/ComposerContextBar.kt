@@ -16,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.wzx.babiq.desktop.state.AppState
 import com.wzx.babiq.desktop.state.ContextWindowUiState
+import com.wzx.babiq.desktop.state.MemoryUiState
 import com.wzx.babiq.desktop.ui.common.BadgeTone
 import com.wzx.babiq.desktop.ui.common.StatusBadge
 import com.wzx.babiq.desktop.ui.common.chooseWorkspaceDirectory
@@ -58,6 +59,10 @@ fun ComposerContextBar(
 		StatusBadge(
 			text = contextWindowChipLabel(state.contextWindowState),
 			tone = contextWindowChipTone(state.contextWindowState),
+		)
+		StatusBadge(
+			text = memoryChipLabel(state.memoryState),
+			tone = memoryChipTone(state.memoryState),
 		)
 		ProviderSelector(
 			providerState = state.providerState,
@@ -137,6 +142,44 @@ internal fun contextWindowChipTone(state: ContextWindowUiState): BadgeTone {
 		status.compactionCount > 0 -> BadgeTone.Success
 		status.status == "over_threshold" || status.usageRatio >= 0.8 -> BadgeTone.Warning
 		status.lastSnapshotId != null -> BadgeTone.Success
+		else -> BadgeTone.Info
+	}
+}
+
+/**
+ * 长期记忆 chip 文案。
+ *
+ * 该 chip 展示的是后端 read/generate 开关和候选状态，不代表聊天消息里已经出现了长期记忆正文；
+ * 正文注入仍由后端上下文窗口组装器按 token 预算完成。
+ */
+internal fun memoryChipLabel(state: MemoryUiState): String {
+	if (state.loading) {
+		return "长期记忆 读取中"
+	}
+	if (state.error != null) {
+		return "长期记忆 异常"
+	}
+	val status = state.status ?: return "长期记忆 未加载"
+	if (!status.enabled) {
+		return "长期记忆 已关闭"
+	}
+	if (!status.readEnabled) {
+		return "长期记忆 不注入"
+	}
+	return "长期记忆 G${status.phase2Generation}"
+}
+
+/**
+ * 长期记忆 chip 色调。
+ */
+internal fun memoryChipTone(state: MemoryUiState): BadgeTone {
+	val status = state.status ?: return if (state.error != null) BadgeTone.Danger else BadgeTone.Info
+	return when {
+		state.loading -> BadgeTone.Info
+		state.error != null -> BadgeTone.Danger
+		!status.enabled || !status.readEnabled -> BadgeTone.Warning
+		status.lastSummaryArtifactId != null -> BadgeTone.Success
+		status.cleanCandidateCount > 0 -> BadgeTone.Warning
 		else -> BadgeTone.Info
 	}
 }

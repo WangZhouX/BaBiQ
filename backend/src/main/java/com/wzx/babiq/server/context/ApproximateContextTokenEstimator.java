@@ -1,11 +1,14 @@
 package com.wzx.babiq.server.context;
 
+import org.springframework.stereotype.Component;
+
 /**
  * 朴素上下文 token 预估器。
  *
  * <p>真实 tokenizer 往往和模型/provider 绑定，P3-1 不在底座阶段引入 provider-specific 依赖。
  * 这里采用保守的字符近似值，让 snapshot 先具备可解释的 token 预算字段。</p>
  */
+@Component
 public class ApproximateContextTokenEstimator implements ContextTokenEstimator {
 
     /** 中文和英文混合场景下的经验比例，取偏保守值避免低估上下文压力。 */

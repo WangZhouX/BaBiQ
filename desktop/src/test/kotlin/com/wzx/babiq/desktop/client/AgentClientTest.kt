@@ -3,6 +3,11 @@ package com.wzx.babiq.desktop.client
 import com.wzx.babiq.desktop.protocol.JsonRpcRequest
 import com.wzx.babiq.desktop.protocol.ContextSnapshotInfo
 import com.wzx.babiq.desktop.protocol.ContextStatusResult
+import com.wzx.babiq.desktop.protocol.MemoryArtifactsListResult
+import com.wzx.babiq.desktop.protocol.MemoryConsolidateResult
+import com.wzx.babiq.desktop.protocol.MemoryJobsListResult
+import com.wzx.babiq.desktop.protocol.MemorySettingsSetParams
+import com.wzx.babiq.desktop.protocol.MemoryStatusResult
 import com.wzx.babiq.desktop.protocol.McpServerRefreshResult
 import com.wzx.babiq.desktop.protocol.McpServersListResult
 import com.wzx.babiq.desktop.protocol.McpToolsListResult
@@ -316,6 +321,32 @@ class AgentClientTest {
 	}
 
 	@Test
+	fun `长期记忆接口可以读取状态 调整设置 列表和触发归并`() = runTest {
+		val transport = FakeAgentTransport()
+		val client = AgentClient(transport, backgroundScope)
+		client.connect()
+
+		val status: MemoryStatusResult = client.getMemoryStatus()
+		val settings = client.setMemorySettings(MemorySettingsSetParams(readEnabled = false))
+		val jobs: MemoryJobsListResult = client.listMemoryJobs(10)
+		val artifacts: MemoryArtifactsListResult = client.listMemoryArtifacts(10)
+		val consolidate: MemoryConsolidateResult = client.consolidateMemory(force = true)
+
+		assertEquals("memory/status", transport.sent[0].method)
+		assertEquals(true, status.enabled)
+		assertEquals("memory/settings/set", transport.sent[1].method)
+		assertEquals("false", transport.sent[1].paramsText("readEnabled"))
+		assertEquals(false, settings.readEnabled)
+		assertEquals("memory/jobs/list", transport.sent[2].method)
+		assertEquals("10", transport.sent[2].paramsText("limit"))
+		assertEquals("phase2:1", jobs.jobs.single().jobKey)
+		assertEquals("memory/artifacts/list", transport.sent[3].method)
+		assertEquals("memory_summary.md", artifacts.artifacts.single().artifactPath)
+		assertEquals("memory/consolidate", transport.sent[4].method)
+		assertEquals(true, consolidate.queued)
+	}
+
+	@Test
 	fun `json rpc error 会转成 AgentClientException`() = runTest {
 		val transport = FakeAgentTransport(errorMethods = setOf("thread/create"))
 		val client = AgentClient(transport, backgroundScope)
@@ -567,6 +598,48 @@ class AgentClientTest {
 				"mcp/servers/refresh" -> buildJsonObject {
 					put("server", mcpServer(status = "connected", toolCount = 1))
 				}
+				"memory/status" -> memoryStatus()
+				"memory/settings/set" -> buildJsonObject {
+					put("enabled", request.params.jsonObject["enabled"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() ?: true)
+					put("generateEnabled", request.params.jsonObject["generateEnabled"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() ?: true)
+					put("readEnabled", request.params.jsonObject["readEnabled"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() ?: true)
+				}
+				"memory/jobs/list" -> buildJsonObject {
+					put(
+						"jobs",
+						buildJsonArray {
+							add(buildJsonObject {
+								put("jobId", "memjob_1")
+								put("jobType", "PHASE2")
+								put("jobKey", "phase2:1")
+								put("generation", 1)
+								put("status", "PENDING")
+								put("createdAt", "2026-05-27T00:00:00Z")
+							})
+						},
+					)
+				}
+				"memory/artifacts/list" -> buildJsonObject {
+					put(
+						"artifacts",
+						buildJsonArray {
+							add(buildJsonObject {
+								put("artifactId", "memart_1")
+								put("artifactType", "MEMORY_SUMMARY")
+								put("artifactPath", "memory_summary.md")
+								put("version", 1)
+								put("tokenEstimate", 100)
+								put("createdAt", "2026-05-27T00:00:00Z")
+							})
+						},
+					)
+				}
+				"memory/consolidate" -> buildJsonObject {
+					put("queued", true)
+					put("jobId", "memjob_2")
+					put("generation", 2)
+					put("status", "QUEUED")
+				}
 				else -> buildJsonObject { put("ok", true) }
 			}
 			return protocolJson.encodeToString(
@@ -776,6 +849,19 @@ class AgentClientTest {
 				)
 			},
 		)
+	}
+
+	private fun memoryStatus() = buildJsonObject {
+		put("enabled", true)
+		put("generateEnabled", true)
+		put("readEnabled", true)
+		put("rootDir", "E:\\BaBiQ\\.babiq\\memories")
+		put("pendingJobs", 1)
+		put("runningJobs", 0)
+		put("cleanCandidateCount", 5)
+		put("lastSummaryArtifactId", "memart_1")
+		put("lastConsolidatedAt", "2026-05-27T00:00:00Z")
+		put("phase2Generation", 1)
 	}
 
 	private fun JsonRpcRequest.paramsText(name: String): String =

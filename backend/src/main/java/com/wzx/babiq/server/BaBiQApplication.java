@@ -3,6 +3,7 @@ package com.wzx.babiq.server;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * BaBiQ 后端服务启动入口。
@@ -12,6 +13,7 @@ import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
  */
 @SpringBootApplication
 @ConfigurationPropertiesScan("com.wzx.babiq.server")
+@EnableScheduling
 public class BaBiQApplication {
 
     /**

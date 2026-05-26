@@ -19,6 +19,7 @@ import com.wzx.babiq.desktop.protocol.ThreadItem
  * @property threadHistory Sidebar 最近会话列表的真实后端数据。
  * @property runRecordState 右侧运行详情面板读取到的持久化 turn、审批、工具调用和恢复报告。
  * @property contextWindowState 当前会话最近一次上下文窗口摘要，用于输入框上下文条和后续审计入口。
+ * @property memoryState 长期记忆流水线状态，用于输入栏 chip 和设置页审计，不直接污染聊天消息。
  * @property currentThreadId 后端 thread id；为空表示还没有为当前工作区创建会话。
  * @property currentThreadTitle 当前打开会话的标题；新对话或未加载历史时为空。
  * @property currentTurnId 当前正在执行或刚结束的 turn id，用于取消、审批和事件归属。
@@ -43,6 +44,7 @@ data class AppState(
 	val threadHistory: ThreadHistoryState = ThreadHistoryState(),
 	val runRecordState: RunRecordState = RunRecordState(),
 	val contextWindowState: ContextWindowUiState = ContextWindowUiState(),
+	val memoryState: MemoryUiState = MemoryUiState(),
 	val currentThreadId: String? = null,
 	val currentThreadTitle: String? = null,
 	val currentTurnId: String? = null,

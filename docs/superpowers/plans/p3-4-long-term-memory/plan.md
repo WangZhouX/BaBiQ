@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED: 实施本计划前先使用 `superpowers:executing-plans`，写代码前使用 `superpowers:test-driven-development`，声称完成前使用 `superpowers:verification-before-completion`。
 >
-> **状态:** 待实施。本文只定义 P3-4 的开发计划，代码实现必须在用户确认后开始。
+> **状态:** 已实施。代码已按本文完成 P3-4 长期记忆异步流水线，最终验收命令和偏差记录见 `codex-handoff.md`。
 
 **Goal:** 在 P3-1 到 P3-3A 已完成的当前窗口、上下文快照、短期压缩和压缩鲁棒性基础上，实现 Codex 风格的长期记忆异步流水线。BaBiQ 要能在会话结束或 turn 完成后异步提取可复用经验，经过 secret redaction、污染标记和可审计归并后，生成可追溯的长期记忆 artifact，并在下一轮上下文组装时只注入受 token budget 控制的 `memory_summary`。
 
@@ -47,7 +47,7 @@ BaBiQ 不照搬 Codex 的 Rust 状态机和文件布局，但吸收它的系统�
 - `AppSettingsService` 已承载 provider、sandbox、approval 等全局设置，可扩展长期记忆开关。
 - 桌面端已有 context chip 和 settings 页面，可继续接入长期记忆状态。
 
-当前缺口：
+P3-4 实施前缺口：
 
 - 没有长期记忆 job 表、候选表、artifact 表和引用表。
 - 没有长期记忆的用户开关、thread 级 memory mode 和污染状态。

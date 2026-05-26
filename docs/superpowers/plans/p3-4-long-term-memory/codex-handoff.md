@@ -2,7 +2,7 @@
 
 ## 状态
 
-P3-4 当前仅完成详细开发计划，尚未实现代码。
+P3-4 已完成实现并进入验收收口。代码已按本计划落地长期记忆异步流水线、SQLite 事实源、Markdown mirror、secret redaction、Phase 1/Phase 2 job、read path summary 注入、JSON-RPC 查询/设置入口和桌面端最小状态控制。
 
 计划入口：
 
@@ -149,13 +149,18 @@ cd ..\desktop
 - `@Disabled` 用例清单（理论上为空）
 - 实施过程中对 plan 默认值或接口的偏离记录（如果有）
 
-## 下一步
+## 实施结果
 
-等待用户确认后，按 `plan.md` 从 Task 1 开始实现。实现前必须使用 `superpowers:executing-plans` 和 `superpowers:test-driven-development`。
+- Task 1 数据库迁移和 repository：已完成。新增 V10 migration、`bq_memory_jobs` / `bq_memory_candidates` / `bq_memory_artifacts` / `bq_memory_references`，并为新增表、字段、Entity、Mapper 和 SQLite adapter 补齐中文注释与覆盖测试。
+- Task 2 设置、开关和 thread mode：已完成。新增长期记忆全局开关、生成/读取开关、thread `memory_mode` / 污染原因字段和 `memory/status`。
+- Task 3/4 secret redaction 与 Phase 1 抽取：已完成。Phase 1 由启动/周期扫描挑选 idle thread，worker 领取 PENDING job 后使用 Spring AI structured output 抽取候选；落库前执行 Java redaction，`SECRET_RISK` 不进入 Phase 2。
+- Task 5/6 Phase 2 触发与 artifact mirror：已完成。Phase 2 使用 `phase2:{generation}` 保留历史，达到 CLEAN candidate 阈值、定时兜底或手动 `memory/consolidate` 均可入队；`raw_memories.md` 和 `rollout_summaries/` 由 Java 机械生成，`MEMORY.md` 与 `memory_summary.md` 由受控 consolidation strategy 生成。
+- Task 7 read path 注入：已完成。`ContextWindowRuntime` 按长期记忆读取开关拉取最新 summary，写入 `ContextAssemblyInput.longTermMemoryRefs`，并把引用和 token 估算写回 context snapshot / memory references。
+- Task 8 桌面端最小控制：已完成。设置页可展示长期记忆状态、开关、job/artifact 列表并手动归并；输入栏 context chip 展示真实后端长期记忆状态。
+- Task 9 文档、handoff 和验证：已完成文档同步，最终验证结果以本次提交记录和最终汇报为准。
 
-### 实施期可能需要拍板的两个小决策
+## 实施偏差记录
 
-1. `memory/consolidate` 手动触发是否豁免 `phase2MinIntervalMillis` 防抖？当前 plan 没区分手动和自动；建议给 handler 增加 `force=true` 参数，手动入口豁免防抖（只保留"同时只有一个 RUNNING"的并发约束）。
-2. `bq_memory_jobs.generation` 字段 SQL 类型：建议 `INTEGER` 允许 `NULL`，Phase 1 写 `NULL`，Phase 2 写 generation 编号。
-
-如果实施时需要把这两点变更落进 plan，优先回 plan 修订再继续 Task。
+- `memory/consolidate` 已按 handoff 建议采用手动 `force=true` 语义：手动入口可绕过 Phase 2 最小间隔防抖，但仍受单个 Phase 2 RUNNING/PENDING 并发约束保护。
+- `bq_memory_jobs.generation` 已使用 `INTEGER` 且允许 `NULL`：Phase 1 job 为空，Phase 2 job 写入递增 generation。
+- 首版未提前引入 VectorStore/RAG；仍只在 read path 注入受 `summaryTokenBudget` 控制的 `memory_summary`。

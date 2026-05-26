@@ -100,6 +100,8 @@ public class SQLiteContextSnapshotRepository implements ContextSnapshotRepositor
                 entity.getEnvelopeJson(),
                 entity.getItemsJson(),
                 entity.getCapabilityCatalogJson(),
+                entity.getLongTermMemoryRefsJson(),
+                entity.getLongTermMemoryTokenEstimate() == null ? 0 : entity.getLongTermMemoryTokenEstimate(),
                 entity.getInputPreview(),
                 PersistenceTime.read(entity.getCreatedAt()));
     }
@@ -123,6 +125,8 @@ public class SQLiteContextSnapshotRepository implements ContextSnapshotRepositor
         entity.setEnvelopeJson(record.envelopeJson());
         entity.setItemsJson(record.itemsJson());
         entity.setCapabilityCatalogJson(record.capabilityCatalogJson());
+        entity.setLongTermMemoryRefsJson(record.longTermMemoryRefsJson());
+        entity.setLongTermMemoryTokenEstimate(record.longTermMemoryTokenEstimate());
         entity.setInputPreview(record.inputPreview());
         entity.setCreatedAt(PersistenceTime.write(record.createdAt()));
         return entity;

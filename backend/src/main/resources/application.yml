@@ -56,6 +56,22 @@ babiq:
   memory:
     short-term:
       max-messages: 20
+    long-term:
+      enabled: true
+      generate-enabled: true
+      read-enabled: true
+      root-dir: ${user.home}/.babiq/memories
+      phase1-scan-interval-millis: 3600000
+      phase1-min-idle-millis: 300000
+      phase1-max-threads-per-scan: 4
+      phase1-on-startup: true
+      phase1-input-window-percent: 70
+      phase1-fallback-token-limit: 150000
+      phase2-trigger-on-candidate-count: 5
+      phase2-scan-interval-millis: 86400000
+      phase2-min-interval-millis: 3600000
+      phase2-max-candidates: 256
+      read-budget-tokens: 2500
   ws:
     path: /ws/agent
     allowed-origins: "*"

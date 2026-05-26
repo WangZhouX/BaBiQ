@@ -90,6 +90,14 @@ public class ContextSnapshotEntity {
     @TableField("capability_catalog_json")
     private String capabilityCatalogJson;
 
+    /** 本轮注入的长期记忆引用 JSON；为空表示未引用长期记忆。 */
+    @TableField("long_term_memory_refs_json")
+    private String longTermMemoryRefsJson;
+
+    /** 长期记忆引用 token 估算；未引用时为 0。 */
+    @TableField("long_term_memory_token_estimate")
+    private Integer longTermMemoryTokenEstimate;
+
     /** 本轮用户输入预览。 */
     @TableField("input_preview")
     private String inputPreview;
