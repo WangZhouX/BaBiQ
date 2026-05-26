@@ -110,6 +110,7 @@ data class RunToolCallInfo(
  * @property summary 后端合成或持久化的 turnSummary；没有摘要时为空。
  * @property approvals 本轮审批记录。
  * @property toolCalls 本轮工具调用记录。
+ * @property contextSnapshot 本轮模型调用前的上下文窗口快照；没有生成快照或旧数据为空时为 null。
  */
 @Serializable
 data class RunTurnDetailResult(
@@ -118,6 +119,7 @@ data class RunTurnDetailResult(
 	val summary: ThreadItem.TurnSummary? = null,
 	val approvals: List<RunApprovalInfo> = emptyList(),
 	val toolCalls: List<RunToolCallInfo> = emptyList(),
+	val contextSnapshot: ContextSnapshotInfo? = null,
 )
 
 /**

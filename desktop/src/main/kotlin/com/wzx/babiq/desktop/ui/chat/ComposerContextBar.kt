@@ -15,6 +15,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.wzx.babiq.desktop.state.AppState
+import com.wzx.babiq.desktop.state.ContextWindowUiState
 import com.wzx.babiq.desktop.ui.common.BadgeTone
 import com.wzx.babiq.desktop.ui.common.StatusBadge
 import com.wzx.babiq.desktop.ui.common.chooseWorkspaceDirectory
@@ -54,6 +55,10 @@ fun ComposerContextBar(
 				onChangeSandboxMode = onChangeSandboxMode,
 			)
 		}
+		StatusBadge(
+			text = contextWindowChipLabel(state.contextWindowState),
+			tone = contextWindowChipTone(state.contextWindowState),
+		)
 		ProviderSelector(
 			providerState = state.providerState,
 			onSelectProvider = onSelectProvider,
@@ -92,6 +97,44 @@ internal fun canOpenSandboxModeMenu(
 	canEditSettings: Boolean,
 	onChangeSandboxMode: ((String) -> Unit)?,
 ): Boolean = canEditSettings && onChangeSandboxMode != null
+
+/**
+ * 输入框上下文窗口 chip 文案。
+ *
+ * 它只展示摘要，不展开完整快照；完整快照留给运行详情，避免底部输入栏被审计信息撑开。
+ */
+internal fun contextWindowChipLabel(state: ContextWindowUiState): String {
+	if (state.loading) {
+		return "上下文 读取中"
+	}
+	if (state.error != null) {
+		return "上下文 异常"
+	}
+	val status = state.status ?: return "上下文 未生成"
+	if (status.lastSnapshotId == null) {
+		return "上下文 未生成"
+	}
+	if (status.modelContextWindow <= 0) {
+		return "上下文 ${status.lastEstimatedTokens} token"
+	}
+	return "上下文 ${(status.usageRatio * 100).toInt().coerceAtLeast(0)}%"
+}
+
+/**
+ * 上下文窗口 chip 色调。
+ *
+ * over_threshold 代表后端已经判断接近或超过阈值；UI 用 Warning 提醒用户后续可能触发压缩。
+ */
+internal fun contextWindowChipTone(state: ContextWindowUiState): BadgeTone {
+	val status = state.status ?: return if (state.error != null) BadgeTone.Danger else BadgeTone.Info
+	return when {
+		state.loading -> BadgeTone.Info
+		state.error != null -> BadgeTone.Danger
+		status.status == "over_threshold" || status.usageRatio >= 0.8 -> BadgeTone.Warning
+		status.lastSnapshotId != null -> BadgeTone.Success
+		else -> BadgeTone.Info
+	}
+}
 
 /**
  * 权限 chip 下拉菜单。

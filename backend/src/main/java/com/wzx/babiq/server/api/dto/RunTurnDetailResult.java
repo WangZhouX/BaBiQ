@@ -18,7 +18,8 @@ public record RunTurnDetailResult(
         List<JsonNode> items,
         JsonNode summary,
         List<RunApprovalDto> approvals,
-        List<RunToolCallDto> toolCalls
+        List<RunToolCallDto> toolCalls,
+        ContextSnapshotDto contextSnapshot
 ) {
     public RunTurnDetailResult {
         items = items == null ? List.of() : List.copyOf(items);

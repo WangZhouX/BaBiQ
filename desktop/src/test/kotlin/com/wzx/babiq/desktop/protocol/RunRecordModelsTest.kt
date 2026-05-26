@@ -59,7 +59,22 @@ class RunRecordModelsTest {
 			    "durationMs": 900
 			  },
 			  "approvals": [],
-			  "toolCalls": []
+			  "toolCalls": [],
+			  "contextSnapshot": {
+			    "snapshotId": "ctxsnap-1",
+			    "threadId": "thr-1",
+			    "turnId": "turn-1",
+			    "phase": "pre_model_call",
+			    "windowOrdinal": 0,
+			    "modelContextWindow": 32768,
+			    "autoCompactThreshold": 22937,
+			    "estimatedTokens": 12,
+			    "includedItemCount": 1,
+			    "excludedItemCount": 0,
+			    "usageRatio": 0.001,
+			    "createdAt": "2026-05-26T08:00:00Z",
+			    "items": []
+			  }
 			}
 		""".trimIndent()
 
@@ -67,5 +82,6 @@ class RunRecordModelsTest {
 
 		assertIs<ThreadItem.UserMessage>(result.items.single())
 		assertEquals("deepseek-v4-pro", result.summary?.model)
+		assertEquals("ctxsnap-1", result.contextSnapshot?.snapshotId)
 	}
 }

@@ -3,6 +3,8 @@ package com.wzx.babiq.desktop.state
 import com.wzx.babiq.desktop.client.AgentGateway
 import com.wzx.babiq.desktop.protocol.AppSettingsResult
 import com.wzx.babiq.desktop.protocol.ApprovalPolicyResult
+import com.wzx.babiq.desktop.protocol.ContextSnapshotInfo
+import com.wzx.babiq.desktop.protocol.ContextStatusResult
 import com.wzx.babiq.desktop.protocol.McpServerInfo
 import com.wzx.babiq.desktop.protocol.McpServerRefreshResult
 import com.wzx.babiq.desktop.protocol.McpServersListResult
@@ -206,11 +208,12 @@ class ChatControllerTest {
 
 		controller.openThread("thr_history")
 
-		assertEquals("loadThread:thr_history", gateway.calls.single())
+		assertEquals(listOf("loadThread:thr_history", "getContextStatus:thr_history"), gateway.calls)
 		assertEquals("thr_history", controller.state.value.currentThreadId)
 		assertEquals("历史会话", controller.state.value.currentThreadTitle)
 		assertEquals("thr_history", controller.state.value.threadHistory.selectedThreadId)
 		assertEquals("你好", (controller.state.value.messages.single() as ChatMessage.User).text)
+		assertEquals("ctxsnap_1", controller.state.value.contextWindowState.status?.lastSnapshotId)
 	}
 
 	@Test
@@ -222,6 +225,7 @@ class ChatControllerTest {
 				currentThreadId = "thr_old",
 				currentThreadTitle = "旧会话",
 				messages = listOf(ChatMessage.User("it_user", "旧消息")),
+				contextWindowState = ContextWindowUiState(status = sampleContextStatus("thr_old")),
 				threadHistory = ThreadHistoryState(
 					items = listOf(ThreadListItem("thr_old", "旧会话", "E:\\BaBiQ", "active", null, "刚刚", 1)),
 					selectedThreadId = "thr_old",
@@ -233,6 +237,7 @@ class ChatControllerTest {
 
 		assertNull(controller.state.value.currentThreadId)
 		assertTrue(controller.state.value.messages.isEmpty())
+		assertNull(controller.state.value.contextWindowState.status)
 		assertEquals(1, controller.state.value.threadHistory.items.size)
 		assertNull(controller.state.value.threadHistory.selectedThreadId)
 	}
@@ -552,6 +557,7 @@ class ChatControllerTest {
 		private val runTurns: RunTurnListResult = RunTurnListResult(
 			turns = listOf(sampleRunTurn("turn-1")),
 		),
+		private val contextStatus: ContextStatusResult = sampleContextStatus("thr_history"),
 		private val observabilitySnapshot: ObservabilitySnapshotResult = ObservabilitySnapshotResult(
 			range = "7d",
 			totals = ObservabilityTotalsInfo(turns = 3, failedTurns = 1, promptTokens = 120, completionTokens = 80, totalTokens = 200),
@@ -671,6 +677,16 @@ class ChatControllerTest {
 			return loadedThread
 		}
 
+		override suspend fun getContextStatus(threadId: String): ContextStatusResult {
+			calls += "getContextStatus:$threadId"
+			return contextStatus.copy(threadId = threadId)
+		}
+
+		override suspend fun getContextSnapshot(snapshotId: String): ContextSnapshotInfo {
+			calls += "getContextSnapshot:$snapshotId"
+			return sampleContextSnapshot(snapshotId)
+		}
+
 		override suspend fun archiveThread(threadId: String): ThreadArchiveResult {
 			calls += "archiveThread:$threadId"
 			return ThreadArchiveResult(ok = true, threadId = threadId, archived = true)
@@ -695,6 +711,7 @@ class ChatControllerTest {
 						completedAt = "2026-05-24T08:00:02Z",
 					),
 				),
+				contextSnapshot = sampleContextSnapshot("ctxsnap_1"),
 			)
 		}
 
@@ -741,6 +758,34 @@ class ChatControllerTest {
 			model = "deepseek-v4-pro",
 			startedAt = "2026-05-24T08:00:00Z",
 			completedAt = "2026-05-24T08:00:03Z",
+		)
+
+	private fun sampleContextStatus(threadId: String): ContextStatusResult =
+		ContextStatusResult(
+			threadId = threadId,
+			windowOrdinal = 0,
+			modelContextWindow = 32768,
+			autoCompactThreshold = 22937,
+			lastSnapshotId = "ctxsnap_1",
+			lastEstimatedTokens = 1200,
+			lastActualPromptTokens = 1300,
+			usageRatio = 0.039,
+			status = "ok",
+		)
+
+	private fun sampleContextSnapshot(snapshotId: String): ContextSnapshotInfo =
+		ContextSnapshotInfo(
+			snapshotId = snapshotId,
+			threadId = "thr_history",
+			turnId = "turn-1",
+			phase = "pre_model_call",
+			modelContextWindow = 32768,
+			autoCompactThreshold = 22937,
+			estimatedTokens = 1200,
+			includedItemCount = 1,
+			excludedItemCount = 0,
+			usageRatio = 0.039,
+			createdAt = "2026-05-26T08:00:00Z",
 		)
 
 	private fun sampleMcpServer(

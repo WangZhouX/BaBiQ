@@ -185,6 +185,25 @@ public class ReActStrategy {
     }
 
     /**
+     * 解析本轮 Provider 的上下文窗口，用于 P3-2 运行时快照预算。
+     *
+     * @param providerId provider id；为空时使用 active provider
+     * @return 有效上下文窗口 token 数
+     */
+    public int resolveContextWindow(String providerId) {
+        return chatClientFactory.resolveContextWindow(providerId);
+    }
+
+    /**
+     * 返回当前候选工具 callback，用于上下文 envelope 生成能力目录摘要。
+     *
+     * @return Spring AI ToolCallback 数组
+     */
+    public ToolCallback[] currentToolCallbacks() {
+        return toolRegistry.allCallbacks();
+    }
+
+    /**
      * 构建普通运行配置。
      *
      * @param threadId 业务线程 id

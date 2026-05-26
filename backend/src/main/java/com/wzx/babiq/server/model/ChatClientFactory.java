@@ -97,6 +97,24 @@ public class ChatClientFactory {
     }
 
     /**
+     * 解析 provider 对应的有效上下文窗口。
+     *
+     * <p>Provider 设置中显式配置的 contextWindow 优先；缺失时回退到 ModelMetadata。
+     * P3-2 的 ContextWindowRuntime 用它计算本轮快照预算，不直接读取配置中心。</p>
+     *
+     * @param providerId provider id；传 null 时使用 active provider
+     * @return 有效上下文窗口 token 数
+     */
+    public int resolveContextWindow(String providerId) {
+        String effectiveProviderId = providerId == null ? registry.active().id() : providerId;
+        ModelProviderConfig providerConfig = registry.get(effectiveProviderId);
+        if (providerConfig.contextWindow() != null && providerConfig.contextWindow() > 0) {
+            return providerConfig.contextWindow();
+        }
+        return ModelMetadata.contextWindowOf(providerConfig.model());
+    }
+
+    /**
      * 返回当前激活 provider 的 ChatClient。
      *
      * @return active-provider 对应的 ChatClient

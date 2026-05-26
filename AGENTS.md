@@ -150,7 +150,16 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
   - 后端新增 `com.wzx.babiq.server.context` 领域包，已实现 `ContextAssembler`、`ContextSnapshot`、`ContextEnvelope`、`ContextTokenEstimator` 和 `CapabilityCatalogAssembler`。
   - P3-1 只落地最小底座：能生成 Spring AI messages、分层 envelope、included/excluded snapshot 和不含 input schema 的能力目录摘要；尚未接入真实 `AgentLoop`、未新增数据库表、未改桌面 UI。
   - 已验证：`cd backend; .\mvnw.cmd "-Dtest=CapabilityCatalogAssemblerTest,ContextAssemblerTest" test`
-- 下一步应创建 P3-2 详细实现计划：接入 `ContextWindowRuntime`、持久化 `ContextSnapshot`、把装配结果接到 Agent 前置链路，并补桌面上下文指示。
+- P3-2 当前窗口管理运行时已完成：
+  - `docs/superpowers/plans/p3-2-context-window-runtime/plan.md`
+  - `docs/superpowers/plans/p3-2-context-window-runtime/codex-handoff.md`
+  - 后端新增 `ContextWindowRuntime`，普通 `turn/start` 会在调用模型前生成本轮临时上下文输入。
+  - 后端新增 `bq_context_windows`、`bq_context_snapshots`，并同步 SQL 中文注释、`bq_schema_comments` 和覆盖测试。
+  - `AgentLoop` 已接入 P3-2 运行时：用户真实输入仍写入 `bq_items`，模型收到的是临时上下文视图，避免污染聊天历史。
+  - 后端新增 `context/status`、`context/snapshot/get`，并在 `run/turn/get` 返回最新上下文快照摘要。
+  - 桌面端新增上下文协议模型、状态刷新、输入栏上下文 chip 和运行详情快照摘要。
+  - 已验证：`cd backend; .\mvnw.cmd clean verify`、`cd desktop; .\gradlew.bat test`。
+- 下一步应创建并确认 P3-3 短期记忆/上下文压缩详细计划。
 
 如果仓库状态发生变化，不要盲信本检查点；必须重新核对代码、文档、测试和 `git status`。
 
@@ -178,10 +187,10 @@ P1-4 已完成范围：
 
 下一阶段边界：
 
-- P2-1、P2-2、P2-3、P2-4、P2-5、P2-6 已完成；用户已暂时验收 P2，P3-1 最小上下文底座已完成，当前下一步是 P3-2 当前窗口管理运行时计划。
+- P2-1、P2-2、P2-3、P2-4、P2-5、P2-6 已完成；用户已暂时验收 P2，P3-1 最小上下文底座已完成，P3-2 当前窗口管理运行时已完成。
 - P2-6 已完成 MCP Client 最小接入；后续如要扩展远程 MCP、OAuth、插件市场、MCP server 开发或复杂沙箱编排，必须进入新阶段计划，不得混入 P2 收口。
 - P3 当前限定为 Codex 级当前窗口管理、短期记忆/上下文压缩、长期记忆平台；Multi-Agent、真 OS 沙箱、A2A、多模态仍属于后续阶段，不能混入 P3-1/P3-2。
-- P3-1 已完成最小底座但不代表完整上下文运行时完成；P3-2 必须单独计划和实现真实 Agent 前置接入、快照持久化和 UI 指示。
+- P3-1 已完成最小底座；P3-2 已完成真实 Agent 前置接入、快照持久化和 UI 指示。P3-3 才允许实现自动压缩、summary 替换 active window 和 `ContextCompactionItem` 事件。
 - P2 范围内 SQLite 使用 MyBatis-Plus 和 Java 常见分层，但 Agent 核心不得直接依赖 Mapper；必须通过 repository/adapter 或 application service 隔离。
 - 后续任何新增业务表或业务字段都必须同步 SQL 中文注释、`bq_schema_comments` 元数据和覆盖测试。
 
@@ -259,6 +268,18 @@ cd backend
 
 cd ..\desktop
 .\gradlew.bat test --tests "*McpModelsTest" --tests "*AgentClientTest" --tests "*ChatControllerTest"
+.\gradlew.bat test
+```
+
+P3-2 当前窗口运行时自动化验收补充：
+
+```powershell
+cd backend
+.\mvnw.cmd "-Dtest=ContextWindowRuntimeTest,ContextualPromptRendererTest,ContextSnapshotPersistenceTest,AgentLoopContextRuntimeTest,ContextHandlersTest,RunRecordServiceTest,SchemaCommentsCoverageTest,AgentLoopLineCountTest" test
+.\mvnw.cmd clean verify
+
+cd ..\desktop
+.\gradlew.bat test --tests "*ContextModelsTest" --tests "*RunRecordModelsTest" --tests "*AgentClientTest" --tests "*ChatControllerTest" --tests "*ComposerContextBarTest"
 .\gradlew.bat test
 ```
 

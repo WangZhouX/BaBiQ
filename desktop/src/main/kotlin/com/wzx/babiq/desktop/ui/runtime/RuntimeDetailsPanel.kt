@@ -231,6 +231,18 @@ private fun RunTurnDetail(detail: RunTurnDetailResult) {
 		},
 	)
 	detail.summary?.let { TurnSummaryBar(it) }
+	detail.contextSnapshot?.let { snapshot ->
+		DetailCard(
+			title = "上下文窗口",
+			detail = buildString {
+				append("snapshot: ").append(snapshot.snapshotId)
+				append("\n窗口: ").append(snapshot.windowOrdinal)
+				append("\n预估 token: ").append(snapshot.estimatedTokens)
+				append("\n真实 prompt token: ").append(snapshot.actualPromptTokens ?: "未返回")
+				append("\n纳入/排除: ").append(snapshot.includedItemCount).append("/").append(snapshot.excludedItemCount)
+			},
+		)
+	}
 	if (detail.toolCalls.isNotEmpty()) {
 		DetailCard("工具调用", detail.toolCalls.joinToString("\n") { it.toolLine() })
 	}

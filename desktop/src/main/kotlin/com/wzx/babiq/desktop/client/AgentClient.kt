@@ -5,6 +5,8 @@ import com.wzx.babiq.desktop.protocol.ApprovalRespondParams
 import com.wzx.babiq.desktop.protocol.AppSettingsResult
 import com.wzx.babiq.desktop.protocol.ApprovalPolicyResult
 import com.wzx.babiq.desktop.protocol.ApprovalPolicySetParams
+import com.wzx.babiq.desktop.protocol.ContextSnapshotInfo
+import com.wzx.babiq.desktop.protocol.ContextStatusResult
 import com.wzx.babiq.desktop.protocol.JsonRpcRequest
 import com.wzx.babiq.desktop.protocol.JsonRpcResponse
 import com.wzx.babiq.desktop.protocol.McpServerRefreshParams
@@ -117,6 +119,12 @@ interface AgentGateway {
 
 	/** 加载指定会话的历史 item，供用户点击最近对话时恢复聊天流。 */
 	suspend fun loadThread(threadId: String, limit: Int = 200, beforeItemId: String? = null): ThreadLoadResult
+
+	/** 读取当前会话最近一次上下文窗口状态，输入框上下文条用它展示 token 使用率。 */
+	suspend fun getContextStatus(threadId: String): ContextStatusResult
+
+	/** 读取单个上下文快照详情，运行详情面板和后续审计页按需调用。 */
+	suspend fun getContextSnapshot(snapshotId: String): ContextSnapshotInfo
 
 	/** 软归档会话，让默认最近列表隐藏它但不删除历史数据。 */
 	suspend fun archiveThread(threadId: String): ThreadArchiveResult
@@ -388,6 +396,28 @@ class AgentClient(
 			},
 		)
 		return protocolJson.decodeFromJsonElement(ThreadLoadResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `context/status`，读取 thread 级上下文窗口摘要。
+	 */
+	override suspend fun getContextStatus(threadId: String): ContextStatusResult {
+		val response = request(
+			method = "context/status",
+			params = buildJsonObject { put("threadId", threadId) },
+		)
+		return protocolJson.decodeFromJsonElement(ContextStatusResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `context/snapshot/get`，读取一次模型调用前的上下文快照。
+	 */
+	override suspend fun getContextSnapshot(snapshotId: String): ContextSnapshotInfo {
+		val response = request(
+			method = "context/snapshot/get",
+			params = buildJsonObject { put("snapshotId", snapshotId) },
+		)
+		return protocolJson.decodeFromJsonElement(ContextSnapshotInfo.serializer(), response.requireResult())
 	}
 
 	/**

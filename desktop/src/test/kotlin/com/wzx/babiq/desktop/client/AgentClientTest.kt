@@ -1,6 +1,8 @@
 package com.wzx.babiq.desktop.client
 
 import com.wzx.babiq.desktop.protocol.JsonRpcRequest
+import com.wzx.babiq.desktop.protocol.ContextSnapshotInfo
+import com.wzx.babiq.desktop.protocol.ContextStatusResult
 import com.wzx.babiq.desktop.protocol.McpServerRefreshResult
 import com.wzx.babiq.desktop.protocol.McpServersListResult
 import com.wzx.babiq.desktop.protocol.McpToolsListResult
@@ -252,8 +254,26 @@ class AgentClientTest {
 		assertEquals("run/turn/get", transport.sent[1].method)
 		assertEquals("turn_1", detail.turn.turnId)
 		assertEquals("cmd", detail.toolCalls.single().toolName)
+		assertEquals("ctxsnap_1", detail.contextSnapshot?.snapshotId)
 		assertEquals("run/recovery/status", transport.sent[2].method)
 		assertEquals(1, recovery.interruptedTurns)
+	}
+
+	@Test
+	fun `上下文窗口接口可以读取状态和快照`() = runTest {
+		val transport = FakeAgentTransport()
+		val client = AgentClient(transport, backgroundScope)
+		client.connect()
+
+		val status: ContextStatusResult = client.getContextStatus("thr_1")
+		val snapshot: ContextSnapshotInfo = client.getContextSnapshot("ctxsnap_1")
+
+		assertEquals("context/status", transport.sent[0].method)
+		assertEquals("thr_1", transport.sent[0].paramsText("threadId"))
+		assertEquals("ctxsnap_1", status.lastSnapshotId)
+		assertEquals("context/snapshot/get", transport.sent[1].method)
+		assertEquals("ctxsnap_1", transport.sent[1].paramsText("snapshotId"))
+		assertEquals(1, snapshot.items.size)
 	}
 
 	@Test
@@ -513,6 +533,7 @@ class AgentClientTest {
 							})
 						},
 					)
+					put("contextSnapshot", contextSnapshot())
 				}
 				"run/recovery/status" -> buildJsonObject {
 					put("lastRecoveredAt", "2026-05-24T08:10:00Z")
@@ -520,6 +541,8 @@ class AgentClientTest {
 					put("expiredTurns", 0)
 					put("expiredApprovals", 0)
 				}
+				"context/status" -> contextStatus()
+				"context/snapshot/get" -> contextSnapshot()
 				"observability/snapshot" -> observabilitySnapshot(request.paramsText("range"))
 				"observability/tools" -> buildJsonObject {
 					put("range", request.paramsText("range"))
@@ -602,6 +625,53 @@ class AgentClientTest {
 		put("model", "deepseek-v4-pro")
 		put("startedAt", "2026-05-24T08:00:00Z")
 		put("completedAt", "2026-05-24T08:00:03Z")
+	}
+
+	private fun contextStatus() = buildJsonObject {
+		put("threadId", "thr_1")
+		put("windowOrdinal", 0)
+		put("modelContextWindow", 32768)
+		put("autoCompactThreshold", 22937)
+		put("lastSnapshotId", "ctxsnap_1")
+		put("lastEstimatedTokens", 1200)
+		put("lastActualPromptTokens", 1300)
+		put("usageRatio", 0.039)
+		put("status", "ok")
+	}
+
+	private fun contextSnapshot() = buildJsonObject {
+		put("snapshotId", "ctxsnap_1")
+		put("threadId", "thr_1")
+		put("turnId", "turn_1")
+		put("phase", "pre_model_call")
+		put("providerId", "deepseek")
+		put("model", "deepseek-v4-pro")
+		put("cwd", "E:\\BaBiQ")
+		put("windowOrdinal", 0)
+		put("modelContextWindow", 32768)
+		put("autoCompactThreshold", 22937)
+		put("estimatedTokens", 1200)
+		put("actualPromptTokens", 1300)
+		put("includedItemCount", 1)
+		put("excludedItemCount", 0)
+		put("usageRatio", 0.039)
+		put("inputPreview", "分析项目")
+		put("createdAt", "2026-05-26T08:00:00Z")
+		put(
+			"items",
+			buildJsonArray {
+				add(
+					buildJsonObject {
+						put("sourceId", "it_user")
+						put("sourceType", "history_item")
+						put("priority", "HISTORY")
+						put("included", true)
+						put("reason", "最近历史")
+						put("tokenEstimate", 100)
+					},
+				)
+			},
+		)
 	}
 
 	private fun observabilitySnapshot(range: String) = buildJsonObject {

@@ -9,6 +9,7 @@ import com.wzx.babiq.server.api.dto.RunToolCallDto;
 import com.wzx.babiq.server.api.dto.RunTurnDetailResult;
 import com.wzx.babiq.server.api.dto.RunTurnListResult;
 import com.wzx.babiq.server.api.dto.RunTurnSummaryDto;
+import com.wzx.babiq.server.context.ContextStatusService;
 import com.wzx.babiq.server.conversation.repository.ConversationRepository;
 import com.wzx.babiq.server.conversation.repository.ToolCallRecord;
 import com.wzx.babiq.server.conversation.repository.TurnSummaryRecord;
@@ -43,6 +44,8 @@ public class RunRecordService {
     private final ApprovalPersistenceService approvalPersistenceService;
     /** 工具调用服务，按 turnId 读取工具轨迹。 */
     private final ToolCallPersistenceService toolCallPersistenceService;
+    /** 上下文窗口查询服务，用于把 P3-2 快照挂到运行详情里。 */
+    private final ContextStatusService contextStatusService;
     /** 解析 bq_items.payload_json，并合成 turnSummary JSON。 */
     private final ObjectMapper objectMapper;
 
@@ -54,6 +57,7 @@ public class RunRecordService {
      * @param itemMapper item mapper
      * @param approvalPersistenceService 审批持久化服务
      * @param toolCallPersistenceService 工具调用持久化服务
+     * @param contextStatusService 上下文窗口查询服务
      * @param objectMapper JSON 序列化器
      */
     public RunRecordService(
@@ -62,12 +66,14 @@ public class RunRecordService {
             ItemMapper itemMapper,
             ApprovalPersistenceService approvalPersistenceService,
             ToolCallPersistenceService toolCallPersistenceService,
+            ContextStatusService contextStatusService,
             ObjectMapper objectMapper) {
         this.turnPersistenceService = turnPersistenceService;
         this.conversationRepository = conversationRepository;
         this.itemMapper = itemMapper;
         this.approvalPersistenceService = approvalPersistenceService;
         this.toolCallPersistenceService = toolCallPersistenceService;
+        this.contextStatusService = contextStatusService;
         this.objectMapper = objectMapper;
     }
 
@@ -101,7 +107,8 @@ public class RunRecordService {
                 listItemPayloads(turnId),
                 summaryJson(turn),
                 approvalPersistenceService.listByTurnId(turnId).stream().map(this::toApprovalDto).toList(),
-                toolCallPersistenceService.listByTurnId(turnId).stream().map(this::toToolCallDto).toList());
+                toolCallPersistenceService.listByTurnId(turnId).stream().map(this::toToolCallDto).toList(),
+                contextStatusService.latestForTurn(turnId).orElse(null));
     }
 
     private List<JsonNode> listItemPayloads(String turnId) {

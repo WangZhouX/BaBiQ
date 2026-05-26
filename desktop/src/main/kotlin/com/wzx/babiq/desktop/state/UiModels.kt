@@ -2,6 +2,7 @@ package com.wzx.babiq.desktop.state
 
 import com.wzx.babiq.desktop.protocol.ApprovalRequestPayload
 import com.wzx.babiq.desktop.protocol.AppSettingsResult
+import com.wzx.babiq.desktop.protocol.ContextStatusResult
 import com.wzx.babiq.desktop.protocol.McpServerInfo
 import com.wzx.babiq.desktop.protocol.McpToolInfo
 import com.wzx.babiq.desktop.protocol.ObservabilitySnapshotResult
@@ -157,6 +158,22 @@ data class RunRecordState(
 	val selectedDetail: RunTurnDetailResult? = null,
 	val recoveryStatus: RunRecoveryStatusResult? = null,
 	val observability: ObservabilityState = ObservabilityState(),
+)
+
+/**
+ * 聊天页上下文窗口状态。
+ *
+ * 它是 P3-2 “当前窗口管理”的 UI 摘要层：后端保存完整快照，桌面端只在输入框附近展示最近一次窗口 token 使用率，
+ * 从而让用户知道下一轮模型是否已经接近窗口上限，又不把审计数据混进聊天消息列表。
+ *
+ * @property loading true 表示正在读取 context/status。
+ * @property status 后端 thread 级上下文窗口摘要；为空表示当前会话还没有模型输入快照。
+ * @property error 最近一次读取失败原因；失败不会阻塞聊天发送。
+ */
+data class ContextWindowUiState(
+	val loading: Boolean = false,
+	val status: ContextStatusResult? = null,
+	val error: String? = null,
 )
 
 /**

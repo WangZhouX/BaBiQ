@@ -333,6 +333,7 @@ class ChatController(
 				latestSummary = null,
 				pendingApproval = null,
 				runRecordState = RunRecordState(),
+				contextWindowState = ContextWindowUiState(),
 				threadHistory = it.threadHistory.copy(selectedThreadId = null),
 				bannerMessage = null,
 				lastError = null,
@@ -370,6 +371,7 @@ class ChatController(
 					} else {
 						RunRecordState()
 					},
+					contextWindowState = it.contextWindowState.copy(loading = true, error = null),
 					threadHistory = it.threadHistory.copy(
 						loading = false,
 						error = null,
@@ -379,6 +381,7 @@ class ChatController(
 					lastError = null,
 				)
 			}
+			loadContextStatus(loaded.thread.threadId)
 			if (state.value.runtimeExpanded) {
 				loadRunRecords(loaded.thread.threadId)
 				loadObservabilitySnapshot(state.value.runRecordState.observability.range)
@@ -408,6 +411,7 @@ class ChatController(
 					messages = if (wasCurrentThread) emptyList() else it.messages,
 					latestSummary = if (wasCurrentThread) null else it.latestSummary,
 					runRecordState = if (wasCurrentThread) RunRecordState() else it.runRecordState,
+					contextWindowState = if (wasCurrentThread) ContextWindowUiState() else it.contextWindowState,
 					threadHistory = it.threadHistory.copy(
 						items = it.threadHistory.items.filterNot { item -> item.threadId == threadId },
 						selectedThreadId = it.threadHistory.selectedThreadId?.takeUnless { selected -> selected == threadId },
@@ -470,6 +474,7 @@ class ChatController(
 				latestSummary = null,
 				pendingApproval = null,
 				runRecordState = RunRecordState(),
+				contextWindowState = ContextWindowUiState(),
 				lastError = null,
 				bannerMessage = "已切换工作目录: $selected",
 			)
@@ -581,6 +586,7 @@ class ChatController(
 		loadSandboxPolicy()
 		loadWorkspaceProjects(state.value.workspace.cwd)
 		loadThreadHistory(state.value.workspace.cwd)
+		refreshContextStatusIfAvailable()
 	}
 
 	private fun handleConnectionFailure(exception: Exception) {
@@ -640,9 +646,46 @@ class ChatController(
 					loadWorkspaceProjects(state.value.workspace.cwd)
 					loadThreadHistory(state.value.workspace.cwd)
 					refreshRunRecordsIfVisible()
+					refreshContextStatusIfAvailable()
 				}
 			}
 		}
+	}
+
+	/**
+	 * 读取当前会话的上下文窗口摘要。
+	 *
+	 * 这里只更新 ContextWindowUiState，不修改 messages：P3-2 的上下文窗口是模型调用前的临时输入，
+	 * 不是聊天历史本身，避免“给模型看的上下文”和“用户看到的对话记录”互相污染。
+	 */
+	private suspend fun loadContextStatus(threadId: String) {
+		_state.update {
+			it.copy(contextWindowState = it.contextWindowState.copy(loading = true, error = null))
+		}
+		try {
+			val status = gateway.getContextStatus(threadId)
+			_state.update {
+				if (it.currentThreadId == threadId) {
+					it.copy(contextWindowState = ContextWindowUiState(loading = false, status = status, error = null))
+				} else {
+					it
+				}
+			}
+		} catch (exception: Exception) {
+			_state.update {
+				it.copy(
+					contextWindowState = it.contextWindowState.copy(loading = false, error = exception.message ?: "读取上下文窗口失败"),
+					lastError = exception.message,
+				)
+			}
+		}
+	}
+
+	/**
+	 * 有当前会话时刷新上下文窗口摘要；没有 thread 时保持空状态。
+	 */
+	private suspend fun refreshContextStatusIfAvailable() {
+		state.value.currentThreadId?.let { loadContextStatus(it) }
 	}
 
 	/**
