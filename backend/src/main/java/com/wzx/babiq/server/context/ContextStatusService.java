@@ -9,6 +9,8 @@ import com.wzx.babiq.server.context.repository.ContextSnapshotRecord;
 import com.wzx.babiq.server.context.repository.ContextSnapshotRepository;
 import com.wzx.babiq.server.context.repository.ContextWindowRecord;
 import com.wzx.babiq.server.context.repository.ContextWindowRepository;
+import com.wzx.babiq.server.context.repository.ContextCompactionRepository;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -27,6 +29,8 @@ public class ContextStatusService {
     private final ContextWindowRepository windowRepository;
     /** 快照仓库，读取最近快照和快照详情。 */
     private final ContextSnapshotRepository snapshotRepository;
+    /** 压缩审计仓库，读取压缩次数和最近状态。 */
+    private final ContextCompactionRepository compactionRepository;
     /** JSON mapper，用于把 items_json 转成桌面端可读 DTO。 */
     private final ObjectMapper objectMapper;
 
@@ -40,8 +44,25 @@ public class ContextStatusService {
     public ContextStatusService(ContextWindowRepository windowRepository,
                                 ContextSnapshotRepository snapshotRepository,
                                 ObjectMapper objectMapper) {
+        this(windowRepository, snapshotRepository, null, objectMapper);
+    }
+
+    /**
+     * 创建上下文窗口查询服务。
+     *
+     * @param windowRepository 窗口仓库
+     * @param snapshotRepository 快照仓库
+     * @param compactionRepository 压缩审计仓库
+     * @param objectMapper JSON mapper
+     */
+    @Autowired
+    public ContextStatusService(ContextWindowRepository windowRepository,
+                                ContextSnapshotRepository snapshotRepository,
+                                ContextCompactionRepository compactionRepository,
+                                ObjectMapper objectMapper) {
         this.windowRepository = windowRepository;
         this.snapshotRepository = snapshotRepository;
+        this.compactionRepository = compactionRepository;
         this.objectMapper = objectMapper == null ? new ObjectMapper() : objectMapper;
     }
 
@@ -54,7 +75,8 @@ public class ContextStatusService {
     public ContextStatusResult status(String threadId) {
         Optional<ContextWindowRecord> window = windowRepository.findByThreadId(threadId);
         if (window.isEmpty()) {
-            return new ContextStatusResult(threadId, 0, 0, 0, null, 0, null, 0.0d, "empty");
+            return new ContextStatusResult(threadId, 0, 0, 0, null, 0, null, 0.0d,
+                    "empty", null, 0, null);
         }
         ContextWindowRecord record = window.get();
         Optional<ContextSnapshotRecord> snapshot = Optional.empty();
@@ -80,7 +102,23 @@ public class ContextStatusService {
                 estimated,
                 actual,
                 ratio,
-                status);
+                status,
+                record.activeSummaryId(),
+                compactionCount(threadId),
+                lastCompactionStatus(threadId));
+    }
+
+    private long compactionCount(String threadId) {
+        return compactionRepository == null ? 0 : compactionRepository.countByThreadId(threadId);
+    }
+
+    private String lastCompactionStatus(String threadId) {
+        if (compactionRepository == null) {
+            return null;
+        }
+        return compactionRepository.findLatestByThreadId(threadId)
+                .map(com.wzx.babiq.server.context.repository.ContextCompactionRecord::status)
+                .orElse(null);
     }
 
     /**

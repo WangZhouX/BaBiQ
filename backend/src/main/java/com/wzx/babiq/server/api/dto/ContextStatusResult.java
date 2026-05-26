@@ -12,6 +12,9 @@ package com.wzx.babiq.server.api.dto;
  * @param lastActualPromptTokens 最近快照回填的真实 prompt token。
  * @param usageRatio 最近 token 使用率。
  * @param status 状态标签，例如 empty、ok、over_threshold。
+ * @param activeSummaryId 当前窗口正在引用的短期摘要 id。
+ * @param compactionCount 当前会话已记录的压缩尝试次数。
+ * @param lastCompactionStatus 最近一次压缩状态。
  */
 public record ContextStatusResult(
         String threadId,
@@ -22,6 +25,9 @@ public record ContextStatusResult(
         int lastEstimatedTokens,
         Long lastActualPromptTokens,
         double usageRatio,
-        String status
+        String status,
+        String activeSummaryId,
+        long compactionCount,
+        String lastCompactionStatus
 ) {
 }

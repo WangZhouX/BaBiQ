@@ -172,7 +172,17 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
   - 后端新增 `context/status`、`context/snapshot/get`，并在 `run/turn/get` 返回最新上下文快照摘要。
   - 桌面端新增上下文协议模型、状态刷新、输入栏上下文 chip 和运行详情快照摘要。
   - 已验证：`cd backend; .\mvnw.cmd clean verify`、`cd desktop; .\gradlew.bat test`。
-- **下一步**：创建并确认 P3-3 短期记忆/上下文压缩详细计划。
+- P3-3 短期记忆/上下文压缩已完成：
+  - `docs/superpowers/plans/p3-3-short-term-compaction/plan.md`
+  - `docs/superpowers/plans/p3-3-short-term-compaction/codex-handoff.md`
+  - 后端新增 `ContextBudgetPolicy`、`CompactionSourceSelector`、`ContextCompactionService`、`SpringAiContextCompactionStrategy` 和 `ContextManualCompactionService`。
+  - 新增 `bq_context_summaries`、`bq_context_compactions`，并同步 SQL 中文注释、`bq_schema_comments` 和覆盖测试。
+  - `ContextWindowRuntime` 已支持 pre-turn 自动压缩：超过 75% 阈值时压缩旧历史，成功后安装 active summary、递增 `window_ordinal`，再重新装配本轮上下文。
+  - `ContextAssembler` 已把 active summary 注入 `short_term_summary` 层，并用 `REPLACED_BY_SUMMARY` 排除被覆盖旧历史。
+  - 后端新增 `context/compact` 手动入口，`context/status` 返回 active summary、压缩次数和最近压缩状态。
+  - 桌面端已支持 `contextCompaction` item，并在输入栏上下文 chip 展示 `已压缩 N 次` 或压缩失败状态。
+  - 已验证：`cd backend; .\mvnw.cmd "-Dtest=ContextBudgetPolicyTest,CompactionSourceSelectorTest,ContextAssemblerCompactionTest,ContextCompactionServiceTest,ContextWindowRuntimeCompactionTest,ContextHandlersTest,SchemaCommentsCoverageTest" test`。
+- **下一步**：编写并确认 P3-4 长期记忆异步流水线详细计划，不能直接开始实现长期记忆。
 
 如果仓库状态已发生变化，不要盲信本检查点；必须重新核对代码、文档、测试和 `git status`。
 
@@ -211,10 +221,10 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
 
 **下一阶段边界：**
 
-- P2-1、P2-2、P2-3、P2-4、P2-5、P2-6 已完成；用户已暂时验收 P2，P3-1 最小上下文底座已完成，P3-2 当前窗口管理运行时已完成。
+- P2-1、P2-2、P2-3、P2-4、P2-5、P2-6 已完成；用户已暂时验收 P2，P3-1 最小上下文底座、P3-2 当前窗口管理运行时、P3-3 短期记忆/上下文压缩已完成。
 - P2-6 已完成 MCP Client 最小接入；后续如要扩展远程 MCP、OAuth、插件市场、MCP server 开发或复杂沙箱编排，必须进入新阶段计划，不得混入 P2 收口。
-- P3 当前限定为 Codex 级当前窗口管理、短期记忆/上下文压缩、长期记忆平台；Multi-Agent、真 OS 沙箱、A2A、多模态仍属于后续阶段，不能混入 P3-1/P3-2。
-- P3-1 已完成最小底座；P3-2 已完成真实 Agent 前置接入、快照持久化和 UI 指示。P3-3 才允许实现自动压缩、summary 替换 active window 和 `ContextCompactionItem` 事件。
+- P3 当前限定为 Codex 级当前窗口管理、短期记忆/上下文压缩、长期记忆平台；Multi-Agent、真 OS 沙箱、A2A、多模态仍属于后续阶段，不能混入 P3。
+- P3-1 已完成最小底座；P3-2 已完成真实 Agent 前置接入、快照持久化和 UI 指示；P3-3 已完成短期压缩、summary 替换 active window 和 `ContextCompactionItem` 事件。P3-4 仍需先写详细 plan，确认后才允许实现长期记忆异步提取/归并。
 - P2 范围内 SQLite 使用 MyBatis-Plus 和 Java 常见分层，但 Agent 核心不得直接依赖 Mapper；必须通过 repository/adapter 或 application service 隔离。
 - 后续任何新增业务表或业务字段都必须同步 SQL 中文注释、`bq_schema_comments` 元数据和覆盖测试。
 
@@ -302,6 +312,18 @@ cd backend
 
 cd ..\desktop
 .\gradlew.bat test --tests "*ContextModelsTest" --tests "*RunRecordModelsTest" --tests "*AgentClientTest" --tests "*ChatControllerTest" --tests "*ComposerContextBarTest"
+.\gradlew.bat test
+```
+
+**P3-3 短期记忆与上下文压缩自动化验收补充：**
+
+```powershell
+cd backend
+.\mvnw.cmd "-Dtest=ContextBudgetPolicyTest,CompactionSourceSelectorTest,ContextAssemblerCompactionTest,ContextCompactionServiceTest,ContextWindowRuntimeCompactionTest,ContextHandlersTest,SchemaCommentsCoverageTest" test
+.\mvnw.cmd clean verify
+
+cd ..\desktop
+.\gradlew.bat test --tests "*ContextModelsTest" --tests "*ThreadHistoryModelsTest" --tests "*ComposerContextBarTest" --tests "*ChatControllerTest"
 .\gradlew.bat test
 ```
 

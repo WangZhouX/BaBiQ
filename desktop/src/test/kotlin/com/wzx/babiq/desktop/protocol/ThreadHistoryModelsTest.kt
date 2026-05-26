@@ -59,4 +59,35 @@ class ThreadHistoryModelsTest {
 		assertIs<ThreadItem.UserMessage>(result.items.first())
 		assertIs<ThreadItem.AgentMessage>(result.items.last())
 	}
+
+	@Test
+	fun `thread load result 可以解析上下文压缩事件`() {
+		val payload = """
+			{
+			  "thread": {"threadId":"thr_1","title":"新对话","cwd":"E:\\BaBiQ","status":"active"},
+			  "items": [
+			    {
+			      "id":"it_compact",
+			      "type":"contextCompaction",
+			      "compactionId":"ctxcmp_1",
+			      "status":"SUCCESS",
+			      "summaryId":"ctxsum_1",
+			      "windowOrdinal":1,
+			      "estimatedTokensBefore":90000,
+			      "estimatedTokensAfter":1200,
+			      "message":"上下文已自动压缩为短期摘要"
+			    }
+			  ],
+			  "latestSummary": null,
+			  "nextBeforeItemId": null
+			}
+		""".trimIndent()
+
+		val result = protocolJson.decodeFromString(ThreadLoadResult.serializer(), payload)
+		val item = assertIs<ThreadItem.ContextCompaction>(result.items.single())
+
+		assertEquals("ctxcmp_1", item.compactionId)
+		assertEquals("ctxsum_1", item.summaryId)
+		assertEquals(1, item.windowOrdinal)
+	}
 }

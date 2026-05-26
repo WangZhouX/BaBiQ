@@ -53,7 +53,7 @@ public class AgentLoop {
         try {
             emitter.emitItemAdded(UserMessageItem.of(AgentLoopSupport.newItemId(), userText));
             AgentLoopDiagnostics.userItemEmitted(turn);
-            contextInput = prepareContextInput(turn, userText, providerId, cwd, runPolicy);
+            contextInput = prepareContextInput(turn, userText, providerId, cwd, runPolicy, emitter);
             ReactAgent agent = strategy.buildAgent(providerId, cwd, emitter, context, runPolicy);
             AgentLoopDiagnostics.modelCallStarted(turn, context);
             AgentStreamConsumer.StreamResult result = AgentStreamConsumer.consume(
@@ -76,13 +76,18 @@ public class AgentLoop {
     public void invokeResume(Turn turn, InterruptionMetadata feedback, String cwd, ItemEmitter emitter, AgentRunPolicy runPolicy) {
         outputHandler.invokeResume(turn, feedback, cwd, emitter, runPolicy);
     }
-    private ContextWindowRuntimeResult prepareContextInput(Turn turn, String userText, String providerId, String cwd, AgentRunPolicy runPolicy) {
+    private ContextWindowRuntimeResult prepareContextInput(Turn turn,
+                                                           String userText,
+                                                           String providerId,
+                                                           String cwd,
+                                                           AgentRunPolicy runPolicy,
+                                                           ItemEmitter emitter) {
         if (contextWindowRuntime == null) {
             return ContextWindowRuntimeResult.prepared(null, userText, userText);
         }
         return contextWindowRuntime.prepare(new ContextWindowRuntimeInput(turn.threadId(), turn.id(), userText,
                 providerId, strategy.resolveModelName(providerId), cwd, projectId(cwd), runPolicy,
-                strategy.resolveContextWindow(providerId), strategy.currentToolCallbacks()));
+                strategy.resolveContextWindow(providerId), strategy.currentToolCallbacks(), emitter));
     }
     private void recordContextUsage(ContextWindowRuntimeResult contextInput, TurnObservationContext context) {
         if (contextWindowRuntime != null && contextInput != null) {

@@ -19,7 +19,10 @@ class ContextModelsTest {
 			  "lastEstimatedTokens": 1200,
 			  "lastActualPromptTokens": 1300,
 			  "usageRatio": 0.039,
-			  "status": "ok"
+			  "status": "ok",
+			  "activeSummaryId": "ctxsum_1",
+			  "compactionCount": 1,
+			  "lastCompactionStatus": "SUCCESS"
 			}
 		""".trimIndent()
 
@@ -29,6 +32,9 @@ class ContextModelsTest {
 		assertEquals("ctxsnap_1", result.lastSnapshotId)
 		assertEquals(1300L, result.lastActualPromptTokens)
 		assertEquals("ok", result.status)
+		assertEquals("ctxsum_1", result.activeSummaryId)
+		assertEquals(1, result.compactionCount)
+		assertEquals("SUCCESS", result.lastCompactionStatus)
 	}
 
 	@Test

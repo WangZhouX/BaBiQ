@@ -47,4 +47,22 @@ class ComposerContextBarTest {
 		assertEquals(BadgeTone.Warning, contextWindowChipTone(ContextWindowUiState(status = status)))
 		assertEquals(BadgeTone.Danger, contextWindowChipTone(ContextWindowUiState(error = "boom")))
 	}
+
+	@Test
+	fun `上下文窗口 chip 优先展示已压缩次数`() {
+		val status = ContextStatusResult(
+			threadId = "thr_1",
+			modelContextWindow = 1000,
+			lastSnapshotId = "ctxsnap_1",
+			lastEstimatedTokens = 400,
+			usageRatio = 0.4,
+			status = "ok",
+			activeSummaryId = "ctxsum_1",
+			compactionCount = 2,
+			lastCompactionStatus = "SUCCESS",
+		)
+
+		assertEquals("已压缩 2 次", contextWindowChipLabel(ContextWindowUiState(status = status)))
+		assertEquals(BadgeTone.Success, contextWindowChipTone(ContextWindowUiState(status = status)))
+	}
 }

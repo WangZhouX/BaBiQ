@@ -136,6 +136,32 @@ sealed interface ThreadItem {
 		val durationMs: Long = 0,
 	) : ThreadItem
 
+	@Serializable
+	/**
+	 * 上下文压缩事件协议 item。
+	 *
+	 * @property id 后端生成的 item id。
+	 * @property type 协议类型固定为 contextCompaction。
+	 * @property compactionId 压缩审计记录 id。
+	 * @property status 压缩状态，例如 SUCCESS、SKIPPED、FAILED。
+	 * @property summaryId 成功时安装的短期摘要 id。
+	 * @property windowOrdinal 压缩成功后的窗口序号。
+	 * @property estimatedTokensBefore 压缩前上下文预估 token。
+	 * @property estimatedTokensAfter 摘要预估 token。
+	 * @property message 后端给 UI 的简短说明。
+	 */
+	data class ContextCompaction(
+		override val id: String,
+		override val type: String = "contextCompaction",
+		val compactionId: String? = null,
+		val status: String? = null,
+		val summaryId: String? = null,
+		val windowOrdinal: Int? = null,
+		val estimatedTokensBefore: Int? = null,
+		val estimatedTokensAfter: Int? = null,
+		val message: String? = null,
+	) : ThreadItem
+
 	/**
 	 * 未知协议 item。
 	 *
@@ -169,6 +195,7 @@ object ThreadItemSerializer : KSerializer<ThreadItem> {
 			"commandExecution" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.CommandExecution.serializer(), raw)
 			"fileChange" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.FileChange.serializer(), raw)
 			"turnSummary" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.TurnSummary.serializer(), raw)
+			"contextCompaction" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.ContextCompaction.serializer(), raw)
 			// 未知类型不丢弃，交给运行详情面板展示 raw JSON，方便后续协议扩展排查。
 			else -> ThreadItem.Unknown(
 				id = raw.optionalText("id") ?: "unknown",

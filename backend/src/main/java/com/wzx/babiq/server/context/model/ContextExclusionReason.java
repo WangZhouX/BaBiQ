@@ -14,6 +14,8 @@ public enum ContextExclusionReason {
     INCOMPLETE_ASSISTANT_MESSAGE,
     /** 文本为空，没有模型可见价值。 */
     EMPTY_TEXT,
+    /** 该历史已经被 active short-term summary 覆盖，不能和摘要重复注入。 */
+    REPLACED_BY_SUMMARY,
     /** 预留给后续 token budget 裁剪。 */
     TOKEN_BUDGET
 }

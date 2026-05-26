@@ -17,6 +17,9 @@ import kotlinx.serialization.Serializable
  * @property lastActualPromptTokens 模型返回的真实 prompt token；供应商未返回时为空。
  * @property usageRatio 最近快照占模型窗口的比例，UI 用它选择提示色。
  * @property status 后端状态标签，例如 empty、ok、over_threshold。
+ * @property activeSummaryId 当前窗口正在引用的短期摘要 id；为空表示尚未压缩。
+ * @property compactionCount 当前会话已记录的压缩尝试次数。
+ * @property lastCompactionStatus 最近一次压缩状态，例如 SUCCESS、SKIPPED、FAILED。
  */
 @Serializable
 data class ContextStatusResult(
@@ -29,6 +32,9 @@ data class ContextStatusResult(
 	val lastActualPromptTokens: Long? = null,
 	val usageRatio: Double = 0.0,
 	val status: String = "empty",
+	val activeSummaryId: String? = null,
+	val compactionCount: Long = 0,
+	val lastCompactionStatus: String? = null,
 )
 
 /**

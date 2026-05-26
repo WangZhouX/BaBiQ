@@ -119,6 +119,19 @@ object ChatReducer {
 				),
 			)
 
+			is ThreadItem.ContextCompaction -> copy(
+				messages = messages.upsert(item.toChatMessage()),
+				runtimeEvents = runtimeEvents + RuntimeEvent(
+					id = item.id,
+					title = "ContextCompaction",
+					detail = listOfNotNull(
+						item.status?.let { "状态 $it" },
+						item.summaryId?.let { "摘要 $it" },
+						item.windowOrdinal?.let { "窗口 #$it" },
+					).joinToString("，").ifBlank { item.message ?: "上下文压缩事件" },
+				),
+			)
+
 			is ThreadItem.Unknown -> copy(
 				runtimeEvents = runtimeEvents + RuntimeEvent(
 					id = item.id,
@@ -156,6 +169,19 @@ object ChatReducer {
 			is ThreadItem.FileChange -> ChatMessage.FileChange(id, action, path, status, contentPreview)
 			is ThreadItem.Reasoning -> ChatMessage.Agent(id, text)
 			is ThreadItem.TurnSummary -> ChatMessage.TurnSummary(id, this)
+			is ThreadItem.ContextCompaction -> ChatMessage.Tool(
+				id = id,
+				title = "上下文压缩",
+				status = status ?: "SUCCESS",
+				detail = listOfNotNull(
+					message,
+					summaryId?.let { "摘要 $it" },
+					windowOrdinal?.let { "窗口 #$it" },
+					estimatedTokensBefore?.let { before ->
+						estimatedTokensAfter?.let { after -> "token $before -> $after" }
+					},
+				).joinToString("\n").ifBlank { "旧历史已压缩为短期摘要" },
+			)
 			is ThreadItem.Unknown -> ChatMessage.Tool(id, type, "unknown", raw.toString())
 		}
 

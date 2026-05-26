@@ -85,7 +85,10 @@ public class ContextAssembler {
      */
     public ContextAssemblyResult assemble(ContextAssemblyInput input) {
         List<ContextSnapshotItem> snapshotItems = new ArrayList<>();
-        List<RecentHistoryItem> historyItems = assembleHistory(input.historyItems(), snapshotItems);
+        List<RecentHistoryItem> historyItems = assembleHistory(
+                input.historyItems(),
+                input.shortTermSummary(),
+                snapshotItems);
 
         ContextEnvelope envelope = new ContextEnvelope(
                 new ContextEnvelope.CurrentTurn(
@@ -136,9 +139,22 @@ public class ContextAssembler {
      * <p>这里是 P3 污染控制的第一道门：运行摘要、压缩事件和不完整流式增量只进 snapshot，
      * 不进入 envelope.recent_history。</p>
      */
-    private List<RecentHistoryItem> assembleHistory(List<ThreadItem> history, List<ContextSnapshotItem> snapshotItems) {
+    private List<RecentHistoryItem> assembleHistory(List<ThreadItem> history,
+                                                    ShortTermSummary activeSummary,
+                                                    List<ContextSnapshotItem> snapshotItems) {
         List<RecentHistoryItem> visible = new ArrayList<>();
+        String coveredEndItemId = activeSummary == null ? null : activeSummary.sourceEndItemId();
+        boolean canSkipCoveredRange = coveredEndItemId != null && history.stream()
+                .anyMatch(item -> coveredEndItemId.equals(item.id()));
+        boolean skipUntilCoveredEnd = canSkipCoveredRange;
         for (ThreadItem item : history) {
+            if (skipUntilCoveredEnd) {
+                excludeThreadItem(snapshotItems, item.id(), ContextExclusionReason.REPLACED_BY_SUMMARY);
+                if (coveredEndItemId.equals(item.id())) {
+                    skipUntilCoveredEnd = false;
+                }
+                continue;
+            }
             if (item instanceof UserMessageItem userMessageItem) {
                 includeHistoryItem(visible, snapshotItems, userMessageItem.id(), "user", userMessageItem.text());
             } else if (item instanceof AgentMessageItem agentMessageItem) {

@@ -114,6 +114,9 @@ internal fun contextWindowChipLabel(state: ContextWindowUiState): String {
 	if (status.lastSnapshotId == null) {
 		return "上下文 未生成"
 	}
+	if (status.compactionCount > 0) {
+		return "已压缩 ${status.compactionCount} 次"
+	}
 	if (status.modelContextWindow <= 0) {
 		return "上下文 ${status.lastEstimatedTokens} token"
 	}
@@ -130,6 +133,8 @@ internal fun contextWindowChipTone(state: ContextWindowUiState): BadgeTone {
 	return when {
 		state.loading -> BadgeTone.Info
 		state.error != null -> BadgeTone.Danger
+		status.lastCompactionStatus == "FAILED" -> BadgeTone.Warning
+		status.compactionCount > 0 -> BadgeTone.Success
 		status.status == "over_threshold" || status.usageRatio >= 0.8 -> BadgeTone.Warning
 		status.lastSnapshotId != null -> BadgeTone.Success
 		else -> BadgeTone.Info

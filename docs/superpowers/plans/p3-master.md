@@ -96,11 +96,11 @@ P3 的原则是“复用官方组件承载能力，BaBiQ 自己掌控策略和�
 | P3-0 | 待确认 | P2 总体验收复盘 + Codex/Spring 证据归档 | `docs/superpowers/plans/p3-1-context-memory-platform/codex-handoff.md` | P2 全量完成 |
 | P3-1 | 已完成 | 当前窗口管理 + 短期压缩 + 长期记忆总体设计，并落地最小 Context Envelope 底座 | `docs/superpowers/plans/p3-1-context-memory-platform/plan.md` | P3 master |
 | P3-2 | 已完成 | ContextWindowRuntime 实现：持久化 ContextSnapshot、Agent 前置接入、token budget、UI 指示 | `docs/superpowers/plans/p3-2-context-window-runtime/plan.md` | P3-1 |
-| P3-3 | 待计划 | ShortTermCompaction 实现：触发、摘要、历史替换、恢复和运行记录 | 后续创建 | P3-2 |
+| P3-3 | 已完成 | ShortTermCompaction 实现：触发、摘要、历史替换、恢复和运行记录 | `docs/superpowers/plans/p3-3-short-term-compaction/plan.md` | P3-2 |
 | P3-4 | 待计划 | LongTermMemoryPipeline 实现：异步提取、归并、memory summary 注入 | 后续创建 | P3-3 |
 | P3-5 | 待计划 | 按需能力装配、记忆检索增强和桌面控制：VectorStore、引用、记忆开关和污染模式 | 后续创建 | P3-4 |
 
-说明：`P3-1` 已按用户要求落地最小可运行底座，包括 `ContextAssembler`、`ContextSnapshot` 和能力目录摘要。`P3-2` 已把该底座接入真实 `AgentLoop`，并完成持久化快照、JSON-RPC 查询和桌面上下文指示。下一阶段 `P3-3` 才开始做短期压缩、summary 替换 active window 和 `ContextCompactionItem` 事件。
+说明：`P3-1` 已按用户要求落地最小可运行底座，包括 `ContextAssembler`、`ContextSnapshot` 和能力目录摘要。`P3-2` 已把该底座接入真实 `AgentLoop`，并完成持久化快照、JSON-RPC 查询和桌面上下文指示。`P3-3` 已实现短期压缩预算策略、summary 持久化、active window 替换、`ContextCompactionItem` 事件、`context/compact` 手动入口和桌面上下文压缩状态展示。
 
 ---
 
@@ -286,6 +286,6 @@ P3 任一子阶段完成前，至少需要满足：
 
 ## 9. 下一步
 
-1. 基于已完成的 P3-2 当前窗口运行时，先创建并确认 P3-3 短期压缩详细计划。
-2. P3-3 从自动压缩触发、summary 落库、active window 替换和恢复语义开始，不混入长期记忆流水线。
-3. P3-4 再实现长期记忆异步提取/归并和 memory summary 注入。
+1. 基于已完成的 P3-3 短期上下文压缩，编写并确认 P3-4 长期记忆异步流水线详细计划。
+2. P3-4 从长期记忆候选提取、secret redaction、归并 artifact 和 memory summary 注入开始。
+3. P3-5 再实现按需 tool/skill/MCP 装配策略、VectorStore/RAG 检索增强和更完整的桌面记忆管理 UI。
