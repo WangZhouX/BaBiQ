@@ -40,10 +40,12 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
 1. `docs/ARCHITECTURE.md`
 2. `docs/superpowers/plans/2026-05-21-p1-master.md`
 3. `docs/superpowers/plans/p2-master.md`
-4. 当前阶段的 `docs/superpowers/plans/p2-*/plan.md`
-5. 当前阶段的 `docs/superpowers/plans/p2-*/codex-handoff.md`
+4. `docs/superpowers/plans/p3-master.md`
+5. `docs/superpowers/plans/p3-task-index.md`
+6. 当前阶段的 `docs/superpowers/plans/p3-*/plan.md`
+7. 当前阶段的 `docs/superpowers/plans/p3-*/codex-handoff.md`
 
-**当前检查点（截至 2026-05-23）：**
+**当前检查点（截至 2026-05-26）：**
 
 - P1-3a Agent Loop 内核已实现，自动化验收证据已补齐。
 - P1-3b 安全 + 可观测已实现，`clean verify` 全绿（143 单测 + 8 IT，0 失败）：
@@ -152,7 +154,16 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
   - 专用适配器只在 thinking 启用时移除 `tool_choice`，并保留 OpenAI-compatible 的 streaming usage 链路，用于继续统计 prompt/completion/total tokens。
   - 已验证：`cd backend; .\mvnw.cmd -q -Dtest="DeepSeekV4OpenAiChatModelTest,OpenAiCompatibleProviderFactoryTest" test`
   - 已验证：`cd backend; .\mvnw.cmd clean verify`
-- **下一步**：做 P2 总体验收复盘；如果验收无新增缺口，再写 P3 或后续阶段详细计划。
+- P3-1 上下文与记忆平台最小底座已完成：
+  - `docs/superpowers/plans/p3-master.md`
+  - `docs/superpowers/plans/p3-task-index.md`
+  - `docs/superpowers/plans/p3-1-context-memory-platform/plan.md`
+  - `docs/superpowers/plans/p3-1-context-memory-platform/codex-handoff.md`
+  - 已核对 Codex 源码的当前窗口管理、短期压缩、长期记忆流水线，并通过 Context7 核对 Spring AI / Spring AI Alibaba 可复用能力。
+  - 后端新增 `com.wzx.babiq.server.context` 领域包，已实现 `ContextAssembler`、`ContextSnapshot`、`ContextEnvelope`、`ContextTokenEstimator` 和 `CapabilityCatalogAssembler`。
+  - P3-1 只落地最小底座：能生成 Spring AI messages、分层 envelope、included/excluded snapshot 和不含 input schema 的能力目录摘要；尚未接入真实 `AgentLoop`、未新增数据库表、未改桌面 UI。
+  - 已验证：`cd backend; .\mvnw.cmd "-Dtest=CapabilityCatalogAssemblerTest,ContextAssemblerTest" test`
+- **下一步**：创建 P3-2 当前窗口管理运行时详细计划，接入 `ContextWindowRuntime`、持久化 `ContextSnapshot`、把装配结果接到 Agent 前置链路，并补桌面上下文指示。
 
 如果仓库状态已发生变化，不要盲信本检查点；必须重新核对代码、文档、测试和 `git status`。
 
@@ -191,9 +202,10 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
 
 **下一阶段边界：**
 
-- P2-1、P2-2、P2-3、P2-4、P2-5、P2-6 已完成；当前应进入 P2 总体验收复盘。
+- P2-1、P2-2、P2-3、P2-4、P2-5、P2-6 已完成；用户已暂时验收 P2，P3-1 最小上下文底座已完成，当前下一步是 P3-2 当前窗口管理运行时计划。
 - P2-6 已完成 MCP Client 最小接入；后续如要扩展远程 MCP、OAuth、插件市场、MCP server 开发或复杂沙箱编排，必须进入新阶段计划，不得混入 P2 收口。
-- P3 或后续阶段可能涉及 Multi-Agent、RAG、真 OS 沙箱、A2A、多模态、上下文压缩等能力；开始前必须先写详细 plan 并由用户确认。
+- P3 当前限定为 Codex 级当前窗口管理、短期记忆/上下文压缩、长期记忆平台；Multi-Agent、真 OS 沙箱、A2A、多模态仍属于后续阶段，不能混入 P3-1/P3-2。
+- P3-1 已完成最小底座但不代表完整上下文运行时完成；P3-2 必须单独计划和实现真实 Agent 前置接入、快照持久化和 UI 指示。
 - P2 范围内 SQLite 使用 MyBatis-Plus 和 Java 常见分层，但 Agent 核心不得直接依赖 Mapper；必须通过 repository/adapter 或 application service 隔离。
 - 后续任何新增业务表或业务字段都必须同步 SQL 中文注释、`bq_schema_comments` 元数据和覆盖测试。
 
