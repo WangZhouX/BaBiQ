@@ -1,7 +1,9 @@
 package com.wzx.babiq.server.recovery;
 
+import com.wzx.babiq.server.context.compaction.ContextCompactionRecoveryService;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
 /**
@@ -15,14 +17,19 @@ public class RecoveryStartupRunner implements ApplicationRunner {
 
     /** 真正执行恢复语义的服务。 */
     private final TurnRecoveryService recoveryService;
+    /** P3-3A 短期压缩恢复服务；使用 ObjectProvider 避免未来裁剪上下文模块时影响启动。 */
+    private final ObjectProvider<ContextCompactionRecoveryService> compactionRecoveryService;
 
     /**
      * 创建启动恢复 runner。
      *
      * @param recoveryService turn 恢复服务
+     * @param compactionRecoveryService 短期压缩恢复服务提供器
      */
-    public RecoveryStartupRunner(TurnRecoveryService recoveryService) {
+    public RecoveryStartupRunner(TurnRecoveryService recoveryService,
+                                 ObjectProvider<ContextCompactionRecoveryService> compactionRecoveryService) {
         this.recoveryService = recoveryService;
+        this.compactionRecoveryService = compactionRecoveryService;
     }
 
     /**
@@ -33,5 +40,6 @@ public class RecoveryStartupRunner implements ApplicationRunner {
     @Override
     public void run(ApplicationArguments args) {
         recoveryService.recoverAbandonedState();
+        compactionRecoveryService.ifAvailable(ContextCompactionRecoveryService::scan);
     }
 }

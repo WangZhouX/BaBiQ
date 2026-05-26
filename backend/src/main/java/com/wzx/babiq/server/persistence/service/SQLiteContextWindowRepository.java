@@ -5,6 +5,7 @@ import com.wzx.babiq.server.context.repository.ContextWindowRecord;
 import com.wzx.babiq.server.context.repository.ContextWindowRepository;
 import com.wzx.babiq.server.persistence.entity.ContextWindowEntity;
 import com.wzx.babiq.server.persistence.mapper.ContextWindowMapper;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -51,6 +52,35 @@ public class SQLiteContextWindowRepository implements ContextWindowRepository {
         entity.setCreatedAt(existing.getCreatedAt());
         mapper.updateById(entity);
         return toRecord(entity);
+    }
+
+    @Override
+    @Transactional
+    public boolean compareAndSwapOrdinal(String threadId, int expectedOrdinal, ContextWindowRecord nextRecord) {
+        ContextWindowEntity existing = mapper.selectOne(Wrappers.<ContextWindowEntity>lambdaQuery()
+                .eq(ContextWindowEntity::getThreadId, threadId));
+        ContextWindowEntity entity = toEntity(nextRecord);
+        if (existing == null) {
+            return insertInitialWindow(expectedOrdinal, entity);
+        }
+        entity.setId(existing.getId());
+        entity.setCreatedAt(existing.getCreatedAt());
+        int updated = mapper.update(entity, Wrappers.<ContextWindowEntity>lambdaUpdate()
+                .eq(ContextWindowEntity::getThreadId, threadId)
+                .eq(ContextWindowEntity::getWindowOrdinal, expectedOrdinal));
+        return updated > 0;
+    }
+
+    private boolean insertInitialWindow(int expectedOrdinal, ContextWindowEntity entity) {
+        if (expectedOrdinal != 0) {
+            return false;
+        }
+        try {
+            return mapper.insert(entity) > 0;
+        } catch (DataIntegrityViolationException exception) {
+            // 另一个并发流程已经为该 thread 创建了窗口，调用方按 CAS 失败降级即可。
+            return false;
+        }
     }
 
     private ContextWindowRecord toRecord(ContextWindowEntity entity) {

@@ -7,6 +7,7 @@ import com.wzx.babiq.server.context.runtime.ContextWindowRuntime;
 import com.wzx.babiq.server.context.runtime.ContextWindowRuntimeResult;
 import com.wzx.babiq.server.conversation.ItemEmitter;
 import com.wzx.babiq.server.conversation.Turn;
+import com.wzx.babiq.server.conversation.TurnStatus;
 import com.wzx.babiq.server.observability.TurnObservationContext;
 import com.wzx.babiq.server.observability.TurnObservationRegistry;
 import com.wzx.babiq.server.observability.TurnSummaryEmitter;
@@ -15,10 +16,12 @@ import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import reactor.core.publisher.Flux;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -64,5 +67,30 @@ class AgentLoopContextRuntimeTest {
 
         verify(agent).stream(eq("上下文窗口输入"), eq(config));
         verify(runtime).recordUsage(eq("ctxsnap_1"), any(TurnObservationContext.class));
+    }
+
+    @Test
+    @DisplayName("上下文运行时异常时 turn 失败且不调用 ReactAgent")
+    void invoke_should_fail_turn_without_calling_agent_when_context_runtime_throws() throws Exception {
+        ReActStrategy strategy = mock(ReActStrategy.class);
+        ContextWindowRuntime runtime = mock(ContextWindowRuntime.class);
+        TurnSummaryEmitter summaryEmitter = mock(TurnSummaryEmitter.class);
+        AgentLoop loop = new AgentLoop(strategy, new PendingApprovals(), summaryEmitter,
+                new TurnObservationRegistry(), runtime);
+        Turn turn = new Turn("turn_ctx", "thr_ctx");
+        turn.start();
+        ItemEmitter emitter = mock(ItemEmitter.class);
+
+        when(strategy.defaultRunPolicy()).thenReturn(null);
+        when(strategy.resolveModelName("provider-a")).thenReturn("deepseek-v4-pro");
+        when(strategy.resolveContextWindow("provider-a")).thenReturn(128_000);
+        when(strategy.currentToolCallbacks()).thenReturn(new org.springframework.ai.tool.ToolCallback[0]);
+        when(runtime.prepare(any())).thenThrow(new IllegalStateException("context window broken"));
+
+        loop.invoke(turn, "原始输入", "provider-a", "E:\\BaBiQ", emitter);
+
+        verify(strategy, never()).buildAgent(any(), any(), any(), any(), any());
+        assertThat(turn.status()).isEqualTo(TurnStatus.FAILED);
+        assertThat(turn.failureReason()).contains("context window broken");
     }
 }

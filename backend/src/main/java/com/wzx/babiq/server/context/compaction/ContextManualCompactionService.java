@@ -21,8 +21,8 @@ import java.util.Optional;
 /**
  * 用户手动触发的上下文压缩服务。
  *
- * <p>手动压缩复用 ContextCompactionService 的来源选择、摘要生成和审计写入，只额外负责把成功摘要安装到
- * bq_context_windows。它不创建普通聊天消息，因此不会污染对话历史。</p>
+ * <p>手动压缩复用 ContextCompactionService 的来源选择、摘要生成、窗口安装和审计写入。
+ * 它不创建普通聊天消息，因此不会污染对话历史。</p>
  */
 @Service
 public class ContextManualCompactionService {
@@ -76,6 +76,8 @@ public class ContextManualCompactionService {
             return new ContextCompactResult(threadId, "SKIPPED", null, null, currentOrdinal);
         }
         String sourceTurnId = itemRecords.getLast().turnId();
+        ContextBudget budget = compactionService.budgetFor(modelWindow);
+        Instant now = Instant.now();
         ContextCompactionOutcome outcome = compactionService.compactIfNeeded(new ContextCompactionRequest(
                 threadId,
                 sourceTurnId,
@@ -86,20 +88,23 @@ public class ContextManualCompactionService {
                 Integer.MAX_VALUE,
                 modelWindow,
                 "用户手动触发上下文压缩",
-                true));
-        int nextOrdinal = outcome.compacted() ? currentOrdinal + 1 : currentOrdinal;
-        if (outcome.compacted()) {
-            Instant now = Instant.now();
-            windowRepository.upsert(new ContextWindowRecord(
-                    threadId,
-                    nextOrdinal,
-                    outcome.summaryRecord().summaryId(),
-                    modelWindow,
-                    compactionService.budgetFor(modelWindow).autoCompactThresholdTokens(),
-                    existingWindow == null ? null : existingWindow.lastSnapshotId(),
-                    existingWindow == null ? now : existingWindow.createdAt(),
-                    now));
-        }
+                true),
+                new WindowInstallRequest(new ContextWindowRecord(
+                        threadId,
+                        currentOrdinal + 1,
+                        null,
+                        modelWindow,
+                        budget.autoCompactThresholdTokens(),
+                        existingWindow == null ? null : existingWindow.lastSnapshotId(),
+                        existingWindow == null ? now : existingWindow.createdAt(),
+                        now),
+                        currentOrdinal,
+                        existingWindow == null ? null : existingWindow.lastSnapshotId(),
+                        existingWindow == null ? null : existingWindow.lastSnapshotId()));
+        int nextOrdinal = outcome.compacted() && outcome.compactionRecord() != null
+                && outcome.compactionRecord().nextWindowOrdinal() != null
+                ? outcome.compactionRecord().nextWindowOrdinal()
+                : currentOrdinal;
         return new ContextCompactResult(
                 threadId,
                 outcome.status(),

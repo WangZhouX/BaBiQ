@@ -104,4 +104,50 @@ class ContextSnapshotPersistenceTest {
                 });
         assertThat(snapshotRepository.findBySnapshotId("ctxsnap_1")).isPresent();
     }
+
+    @Test
+    @DisplayName("window ordinal 乐观锁只允许匹配旧序号的安装成功")
+    void context_window_should_compare_and_swap_by_window_ordinal() {
+        Instant now = Instant.now();
+        conversationRepository.createThread("thr_cas", "上下文 CAS 测试", "E:\\BaBiQ",
+                "deepseek", "deepseek-v4-pro", "WORKSPACE_WRITE", "ON_REQUEST", now);
+        windowRepository.upsert(new ContextWindowRecord(
+                "thr_cas",
+                0,
+                null,
+                128_000,
+                89_600,
+                "ctxsnap_0",
+                now,
+                now));
+
+        boolean firstInstalled = windowRepository.compareAndSwapOrdinal("thr_cas", 0, new ContextWindowRecord(
+                "thr_cas",
+                1,
+                "ctxsum_1",
+                128_000,
+                89_600,
+                "ctxsnap_1",
+                now,
+                now.plusSeconds(1)));
+        boolean secondInstalled = windowRepository.compareAndSwapOrdinal("thr_cas", 0, new ContextWindowRecord(
+                "thr_cas",
+                1,
+                "ctxsum_2",
+                128_000,
+                89_600,
+                "ctxsnap_2",
+                now,
+                now.plusSeconds(2)));
+
+        assertThat(firstInstalled).isTrue();
+        assertThat(secondInstalled).isFalse();
+        assertThat(windowRepository.findByThreadId("thr_cas"))
+                .get()
+                .satisfies(window -> {
+                    assertThat(window.windowOrdinal()).isEqualTo(1);
+                    assertThat(window.activeSummaryId()).isEqualTo("ctxsum_1");
+                    assertThat(window.lastSnapshotId()).isEqualTo("ctxsnap_1");
+                });
+    }
 }

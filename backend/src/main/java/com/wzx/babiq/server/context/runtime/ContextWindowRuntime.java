@@ -9,6 +9,7 @@ import com.wzx.babiq.server.context.compaction.ContextBudgetPolicy;
 import com.wzx.babiq.server.context.compaction.ContextCompactionOutcome;
 import com.wzx.babiq.server.context.compaction.ContextCompactionRequest;
 import com.wzx.babiq.server.context.compaction.ContextCompactionService;
+import com.wzx.babiq.server.context.compaction.WindowInstallRequest;
 import com.wzx.babiq.server.context.model.CapabilityCatalog;
 import com.wzx.babiq.server.context.model.ContextAssemblyInput;
 import com.wzx.babiq.server.context.model.ContextAssemblyResult;
@@ -139,23 +140,28 @@ public class ContextWindowRuntime {
         List<ThreadItem> historyItems = historyItems(input);
         ShortTermSummary activeSummary = activeSummary(existingWindow).orElse(null);
         ContextAssemblyResult assemblyResult = assemble(input, historyItems, activeSummary, capabilityCatalog);
+        String snapshotId = newSnapshotId();
         ContextCompactionOutcome compactionOutcome = compactIfNeeded(input, historyItems, activeSummary,
-                assemblyResult, modelWindow);
+                assemblyResult, existingWindow, modelWindow, threshold, snapshotId);
         int windowOrdinal = existingWindow == null ? 0 : existingWindow.windowOrdinal();
         if (compactionOutcome.compacted()) {
-            windowOrdinal = windowOrdinal + 1;
+            windowOrdinal = compactionOutcome.compactionRecord() != null
+                    && compactionOutcome.compactionRecord().nextWindowOrdinal() != null
+                    ? compactionOutcome.compactionRecord().nextWindowOrdinal()
+                    : windowOrdinal + 1;
             activeSummary = toShortTermSummary(compactionOutcome.summaryRecord());
             emitCompactionItem(input, compactionOutcome, windowOrdinal);
             assemblyResult = assemble(input, historyItems, activeSummary, capabilityCatalog);
         }
-        String snapshotId = newSnapshotId();
         ContextSnapshotRecord snapshot = snapshotRecord(input, assemblyResult, capabilityCatalog,
                 snapshotId, windowOrdinal, modelWindow, threshold, now);
         String modelInputText = promptRenderer.render(assemblyResult);
         try {
             snapshotRepository.save(snapshot);
-            windowRepository.upsert(windowRecord(input, existingWindow, snapshotId, modelWindow, threshold,
-                    windowOrdinal, activeSummary == null ? null : activeSummary.summaryId(), now));
+            if (!compactionOutcome.compacted()) {
+                windowRepository.upsert(windowRecord(input, existingWindow, snapshotId, modelWindow, threshold,
+                        windowOrdinal, activeSummary == null ? null : activeSummary.summaryId(), now));
+            }
             return new ContextWindowRuntimeResult(snapshotId, input.userText(), modelInputText, assemblyResult);
         } catch (RuntimeException exception) {
             // 上下文快照是观测和回放用途的侧车数据，不能因为落库竞态或历史测试缺少父级记录而中断模型主流程。
@@ -315,10 +321,28 @@ public class ContextWindowRuntime {
                                                      List<ThreadItem> historyItems,
                                                      ShortTermSummary activeSummary,
                                                      ContextAssemblyResult assemblyResult,
-                                                     int modelWindow) {
+                                                     ContextWindowRecord existingWindow,
+                                                     int modelWindow,
+                                                     int threshold,
+                                                     String replacementSnapshotId) {
         if (compactionService == null) {
             return ContextCompactionOutcome.notNeeded();
         }
+        int previousOrdinal = existingWindow == null ? 0 : existingWindow.windowOrdinal();
+        Instant now = Instant.now();
+        WindowInstallRequest installRequest = new WindowInstallRequest(
+                new ContextWindowRecord(
+                        input.threadId(),
+                        previousOrdinal + 1,
+                        null,
+                        modelWindow,
+                        threshold,
+                        replacementSnapshotId,
+                        existingWindow == null ? now : existingWindow.createdAt(),
+                        now),
+                previousOrdinal,
+                existingWindow == null ? null : existingWindow.lastSnapshotId(),
+                replacementSnapshotId);
         return compactionService.compactIfNeeded(new ContextCompactionRequest(
                 input.threadId(),
                 input.turnId(),
@@ -328,7 +352,11 @@ public class ContextWindowRuntime {
                 activeSummary,
                 assemblyResult.snapshot().estimatedTokens(),
                 modelWindow,
-                input.userText()));
+                input.userText(),
+                false,
+                "AUTO_PRE_TURN",
+                existingWindow == null ? null : existingWindow.lastSnapshotId()),
+                installRequest);
     }
 
     private Optional<ShortTermSummary> activeSummary(ContextWindowRecord existingWindow) {

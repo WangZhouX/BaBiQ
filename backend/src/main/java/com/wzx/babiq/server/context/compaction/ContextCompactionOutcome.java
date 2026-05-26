@@ -6,7 +6,7 @@ import com.wzx.babiq.server.context.repository.ContextSummaryRecord;
 /**
  * 自动压缩的执行结果。
  *
- * @param status 结果状态：NOT_NEEDED、SUCCESS、SKIPPED、FAILED
+ * @param status 结果状态：NOT_NEEDED、SUCCESS、SKIPPED、FAILED、CONFLICT
  * @param summaryRecord 成功时生成的摘要记录
  * @param compactionRecord 本次压缩审计记录，未达到阈值时为空
  */
@@ -37,10 +37,15 @@ public record ContextCompactionOutcome(
         return new ContextCompactionOutcome("FAILED", null, compactionRecord);
     }
 
+    /** 成功生成摘要但安装窗口时发现 windowOrdinal 已被并发更新。 */
+    public static ContextCompactionOutcome conflict(ContextCompactionRecord compactionRecord) {
+        return new ContextCompactionOutcome("CONFLICT", null, compactionRecord);
+    }
+
     /**
-     * @return true 表示当前窗口已经安装了新的摘要
+     * @return true 表示当前窗口已经安装了新的摘要；CONFLICT 下虽然生成过摘要正文，但不会暴露为已安装
      */
     public boolean compacted() {
-        return summaryRecord != null;
+        return "SUCCESS".equals(status) && summaryRecord != null;
     }
 }

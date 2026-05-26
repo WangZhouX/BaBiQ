@@ -72,4 +72,44 @@ public class ContextCompactionEntity {
     /** 创建时间，ISO-8601 文本。 */
     @TableField("created_at")
     private String createdAt;
+
+    /** 压缩触发类型：AUTO_PRE_TURN、MANUAL 或 FORCE_GUARD。 */
+    @TableField("trigger_type")
+    private String triggerType;
+
+    /** 压缩前窗口序号，用于乐观锁和审计回放。 */
+    @TableField("previous_window_ordinal")
+    private Integer previousWindowOrdinal;
+
+    /** 压缩成功安装后的窗口序号，失败或跳过时可为空。 */
+    @TableField("next_window_ordinal")
+    private Integer nextWindowOrdinal;
+
+    /** 触发压缩时用于估算的输入快照 id。 */
+    @TableField("input_snapshot_id")
+    private String inputSnapshotId;
+
+    /** 压缩成功后替换窗口指向的快照 id。 */
+    @TableField("replacement_snapshot_id")
+    private String replacementSnapshotId;
+
+    /** 本次压缩判定时采用的模型上下文窗口 token 数。 */
+    @TableField("model_context_window")
+    private Integer modelContextWindow;
+
+    /** 本次压缩判定时的有效输入预算 token 数。 */
+    @TableField("effective_input_budget")
+    private Integer effectiveInputBudget;
+
+    /** 本次压缩判定时的自动压缩阈值 token 数。 */
+    @TableField("auto_compact_threshold")
+    private Integer autoCompactThreshold;
+
+    /** 压缩尝试开始时间，ISO-8601 文本。 */
+    @TableField("started_at")
+    private String startedAt;
+
+    /** 压缩尝试结束时间，ISO-8601 文本。 */
+    @TableField("completed_at")
+    private String completedAt;
 }

@@ -482,3 +482,13 @@ P3-3 已按本计划完成可运行闭环：
 - 桌面端已识别 `contextCompaction` item，并在输入栏上下文 chip 中展示 `已压缩 N 次` 或压缩失败状态。
 
 本阶段刻意没有实现 P3-4 长期记忆异步提取/归并，也没有把 Spring AI Alibaba 的 ContextEditing/Summarization 组件直接接管 BaBiQ 的事实源。它们后续仍应作为 `ContextCompactionStrategy` 或长期记忆流水线的可替换实现，而不是绕过 SQLite 审计链路。
+
+### 9.1 P3-3a 鲁棒性补强记录
+
+P3-3 主链路完成后，已通过 `docs/superpowers/plans/p3-3a-compaction-hardening/plan.md` 补齐实施审查发现的鲁棒性缺口：
+
+- `bq_context_compactions` 已通过 V9 migration 补齐 10 个审计字段，覆盖 trigger、窗口 ordinal 血缘、快照血缘、预算审计和起止时间。
+- `ContextCompactionService` 已把 summary、compaction audit 和 active window 安装纳入同一 `TransactionTemplate` 边界，模型摘要调用仍保持在事务外。
+- `ContextWindowRepository.compareAndSwapOrdinal(...)` 已作为 active window 安装的乐观校验入口，CAS 冲突会记录为 `CONFLICT` 并让本轮继续使用未压缩上下文。
+- `ContextCompactionRecoveryService` 已接入启动恢复，能把半完成压缩标记为 `INTERRUPTED`，把未安装的成功记录标记为 `ORPHANED`。
+- 已通过 P3-3a 专项、后端 `clean verify` 和桌面端 `gradlew test` 验证。

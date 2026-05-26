@@ -8,6 +8,8 @@ import com.wzx.babiq.server.persistence.mapper.ContextCompactionMapper;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -52,6 +54,37 @@ public class SQLiteContextCompactionRepository implements ContextCompactionRepos
                 .map(this::toRecord);
     }
 
+    @Override
+    public List<ContextCompactionRecord> findRecoverableSince(Instant since) {
+        String sinceText = PersistenceTime.write(since);
+        return mapper.selectList(Wrappers.<ContextCompactionEntity>lambdaQuery()
+                        .ge(since != null, ContextCompactionEntity::getCreatedAt, sinceText)
+                        .and(wrapper -> wrapper
+                                .isNotNull(ContextCompactionEntity::getStartedAt)
+                                .isNull(ContextCompactionEntity::getCompletedAt)
+                                .or()
+                                .eq(ContextCompactionEntity::getStatus, "SUCCESS")
+                                .isNotNull(ContextCompactionEntity::getSummaryId))
+                        .orderByDesc(ContextCompactionEntity::getCreatedAt))
+                .stream()
+                .map(this::toRecord)
+                .toList();
+    }
+
+    @Override
+    @Transactional
+    public void updateStatus(String compactionId, String status, String errorMessage, Instant completedAt) {
+        ContextCompactionEntity existing = mapper.selectOne(Wrappers.<ContextCompactionEntity>lambdaQuery()
+                .eq(ContextCompactionEntity::getCompactionId, compactionId));
+        if (existing == null) {
+            return;
+        }
+        existing.setStatus(status);
+        existing.setErrorMessage(errorMessage);
+        existing.setCompletedAt(PersistenceTime.write(completedAt == null ? Instant.now() : completedAt));
+        mapper.updateById(existing);
+    }
+
     private ContextCompactionEntity toEntity(ContextCompactionRecord record) {
         ContextCompactionEntity entity = new ContextCompactionEntity();
         entity.setCompactionId(record.compactionId());
@@ -66,6 +99,16 @@ public class SQLiteContextCompactionRepository implements ContextCompactionRepos
         entity.setEstimatedTokensAfter(record.estimatedTokensAfter());
         entity.setErrorMessage(record.errorMessage());
         entity.setCreatedAt(PersistenceTime.write(record.createdAt()));
+        entity.setTriggerType(record.triggerType());
+        entity.setPreviousWindowOrdinal(record.previousWindowOrdinal());
+        entity.setNextWindowOrdinal(record.nextWindowOrdinal());
+        entity.setInputSnapshotId(record.inputSnapshotId());
+        entity.setReplacementSnapshotId(record.replacementSnapshotId());
+        entity.setModelContextWindow(record.modelContextWindow());
+        entity.setEffectiveInputBudget(record.effectiveInputBudget());
+        entity.setAutoCompactThreshold(record.autoCompactThreshold());
+        entity.setStartedAt(PersistenceTime.write(record.startedAt()));
+        entity.setCompletedAt(PersistenceTime.write(record.completedAt()));
         return entity;
     }
 
@@ -82,6 +125,16 @@ public class SQLiteContextCompactionRepository implements ContextCompactionRepos
                 entity.getEstimatedTokensBefore() == null ? 0 : entity.getEstimatedTokensBefore(),
                 entity.getEstimatedTokensAfter() == null ? 0 : entity.getEstimatedTokensAfter(),
                 entity.getErrorMessage(),
-                PersistenceTime.read(entity.getCreatedAt()));
+                PersistenceTime.read(entity.getCreatedAt()),
+                entity.getTriggerType(),
+                entity.getPreviousWindowOrdinal(),
+                entity.getNextWindowOrdinal(),
+                entity.getInputSnapshotId(),
+                entity.getReplacementSnapshotId(),
+                entity.getModelContextWindow(),
+                entity.getEffectiveInputBudget(),
+                entity.getAutoCompactThreshold(),
+                PersistenceTime.read(entity.getStartedAt()),
+                PersistenceTime.read(entity.getCompletedAt()));
     }
 }
