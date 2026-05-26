@@ -98,7 +98,7 @@ P3 的原则是“复用官方组件承载能力，BaBiQ 自己掌控策略和�
 | P3-2 | 已完成 | ContextWindowRuntime 实现：持久化 ContextSnapshot、Agent 前置接入、token budget、UI 指示 | `docs/superpowers/plans/p3-2-context-window-runtime/plan.md` | P3-1 |
 | P3-3 | 已完成 | ShortTermCompaction 实现：触发、摘要、历史替换、恢复和运行记录 | `docs/superpowers/plans/p3-3-short-term-compaction/plan.md` | P3-2 |
 | P3-3A | 已完成 | ShortTermCompaction 鲁棒性补强：审计字段、事务安装、ordinal 乐观锁和启动恢复 | `docs/superpowers/plans/p3-3a-compaction-hardening/plan.md` | P3-3 |
-| P3-4 | 待计划 | LongTermMemoryPipeline 实现：异步提取、归并、memory summary 注入 | 后续创建 | P3-3 |
+| P3-4 | 待实施 | LongTermMemoryPipeline 实现：异步提取、归并、memory summary 注入 | `docs/superpowers/plans/p3-4-long-term-memory/plan.md` | P3-3 |
 | P3-5 | 待计划 | 按需能力装配、记忆检索增强和桌面控制：VectorStore、引用、记忆开关和污染模式 | 后续创建 | P3-4 |
 
 说明：`P3-1` 已按用户要求落地最小可运行底座，包括 `ContextAssembler`、`ContextSnapshot` 和能力目录摘要。`P3-2` 已把该底座接入真实 `AgentLoop`，并完成持久化快照、JSON-RPC 查询和桌面上下文指示。`P3-3` 已实现短期压缩预算策略、summary 持久化、active window 替换、`ContextCompactionItem` 事件、`context/compact` 手动入口和桌面上下文压缩状态展示。`P3-3A` 已补齐压缩审计字段、事务安装边界、`window_ordinal` 乐观校验、启动恢复和关键失败路径测试。
@@ -287,6 +287,6 @@ P3 任一子阶段完成前，至少需要满足：
 
 ## 9. 下一步
 
-1. 基于已完成的 P3-3 短期上下文压缩，编写并确认 P3-4 长期记忆异步流水线详细计划。
+1. 确认并执行 `docs/superpowers/plans/p3-4-long-term-memory/plan.md`。
 2. P3-4 从长期记忆候选提取、secret redaction、归并 artifact 和 memory summary 注入开始。
 3. P3-5 再实现按需 tool/skill/MCP 装配策略、VectorStore/RAG 检索增强和更完整的桌面记忆管理 UI。
