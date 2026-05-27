@@ -15,11 +15,11 @@ P3-5 尚未实施。本目录当前只包含计划文档，用于用户确认后
 
 ## 已确认事实
 
-- Spring AI 最新稳定线可从 `1.1.6` 升到 `1.1.7`，不应升到 `2.0.0-M7`。
+- P3-5 暂不需要 Spring AI `1.1.6 -> 1.1.7` 升级，当前主线继续保持 `1.1.6`。
 - Spring AI Alibaba 最新 BOM 仍为 `1.1.2.3`；它不等于 Spring AI 全能力集合，也不直接替代 Spring AI。
 - Dynamic Tool Search 来自 Spring AI Community，不在 Spring AI core jar 内。
-- 当前适配 Spring Boot 3 / Spring AI 1.1.x 的 Dynamic Tool Search 版本线是 `1.0.x`，建议使用 `1.0.1`。
-- Spring AI `spring-ai-vector-store:1.1.7` 包含 `SimpleVectorStore`，`spring-ai-advisors-vector-store:1.1.7` 包含 `QuestionAnswerAdvisor` 和 `VectorStoreChatMemoryAdvisor`。
+- 当前适配 Spring Boot 3 / Spring AI 1.1.x 的 Dynamic Tool Search 版本线是 `1.0.x`，只能作为候选实现评估；不应为了它升级 Spring AI。
+- Spring AI `spring-ai-vector-store:1.1.6` 包含 `SimpleVectorStore`，`spring-ai-advisors-vector-store:1.1.6` 包含 `QuestionAnswerAdvisor` 和 `VectorStoreChatMemoryAdvisor`，记忆检索增强不依赖升级。
 - Codex 采用“已注册能力”和“模型可见能力”分离的 deferred tool 设计，BaBiQ P3-5 应按这个方向做，但不能绕过自己的 SQLite 审计、审批和沙箱链路。
 
 ## 执行注意事项
@@ -34,7 +34,7 @@ P3-5 尚未实施。本目录当前只包含计划文档，用于用户确认后
 
 ## 推荐执行顺序
 
-1. 依赖升级和兼容性锁定。
+1. 能力搜索依赖边界确认，保持 Spring AI `1.1.6` 不升级。
 2. 能力目录持久化底座。
 3. 能力扫描和目录装配。
 4. 按需工具暴露和 `tool_search`。

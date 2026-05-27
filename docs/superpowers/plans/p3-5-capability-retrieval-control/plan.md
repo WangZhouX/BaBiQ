@@ -8,7 +8,7 @@
 
 **Architecture:** P3-5 新增 `capability` 与 `retrieval` 两条主线。`capability` 负责收集本地工具、MCP 工具、Skill 元数据，决定本轮哪些工具直接暴露、哪些延迟暴露、哪些禁用；`retrieval` 负责在长期记忆 artifact 和 candidate 中检索少量高相关片段，带引用注入 `long_term_memory` 层。Spring AI / Spring AI Alibaba 继续提供模型、工具调用、advisor、agent-framework 和 VectorStore 抽象，BaBiQ 负责跨模型策略、权限、审计、恢复和桌面控制。
 
-**Tech Stack:** Java 21, Spring Boot 3.5.14, Spring AI 1.1.7 candidate, Spring AI Alibaba 1.1.2.3, Spring AI Community `tool-search-tool` 1.0.1 / `tool-searcher-lucene` 1.0.1, Spring AI `SimpleVectorStore` / `QuestionAnswerAdvisor` / `VectorStoreChatMemoryAdvisor`, SQLite, MyBatis-Plus, Flyway, Jackson, Kotlin Compose Desktop.
+**Tech Stack:** Java 21, Spring Boot 3.5.14, Spring AI 1.1.6, Spring AI Alibaba 1.1.2.3, Spring AI Community `tool-search-tool` / `tool-searcher-lucene` 1.0.x 可选评估, Spring AI `SimpleVectorStore` / `QuestionAnswerAdvisor` / `VectorStoreChatMemoryAdvisor`, SQLite, MyBatis-Plus, Flyway, Jackson, Kotlin Compose Desktop.
 
 ---
 
@@ -17,11 +17,11 @@
 ### 1.1 Spring AI / Spring AI Alibaba 版本结论
 
 - 当前仓库锁定 Spring AI `1.1.6`、Spring AI Alibaba `1.1.2.3`、Spring Boot `3.5.14`。
-- Spring AI 官方 BOM 最新稳定线可升到 `1.1.7`；`2.0.0-M7` 是里程碑版本，不符合本仓库“禁止 RC/Beta/EAP/Milestone 作为主线”的规则。
-- Spring AI Alibaba `1.1.2.3` 自身 BOM 不直接托管所有 Spring AI 模块版本，当前仓库已经通过 Spring AI BOM 把最终解析版本统一到 `1.1.6`。本地临时编译验证显示 `-Dspring-ai.version=1.1.7 -DskipTests compile` 可以通过，但正式升级仍必须跑全量后端验证。
-- Spring AI Core `1.1.6/1.1.7` jar 内没有 `ToolSearchToolCallAdvisor` 或 `ToolSearcher`；Dynamic Tool Search 来自 Spring AI Community 项目。
-- Spring AI Community Dynamic Tool Search 的 `1.0.x` 线对应 Spring AI `1.1.x` + Spring Boot 3，`2.x` 线对应 Spring AI 2 + Spring Boot 4。本阶段只能选 `1.0.1`。
-- Spring AI `spring-ai-vector-store:1.1.7` 已包含 `SimpleVectorStore`、`VectorStore`、`VectorStoreRetriever`；`spring-ai-advisors-vector-store:1.1.7` 已包含 `QuestionAnswerAdvisor`、`VectorStoreChatMemoryAdvisor`。
+- Spring AI 官方 BOM 虽然已有 `1.1.7` 稳定版，但 P3-5 暂不需要为了本阶段目标升级；当前主线继续保持 `1.1.6`。
+- Spring AI Alibaba `1.1.2.3` 自身 BOM 不直接托管所有 Spring AI 模块版本，当前仓库已经通过 Spring AI BOM 把最终解析版本统一到 `1.1.6`。
+- Spring AI Core `1.1.6` jar 内没有 `ToolSearchToolCallAdvisor` 或 `ToolSearcher`；Dynamic Tool Search 来自 Spring AI Community 项目。
+- Spring AI Community Dynamic Tool Search 的 `1.0.x` 线对应 Spring AI `1.1.x` + Spring Boot 3；P3-5 只评估它能否在当前 `1.1.6` 主线下安全接入，不能接入时使用 BaBiQ 自有 Lucene/Fallback 搜索实现。
+- Spring AI `spring-ai-vector-store:1.1.6` 已包含 `SimpleVectorStore`、`VectorStore`、`VectorStoreRetriever`；`spring-ai-advisors-vector-store:1.1.6` 已包含 `QuestionAnswerAdvisor`、`VectorStoreChatMemoryAdvisor`。
 
 ### 1.2 Codex 源码结论
 
@@ -43,7 +43,7 @@
 
 ### 2.1 本阶段要做
 
-- 升级并锁定 Spring AI `1.1.7`，接入 Spring AI Community Dynamic Tool Search `1.0.1` 依赖，完成兼容性验证。
+- 保持 Spring AI `1.1.6`，评估 Spring AI Community Dynamic Tool Search `1.0.x` 是否值得作为可选依赖接入。
 - 建立 BaBiQ 能力目录持久化模型，覆盖 local tool、MCP tool、Skill metadata。
 - 实现按需能力装配：默认工具、延迟工具、禁用工具、搜索命中工具都要写入 `ContextSnapshot` 审计。
 - 实现 BaBiQ 自有 `tool_search` 工具或等价入口，确保搜索行为仍经过 ToolRegistry、审批、沙箱和运行记录。
@@ -159,23 +159,23 @@ flowchart LR
 
 ## 5. 实施步骤
 
-### Task 1: 依赖升级和兼容性锁定
+### Task 1: 能力搜索依赖边界确认
 
-**目标:** 把 Spring AI 从 `1.1.6` 升到 `1.1.7`，并加入 Dynamic Tool Search `1.0.1`。先用最小编译和依赖树确认，再进入功能实现。
+**目标:** 保持 Spring AI `1.1.6` 不升级，只确认 Spring AI Community Dynamic Tool Search `1.0.x` 是否能在当前主线上作为可选能力搜索实现使用。不能安全接入时，P3-5 直接走 BaBiQ 自有 `CapabilitySearchService` + Lucene/Fallback。
 
 文件：
 
-- `backend/pom.xml`
+- `backend/pom.xml`（仅在确认可安全接入 Spring AI Community 依赖时修改）
 
 步骤：
 
-1. 修改 `spring-ai.version` 为 `1.1.7`。
-2. 新增属性 `spring-ai-community-tool-search.version=1.0.1`。
-3. 新增依赖：
+1. 保持 `spring-ai.version=1.1.6` 不变。
+2. 先用临时 Maven 参数或隔离分支验证 `org.springaicommunity` `1.0.x` 是否能与当前依赖树编译通过。
+3. 如果验证通过，再新增属性 `spring-ai-community-tool-search.version=1.0.1` 和可选依赖：
    - `org.springaicommunity:tool-search-tool`
    - `org.springaicommunity:tool-searcher-lucene`
-4. 保留 Spring AI Alibaba `1.1.2.3` 不动。
-5. 跑依赖树确认所有 `org.springframework.ai` 最终解析到 `1.1.7`。
+4. 如果验证不通过，不引入上述依赖，后续任务直接使用 `LuceneCapabilitySearchService` 或 `FallbackLexicalCapabilitySearchService`。
+5. 跑依赖树确认所有 `org.springframework.ai` 仍最终解析到 `1.1.6`。
 
 验证：
 
@@ -189,7 +189,7 @@ cd backend
 提交建议：
 
 ```text
-build(p3-5): 升级 Spring AI 并接入能力搜索依赖
+chore(p3-5): 确认能力搜索依赖边界
 ```
 
 ### Task 2: 能力目录持久化底座
@@ -497,12 +497,12 @@ docs(p3-5): 同步能力装配和记忆检索阶段状态
 
 ## 6. 风险和处理
 
-### 6.1 Spring AI 1.1.7 与 SAA 1.1.2.3 的二进制风险
+### 6.1 避免非必要 Spring AI 升级风险
 
 处理：
 
-- Task 1 单独提交。
-- 如果 `clean verify` 失败，先不做 P3-5 代码，实现者必须回滚依赖升级或记录兼容 patch。
+- Task 1 默认不升级 Spring AI，先保护当前 P3-4 已验证链路。
+- 如果可选引入 Spring AI Community Dynamic Tool Search 后 `clean verify` 失败，立即移除该依赖，回到 BaBiQ 自有搜索实现。
 - Dynamic Tool Search 不作为硬依赖贯穿核心路径；BaBiQ 保留 `CapabilitySearchService` 接口，允许 Lucene/Fallback 实现替代。
 
 ### 6.2 ReactAgent 当前迭代动态工具装配能力不确定
@@ -536,7 +536,7 @@ docs(p3-5): 同步能力装配和记忆检索阶段状态
 
 P3-5 只有满足以下条件才算完成：
 
-- Spring AI 1.1.7 和 Spring AI Community Dynamic Tool Search `1.0.1` 兼容性验证通过，或明确记录不能升级的原因和替代方案。
+- 明确保持 Spring AI `1.1.6`；Spring AI Community Dynamic Tool Search `1.0.x` 只是可选候选实现，接入或不接入都有清晰记录。
 - 能力目录能从 local tool、MCP tool、Skill metadata 同步，并落库审计。
 - 模型可见工具列表能按 VISIBLE/DEFERRED/DISABLED 生成，`ContextSnapshot` 能复现装配决策。
 - `tool_search` 不绕过 BaBiQ 工具执行链路。

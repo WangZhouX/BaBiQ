@@ -29,7 +29,7 @@ BaBiQ 的核心设计原则是：**Spring AI / Spring AI Alibaba 承载模型和
 |---|---|---|
 | Backend JDK | Java | 21 LTS |
 | Backend 框架 | Spring Boot | 3.5.14 |
-| AI 框架 | Spring AI | 当前主线 1.1.6，P3-5 计划评估升级到 1.1.7 |
+| AI 框架 | Spring AI | 当前主线 1.1.6，P3-5 暂不升级，仅评估可选能力依赖 |
 | Agent 框架 | Spring AI Alibaba | 1.1.2.3 |
 | Provider | DashScope / OpenAI Compatible / DeepSeek V4 / Ollama | 通过 Provider 配置切换 |
 | 数据库 | SQLite | 本地持久化事实源 |
@@ -451,8 +451,8 @@ P3-4 已实现长期记忆异步流水线：
 
 ### P3-5 待实现
 
-- Spring AI `1.1.7` 升级验证。
-- Spring AI Community Dynamic Tool Search `1.0.1` 接入评估。
+- 保持 Spring AI `1.1.6`，不把 `1.1.7` 升级作为 P3-5 前置任务。
+- Spring AI Community Dynamic Tool Search `1.0.x` 在当前 `1.1.6` 主线上的可选接入评估。
 - BaBiQ 能力目录持久化。
 - Local tool / MCP tool / Skill metadata 统一能力目录。
 - Codex 风格 deferred tool / `tool_search`。
