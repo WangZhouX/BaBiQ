@@ -147,7 +147,9 @@ public class CapabilityCatalogSyncService {
     }
 
     private String searchText(String name, String description, String tags) {
-        return (safe(name) + " " + safe(description) + " " + safe(tags)).trim();
+        String originalSearchText = (safe(name) + " " + safe(description) + " " + safe(tags)).trim();
+        // 中文别名只能进入辅助检索文本，不能反向改工具 name，否则会破坏 function calling 协议。
+        return CapabilityAliasDictionary.enrich(name, originalSearchText);
     }
 
     private String sha256(Object value) {
