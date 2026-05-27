@@ -56,10 +56,14 @@ fun BaBiQDesktopApp() {
 			onTestProvider = { providerId -> scope.launch { controller.testProvider(providerId) } },
 			onSaveSandboxMode = { mode -> scope.launch { controller.saveSandboxMode(mode) } },
 			onSaveApprovalPolicy = { policy -> scope.launch { controller.saveApprovalPolicy(policy) } },
-			onSaveMemorySettings = { enabled, generateEnabled, readEnabled ->
-				scope.launch { controller.saveMemorySettings(enabled, generateEnabled, readEnabled) }
+			onSaveMemorySettings = { enabled, generateEnabled, readEnabled, retrievalEnabled ->
+				scope.launch { controller.saveMemorySettings(enabled, generateEnabled, readEnabled, retrievalEnabled) }
 			},
 			onConsolidateMemory = { controller.consolidateMemory(force = true) },
+			onSaveCapabilitySettings = { capabilityId, enabled, exposureMode ->
+				controller.saveCapabilitySettings(capabilityId, enabled, exposureMode)
+			},
+			onSearchCapabilities = { query -> controller.searchCapabilities(query) },
 			onRefreshMcpServer = { serverId -> controller.refreshMcpServer(serverId) },
 			onToggleRuntime = { controller.toggleRuntimeDetails() },
 			onSelectRunTurn = { turnId -> controller.selectRunTurn(turnId) },

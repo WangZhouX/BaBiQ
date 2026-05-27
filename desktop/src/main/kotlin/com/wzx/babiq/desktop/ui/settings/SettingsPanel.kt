@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.wzx.babiq.desktop.protocol.CapabilityInfo
 import com.wzx.babiq.desktop.protocol.ProviderInfo
 import com.wzx.babiq.desktop.protocol.ProviderSaveParams
 import com.wzx.babiq.desktop.state.AppState
@@ -49,8 +50,10 @@ fun SettingsPanel(
 	onTestProvider: (String) -> Unit,
 	onSaveSandboxMode: (String) -> Unit,
 	onSaveApprovalPolicy: (String) -> Unit,
-	onSaveMemorySettings: (Boolean?, Boolean?, Boolean?) -> Unit,
+	onSaveMemorySettings: (Boolean?, Boolean?, Boolean?, Boolean?) -> Unit,
 	onConsolidateMemory: () -> Unit,
+	onSaveCapabilitySettings: (String, Boolean?, String?) -> Unit,
+	onSearchCapabilities: (String) -> Unit,
 ) {
 	Column(
 		modifier = Modifier.fillMaxSize().padding(34.dp),
@@ -74,6 +77,11 @@ fun SettingsPanel(
 			onSaveMemorySettings = onSaveMemorySettings,
 			onConsolidateMemory = onConsolidateMemory,
 		)
+		CapabilitySettingsCard(
+			state = state,
+			onSaveCapabilitySettings = onSaveCapabilitySettings,
+			onSearchCapabilities = onSearchCapabilities,
+		)
 		ProviderSettingsCard(
 			state = state,
 			onSelectProvider = onSelectProvider,
@@ -93,7 +101,7 @@ fun SettingsPanel(
 @Composable
 private fun MemorySettingsCard(
 	state: AppState,
-	onSaveMemorySettings: (Boolean?, Boolean?, Boolean?) -> Unit,
+	onSaveMemorySettings: (Boolean?, Boolean?, Boolean?, Boolean?) -> Unit,
 	onConsolidateMemory: () -> Unit,
 ) {
 	val memory = state.memoryState
@@ -105,13 +113,16 @@ private fun MemorySettingsCard(
 		Text("候选: ${status?.cleanCandidateCount ?: 0} CLEAN / generation: ${status?.phase2Generation ?: 0}")
 		Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
 			BooleanPolicyButton("总开关", status?.enabled, state.canEditSettings) {
-				onSaveMemorySettings(!(status?.enabled ?: true), null, null)
+				onSaveMemorySettings(!(status?.enabled ?: true), null, null, null)
 			}
 			BooleanPolicyButton("后台生成", status?.generateEnabled, state.canEditSettings) {
-				onSaveMemorySettings(null, !(status?.generateEnabled ?: true), null)
+				onSaveMemorySettings(null, !(status?.generateEnabled ?: true), null, null)
 			}
 			BooleanPolicyButton("上下文注入", status?.readEnabled, state.canEditSettings) {
-				onSaveMemorySettings(null, null, !(status?.readEnabled ?: true))
+				onSaveMemorySettings(null, null, !(status?.readEnabled ?: true), null)
+			}
+			BooleanPolicyButton("检索增强", status?.retrievalEnabled, state.canEditSettings) {
+				onSaveMemorySettings(null, null, null, !(status?.retrievalEnabled ?: true))
 			}
 		}
 		OutlinedButton(enabled = state.canEditSettings && !memory.loading, onClick = onConsolidateMemory) {
@@ -127,6 +138,72 @@ private fun MemorySettingsCard(
 			Text("最近产物", fontWeight = FontWeight.Medium)
 			memory.artifacts.take(3).forEach { artifact ->
 				Text("${artifact.artifactType} ${artifact.artifactPath}", color = BaBiQColors.Muted)
+			}
+		}
+	}
+}
+
+/**
+ * 能力目录设置卡片。
+ *
+ * P3-5 的关键是“能力按需装配”：这里显示的是后端真实能力目录，不是 UI 假状态；
+ * 用户关闭或切换暴露模式后，下一轮 Agent 构建工具列表会跟着变化。
+ */
+@Composable
+private fun CapabilitySettingsCard(
+	state: AppState,
+	onSaveCapabilitySettings: (String, Boolean?, String?) -> Unit,
+	onSearchCapabilities: (String) -> Unit,
+) {
+	val capability = state.capabilityState
+	val status = capability.status
+	var query by remember { mutableStateOf("") }
+	SettingsCard("能力装配") {
+		capability.notice?.let { Text(it, color = BaBiQColors.Success) }
+		capability.error?.let { Text("能力错误: $it", color = BaBiQColors.Danger) }
+		Text(
+			"总数: ${status?.totalCount ?: 0} / 常驻: ${status?.visibleCount ?: 0} / 按需: ${status?.deferredCount ?: 0} / 禁用: ${status?.disabledCount ?: 0}",
+			color = BaBiQColors.Muted,
+		)
+		Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+			OutlinedTextField(
+				value = query,
+				onValueChange = { query = it },
+				modifier = Modifier.weight(1f),
+				singleLine = true,
+				label = { Text("搜索能力") },
+			)
+			OutlinedButton(enabled = state.canEditSettings && query.isNotBlank(), onClick = { onSearchCapabilities(query) }) {
+				Text("搜索")
+			}
+		}
+		val visibleList = if (capability.searchResults.isNotEmpty()) capability.searchResults else status?.capabilities.orEmpty()
+		visibleList.take(5).forEach { item ->
+			CapabilityRow(item, state.canEditSettings, onSaveCapabilitySettings)
+		}
+		if (state.skillState.skills.isNotEmpty()) {
+			Text("Skill: ${state.skillState.skills.take(3).joinToString { it.name }}", color = BaBiQColors.Muted)
+		}
+	}
+}
+
+@Composable
+private fun CapabilityRow(
+	item: CapabilityInfo,
+	canEdit: Boolean,
+	onSaveCapabilitySettings: (String, Boolean?, String?) -> Unit,
+) {
+	Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+		Text("${item.displayName} · ${item.type}", fontWeight = FontWeight.Medium)
+		Text(item.description, color = BaBiQColors.Muted)
+		Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+			BooleanPolicyButton("启用", item.enabled, canEdit) {
+				onSaveCapabilitySettings(item.capabilityId, !item.enabled, null)
+			}
+			listOf("VISIBLE", "DEFERRED", "DISABLED").forEach { mode ->
+				PolicyButton(mode, mode, item.exposureMode, canEdit) {
+					onSaveCapabilitySettings(item.capabilityId, null, mode)
+				}
 			}
 		}
 	}

@@ -105,6 +105,31 @@ public class ToolRegistry {
     }
 
     /**
+     * 导出本地静态工具 callback。
+     *
+     * <p>P3-5 能力目录扫描需要区分 local 与 MCP 来源，因此不能只看 allCallbacks 的合并结果。</p>
+     */
+    public ToolCallback[] localCallbacks() {
+        return Arrays.copyOf(callbacks, callbacks.length);
+    }
+
+    /**
+     * 按工具名导出 callback。
+     *
+     * <p>CapabilityExposurePlanner 传入的是模型本轮允许看到的工具名；这里再从完整注册表中筛选，
+     * 确保工具仍然先注册、后按需暴露。</p>
+     */
+    public ToolCallback[] callbacksForNames(List<String> names) {
+        if (names == null || names.isEmpty()) {
+            return new ToolCallback[0];
+        }
+        List<String> allowed = List.copyOf(names);
+        return Arrays.stream(allCallbacks())
+                .filter(callback -> allowed.contains(callback.getToolDefinition().name()))
+                .toArray(ToolCallback[]::new);
+    }
+
+    /**
      * 建立本地工具名称索引，并在启动期发现重复工具名。
      */
     private Map<String, Tool> indexTools(List<Tool> tools) {

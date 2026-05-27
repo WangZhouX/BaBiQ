@@ -25,6 +25,9 @@ import java.nio.file.Path;
  * @param phase2MinIntervalMillis 自动 Phase2 最小间隔
  * @param phase2MaxCandidates 每次 Phase2 最多选择候选数
  * @param readBudgetTokens read path 注入 memory_summary 的 token 预算
+ * @param retrievalEnabled 是否允许 read path 按用户本轮输入检索长期记忆 artifact
+ * @param retrievalMaxReferences 每轮最多注入多少条检索命中的长期记忆引用
+ * @param retrievalBudgetWindowPercent 检索增强最多占用模型上下文窗口的百分比
  */
 @ConfigurationProperties(prefix = "babiq.memory.long-term")
 public record LongTermMemoryProperties(
@@ -42,7 +45,10 @@ public record LongTermMemoryProperties(
         long phase2ScanIntervalMillis,
         long phase2MinIntervalMillis,
         int phase2MaxCandidates,
-        int readBudgetTokens
+        int readBudgetTokens,
+        boolean retrievalEnabled,
+        int retrievalMaxReferences,
+        int retrievalBudgetWindowPercent
 ) {
 
     /**
@@ -62,6 +68,8 @@ public record LongTermMemoryProperties(
         phase2MinIntervalMillis = phase2MinIntervalMillis <= 0 ? 3_600_000 : phase2MinIntervalMillis;
         phase2MaxCandidates = phase2MaxCandidates <= 0 ? 256 : phase2MaxCandidates;
         readBudgetTokens = readBudgetTokens <= 0 ? 2_500 : readBudgetTokens;
+        retrievalMaxReferences = retrievalMaxReferences <= 0 ? 3 : retrievalMaxReferences;
+        retrievalBudgetWindowPercent = retrievalBudgetWindowPercent <= 0 ? 5 : retrievalBudgetWindowPercent;
     }
 
     /**
@@ -70,7 +78,8 @@ public record LongTermMemoryProperties(
     public static LongTermMemoryProperties defaultsForTests() {
         return new LongTermMemoryProperties(true, true, true, Path.of("target", "test-memories"),
                 3_600_000, 300_000, 4, true, 70, 150_000,
-                5, 86_400_000, 3_600_000, 256, 2_500);
+                5, 86_400_000, 3_600_000, 256, 2_500,
+                true, 3, 5);
     }
 
     /**
@@ -80,7 +89,8 @@ public record LongTermMemoryProperties(
         return new LongTermMemoryProperties(enabled, generateEnabled, readEnabled, rootDir,
                 phase1ScanIntervalMillis, phase1MinIdleMillis, phase1MaxThreadsPerScan, phase1OnStartup,
                 phase1InputWindowPercent, phase1FallbackTokenLimit, phase2TriggerOnCandidateCount,
-                phase2ScanIntervalMillis, phase2MinIntervalMillis, phase2MaxCandidates, readBudgetTokens);
+                phase2ScanIntervalMillis, phase2MinIntervalMillis, phase2MaxCandidates, readBudgetTokens,
+                retrievalEnabled, retrievalMaxReferences, retrievalBudgetWindowPercent);
     }
 
     /**
@@ -90,7 +100,8 @@ public record LongTermMemoryProperties(
         return new LongTermMemoryProperties(enabled, generateEnabled, readEnabled, rootDir,
                 phase1ScanIntervalMillis, phase1MinIdleMillis, phase1MaxThreadsPerScan, phase1OnStartup,
                 phase1InputWindowPercent, phase1FallbackTokenLimit, phase2TriggerOnCandidateCount,
-                phase2ScanIntervalMillis, phase2MinIntervalMillis, phase2MaxCandidates, readBudgetTokens);
+                phase2ScanIntervalMillis, phase2MinIntervalMillis, phase2MaxCandidates, readBudgetTokens,
+                retrievalEnabled, retrievalMaxReferences, retrievalBudgetWindowPercent);
     }
 
     /**
@@ -100,13 +111,17 @@ public record LongTermMemoryProperties(
         return new LongTermMemoryProperties(enabled, generateEnabled, readEnabled, rootDir,
                 phase1ScanIntervalMillis, phase1MinIdleMillis, phase1MaxThreadsPerScan, phase1OnStartup,
                 phase1InputWindowPercent, phase1FallbackTokenLimit, phase2TriggerOnCandidateCount,
-                phase2ScanIntervalMillis, phase2MinIntervalMillis, phase2MaxCandidates, readBudgetTokens);
+                phase2ScanIntervalMillis, phase2MinIntervalMillis, phase2MaxCandidates, readBudgetTokens,
+                retrievalEnabled, retrievalMaxReferences, retrievalBudgetWindowPercent);
     }
 
     /**
      * 返回运行时开关更新后的副本。
      */
-    public LongTermMemoryProperties withSwitches(Boolean enabled, Boolean generateEnabled, Boolean readEnabled) {
+    public LongTermMemoryProperties withSwitches(Boolean enabled,
+                                                 Boolean generateEnabled,
+                                                 Boolean readEnabled,
+                                                 Boolean retrievalEnabled) {
         return new LongTermMemoryProperties(
                 enabled == null ? this.enabled : enabled,
                 generateEnabled == null ? this.generateEnabled : generateEnabled,
@@ -122,6 +137,16 @@ public record LongTermMemoryProperties(
                 phase2ScanIntervalMillis,
                 phase2MinIntervalMillis,
                 phase2MaxCandidates,
-                readBudgetTokens);
+                readBudgetTokens,
+                retrievalEnabled == null ? this.retrievalEnabled : retrievalEnabled,
+                retrievalMaxReferences,
+                retrievalBudgetWindowPercent);
+    }
+
+    /**
+     * 返回只修改长期记忆检索开关的副本。
+     */
+    public LongTermMemoryProperties withRetrievalEnabled(boolean retrievalEnabled) {
+        return withSwitches(null, null, null, retrievalEnabled);
     }
 }

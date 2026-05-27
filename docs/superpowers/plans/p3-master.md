@@ -67,7 +67,7 @@ Codex 的长期记忆是异步两阶段流水线，不是每轮即时写 `memory
 - 再启动一个受限内部 agent，对 `MEMORY.md`、`memory_summary.md`、技能和 rollout summaries 做归并。
 - Read path 只把受 token budget 控制的 `memory_summary.md` 注入 prompt。
 
-BaBiQ 对应设计：新增 `LongTermMemoryPipeline`。P3 先采用 DB-first + Markdown mirror：SQLite 保存任务、stage output、记忆 artifact 元数据和引用关系；本地文件保存用户可读的 `MEMORY.md`、`memory_summary.md`、`rollout_summaries/`。读路径默认只注入短小、可信、可追溯的 memory summary，完整检索在后续阶段接 VectorStore/RAG。
+BaBiQ 对应设计：新增 `LongTermMemoryPipeline`。P3 先采用 DB-first + Markdown mirror：SQLite 保存任务、stage output、记忆 artifact 元数据和引用关系；本地文件保存用户可读的 `MEMORY.md`、`memory_summary.md`、`rollout_summaries/`。读路径默认只注入短小、可信、可追溯的 memory summary；P3-5 已补充有界检索增强，把少量带引用的长期记忆片段注入 `long_term_memory` 参考层。
 
 ---
 
@@ -99,9 +99,9 @@ P3 的原则是“复用官方组件承载能力，BaBiQ 自己掌控策略和�
 | P3-3 | 已完成 | ShortTermCompaction 实现：触发、摘要、历史替换、恢复和运行记录 | `docs/superpowers/plans/p3-3-short-term-compaction/plan.md` | P3-2 |
 | P3-3A | 已完成 | ShortTermCompaction 鲁棒性补强：审计字段、事务安装、ordinal 乐观锁和启动恢复 | `docs/superpowers/plans/p3-3a-compaction-hardening/plan.md` | P3-3 |
 | P3-4 | 已完成 | LongTermMemoryPipeline 实现：异步提取、归并、memory summary 注入 | `docs/superpowers/plans/p3-4-long-term-memory/plan.md` | P3-3 |
-| P3-5 | 待确认 | 按需能力装配、记忆检索增强和桌面控制：VectorStore、引用、记忆开关和污染模式 | `docs/superpowers/plans/p3-5-capability-retrieval-control/plan.md` | P3-4 |
+| P3-5 | 已完成 | 按需能力装配、记忆检索增强和桌面控制：tool_search、Skill metadata、能力策略、引用和记忆检索开关 | `docs/superpowers/plans/p3-5-capability-retrieval-control/plan.md` | P3-4 |
 
-说明：`P3-1` 已按用户要求落地最小可运行底座，包括 `ContextAssembler`、`ContextSnapshot` 和能力目录摘要。`P3-2` 已把该底座接入真实 `AgentLoop`，并完成持久化快照、JSON-RPC 查询和桌面上下文指示。`P3-3` 已实现短期压缩预算策略、summary 持久化、active window 替换、`ContextCompactionItem` 事件、`context/compact` 手动入口和桌面上下文压缩状态展示。`P3-3A` 已补齐压缩审计字段、事务安装边界、`window_ordinal` 乐观校验、启动恢复和关键失败路径测试。`P3-4` 已完成长期记忆异步流水线、SQLite 审计、Markdown mirror、长期记忆 summary 注入和桌面最小控制。
+说明：`P3-1` 已按用户要求落地最小可运行底座，包括 `ContextAssembler`、`ContextSnapshot` 和能力目录摘要。`P3-2` 已把该底座接入真实 `AgentLoop`，并完成持久化快照、JSON-RPC 查询和桌面上下文指示。`P3-3` 已实现短期压缩预算策略、summary 持久化、active window 替换、`ContextCompactionItem` 事件、`context/compact` 手动入口和桌面上下文压缩状态展示。`P3-3A` 已补齐压缩审计字段、事务安装边界、`window_ordinal` 乐观校验、启动恢复和关键失败路径测试。`P3-4` 已完成长期记忆异步流水线、SQLite 审计、Markdown mirror、长期记忆 summary 注入和桌面最小控制。`P3-5` 已完成按需能力装配、`tool_search`、Skill metadata 注册、长期记忆有界检索增强和桌面控制。
 
 ---
 
@@ -287,6 +287,6 @@ P3 任一子阶段完成前，至少需要满足：
 
 ## 9. 下一步
 
-1. 确认 `docs/superpowers/plans/p3-5-capability-retrieval-control/plan.md`。
-2. 用户确认后，P3-5 再实现按需 tool/skill/MCP 装配策略、VectorStore/RAG 检索增强和更完整的桌面记忆管理 UI。
-3. 在 P3-5 实施前继续保持 P3-4 的 SQLite 事实源和 read path summary-only 边界，不把完整 `MEMORY.md` 直接塞入每轮模型上下文。
+1. 进行 P3 总体验收复盘，核对上下文窗口、短期压缩、长期记忆、按需能力装配和桌面控制是否满足当前阶段目标。
+2. 用户确认后，再编写下一阶段详细计划；候选方向包括 P4 多 Agent / 更强沙箱 / A2A / 远程 MCP / 更完整记忆管理 UI。
+3. 继续保持 BaBiQ SQLite 事实源、ContextSnapshot 审计和“完整记忆/完整 Skill 正文不常驻注入”的边界。

@@ -64,6 +64,7 @@ public class MemoryStatusService {
                 properties.enabled(),
                 properties.generateEnabled(),
                 properties.readEnabled(),
+                properties.retrievalEnabled(),
                 properties.rootDir().toString(),
                 jobRepository.countByStatus("PENDING"),
                 jobRepository.countByStatus("RUNNING"),
@@ -76,10 +77,14 @@ public class MemoryStatusService {
     /**
      * 局部更新长期记忆开关。
      */
-    public MemorySettingsSetResult updateSettings(Boolean enabled, Boolean generateEnabled, Boolean readEnabled) {
+    public MemorySettingsSetResult updateSettings(Boolean enabled,
+                                                  Boolean generateEnabled,
+                                                  Boolean readEnabled,
+                                                  Boolean retrievalEnabled) {
         LongTermMemoryProperties updated = currentProperties.updateAndGet(
-                properties -> properties.withSwitches(enabled, generateEnabled, readEnabled));
-        return new MemorySettingsSetResult(updated.enabled(), updated.generateEnabled(), updated.readEnabled());
+                properties -> properties.withSwitches(enabled, generateEnabled, readEnabled, retrievalEnabled));
+        return new MemorySettingsSetResult(updated.enabled(), updated.generateEnabled(),
+                updated.readEnabled(), updated.retrievalEnabled());
     }
 
     /**

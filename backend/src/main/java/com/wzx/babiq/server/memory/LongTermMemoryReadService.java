@@ -6,10 +6,14 @@ import com.wzx.babiq.server.memory.repository.MemoryArtifactRecord;
 import com.wzx.babiq.server.memory.repository.MemoryArtifactRepository;
 import com.wzx.babiq.server.memory.repository.MemoryReferenceRecord;
 import com.wzx.babiq.server.memory.repository.MemoryReferenceRepository;
+import com.wzx.babiq.server.memory.retrieval.LongTermMemoryRetrievalResult;
+import com.wzx.babiq.server.memory.retrieval.LongTermMemoryRetrievalService;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.function.Supplier;
@@ -31,6 +35,8 @@ public class LongTermMemoryReadService {
     private final ContextTokenEstimator tokenEstimator;
     /** 长期记忆配置供应器，设置页修改后读取最新开关。 */
     private final Supplier<LongTermMemoryProperties> propertiesSupplier;
+    /** P3-5 长期记忆检索增强服务；为空时保持 P3-4 summary-only 行为。 */
+    private final LongTermMemoryRetrievalService retrievalService;
 
     /**
      * 创建长期记忆读取服务。
@@ -39,11 +45,13 @@ public class LongTermMemoryReadService {
     public LongTermMemoryReadService(MemoryArtifactRepository artifactRepository,
                                      MemoryReferenceRepository referenceRepository,
                                      ContextTokenEstimator tokenEstimator,
-                                     MemoryStatusService statusService) {
+                                     MemoryStatusService statusService,
+                                     ObjectProvider<LongTermMemoryRetrievalService> retrievalServiceProvider) {
         this.artifactRepository = artifactRepository;
         this.referenceRepository = referenceRepository;
         this.tokenEstimator = tokenEstimator;
         this.propertiesSupplier = statusService::properties;
+        this.retrievalService = retrievalServiceProvider.getIfAvailable();
     }
 
     /**
@@ -57,19 +65,50 @@ public class LongTermMemoryReadService {
         this.referenceRepository = referenceRepository;
         this.tokenEstimator = tokenEstimator;
         this.propertiesSupplier = () -> properties;
+        this.retrievalService = null;
     }
 
     /**
      * 为当前 turn 读取可注入的长期记忆。
      */
     public LongTermMemoryReadResult readForTurn(String threadId, String turnId, String snapshotId) {
+        return readForTurn(threadId, turnId, snapshotId, "", 32_768);
+    }
+
+    /**
+     * 为当前 turn 读取可注入的长期记忆，并按本轮用户输入补充少量检索命中。
+     *
+     * <p>summary 仍然是 read path 的主干，检索引用只作为低优先级补充。这样可以避免把长期记忆
+     * 变成无边界的历史回放，也便于后续在 SQLite 中审计每次注入了哪些 artifact。</p>
+     */
+    public LongTermMemoryReadResult readForTurn(String threadId,
+                                                String turnId,
+                                                String snapshotId,
+                                                String queryText,
+                                                int modelContextWindow) {
         LongTermMemoryProperties properties = propertiesSupplier.get();
         if (!properties.enabled() || !properties.readEnabled()) {
             return LongTermMemoryReadResult.empty();
         }
-        return artifactRepository.findLatestByType("MEMORY_SUMMARY")
+        List<LongTermMemoryReference> references = new ArrayList<>();
+        int tokenEstimate = 0;
+        LongTermMemoryReadResult summaryResult = artifactRepository.findLatestByType("MEMORY_SUMMARY")
                 .map(artifact -> toReadResult(artifact, properties.readBudgetTokens()))
                 .orElseGet(LongTermMemoryReadResult::empty);
+        references.addAll(summaryResult.references());
+        tokenEstimate += summaryResult.tokenEstimate();
+        if (retrievalService != null) {
+            LongTermMemoryRetrievalResult retrievalResult = retrievalService.retrieve(
+                    threadId, turnId, snapshotId, queryText, modelContextWindow);
+            for (LongTermMemoryReference reference : retrievalResult.references()) {
+                if (references.stream().noneMatch(existing -> existing.artifactId().equals(reference.artifactId()))) {
+                    references.add(reference);
+                    tokenEstimate += tokenEstimator.estimate(reference.text());
+                }
+            }
+        }
+        return references.isEmpty() ? LongTermMemoryReadResult.empty()
+                : new LongTermMemoryReadResult(List.copyOf(references), tokenEstimate);
     }
 
     /**

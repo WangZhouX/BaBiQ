@@ -2,6 +2,7 @@ package com.wzx.babiq.server.agent;
 
 import com.alibaba.cloud.ai.graph.action.InterruptionMetadata;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
+import com.wzx.babiq.server.capability.CapabilityExposurePlan;
 import com.wzx.babiq.server.context.runtime.ContextWindowRuntime;
 import com.wzx.babiq.server.context.runtime.ContextWindowRuntimeInput;
 import com.wzx.babiq.server.context.runtime.ContextWindowRuntimeResult;
@@ -49,12 +50,14 @@ public class AgentLoop {
         TurnObservationContext context = observationRegistry.start(turn.threadId(), turn.id(), providerId, strategy.resolveModelName(providerId));
         long startedNanos = System.nanoTime();
         ContextWindowRuntimeResult contextInput = null;
+        CapabilityExposurePlan exposurePlan = null;
         AgentLoopDiagnostics.started(turn, context, cwd, userText);
         try {
             emitter.emitItemAdded(UserMessageItem.of(AgentLoopSupport.newItemId(), userText));
             AgentLoopDiagnostics.userItemEmitted(turn);
-            contextInput = prepareContextInput(turn, userText, providerId, cwd, runPolicy, emitter);
-            ReactAgent agent = strategy.buildAgent(providerId, cwd, emitter, context, runPolicy);
+            exposurePlan = strategy.planCapabilities(turn.threadId(), turn.id());
+            contextInput = prepareContextInput(turn, userText, providerId, cwd, runPolicy, emitter, exposurePlan);
+            ReactAgent agent = buildAgent(providerId, cwd, emitter, context, runPolicy, exposurePlan);
             AgentLoopDiagnostics.modelCallStarted(turn, context);
             AgentStreamConsumer.StreamResult result = AgentStreamConsumer.consume(
                     agent.stream(contextInput.modelInputText(), strategy.buildConfig(turn.threadId(), cwd, emitter, context, runPolicy)), emitter);
@@ -76,23 +79,20 @@ public class AgentLoop {
     public void invokeResume(Turn turn, InterruptionMetadata feedback, String cwd, ItemEmitter emitter, AgentRunPolicy runPolicy) {
         outputHandler.invokeResume(turn, feedback, cwd, emitter, runPolicy);
     }
-    private ContextWindowRuntimeResult prepareContextInput(Turn turn,
-                                                           String userText,
-                                                           String providerId,
-                                                           String cwd,
-                                                           AgentRunPolicy runPolicy,
-                                                           ItemEmitter emitter) {
+    private ReactAgent buildAgent(String providerId, String cwd, ItemEmitter emitter, TurnObservationContext context, AgentRunPolicy runPolicy, CapabilityExposurePlan exposurePlan) {
+        return exposurePlan == null ? strategy.buildAgent(providerId, cwd, emitter, context, runPolicy) : strategy.buildAgent(providerId, cwd, emitter, context, runPolicy, exposurePlan);
+    }
+    private ContextWindowRuntimeResult prepareContextInput(Turn turn, String userText, String providerId, String cwd,
+                                                           AgentRunPolicy runPolicy, ItemEmitter emitter, CapabilityExposurePlan exposurePlan) {
         if (contextWindowRuntime == null) {
             return ContextWindowRuntimeResult.prepared(null, userText, userText);
         }
         return contextWindowRuntime.prepare(new ContextWindowRuntimeInput(turn.threadId(), turn.id(), userText,
                 providerId, strategy.resolveModelName(providerId), cwd, projectId(cwd), runPolicy,
-                strategy.resolveContextWindow(providerId), strategy.currentToolCallbacks(), emitter));
+                strategy.resolveContextWindow(providerId), strategy.currentToolCallbacks(exposurePlan), emitter));
     }
     private void recordContextUsage(ContextWindowRuntimeResult contextInput, TurnObservationContext context) {
-        if (contextWindowRuntime != null && contextInput != null) {
-            contextWindowRuntime.recordUsage(contextInput.snapshotId(), context);
-        }
+        if (contextWindowRuntime != null && contextInput != null) contextWindowRuntime.recordUsage(contextInput.snapshotId(), context);
     }
     private static String projectId(String cwd) {
         return cwd == null || cwd.isBlank() ? null : java.nio.file.Path.of(cwd).getFileName().toString();

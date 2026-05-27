@@ -10,6 +10,8 @@ import com.alibaba.cloud.ai.graph.agent.hook.hip.ToolConfig;
 import com.alibaba.cloud.ai.graph.agent.hook.modelcalllimit.ModelCallLimitHook;
 import com.alibaba.cloud.ai.graph.checkpoint.savers.MemorySaver;
 import com.wzx.babiq.server.conversation.ItemEmitter;
+import com.wzx.babiq.server.capability.CapabilityExposurePlan;
+import com.wzx.babiq.server.capability.CapabilityExposurePlanner;
 import com.wzx.babiq.server.conversation.Turn;
 import com.wzx.babiq.server.hook.BaBiQTokenUsageHook;
 import com.wzx.babiq.server.hook.ResumeJumpCleanupHook;
@@ -27,6 +29,7 @@ import com.wzx.babiq.server.tool.ToolRegistry;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.tool.ToolCallback;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;
@@ -71,6 +74,8 @@ public class ReActStrategy {
     private final ApprovalRuleService approvalRuleService;
     /** turn 持久化服务，HITL 进入等待态时用它同步数据库状态。 */
     private final TurnPersistenceService turnPersistenceService;
+    /** P3-5 能力暴露规划器；为空时退回 P3-4 全量工具行为。 */
+    private final ObjectProvider<CapabilityExposurePlanner> capabilityExposurePlannerProvider;
 
     /**
      * 创建 ReAct 装配策略。
@@ -96,6 +101,27 @@ public class ReActStrategy {
                          BaBiQStreamingTokenUsageInterceptor streamingTokenUsageInterceptor,
                          ApprovalRuleService approvalRuleService,
                          TurnPersistenceService turnPersistenceService) {
+        this(chatClientFactory, toolRegistry, properties, sandboxInterceptor, toolObservationInterceptor,
+                spotlightingInterceptor, tokenUsageHook, resumeJumpCleanupHook, streamingTokenUsageInterceptor,
+                approvalRuleService, turnPersistenceService, null);
+    }
+
+    /**
+     * 创建带 P3-5 能力暴露规划器的 ReAct 装配策略。
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    public ReActStrategy(ChatClientFactory chatClientFactory,
+                         ToolRegistry toolRegistry,
+                         AgentLoopProperties properties,
+                         BaBiQSandboxInterceptor sandboxInterceptor,
+                         ToolObservationInterceptor toolObservationInterceptor,
+                         SpotlightingToolInterceptor spotlightingInterceptor,
+                         BaBiQTokenUsageHook tokenUsageHook,
+                         ResumeJumpCleanupHook resumeJumpCleanupHook,
+                         BaBiQStreamingTokenUsageInterceptor streamingTokenUsageInterceptor,
+                         ApprovalRuleService approvalRuleService,
+                         TurnPersistenceService turnPersistenceService,
+                         ObjectProvider<CapabilityExposurePlanner> capabilityExposurePlannerProvider) {
         this.chatClientFactory = chatClientFactory;
         this.toolRegistry = toolRegistry;
         this.properties = properties;
@@ -107,6 +133,7 @@ public class ReActStrategy {
         this.streamingTokenUsageInterceptor = streamingTokenUsageInterceptor;
         this.approvalRuleService = approvalRuleService;
         this.turnPersistenceService = turnPersistenceService;
+        this.capabilityExposurePlannerProvider = capabilityExposurePlannerProvider;
     }
 
     /**
@@ -134,8 +161,19 @@ public class ReActStrategy {
      */
     public ReactAgent buildAgent(String providerId, String cwd, ItemEmitter emitter,
                                  TurnObservationContext context, AgentRunPolicy runPolicy) {
+        return buildAgent(providerId, cwd, emitter, context, runPolicy, null);
+    }
+
+    /**
+     * 为一次 turn 构建 ReactAgent，并按 P3-5 能力计划筛选模型可见工具。
+     */
+    public ReactAgent buildAgent(String providerId, String cwd, ItemEmitter emitter,
+                                 TurnObservationContext context, AgentRunPolicy runPolicy,
+                                 CapabilityExposurePlan exposurePlan) {
         ChatModel chatModel = chatClientFactory.resolveChatModel(providerId);
-        ToolCallback[] callbacks = toolRegistry.allCallbacks();
+        ToolCallback[] callbacks = exposurePlan == null
+                ? toolRegistry.allCallbacks()
+                : toolRegistry.callbacksForNames(exposurePlan.visibleToolNames());
         AgentRunPolicy effectivePolicy = runPolicy == null ? defaultRunPolicy() : runPolicy;
 
         // toolContext 是 SAA 在工具调用和拦截器之间传递上下文的 Map。
@@ -201,6 +239,23 @@ public class ReActStrategy {
      */
     public ToolCallback[] currentToolCallbacks() {
         return toolRegistry.allCallbacks();
+    }
+
+    /**
+     * 返回当前计划内可见工具 callback，用于上下文 envelope 生成能力目录摘要。
+     */
+    public ToolCallback[] currentToolCallbacks(CapabilityExposurePlan exposurePlan) {
+        return exposurePlan == null ? currentToolCallbacks() : toolRegistry.callbacksForNames(exposurePlan.visibleToolNames());
+    }
+
+    /**
+     * 生成本轮能力暴露计划；缺少 P3-5 服务时返回 null，保持旧行为。
+     */
+    public CapabilityExposurePlan planCapabilities(String threadId, String turnId) {
+        CapabilityExposurePlanner planner = capabilityExposurePlannerProvider == null
+                ? null
+                : capabilityExposurePlannerProvider.getIfAvailable();
+        return planner == null ? null : planner.plan(threadId, turnId);
     }
 
     /**

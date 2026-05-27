@@ -147,7 +147,7 @@ public class ContextWindowRuntime {
         List<ThreadItem> historyItems = historyItems(input);
         ShortTermSummary activeSummary = activeSummary(existingWindow).orElse(null);
         String snapshotId = newSnapshotId();
-        LongTermMemoryReadResult memoryReadResult = readLongTermMemory(input, snapshotId);
+        LongTermMemoryReadResult memoryReadResult = readLongTermMemory(input, snapshotId, modelWindow);
         ContextAssemblyResult assemblyResult = assemble(input, historyItems, activeSummary,
                 capabilityCatalog, memoryReadResult.references());
         ContextCompactionOutcome compactionOutcome = compactIfNeeded(input, historyItems, activeSummary,
@@ -328,12 +328,15 @@ public class ContextWindowRuntime {
                 capabilityCatalog));
     }
 
-    private LongTermMemoryReadResult readLongTermMemory(ContextWindowRuntimeInput input, String snapshotId) {
+    private LongTermMemoryReadResult readLongTermMemory(ContextWindowRuntimeInput input,
+                                                        String snapshotId,
+                                                        int modelWindow) {
         if (longTermMemoryReadService == null) {
             return LongTermMemoryReadResult.empty();
         }
         try {
-            return longTermMemoryReadService.readForTurn(input.threadId(), input.turnId(), snapshotId);
+            return longTermMemoryReadService.readForTurn(
+                    input.threadId(), input.turnId(), snapshotId, input.userText(), modelWindow);
         } catch (RuntimeException exception) {
             log.warn("长期记忆读取失败，本轮继续使用无长期记忆上下文: threadId={}, turnId={}, reason={}: {}",
                     input.threadId(), input.turnId(), exception.getClass().getSimpleName(), exception.getMessage());

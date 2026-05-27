@@ -3,6 +3,11 @@ package com.wzx.babiq.desktop.state
 import com.wzx.babiq.desktop.client.AgentGateway
 import com.wzx.babiq.desktop.protocol.AppSettingsResult
 import com.wzx.babiq.desktop.protocol.ApprovalPolicyResult
+import com.wzx.babiq.desktop.protocol.CapabilityInfo
+import com.wzx.babiq.desktop.protocol.CapabilitySearchResult
+import com.wzx.babiq.desktop.protocol.CapabilitySettingsSetParams
+import com.wzx.babiq.desktop.protocol.CapabilitySettingsSetResult
+import com.wzx.babiq.desktop.protocol.CapabilityStatusResult
 import com.wzx.babiq.desktop.protocol.ContextSnapshotInfo
 import com.wzx.babiq.desktop.protocol.ContextStatusResult
 import com.wzx.babiq.desktop.protocol.McpServerInfo
@@ -15,6 +20,7 @@ import com.wzx.babiq.desktop.protocol.MemoryArtifactInfo
 import com.wzx.babiq.desktop.protocol.MemoryConsolidateResult
 import com.wzx.babiq.desktop.protocol.MemoryJobInfo
 import com.wzx.babiq.desktop.protocol.MemoryJobsListResult
+import com.wzx.babiq.desktop.protocol.MemorySearchResult
 import com.wzx.babiq.desktop.protocol.MemorySettingsSetParams
 import com.wzx.babiq.desktop.protocol.MemorySettingsSetResult
 import com.wzx.babiq.desktop.protocol.MemoryStatusResult
@@ -35,6 +41,8 @@ import com.wzx.babiq.desktop.protocol.RunTurnSummaryInfo
 import com.wzx.babiq.desktop.protocol.SandboxPolicyResult
 import com.wzx.babiq.desktop.protocol.ServerEvent
 import com.wzx.babiq.desktop.protocol.SettingsUpdateParams
+import com.wzx.babiq.desktop.protocol.SkillListResult
+import com.wzx.babiq.desktop.protocol.SkillGetResult
 import com.wzx.babiq.desktop.protocol.ThreadArchiveResult
 import com.wzx.babiq.desktop.protocol.ThreadItem
 import com.wzx.babiq.desktop.protocol.ThreadListResult
@@ -436,10 +444,14 @@ class ChatControllerTest {
 		controller.showScreen(Screen.Settings)
 		advanceUntilIdle()
 
-		assertEquals(listOf("getMemoryStatus", "listMemoryJobs:20", "listMemoryArtifacts:20"), gateway.calls)
+		assertEquals(
+			listOf("getMemoryStatus", "listMemoryJobs:20", "listMemoryArtifacts:20", "getCapabilityStatus", "listSkills"),
+			gateway.calls,
+		)
 		assertEquals(5, controller.state.value.memoryState.status?.cleanCandidateCount)
 		assertEquals("phase2:1", controller.state.value.memoryState.jobs.single().jobKey)
 		assertEquals("memory_summary.md", controller.state.value.memoryState.artifacts.single().artifactPath)
+		assertEquals(1, controller.state.value.capabilityState.status?.totalCount)
 	}
 
 	@Test
@@ -854,6 +866,53 @@ class ChatControllerTest {
 			calls += "consolidateMemory:$force"
 			return MemoryConsolidateResult(queued = true, jobId = "memjob_1", generation = 1, status = "QUEUED")
 		}
+
+		override suspend fun getCapabilityStatus(): CapabilityStatusResult {
+			calls += "getCapabilityStatus"
+			return CapabilityStatusResult(
+				totalCount = 1,
+				enabledCount = 1,
+				visibleCount = 1,
+				deferredCount = 0,
+				capabilities = listOf(sampleCapability()),
+			)
+		}
+
+		override suspend fun searchCapabilities(query: String, limit: Int): CapabilitySearchResult {
+			calls += "searchCapabilities:$query:$limit"
+			return CapabilitySearchResult("FALLBACK_LEXICAL", listOf(sampleCapability(exposureMode = "DEFERRED")))
+		}
+
+		override suspend fun setCapabilitySettings(params: CapabilitySettingsSetParams): CapabilitySettingsSetResult {
+			calls += "setCapability:${params.capabilityId}:${params.enabled}:${params.exposureMode}"
+			return CapabilitySettingsSetResult(sampleCapability(params.capabilityId, params.exposureMode ?: "VISIBLE"))
+		}
+
+		override suspend fun listSkills(): SkillListResult {
+			calls += "listSkills"
+			return SkillListResult(emptyList())
+		}
+
+		override suspend fun getSkill(skillId: String): SkillGetResult {
+			calls += "getSkill:$skillId"
+			return SkillGetResult(
+				skill = com.wzx.babiq.desktop.protocol.SkillInfo(
+					id = skillId,
+					namespace = "local",
+					name = "demo",
+					description = "demo",
+					sourceDirectory = "E:\\skills",
+					skillFile = "E:\\skills\\SKILL.md",
+					contentHash = "hash",
+				),
+				content = "# demo",
+			)
+		}
+
+		override suspend fun searchMemory(query: String, threadId: String?): MemorySearchResult {
+			calls += "searchMemory:$query:$threadId"
+			return MemorySearchResult("LEXICAL")
+		}
 	}
 
 	private fun sampleRunTurn(turnId: String): RunTurnSummaryInfo =
@@ -916,6 +975,21 @@ class ChatControllerTest {
 			toolName = "read_file",
 			namespacedName = "mcp.local-filesystem.read_file",
 			description = "Read file",
+			enabled = true,
+		)
+
+	private fun sampleCapability(
+		capabilityId: String = "local.exec_shell",
+		exposureMode: String = "VISIBLE",
+	): CapabilityInfo =
+		CapabilityInfo(
+			capabilityId = capabilityId,
+			type = "LOCAL_TOOL",
+			namespace = "local",
+			name = "exec_shell",
+			displayName = "exec_shell",
+			description = "执行 Shell 命令",
+			exposureMode = exposureMode,
 			enabled = true,
 		)
 }

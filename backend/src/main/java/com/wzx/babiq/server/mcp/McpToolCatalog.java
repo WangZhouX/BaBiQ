@@ -57,4 +57,13 @@ public class McpToolCatalog {
                 .map(descriptor -> new McpToolAdapter(descriptor, manager, objectMapper))
                 .toArray(ToolCallback[]::new);
     }
+
+    /**
+     * 返回当前 MCP 工具描述符。
+     *
+     * <p>能力目录同步只需要轻量 metadata，不应该为了展示和搜索重新构造 ToolCallback。</p>
+     */
+    public List<McpToolDescriptor> descriptors() {
+        return manager.allTools();
+    }
 }

@@ -6,6 +6,7 @@ package com.wzx.babiq.server.api.dto;
  * @param enabled 长期记忆总开关
  * @param generateEnabled 后台生成开关
  * @param readEnabled 上下文注入开关
+ * @param retrievalEnabled 长期记忆检索增强开关
  * @param rootDir Markdown 镜像根目录
  * @param pendingJobs 等待执行任务数
  * @param runningJobs 正在执行任务数
@@ -18,6 +19,7 @@ public record MemoryStatusResult(
         boolean enabled,
         boolean generateEnabled,
         boolean readEnabled,
+        boolean retrievalEnabled,
         String rootDir,
         long pendingJobs,
         long runningJobs,

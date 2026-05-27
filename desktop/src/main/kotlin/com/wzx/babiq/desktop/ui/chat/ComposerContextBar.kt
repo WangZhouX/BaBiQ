@@ -15,6 +15,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.wzx.babiq.desktop.state.AppState
+import com.wzx.babiq.desktop.state.CapabilityUiState
 import com.wzx.babiq.desktop.state.ContextWindowUiState
 import com.wzx.babiq.desktop.state.MemoryUiState
 import com.wzx.babiq.desktop.ui.common.BadgeTone
@@ -63,6 +64,10 @@ fun ComposerContextBar(
 		StatusBadge(
 			text = memoryChipLabel(state.memoryState),
 			tone = memoryChipTone(state.memoryState),
+		)
+		StatusBadge(
+			text = capabilityChipLabel(state.capabilityState),
+			tone = capabilityChipTone(state.capabilityState),
 		)
 		ProviderSelector(
 			providerState = state.providerState,
@@ -181,6 +186,34 @@ internal fun memoryChipTone(state: MemoryUiState): BadgeTone {
 		status.lastSummaryArtifactId != null -> BadgeTone.Success
 		status.cleanCandidateCount > 0 -> BadgeTone.Warning
 		else -> BadgeTone.Info
+	}
+}
+
+/**
+ * 能力按需装配 chip 文案。
+ */
+internal fun capabilityChipLabel(state: CapabilityUiState): String {
+	if (state.loading) {
+		return "能力 读取中"
+	}
+	if (state.error != null) {
+		return "能力 异常"
+	}
+	val status = state.status ?: return "能力 未加载"
+	return "能力 常驻${status.visibleCount}/按需${status.deferredCount}"
+}
+
+/**
+ * 能力按需装配 chip 色调。
+ */
+internal fun capabilityChipTone(state: CapabilityUiState): BadgeTone {
+	val status = state.status ?: return if (state.error != null) BadgeTone.Danger else BadgeTone.Info
+	return when {
+		state.loading -> BadgeTone.Info
+		state.error != null -> BadgeTone.Danger
+		status.deferredCount > 0 -> BadgeTone.Success
+		status.enabledCount > 0 -> BadgeTone.Info
+		else -> BadgeTone.Warning
 	}
 }
 

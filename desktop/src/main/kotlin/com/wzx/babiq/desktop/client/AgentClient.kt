@@ -5,6 +5,10 @@ import com.wzx.babiq.desktop.protocol.ApprovalRespondParams
 import com.wzx.babiq.desktop.protocol.AppSettingsResult
 import com.wzx.babiq.desktop.protocol.ApprovalPolicyResult
 import com.wzx.babiq.desktop.protocol.ApprovalPolicySetParams
+import com.wzx.babiq.desktop.protocol.CapabilitySearchResult
+import com.wzx.babiq.desktop.protocol.CapabilitySettingsSetParams
+import com.wzx.babiq.desktop.protocol.CapabilitySettingsSetResult
+import com.wzx.babiq.desktop.protocol.CapabilityStatusResult
 import com.wzx.babiq.desktop.protocol.ContextSnapshotInfo
 import com.wzx.babiq.desktop.protocol.ContextStatusResult
 import com.wzx.babiq.desktop.protocol.JsonRpcRequest
@@ -16,6 +20,7 @@ import com.wzx.babiq.desktop.protocol.McpToolsListResult
 import com.wzx.babiq.desktop.protocol.MemoryArtifactsListResult
 import com.wzx.babiq.desktop.protocol.MemoryConsolidateResult
 import com.wzx.babiq.desktop.protocol.MemoryJobsListResult
+import com.wzx.babiq.desktop.protocol.MemorySearchResult
 import com.wzx.babiq.desktop.protocol.MemorySettingsSetParams
 import com.wzx.babiq.desktop.protocol.MemorySettingsSetResult
 import com.wzx.babiq.desktop.protocol.MemoryStatusResult
@@ -36,6 +41,8 @@ import com.wzx.babiq.desktop.protocol.SandboxPolicySetParams
 import com.wzx.babiq.desktop.protocol.SandboxPolicyResult
 import com.wzx.babiq.desktop.protocol.ServerEvent
 import com.wzx.babiq.desktop.protocol.SettingsUpdateParams
+import com.wzx.babiq.desktop.protocol.SkillGetResult
+import com.wzx.babiq.desktop.protocol.SkillListResult
 import com.wzx.babiq.desktop.protocol.protocolJson
 import com.wzx.babiq.desktop.protocol.ThreadArchiveResult
 import com.wzx.babiq.desktop.protocol.ThreadListResult
@@ -176,6 +183,24 @@ interface AgentGateway {
 
 	/** 手动触发长期记忆 Phase2 归并。 */
 	suspend fun consolidateMemory(force: Boolean = false): MemoryConsolidateResult
+
+	/** 读取统一能力目录状态，设置页用它控制工具、MCP 和 Skill 的暴露模式。 */
+	suspend fun getCapabilityStatus(): CapabilityStatusResult
+
+	/** 搜索能力 metadata，供设置页调试按需能力发现。 */
+	suspend fun searchCapabilities(query: String, limit: Int = 8): CapabilitySearchResult
+
+	/** 更新单个能力的开关或暴露模式，下一轮 Agent 装配工具时生效。 */
+	suspend fun setCapabilitySettings(params: CapabilitySettingsSetParams): CapabilitySettingsSetResult
+
+	/** 读取本地 Skill metadata 列表。 */
+	suspend fun listSkills(): SkillListResult
+
+	/** 按 id 读取单个 Skill 正文。 */
+	suspend fun getSkill(skillId: String): SkillGetResult
+
+	/** 手动检索长期记忆，用于设置页确认 read path 的候选来源。 */
+	suspend fun searchMemory(query: String, threadId: String? = null): MemorySearchResult
 }
 
 /**
@@ -589,6 +614,71 @@ class AgentClient(
 	override suspend fun consolidateMemory(force: Boolean): MemoryConsolidateResult {
 		val response = request("memory/consolidate", buildJsonObject { put("force", force) })
 		return protocolJson.decodeFromJsonElement(MemoryConsolidateResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `capability/status`，读取统一能力目录。
+	 */
+	override suspend fun getCapabilityStatus(): CapabilityStatusResult {
+		val response = request("capability/status", buildJsonObject {})
+		return protocolJson.decodeFromJsonElement(CapabilityStatusResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `capability/search`，验证按需能力发现效果。
+	 */
+	override suspend fun searchCapabilities(query: String, limit: Int): CapabilitySearchResult {
+		val response = request(
+			method = "capability/search",
+			params = buildJsonObject {
+				put("query", query)
+				put("limit", limit)
+			},
+		)
+		return protocolJson.decodeFromJsonElement(CapabilitySearchResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `capability/settings/set`，更新能力暴露策略。
+	 */
+	override suspend fun setCapabilitySettings(params: CapabilitySettingsSetParams): CapabilitySettingsSetResult {
+		val response = request(
+			method = "capability/settings/set",
+			params = protocolJson.encodeToJsonElement(CapabilitySettingsSetParams.serializer(), params),
+		)
+		return protocolJson.decodeFromJsonElement(CapabilitySettingsSetResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `skills/list`，读取本地 Skill metadata。
+	 */
+	override suspend fun listSkills(): SkillListResult {
+		val response = request("skills/list", buildJsonObject {})
+		return protocolJson.decodeFromJsonElement(SkillListResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `skills/get`，按需读取 Skill 正文。
+	 */
+	override suspend fun getSkill(skillId: String): SkillGetResult {
+		val response = request("skills/get", buildJsonObject { put("skillId", skillId) })
+		return protocolJson.decodeFromJsonElement(SkillGetResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `memory/search`，手动检索长期记忆 artifact。
+	 */
+	override suspend fun searchMemory(query: String, threadId: String?): MemorySearchResult {
+		val response = request(
+			method = "memory/search",
+			params = buildJsonObject {
+				put("query", query)
+				if (!threadId.isNullOrBlank()) {
+					put("threadId", threadId)
+				}
+			},
+		)
+		return protocolJson.decodeFromJsonElement(MemorySearchResult.serializer(), response.requireResult())
 	}
 
 	/**

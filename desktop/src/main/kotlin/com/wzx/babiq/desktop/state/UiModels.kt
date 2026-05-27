@@ -2,6 +2,8 @@ package com.wzx.babiq.desktop.state
 
 import com.wzx.babiq.desktop.protocol.ApprovalRequestPayload
 import com.wzx.babiq.desktop.protocol.AppSettingsResult
+import com.wzx.babiq.desktop.protocol.CapabilityInfo
+import com.wzx.babiq.desktop.protocol.CapabilityStatusResult
 import com.wzx.babiq.desktop.protocol.ContextStatusResult
 import com.wzx.babiq.desktop.protocol.McpServerInfo
 import com.wzx.babiq.desktop.protocol.McpToolInfo
@@ -14,6 +16,7 @@ import com.wzx.babiq.desktop.protocol.ProviderSaveParams
 import com.wzx.babiq.desktop.protocol.RunRecoveryStatusResult
 import com.wzx.babiq.desktop.protocol.RunTurnDetailResult
 import com.wzx.babiq.desktop.protocol.RunTurnSummaryInfo
+import com.wzx.babiq.desktop.protocol.SkillInfo
 import com.wzx.babiq.desktop.protocol.ThreadItem
 import com.wzx.babiq.desktop.protocol.ThreadSummaryInfo
 import kotlinx.serialization.json.JsonElement
@@ -199,6 +202,38 @@ data class MemoryUiState(
 	val artifacts: List<MemoryArtifactInfo> = emptyList(),
 	val error: String? = null,
 	val notice: String? = null,
+)
+
+/**
+ * P3-5 统一能力目录状态。
+ *
+ * @property loading true 表示正在读取 capability/status。
+ * @property status 后端能力目录计数和列表，和 Agent 运行时使用同一份 SQLite 事实源。
+ * @property searchResults 设置页最近一次手动搜索的能力结果。
+ * @property error 最近一次能力目录读写失败原因。
+ * @property notice 最近一次能力目录操作提示。
+ */
+data class CapabilityUiState(
+	val loading: Boolean = false,
+	val status: CapabilityStatusResult? = null,
+	val searchResults: List<CapabilityInfo> = emptyList(),
+	val error: String? = null,
+	val notice: String? = null,
+)
+
+/**
+ * 本地 Skill metadata 状态。
+ *
+ * @property loading true 表示正在读取 skills/list。
+ * @property skills 当前可见 Skill metadata，不包含完整正文。
+ * @property selectedContent 最近一次按需读取的 Skill 正文片段。
+ * @property error 最近一次 Skill 读取失败原因。
+ */
+data class SkillUiState(
+	val loading: Boolean = false,
+	val skills: List<SkillInfo> = emptyList(),
+	val selectedContent: String? = null,
+	val error: String? = null,
 )
 
 /**

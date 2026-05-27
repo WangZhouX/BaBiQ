@@ -38,8 +38,10 @@ fun AppShell(
 	onTestProvider: (String) -> Unit,
 	onSaveSandboxMode: (String) -> Unit,
 	onSaveApprovalPolicy: (String) -> Unit,
-	onSaveMemorySettings: (Boolean?, Boolean?, Boolean?) -> Unit,
+	onSaveMemorySettings: (Boolean?, Boolean?, Boolean?, Boolean?) -> Unit,
 	onConsolidateMemory: () -> Unit,
+	onSaveCapabilitySettings: (String, Boolean?, String?) -> Unit,
+	onSearchCapabilities: (String) -> Unit,
 	onRefreshMcpServer: (String) -> Unit,
 	onToggleRuntime: () -> Unit,
 	onSelectRunTurn: (String) -> Unit,
@@ -82,6 +84,8 @@ fun AppShell(
 					onSaveApprovalPolicy = onSaveApprovalPolicy,
 					onSaveMemorySettings = onSaveMemorySettings,
 					onConsolidateMemory = onConsolidateMemory,
+					onSaveCapabilitySettings = onSaveCapabilitySettings,
+					onSearchCapabilities = onSearchCapabilities,
 				)
 
 				Screen.Mcp -> McpSettingsPanel(

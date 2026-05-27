@@ -29,7 +29,8 @@ public class MemorySettingsSetHandler implements JsonRpcMethodHandler {
         return service.updateSettings(
                 booleanOrNull(params, "enabled"),
                 booleanOrNull(params, "generateEnabled"),
-                booleanOrNull(params, "readEnabled"));
+                booleanOrNull(params, "readEnabled"),
+                booleanOrNull(params, "retrievalEnabled"));
     }
 
     private static Boolean booleanOrNull(JsonNode params, String name) {

@@ -2,6 +2,7 @@ package com.wzx.babiq.desktop.state
 
 import com.wzx.babiq.desktop.client.AgentGateway
 import com.wzx.babiq.desktop.protocol.AppSettingsResult
+import com.wzx.babiq.desktop.protocol.CapabilitySettingsSetParams
 import com.wzx.babiq.desktop.protocol.MemorySettingsSetParams
 import com.wzx.babiq.desktop.protocol.ProviderInfo
 import com.wzx.babiq.desktop.protocol.ProviderSaveParams
@@ -501,6 +502,8 @@ class ChatController(
 		if (screen == Screen.Settings) {
 			scope.launch(start = CoroutineStart.UNDISPATCHED) {
 				loadMemoryStatus(loadAudit = true)
+				loadCapabilityStatus()
+				loadSkills()
 			}
 		}
 	}
@@ -511,10 +514,17 @@ class ChatController(
 	 * 这里调用后端 `memory/settings/set`，因此不是单纯 UI 状态切换；下一轮 context read path 和后台 worker
 	 * 都会读取后端的运行时开关，保持“设置页变化”和“Agent 实际行为”一致。
 	 */
-	suspend fun saveMemorySettings(enabled: Boolean? = null, generateEnabled: Boolean? = null, readEnabled: Boolean? = null) {
+	suspend fun saveMemorySettings(
+		enabled: Boolean? = null,
+		generateEnabled: Boolean? = null,
+		readEnabled: Boolean? = null,
+		retrievalEnabled: Boolean? = null,
+	) {
 		_state.update { it.copy(memoryState = it.memoryState.copy(loading = true, error = null, notice = null)) }
 		try {
-			val result = gateway.setMemorySettings(MemorySettingsSetParams(enabled, generateEnabled, readEnabled))
+			val result = gateway.setMemorySettings(
+				MemorySettingsSetParams(enabled, generateEnabled, readEnabled, retrievalEnabled),
+			)
 			_state.update {
 				val previousStatus = it.memoryState.status
 				it.copy(
@@ -524,6 +534,7 @@ class ChatController(
 							enabled = result.enabled,
 							generateEnabled = result.generateEnabled,
 							readEnabled = result.readEnabled,
+							retrievalEnabled = result.retrievalEnabled,
 						),
 						error = null,
 						notice = "长期记忆设置已保存，下一轮上下文组装生效",
@@ -537,6 +548,53 @@ class ChatController(
 					memoryState = it.memoryState.copy(loading = false, error = exception.message ?: "保存长期记忆设置失败"),
 					lastError = exception.message,
 				)
+			}
+		}
+	}
+
+	/**
+	 * 保存单个能力的启用状态或暴露模式。
+	 */
+	fun saveCapabilitySettings(capabilityId: String, enabled: Boolean? = null, exposureMode: String? = null) {
+		scope.launch(start = CoroutineStart.UNDISPATCHED) {
+			_state.update {
+				it.copy(capabilityState = it.capabilityState.copy(loading = true, error = null, notice = null))
+			}
+			try {
+				gateway.setCapabilitySettings(CapabilitySettingsSetParams(capabilityId, enabled, exposureMode))
+				loadCapabilityStatus()
+				_state.update {
+					it.copy(capabilityState = it.capabilityState.copy(loading = false, notice = "能力设置已保存，下一轮 Agent 生效"))
+				}
+			} catch (exception: Exception) {
+				_state.update {
+					it.copy(
+						capabilityState = it.capabilityState.copy(loading = false, error = exception.message ?: "保存能力设置失败"),
+						lastError = exception.message,
+					)
+				}
+			}
+		}
+	}
+
+	/**
+	 * 手动搜索能力目录，便于用户确认 tool_search 能按需找到哪些工具和 Skill。
+	 */
+	fun searchCapabilities(query: String) {
+		scope.launch(start = CoroutineStart.UNDISPATCHED) {
+			_state.update { it.copy(capabilityState = it.capabilityState.copy(loading = true, error = null)) }
+			try {
+				val result = gateway.searchCapabilities(query)
+				_state.update {
+					it.copy(capabilityState = it.capabilityState.copy(loading = false, searchResults = result.results, error = null))
+				}
+			} catch (exception: Exception) {
+				_state.update {
+					it.copy(
+						capabilityState = it.capabilityState.copy(loading = false, error = exception.message ?: "搜索能力失败"),
+						lastError = exception.message,
+					)
+				}
 			}
 		}
 	}
@@ -790,6 +848,50 @@ class ChatController(
 			_state.update {
 				it.copy(
 					memoryState = it.memoryState.copy(loading = false, error = exception.message ?: "读取长期记忆状态失败"),
+					lastError = exception.message,
+				)
+			}
+		}
+	}
+
+	/**
+	 * 读取 P3-5 能力目录状态。
+	 */
+	private suspend fun loadCapabilityStatus() {
+		_state.update {
+			it.copy(capabilityState = it.capabilityState.copy(loading = true, error = null))
+		}
+		try {
+			val status = gateway.getCapabilityStatus()
+			_state.update {
+				it.copy(capabilityState = it.capabilityState.copy(loading = false, status = status, error = null))
+			}
+		} catch (exception: Exception) {
+			_state.update {
+				it.copy(
+					capabilityState = it.capabilityState.copy(loading = false, error = exception.message ?: "读取能力目录失败"),
+					lastError = exception.message,
+				)
+			}
+		}
+	}
+
+	/**
+	 * 读取本地 Skill metadata 列表。
+	 */
+	private suspend fun loadSkills() {
+		_state.update {
+			it.copy(skillState = it.skillState.copy(loading = true, error = null))
+		}
+		try {
+			val result = gateway.listSkills()
+			_state.update {
+				it.copy(skillState = it.skillState.copy(loading = false, skills = result.skills, error = null))
+			}
+		} catch (exception: Exception) {
+			_state.update {
+				it.copy(
+					skillState = it.skillState.copy(loading = false, error = exception.message ?: "读取 Skill 列表失败"),
 					lastError = exception.message,
 				)
 			}

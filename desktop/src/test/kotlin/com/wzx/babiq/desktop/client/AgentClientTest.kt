@@ -1,11 +1,15 @@
 package com.wzx.babiq.desktop.client
 
 import com.wzx.babiq.desktop.protocol.JsonRpcRequest
+import com.wzx.babiq.desktop.protocol.CapabilitySearchResult
+import com.wzx.babiq.desktop.protocol.CapabilitySettingsSetParams
+import com.wzx.babiq.desktop.protocol.CapabilityStatusResult
 import com.wzx.babiq.desktop.protocol.ContextSnapshotInfo
 import com.wzx.babiq.desktop.protocol.ContextStatusResult
 import com.wzx.babiq.desktop.protocol.MemoryArtifactsListResult
 import com.wzx.babiq.desktop.protocol.MemoryConsolidateResult
 import com.wzx.babiq.desktop.protocol.MemoryJobsListResult
+import com.wzx.babiq.desktop.protocol.MemorySearchResult
 import com.wzx.babiq.desktop.protocol.MemorySettingsSetParams
 import com.wzx.babiq.desktop.protocol.MemoryStatusResult
 import com.wzx.babiq.desktop.protocol.McpServerRefreshResult
@@ -23,6 +27,7 @@ import com.wzx.babiq.desktop.protocol.RunTurnListResult
 import com.wzx.babiq.desktop.protocol.SandboxPolicyResult
 import com.wzx.babiq.desktop.protocol.ServerEvent
 import com.wzx.babiq.desktop.protocol.SettingsUpdateParams
+import com.wzx.babiq.desktop.protocol.SkillListResult
 import com.wzx.babiq.desktop.protocol.ThreadItem
 import com.wzx.babiq.desktop.protocol.protocolJson
 import kotlin.test.Test
@@ -347,6 +352,32 @@ class AgentClientTest {
 	}
 
 	@Test
+	fun `能力 Skill 和记忆检索接口可以按需调用`() = runTest {
+		val transport = FakeAgentTransport()
+		val client = AgentClient(transport, backgroundScope)
+		client.connect()
+
+		val capabilityStatus: CapabilityStatusResult = client.getCapabilityStatus()
+		val search: CapabilitySearchResult = client.searchCapabilities("file", 4)
+		val updated = client.setCapabilitySettings(CapabilitySettingsSetParams("mcp.fs.read", exposureMode = "VISIBLE"))
+		val skills: SkillListResult = client.listSkills()
+		val memory: MemorySearchResult = client.searchMemory("权限")
+
+		assertEquals("capability/status", transport.sent[0].method)
+		assertEquals(1, capabilityStatus.totalCount)
+		assertEquals("capability/search", transport.sent[1].method)
+		assertEquals("file", transport.sent[1].paramsText("query"))
+		assertEquals("mcp.fs.read", search.results.single().capabilityId)
+		assertEquals("capability/settings/set", transport.sent[2].method)
+		assertEquals("VISIBLE", updated.capability.exposureMode)
+		assertEquals("skills/list", transport.sent[3].method)
+		assertEquals("context", skills.skills.single().name)
+		assertEquals("memory/search", transport.sent[4].method)
+		assertEquals("权限", transport.sent[4].paramsText("query"))
+		assertEquals("memart_1", memory.references.single().artifactId)
+	}
+
+	@Test
 	fun `json rpc error 会转成 AgentClientException`() = runTest {
 		val transport = FakeAgentTransport(errorMethods = setOf("thread/create"))
 		val client = AgentClient(transport, backgroundScope)
@@ -603,6 +634,7 @@ class AgentClientTest {
 					put("enabled", request.params.jsonObject["enabled"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() ?: true)
 					put("generateEnabled", request.params.jsonObject["generateEnabled"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() ?: true)
 					put("readEnabled", request.params.jsonObject["readEnabled"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() ?: true)
+					put("retrievalEnabled", request.params.jsonObject["retrievalEnabled"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() ?: true)
 				}
 				"memory/jobs/list" -> buildJsonObject {
 					put(
@@ -639,6 +671,45 @@ class AgentClientTest {
 					put("jobId", "memjob_2")
 					put("generation", 2)
 					put("status", "QUEUED")
+				}
+				"capability/status" -> capabilityStatus()
+				"capability/search" -> buildJsonObject {
+					put("strategy", "FALLBACK_LEXICAL")
+					put("results", buildJsonArray { add(capabilityInfo("mcp.fs.read", "DEFERRED")) })
+				}
+				"capability/settings/set" -> buildJsonObject {
+					put("capability", capabilityInfo(request.paramsText("capabilityId"), request.paramsText("exposureMode")))
+				}
+				"skills/list" -> buildJsonObject {
+					put(
+						"skills",
+						buildJsonArray {
+							add(buildJsonObject {
+								put("id", "local.context")
+								put("namespace", "local")
+								put("name", "context")
+								put("description", "上下文治理")
+								put("sourceDirectory", "E:\\skills")
+								put("skillFile", "E:\\skills\\context\\SKILL.md")
+								put("contentHash", "hash")
+							})
+						},
+					)
+				}
+				"memory/search" -> buildJsonObject {
+					put("strategy", "LEXICAL")
+					put(
+						"references",
+						buildJsonArray {
+							add(buildJsonObject {
+								put("artifactId", "memart_1")
+								put("confidence", "medium")
+								put("text", "权限切换需要进入 Agent 运行时")
+								put("tokenEstimate", 12)
+							})
+						},
+					)
+					put("tokenEstimate", 12)
 				}
 				else -> buildJsonObject { put("ok", true) }
 			}
@@ -855,6 +926,7 @@ class AgentClientTest {
 		put("enabled", true)
 		put("generateEnabled", true)
 		put("readEnabled", true)
+		put("retrievalEnabled", true)
 		put("rootDir", "E:\\BaBiQ\\.babiq\\memories")
 		put("pendingJobs", 1)
 		put("runningJobs", 0)
@@ -862,6 +934,27 @@ class AgentClientTest {
 		put("lastSummaryArtifactId", "memart_1")
 		put("lastConsolidatedAt", "2026-05-27T00:00:00Z")
 		put("phase2Generation", 1)
+	}
+
+	private fun capabilityStatus() = buildJsonObject {
+		put("totalCount", 1)
+		put("enabledCount", 1)
+		put("visibleCount", 1)
+		put("deferredCount", 0)
+		put("disabledCount", 0)
+		put("capabilities", buildJsonArray { add(capabilityInfo("local.exec_shell", "VISIBLE")) })
+	}
+
+	private fun capabilityInfo(capabilityId: String, exposureMode: String) = buildJsonObject {
+		put("capabilityId", capabilityId)
+		put("type", "MCP_TOOL")
+		put("namespace", "mcp")
+		put("name", "read")
+		put("displayName", "read")
+		put("description", "读取文件")
+		put("exposureMode", exposureMode)
+		put("enabled", true)
+		put("lastSeenAt", "2026-05-27T00:00:00Z")
 	}
 
 	private fun JsonRpcRequest.paramsText(name: String): String =

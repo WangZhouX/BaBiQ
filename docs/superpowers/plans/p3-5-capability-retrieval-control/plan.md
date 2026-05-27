@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED: Use `superpowers:executing-plans` to execute this plan. Stop at every review checkpoint and report real verification output. Use `superpowers:test-driven-development` before writing production code, and use `superpowers:verification-before-completion` before claiming completion.
 >
-> **Status:** 待用户确认后实施。本计划只定义 P3-5 范围，不代表代码已完成。
+> **Status:** 已按用户确认执行并进入收口。本阶段保持 Spring AI `1.1.6` 不升级，采用 BaBiQ 自有能力目录、`tool_search`、长期记忆检索审计和桌面控制完成实现。
 
 **Goal:** 在 P3-4 长期记忆异步流水线之上，把 BaBiQ 从“能注入长期记忆 summary”推进到“能按需装配工具、MCP、Skill 和记忆检索片段”的通用 Agent 平台。模型每轮只看到必要能力和必要记忆，所有能力选择、记忆检索、权限策略和审计仍以 BaBiQ 的 SQLite、JSON-RPC、沙箱、审批和 ContextSnapshot 为事实源。
 

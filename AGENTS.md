@@ -187,7 +187,16 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
   - `LongTermMemoryPipeline` 已实现 Phase 1 idle 扫描/领取/抽取、Java secret redaction、`SECRET_RISK` 隔离、Phase 2 generation 入队/归并、Markdown mirror 和 `memory_summary` read path 注入。
   - 后端新增 `memory/status`、`memory/settings/set`、`memory/jobs/list`、`memory/artifacts/list`、`memory/consolidate`；桌面端设置页和输入栏 context chip 已接入真实长期记忆状态和控制。
   - 已验证：`cd backend; .\mvnw.cmd -q -Dtest="MemorySecretRedactorTest,MemoryArtifactMirrorTest,LongTermMemoryReadServiceTest,MemoryPhase2TriggerServiceTest,LongTermMemoryPipelineTest,MemoryHandlersTest,SchemaCommentsCoverageTest,ContextWindowRuntimeTest,ContextWindowRuntimeCompactionTest,ContextAssemblerTest,ContextAssemblerCompactionTest,ContextCompactionServiceTest,ContextCompactionRecoveryServiceTest" test`。
-- **下一步**：编写并确认 P3-5 按需能力装配、记忆检索增强和桌面控制详细计划。
+- P3-5 按需能力装配、记忆检索增强和桌面控制已完成：
+  - `docs/superpowers/plans/p3-5-capability-retrieval-control/plan.md`
+  - `docs/superpowers/plans/p3-5-capability-retrieval-control/codex-handoff.md`
+  - 本阶段保持 Spring AI `1.1.6`、Spring AI Alibaba `1.1.2.3` 不升级；Dynamic Tool Search 采用 BaBiQ 自有 `CapabilitySearchService` 和 `tool_search` 工具实现。
+  - 后端新增 V11 migration、`bq_capabilities`、`bq_capability_search_events`、`bq_memory_retrieval_events`，并同步 SQL 中文注释、`bq_schema_comments`、Entity 注释和覆盖测试。
+  - `CapabilityExposurePlanner` 已把“已注册能力”和“模型可见工具”分离：local tool 默认可见，MCP / Skill 默认 deferred，`tool_search` 命中后下一轮提升为可见，实际执行仍走 `ToolRegistry`、审批、沙箱和运行记录。
+  - 后端新增本地 Skill metadata 注册、`skills/list` / `skills/get`，只在显式读取时加载 `SKILL.md` 正文。
+  - 长期记忆 read path 已支持有界检索增强，按本轮用户输入检索少量带引用片段注入 `long_term_memory` 参考层，并记录检索审计。
+  - 后端新增 `capability/status`、`capability/search`、`capability/settings/set`、`memory/search`；桌面端设置页和输入栏 context chip 已接入能力装配、Skill 和记忆检索控制。
+- **下一步**：进行 P3 总体验收复盘；用户确认后再编写 P4 或新的专项增强详细计划。
 
 如果仓库状态发生变化，不要盲信本检查点；必须重新核对代码、文档、测试和 `git status`。
 
@@ -215,10 +224,10 @@ P1-4 已完成范围：
 
 下一阶段边界：
 
-- P2-1、P2-2、P2-3、P2-4、P2-5、P2-6 已完成；用户已暂时验收 P2，P3-1 最小上下文底座、P3-2 当前窗口管理运行时、P3-3 短期记忆/上下文压缩、P3-3a 鲁棒性补强和 P3-4 长期记忆异步流水线已完成。
+- P2-1、P2-2、P2-3、P2-4、P2-5、P2-6 已完成；用户已暂时验收 P2，P3-1 最小上下文底座、P3-2 当前窗口管理运行时、P3-3 短期记忆/上下文压缩、P3-3a 鲁棒性补强、P3-4 长期记忆异步流水线和 P3-5 按需能力装配已完成。
 - P2-6 已完成 MCP Client 最小接入；后续如要扩展远程 MCP、OAuth、插件市场、MCP server 开发或复杂沙箱编排，必须进入新阶段计划，不得混入 P2 收口。
 - P3 当前限定为 Codex 级当前窗口管理、短期记忆/上下文压缩、长期记忆平台；Multi-Agent、真 OS 沙箱、A2A、多模态仍属于后续阶段，不能混入 P3。
-- P3-1 已完成最小底座；P3-2 已完成真实 Agent 前置接入、快照持久化和 UI 指示；P3-3 已完成短期压缩、summary 替换 active window 和 `ContextCompactionItem` 事件；P3-3a 已补齐压缩审计、事务安装、乐观锁和恢复服务；P3-4 已完成长期记忆异步提取、secret redaction、Phase 2 归并和 summary read path 注入。P3-5 仍需先写详细 plan，确认后才允许实现按需能力装配和 VectorStore/RAG 检索增强。
+- P3-1 已完成最小底座；P3-2 已完成真实 Agent 前置接入、快照持久化和 UI 指示；P3-3 已完成短期压缩、summary 替换 active window 和 `ContextCompactionItem` 事件；P3-3a 已补齐压缩审计、事务安装、乐观锁和恢复服务；P3-4 已完成长期记忆异步提取、secret redaction、Phase 2 归并和 summary read path 注入；P3-5 已完成按需工具/Skill/MCP 能力装配、`tool_search`、长期记忆检索增强和桌面控制。后续 P4 或专项增强必须先写详细 plan 并由用户确认。
 - P2 范围内 SQLite 使用 MyBatis-Plus 和 Java 常见分层，但 Agent 核心不得直接依赖 Mapper；必须通过 repository/adapter 或 application service 隔离。
 - 后续任何新增业务表或业务字段都必须同步 SQL 中文注释、`bq_schema_comments` 元数据和覆盖测试。
 
@@ -343,6 +352,18 @@ cd backend
 
 cd ..\desktop
 .\gradlew.bat test --tests "*MemoryModelsTest" --tests "*AgentClientTest" --tests "*ChatControllerTest" --tests "*ComposerContextBarTest"
+.\gradlew.bat test
+```
+
+P3-5 按需能力装配、记忆检索增强和桌面控制自动化验收补充：
+
+```powershell
+cd backend
+.\mvnw.cmd -q -Dtest="CapabilityHandlersTest,SkillHandlersTest,MemoryHandlersTest,CapabilityExposurePlannerTest,CapabilitySearchServiceTest,ToolSearchToolTest,LongTermMemoryRetrievalServiceTest,LongTermMemoryReadServiceTest,SchemaCommentsCoverageTest" test
+.\mvnw.cmd clean verify
+
+cd ..\desktop
+.\gradlew.bat test --tests "*CapabilityModelsTest" --tests "*SkillModelsTest" --tests "*MemoryModelsTest" --tests "*AgentClientTest" --tests "*ChatControllerTest" --tests "*ComposerContextBarTest"
 .\gradlew.bat test
 ```
 
