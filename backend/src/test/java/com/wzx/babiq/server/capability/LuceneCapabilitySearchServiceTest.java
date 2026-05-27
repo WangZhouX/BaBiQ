@@ -1,9 +1,22 @@
 package com.wzx.babiq.server.capability;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wzx.babiq.server.mcp.McpToolCatalog;
+import com.wzx.babiq.server.skill.LocalSkillRegistry;
+import com.wzx.babiq.server.tool.ToolRegistry;
+import com.wzx.babiq.server.tool.impl.ApplyPatchTool;
+import com.wzx.babiq.server.tool.impl.ExecShellTool;
+import com.wzx.babiq.server.tool.impl.GrepTool;
+import com.wzx.babiq.server.tool.impl.ListDirTool;
+import com.wzx.babiq.server.tool.impl.ReadFileTool;
+import com.wzx.babiq.server.tool.impl.WriteFileTool;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.springframework.beans.factory.ObjectProvider;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -11,6 +24,8 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * Lucene 能力搜索服务测试。
@@ -108,6 +123,54 @@ class LuceneCapabilitySearchServiceTest {
                 "thr_1", "turn_1", "zzzz-no-match", 5, false));
 
         assertThat(result.results()).isEmpty();
+    }
+
+    @ParameterizedTest(name = "query={0} should hit {1}")
+    @CsvSource({
+            "读取文件, local.read_file",
+            "查看代码, local.read_file",
+            "运行命令, local.exec_shell",
+            "执行脚本, local.exec_shell",
+            "列出目录, local.list_dir",
+            "搜索关键字, local.grep",
+            "写文件, local.write_file",
+            "打补丁, local.apply_patch"
+    })
+    @DisplayName("中文 query 矩阵可以命中真实同步后的本地工具")
+    void search_should_match_chinese_query_matrix(String query, String expectedCapabilityId) {
+        LuceneCapabilitySearchService matrixService = new LuceneCapabilitySearchService(synchronizedLocalToolRepository());
+        matrixService.rebuildIndex();
+        try {
+            CapabilitySearchResult result = matrixService.search(new CapabilitySearchRequest(
+                    "thr_1", "turn_1", query, 5, false));
+
+            assertThat(result.results()).extracting(CapabilityDescriptor::capabilityId)
+                    .contains(expectedCapabilityId);
+        } finally {
+            matrixService.close();
+        }
+    }
+
+    /**
+     * 构造真实本地工具同步后的能力目录，专门用于中文 query 矩阵验收。
+     */
+    @SuppressWarnings("unchecked")
+    private static InMemoryCapabilityRepository synchronizedLocalToolRepository() {
+        InMemoryCapabilityRepository repository = new InMemoryCapabilityRepository();
+        ToolRegistry toolRegistry = new ToolRegistry(List.of(
+                new ReadFileTool(),
+                new WriteFileTool(),
+                new ListDirTool(),
+                new GrepTool(),
+                new ExecShellTool(),
+                new ApplyPatchTool()));
+        ObjectProvider<McpToolCatalog> mcpProvider = mock(ObjectProvider.class);
+        ObjectProvider<LocalSkillRegistry> skillProvider = mock(ObjectProvider.class);
+        when(mcpProvider.getIfAvailable()).thenReturn(null);
+        when(skillProvider.getIfAvailable()).thenReturn(null);
+        new CapabilityCatalogSyncService(
+                toolRegistry, mcpProvider, skillProvider, repository, new ObjectMapper(), null).sync();
+        return repository;
     }
 
     private static CapabilityDescriptor capability(String id,
