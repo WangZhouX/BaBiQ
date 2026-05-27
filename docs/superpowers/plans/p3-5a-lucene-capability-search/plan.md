@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED：实施前使用 `superpowers:writing-plans` 复核本计划，实施时使用 `superpowers:executing-plans` 和 `superpowers:test-driven-development`，声称完成前使用 `superpowers:verification-before-completion`。
 >
-> **状态：** 待用户确认。本计划是对已完成 P3-5 的"自实现替换为官方组件"补强，不引入新功能边界。
+> **状态：** 已完成。本计划是对已完成 P3-5 的"自实现替换为官方组件"补强，不引入新功能边界。
 
 **Goal:** 把 P3-5 自实现的 `FallbackLexicalCapabilitySearchService` 完全替换为 Spring AI Community 官方 `LuceneToolSearcher`（基于 Apache Lucene + BM25），**移除自家轮子**，让 BaBiQ 的能力搜索遵守自己的"优先官方组件、不重复造轮子"规则。
 
@@ -111,7 +111,7 @@ CLAUDE.md §1 明确 BaBiQ 是 Codex-like AI Agent **学习项目**。学习项�
 - 新增 `tool-searcher-lucene:1.0.1` Maven 依赖（**仅此一个**，不引入 `tool-search-tool` Advisor 模块）
 - 新增 `LuceneCapabilitySearchService implements CapabilitySearchService`，作 Spring `@Service` 默认实现
 - **删除** `FallbackLexicalCapabilitySearchService.java` 和 `FallbackLexicalCapabilitySearchServiceTest.java`（如果存在）
-- 改写 `CapabilitySearchServiceTest`，从测 Fallback 行为改为测 Lucene 行为（BM25 评分、stemming、CJK token）
+- 删除原 `CapabilitySearchServiceTest`，新增 `LuceneCapabilitySearchServiceTest` 覆盖 Lucene 行为（BM25 评分、英文基础 query、CJK token 和索引重建）
 - 启动时把所有 `repository.listEnabled()` 索引到 LuceneToolSearcher
 - 监听能力目录变更（启用/禁用、新增、修改）增量更新索引
 - 搜索事件 `strategy` 字段写 `'LUCENE'`
@@ -161,7 +161,7 @@ CLAUDE.md §1 明确 BaBiQ 是 Codex-like AI Agent **学习项目**。学习项�
   .\mvnw.cmd dependency:tree -Dincludes=org.springaicommunity,org.apache.lucene
   ```
 
-  Expected：解析到 `tool-searcher-lucene:1.0.1`、`tool-search-tool:1.0.1`（作为 transitive）、`lucene-core` 和 `lucene-analyzers-common`。
+  Expected：解析到 `tool-searcher-lucene:1.0.1`、`tool-search-tool:1.0.1`（作为 transitive）和 `lucene-core`。实际核对显示 `LuceneToolSearcher` 使用 Lucene 9.12.3 的 `StandardAnalyzer`，不额外引入 `lucene-analyzers-common`。
 
 - [ ] **Step 4：编译验证**
 
@@ -191,7 +191,7 @@ build(p3-5a): 接入 Lucene 工具搜索器依赖
 
   关键用例：
   - 基础 BM25 评分：query `"read"` 命中 `read_file` 而不命中 `write_file`
-  - Stemming：query `"reading"` 也能命中 `read_file`（StandardAnalyzer 自带）
+  - 英文基础 query：query `"read file"` 命中 `read_file`；注意 Context7 和 `javap` 已确认 `StandardAnalyzer` 不做 stemming，不能把 `"reading"` 当作 `"read"` 的同义词
   - Stop words：query `"the file reader"` 不会把 `"the"` 当成评分主因
   - CJK 单字 token：query `"读取"` 命中 description 含 `"读取文件"` 的能力
   - DISABLED 能力不进入索引，不会被搜索到
@@ -395,10 +395,10 @@ feat(p3-5a): 能力目录变更后增量重建 Lucene 索引
 
 - [ ] **Step 4：扫描审计字段值**
 
-  代码里不能有任何地方写 `"FALLBACK_LEXICAL"` 字符串（除非是测试 fixture）。
+  Java 生产代码和测试里不能有任何地方写 `"FALLBACK_LEXICAL"` 字符串；已发布 migration 中的历史值不改写，避免破坏 Flyway checksum。
 
   ```powershell
-  grep -rn "FALLBACK_LEXICAL" src/main/
+  rg -n "FALLBACK_LEXICAL" src/main/java src/test/java
   ```
 
   Expected：0 命中。
@@ -454,7 +454,7 @@ refactor(p3-5a): 移除自实现的 Fallback 能力搜索器
 
   - query `"读取文件"` → 期望命中 `read_file` 这类能力
   - query `"执行命令"` → 期望命中 `exec_shell`
-  - query `"reading file"`（英文带 stemming）→ 命中 `read_file`
+  - query `"read file"`（英文基础词）→ 命中 `read_file`
   - query `"unknown"` → 返回空列表
 
   对比 P3-5 替换前 FallbackLexical 在同样 query 下的行为，记录在 codex-handoff.md。
@@ -505,8 +505,7 @@ cd ..\desktop
 
 # 4. 确认 Fallback 类已删除
 cd ..\backend
-grep -rn "FallbackLexicalCapabilitySearchService" src/   # Expected: 0 hit
-grep -rn "FALLBACK_LEXICAL" src/main/                   # Expected: 0 hit
+rg -n "FallbackLexicalCapabilitySearchService|FALLBACK_LEXICAL" src/main/java src/test/java  # Expected: 0 hit
 
 # 5. 确认依赖树
 .\mvnw.cmd dependency:tree -Dincludes=org.springaicommunity,org.apache.lucene
@@ -529,18 +528,17 @@ grep -rn "FALLBACK_LEXICAL" src/main/                   # Expected: 0 hit
 
 ## 7. 完成标准
 
-- [ ] `backend/pom.xml` 已添加 `org.springaicommunity:tool-searcher-lucene:1.0.1` 依赖
-- [ ] `LuceneCapabilitySearchService` 已实现并通过完整失败路径测试
-- [ ] `FallbackLexicalCapabilitySearchService.java` 已**物理删除**
-- [ ] 原 `CapabilitySearchServiceTest` 已删除，新 `LuceneCapabilitySearchServiceTest` 覆盖等效场景
-- [ ] `grep -rn "FallbackLexicalCapabilitySearchService" backend/src/` 0 命中
-- [ ] `grep -rn "FALLBACK_LEXICAL" backend/src/main/` 0 命中（历史数据库记录不动）
-- [ ] 后端 `clean verify` 通过，且 P3-5 已有测试不退化
-- [ ] 桌面端 `gradlew.bat test` 通过
-- [ ] 中文 query 烟测可用（`"读取文件"` 命中 `read_file` 类能力）
-- [ ] `AGENTS.md` / `CLAUDE.md` / `p3-master.md` 当前检查点已同步
-- [ ] 所有 commit 使用中文 conventional commit
-- [ ] 未 push
+- [x] `backend/pom.xml` 已添加 `org.springaicommunity:tool-searcher-lucene:1.0.1` 依赖
+- [x] `LuceneCapabilitySearchService` 已实现并通过完整失败路径测试
+- [x] `FallbackLexicalCapabilitySearchService.java` 已**物理删除**
+- [x] 原 `CapabilitySearchServiceTest` 已删除，新 `LuceneCapabilitySearchServiceTest` 覆盖等效场景
+- [x] Java 生产代码和测试中 `FallbackLexicalCapabilitySearchService|FALLBACK_LEXICAL` 0 命中
+- [x] 后端 `clean verify` 通过，且 P3-5 已有测试不退化
+- [x] 桌面端 `gradlew.bat test` 通过
+- [x] 中文 query 自动化烟测可用（`"读取"` 命中 `read_file` 类能力）
+- [x] `AGENTS.md` / `CLAUDE.md` / `p3-master.md` 当前检查点已同步
+- [x] 使用中文 conventional commit
+- [x] 未 push
 
 ---
 

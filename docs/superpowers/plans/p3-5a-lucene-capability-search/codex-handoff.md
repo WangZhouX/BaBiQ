@@ -4,12 +4,12 @@
 
 ## 当前状态
 
-- P3-5 按需能力装配主链路已完成，但默认搜索实现 `FallbackLexicalCapabilitySearchService` 是 130 行自家 Java 子串匹配，**违反 CLAUDE.md §4 实现规则**（不重复造轮子）。
-- P3-5a 是 P3-5 的**算法层补强**：
-  - 接入官方 `org.springaicommunity:tool-searcher-lucene:1.0.1`（Apache Lucene + BM25）
-  - **物理删除** `FallbackLexicalCapabilitySearchService`
+- P3-5a 已完成，是 P3-5 的**算法层补强**：
+  - 已接入 `org.springaicommunity:tool-searcher-lucene:1.0.1`（Apache Lucene + BM25）
+  - 已**物理删除** `FallbackLexicalCapabilitySearchService`
   - 不留两套实现作可配置 fallback，避免代码污染
 - 本阶段不引入 `tool-search-tool`（Advisor）和 `tool-searcher-vectorstore`（向量），原因见 plan §3.2。
+- Context7 和 `javap` 已确认 `LuceneToolSearcher` 使用 `StandardAnalyzer`。它支持 Unicode/CJK token、lowercase 和 stop words，但不做英文 stemming；因此验收用例以 `"read file"` 和中文 `"读取"` 为准。
 
 ## 必读入口
 
@@ -52,10 +52,11 @@
 |---|---|---|
 | `backend/pom.xml` | 新增 `tool-searcher-lucene:1.0.1` 依赖 | 接入官方搜索器 |
 | `backend/src/main/java/com/wzx/babiq/server/capability/LuceneCapabilitySearchService.java` | **新增** | 实现 `CapabilitySearchService` 接口，包装 `LuceneToolSearcher` |
-| `backend/src/test/java/com/wzx/babiq/server/capability/LuceneCapabilitySearchServiceTest.java` | **新增** | BM25 评分、stemming、CJK token、增量更新等用例 |
+| `backend/src/test/java/com/wzx/babiq/server/capability/LuceneCapabilitySearchServiceTest.java` | **新增** | BM25 评分、英文基础 query、CJK token、索引重建等用例 |
 | `backend/src/main/java/com/wzx/babiq/server/capability/FallbackLexicalCapabilitySearchService.java` | **删除** | 自家轮子，违反 §4 实现规则 |
 | `backend/src/test/java/com/wzx/babiq/server/capability/CapabilitySearchServiceTest.java` | **删除** | 测的是 Fallback 行为，已被新测试覆盖 |
 | `backend/src/main/java/com/wzx/babiq/server/capability/CapabilityCatalogSyncService.java` | 修改 | 同步完目录后发 `CapabilityCatalogChangedEvent` 触发 Lucene 重建 |
+| `backend/src/main/resources/db/migration/V12__lucene_capability_search_comments.sql` | 新增 | 刷新搜索策略字段中文说明，不改写已发布 V11 migration |
 
 不动：
 
@@ -82,7 +83,7 @@
 | 参数 | 值 | 说明 |
 |---|---|---|
 | `LuceneToolSearcher` 最低分阈值 | `0.1f` | 过滤明显不相关结果。官方示例用 `0.4f`；BaBiQ 工具集少，放宽一点避免空结果 |
-| Lucene Analyzer | 默认 `StandardAnalyzer` | 库自带，含 CJK 单字 token、英文 stemming、stop words。后续可换 `SmartChineseAnalyzer` |
+| Lucene Analyzer | 默认 `StandardAnalyzer` | 库自带，含 Unicode/CJK token、lowercase、stop words；不做英文 stemming。后续如中文相关性不足，可评估 `SmartChineseAnalyzer` |
 | Lucene session id | `"babiq"` 单 session | 学习项目单进程，不需要多租户隔离 |
 | 索引重建策略 | 全量 rebuild on `CapabilityCatalogChangedEvent` | 当前能力 < 50，毫秒级，不优化为真正增量 |
 | 搜索 strategy 字段值 | `"LUCENE"` | 写入 `bq_capability_search_events.strategy` |
@@ -104,13 +105,12 @@ cd ..\desktop
 
 # 4. 确认 Fallback 类已删除
 cd ..\backend
-grep -rn "FallbackLexicalCapabilitySearchService" src/
+rg -n "FallbackLexicalCapabilitySearchService|FALLBACK_LEXICAL" src/main/java src/test/java
 # Expected: 0 hit
-grep -rn "FALLBACK_LEXICAL" src/main/
-# Expected: 0 hit（历史数据库记录不受影响）
+# 历史 migration 中的旧策略说明不改写；V12 会刷新新库最终 bq_schema_comments。
 
 # 5. 依赖树确认
-.\mvnw.cmd dependency:tree -Dincludes=org.springaicommunity,org.apache.lucene
+.\mvnw.cmd "dependency:tree" "-Dincludes=org.springaicommunity,org.apache.lucene"
 ```
 
 ## 完成报告必须包含
@@ -122,6 +122,15 @@ grep -rn "FALLBACK_LEXICAL" src/main/
 - 中文 query 烟测对比（同一 query 在 P3-5 时 FallbackLexical 返回什么，P3-5a 后 LuceneToolSearcher 返回什么）
 - P3-5 回归测试通过证据（`CapabilityExposurePlannerTest`、`ToolSearchToolTest`、`CapabilityHandlersTest` 等）
 - 中文 conventional commit 列表
+
+## 本次完成证据
+
+- `.\mvnw.cmd "dependency:tree" "-Dincludes=org.springaicommunity,org.apache.lucene"`：通过，确认 `tool-searcher-lucene:1.0.1` 传递引入 `tool-search-tool:1.0.1` 和 `lucene-core:9.12.3`。
+- `rg -n "FallbackLexicalCapabilitySearchService|FALLBACK_LEXICAL" src/main/java src/test/java`：0 命中，Java 生产代码和测试已不再保留 fallback 实现或策略常量。
+- `.\mvnw.cmd "-Dtest=LuceneCapabilitySearchServiceTest,CapabilityCatalogSyncServiceTest,CapabilityExposurePlannerTest,ToolSearchToolTest,CapabilityHandlersTest,SchemaCommentsCoverageTest" test`：通过，13 tests，0 failures，0 errors。
+- `.\mvnw.cmd clean verify`：通过，后端全量回归成功。
+- `.\gradlew.bat test`：通过，桌面端回归成功。
+- 中文 query 验收由 `LuceneCapabilitySearchServiceTest.search_should_support_cjk_query_tokens` 覆盖：`"读取"` 能命中 `local.read_file`，并且不会把 `local.write_file` 排在结果里。
 - 明确说明未 push
 
 ## 下一步

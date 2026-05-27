@@ -30,7 +30,7 @@ class ToolSearchToolTest {
         AtomicReference<CapabilitySearchRequest> captured = new AtomicReference<>();
         CapabilitySearchService service = request -> {
             captured.set(request);
-            return new CapabilitySearchResult("FALLBACK_LEXICAL", List.of(new CapabilityDescriptor(
+            return new CapabilitySearchResult("LUCENE", List.of(new CapabilityDescriptor(
                     "mcp.files.read_file",
                     CapabilityType.MCP_TOOL,
                     "files",

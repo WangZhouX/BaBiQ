@@ -8,6 +8,7 @@ import com.wzx.babiq.server.skill.SkillDescriptor;
 import com.wzx.babiq.server.tool.ToolRegistry;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
@@ -35,6 +36,8 @@ public class CapabilityCatalogSyncService {
     private final CapabilityRepository repository;
     /** JSON mapper，用于稳定生成 schema hash。 */
     private final ObjectMapper objectMapper;
+    /** 能力目录变化事件发布器；Lucene 索引等派生组件通过事件重建，不反向耦合同步流程。 */
+    private final ApplicationEventPublisher events;
 
     /**
      * 创建能力同步服务。
@@ -43,12 +46,14 @@ public class CapabilityCatalogSyncService {
                                         ObjectProvider<McpToolCatalog> mcpToolCatalogProvider,
                                         ObjectProvider<LocalSkillRegistry> skillRegistryProvider,
                                         CapabilityRepository repository,
-                                        ObjectMapper objectMapper) {
+                                        ObjectMapper objectMapper,
+                                        ApplicationEventPublisher events) {
         this.toolRegistry = toolRegistry;
         this.mcpToolCatalogProvider = mcpToolCatalogProvider;
         this.skillRegistryProvider = skillRegistryProvider;
         this.repository = repository;
         this.objectMapper = objectMapper == null ? new ObjectMapper() : objectMapper;
+        this.events = events;
     }
 
     /**
@@ -59,6 +64,9 @@ public class CapabilityCatalogSyncService {
         repository.upsertAll(localToolCapabilities(now));
         repository.upsertAll(mcpToolCapabilities(now));
         repository.upsertAll(skillCapabilities(now));
+        if (events != null) {
+            events.publishEvent(new CapabilityCatalogChangedEvent(this));
+        }
     }
 
     private List<CapabilityDescriptor> localToolCapabilities(Instant now) {

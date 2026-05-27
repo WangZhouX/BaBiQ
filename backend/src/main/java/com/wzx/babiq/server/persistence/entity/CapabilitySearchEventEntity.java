@@ -41,7 +41,7 @@ public class CapabilitySearchEventEntity {
     @TableField("query_text")
     private String queryText;
 
-    /** 搜索策略，例如 FALLBACK_LEXICAL。 */
+    /** 搜索策略；P3-5a 之后新事件固定写入 LUCENE，旧数据库记录可能保留历史策略值。 */
     private String strategy;
 
     /** 返回候选数量。 */

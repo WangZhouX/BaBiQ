@@ -42,7 +42,7 @@ class CapabilityHandlersTest {
     void search_should_accept_query_and_limit() {
         CapabilityCatalogService service = mock(CapabilityCatalogService.class);
         CapabilitySearchRpcResult expected = new CapabilitySearchRpcResult(
-                "FALLBACK_LEXICAL", List.of(info("mcp.fs.read", "DEFERRED", true)));
+                "LUCENE", List.of(info("mcp.fs.read", "DEFERRED", true)));
         when(service.search("file", 4, false)).thenReturn(expected);
 
         Object result = new CapabilitySearchHandler(service)

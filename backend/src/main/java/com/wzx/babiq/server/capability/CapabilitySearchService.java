@@ -3,8 +3,8 @@ package com.wzx.babiq.server.capability;
 /**
  * 能力搜索服务端口。
  *
- * <p>本阶段默认实现是轻量词法搜索；接口保留下来是为了后续可以把 Lucene、
- * Spring AI Community Tool Search 或 VectorStore 作为候选实现接进来。</p>
+ * <p>默认实现是 P3-5a 接入的 Spring AI Community Lucene 搜索器。接口保留下来是为了让
+ * ToolSearchTool、Planner 和 JSON-RPC handler 只依赖 BaBiQ 端口，不直接绑定具体索引实现。</p>
  */
 public interface CapabilitySearchService {
 

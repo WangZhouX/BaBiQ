@@ -20,7 +20,7 @@
 - Spring AI 官方 BOM 虽然已有 `1.1.7` 稳定版，但 P3-5 暂不需要为了本阶段目标升级；当前主线继续保持 `1.1.6`。
 - Spring AI Alibaba `1.1.2.3` 自身 BOM 不直接托管所有 Spring AI 模块版本，当前仓库已经通过 Spring AI BOM 把最终解析版本统一到 `1.1.6`。
 - Spring AI Core `1.1.6` jar 内没有 `ToolSearchToolCallAdvisor` 或 `ToolSearcher`；Dynamic Tool Search 来自 Spring AI Community 项目。
-- Spring AI Community Dynamic Tool Search 的 `1.0.x` 线对应 Spring AI `1.1.x` + Spring Boot 3；P3-5 只评估它能否在当前 `1.1.6` 主线下安全接入，不能接入时使用 BaBiQ 自有 Lucene/Fallback 搜索实现。
+- Spring AI Community Dynamic Tool Search 的 `1.0.x` 线对应 Spring AI `1.1.x` + Spring Boot 3；P3-5a 已在当前 `1.1.6` 主线下接入 `tool-searcher-lucene:1.0.1`，只复用 Lucene 搜索器，不接入 Advisor。
 - Spring AI `spring-ai-vector-store:1.1.6` 已包含 `SimpleVectorStore`、`VectorStore`、`VectorStoreRetriever`；`spring-ai-advisors-vector-store:1.1.6` 已包含 `QuestionAnswerAdvisor`、`VectorStoreChatMemoryAdvisor`。
 
 ### 1.2 Codex 源码结论
@@ -33,7 +33,7 @@
 ### 1.3 BaBiQ 设计结论
 
 - 不能让 Spring AI Community `ToolSearchToolCallAdvisor` 直接绕过 BaBiQ 的 `ToolRegistry`、HITL 审批、沙箱、MCP 观测和 SQLite 审计。
-- P3-5 可以复用 Spring AI Community 的 Lucene/BM25 搜索器，或把它封装成 BaBiQ `CapabilitySearchService` 的候选实现。
+- P3-5a 已复用 Spring AI Community 的 Lucene/BM25 搜索器，并封装成 BaBiQ `CapabilitySearchService` 默认实现。
 - 工具 schema 仍走 Spring AI/SAA tool-calling 通道，能力目录摘要走 `ContextEnvelope.capability_catalog` 层，二者不能混成一个大 JSON。
 - 记忆检索片段必须带 artifact/candidate/reference id、置信度、token 预算和污染标记；只能作为参考层注入，不能覆盖本轮用户输入。
 
@@ -133,7 +133,7 @@ flowchart LR
 - `event_id`: 搜索事件 id。
 - `thread_id` / `turn_id`: 来源会话和 turn。
 - `query_text`: 搜索词或模型请求。
-- `strategy`: `LUCENE`、`SPRING_AI_TOOL_SEARCH`、`FALLBACK_LEXICAL`。
+- `strategy`: `LUCENE` 为当前默认策略；旧库里可能保留历史 `FALLBACK_LEXICAL` 审计值，但生产代码不再写入该值。
 - `result_count`: 返回候选数量。
 - `selected_capability_ids_json`: 最终装配的能力 id 列表。
 - `rejected_capability_ids_json`: 被拒绝或禁用的能力 id 列表。
@@ -161,7 +161,7 @@ flowchart LR
 
 ### Task 1: 能力搜索依赖边界确认
 
-**目标:** 保持 Spring AI `1.1.6` 不升级，只确认 Spring AI Community Dynamic Tool Search `1.0.x` 是否能在当前主线上作为可选能力搜索实现使用。不能安全接入时，P3-5 直接走 BaBiQ 自有 `CapabilitySearchService` + Lucene/Fallback。
+**目标:** 保持 Spring AI `1.1.6` 不升级，只确认 Spring AI Community Dynamic Tool Search `1.0.x` 是否能在当前主线上作为可选能力搜索实现使用。P3-5a 已确认并接入 `tool-searcher-lucene:1.0.1`，只把 LuceneToolSearcher 作为 `CapabilitySearchService` 的底层实现。
 
 文件：
 
@@ -174,7 +174,7 @@ flowchart LR
 3. 如果验证通过，再新增属性 `spring-ai-community-tool-search.version=1.0.1` 和可选依赖：
    - `org.springaicommunity:tool-search-tool`
    - `org.springaicommunity:tool-searcher-lucene`
-4. 如果验证不通过，不引入上述依赖，后续任务直接使用 `LuceneCapabilitySearchService` 或 `FallbackLexicalCapabilitySearchService`。
+4. P3-5a 验证通过后，后续能力搜索统一使用 `LuceneCapabilitySearchService`，不再保留 fallback 实现。
 5. 跑依赖树确认所有 `org.springframework.ai` 仍最终解析到 `1.1.6`。
 
 验证：
@@ -300,7 +300,8 @@ feat(p3-5): 同步本地和 MCP 能力目录
 测试：
 
 - `CapabilityExposurePlannerTest`
-- `CapabilitySearchServiceTest`
+- `LuceneCapabilitySearchServiceTest`
+- `CapabilityCatalogSyncServiceTest`
 - `ToolSearchToolTest`
 - `AgentLoopCapabilityExposureTest`
 
@@ -308,7 +309,7 @@ feat(p3-5): 同步本地和 MCP 能力目录
 
 ```powershell
 cd backend
-.\mvnw.cmd "-Dtest=CapabilityExposurePlannerTest,CapabilitySearchServiceTest,ToolSearchToolTest,AgentLoopCapabilityExposureTest" test
+.\mvnw.cmd "-Dtest=CapabilityExposurePlannerTest,LuceneCapabilitySearchServiceTest,CapabilityCatalogSyncServiceTest,ToolSearchToolTest,AgentLoopCapabilityExposureTest" test
 ```
 
 提交建议：
@@ -479,7 +480,7 @@ feat(p3-5): 增加能力和记忆检索桌面控制
 
 ```powershell
 cd backend
-.\mvnw.cmd "-Dtest=SchemaCommentsCoverageTest,CapabilityRepositoryTest,CapabilityCatalogSyncServiceTest,CapabilityExposurePlannerTest,CapabilitySearchServiceTest,ToolSearchToolTest,LocalSkillRegistryTest,LongTermMemoryRetrievalServiceTest,ContextAssemblerMemoryRetrievalTest,CapabilityHandlersTest,SkillHandlersTest,MemoryHandlersTest" test
+.\mvnw.cmd "-Dtest=SchemaCommentsCoverageTest,CapabilityRepositoryTest,CapabilityCatalogSyncServiceTest,CapabilityExposurePlannerTest,LuceneCapabilitySearchServiceTest,ToolSearchToolTest,LocalSkillRegistryTest,LongTermMemoryRetrievalServiceTest,ContextAssemblerMemoryRetrievalTest,CapabilityHandlersTest,SkillHandlersTest,MemoryHandlersTest" test
 .\mvnw.cmd clean verify
 
 cd ..\desktop
@@ -503,7 +504,7 @@ docs(p3-5): 同步能力装配和记忆检索阶段状态
 
 - Task 1 默认不升级 Spring AI，先保护当前 P3-4 已验证链路。
 - 如果可选引入 Spring AI Community Dynamic Tool Search 后 `clean verify` 失败，立即移除该依赖，回到 BaBiQ 自有搜索实现。
-- Dynamic Tool Search 不作为硬依赖贯穿核心路径；BaBiQ 保留 `CapabilitySearchService` 接口，允许 Lucene/Fallback 实现替代。
+- Dynamic Tool Search Advisor 不作为硬依赖贯穿核心路径；BaBiQ 保留 `CapabilitySearchService` 接口，P3-5a 已把默认实现替换为 LuceneToolSearcher，不再保留 fallback。
 
 ### 6.2 ReactAgent 当前迭代动态工具装配能力不确定
 
