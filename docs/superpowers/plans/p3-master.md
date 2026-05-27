@@ -100,9 +100,9 @@ P3 的原则是“复用官方组件承载能力，BaBiQ 自己掌控策略和�
 | P3-3A | 已完成 | ShortTermCompaction 鲁棒性补强：审计字段、事务安装、ordinal 乐观锁和启动恢复 | `docs/superpowers/plans/p3-3a-compaction-hardening/plan.md` | P3-3 |
 | P3-4 | 已完成 | LongTermMemoryPipeline 实现：异步提取、归并、memory summary 注入 | `docs/superpowers/plans/p3-4-long-term-memory/plan.md` | P3-3 |
 | P3-5 | 已完成 | 按需能力装配、记忆检索增强和桌面控制：tool_search、Skill metadata、能力策略、引用和记忆检索开关 | `docs/superpowers/plans/p3-5-capability-retrieval-control/plan.md` | P3-4 |
-| P3-5a | 已完成 | Lucene 能力搜索替换：移除 fallback，接入 Spring AI Community LuceneToolSearcher | `docs/superpowers/plans/p3-5a-lucene-capability-search/plan.md` | P3-5 |
+| P3-5a | 已完成 | Lucene 能力搜索替换：移除 fallback，接入 Spring AI Community LuceneToolSearcher；中文别名富化已落地 | `docs/superpowers/plans/p3-5a-lucene-capability-search/plan.md` | P3-5 |
 
-说明：`P3-1` 已按用户要求落地最小可运行底座，包括 `ContextAssembler`、`ContextSnapshot` 和能力目录摘要。`P3-2` 已把该底座接入真实 `AgentLoop`，并完成持久化快照、JSON-RPC 查询和桌面上下文指示。`P3-3` 已实现短期压缩预算策略、summary 持久化、active window 替换、`ContextCompactionItem` 事件、`context/compact` 手动入口和桌面上下文压缩状态展示。`P3-3A` 已补齐压缩审计字段、事务安装边界、`window_ordinal` 乐观校验、启动恢复和关键失败路径测试。`P3-4` 已完成长期记忆异步流水线、SQLite 审计、Markdown mirror、长期记忆 summary 注入和桌面最小控制。`P3-5` 已完成按需能力装配、`tool_search`、Skill metadata 注册、长期记忆有界检索增强和桌面控制。`P3-5a` 已把能力搜索底层从自实现 fallback 替换为 Spring AI Community `LuceneToolSearcher`，新搜索事件策略写入 `LUCENE`。
+说明：`P3-1` 已按用户要求落地最小可运行底座，包括 `ContextAssembler`、`ContextSnapshot` 和能力目录摘要。`P3-2` 已把该底座接入真实 `AgentLoop`，并完成持久化快照、JSON-RPC 查询和桌面上下文指示。`P3-3` 已实现短期压缩预算策略、summary 持久化、active window 替换、`ContextCompactionItem` 事件、`context/compact` 手动入口和桌面上下文压缩状态展示。`P3-3A` 已补齐压缩审计字段、事务安装边界、`window_ordinal` 乐观校验、启动恢复和关键失败路径测试。`P3-4` 已完成长期记忆异步流水线、SQLite 审计、Markdown mirror、长期记忆 summary 注入和桌面最小控制。`P3-5` 已完成按需能力装配、`tool_search`、Skill metadata 注册、长期记忆有界检索增强和桌面控制。`P3-5a` 已把能力搜索底层从自实现 fallback 替换为 Spring AI Community `LuceneToolSearcher`，新搜索事件策略写入 `LUCENE`，并通过 `CapabilityCatalogSyncService` 中文别名字典富化 searchText。
 
 ---
 

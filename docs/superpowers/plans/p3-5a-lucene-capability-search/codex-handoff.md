@@ -8,6 +8,10 @@
   - 已接入 `org.springaicommunity:tool-searcher-lucene:1.0.1`（Apache Lucene + BM25）
   - 已**物理删除** `FallbackLexicalCapabilitySearchService`
   - 不留两套实现作可配置 fallback，避免代码污染
+- 本次补强已完成中文 query 词面富化：
+  - 新增 `CapabilityAliasDictionary`，按工具名 token 给 searchText 追加中文同义词
+  - `CapabilityCatalogSyncService` 已统一富化 local 工具和 MCP 工具的 searchText
+  - Lucene 中文 query 矩阵已覆盖 `读取文件`、`运行命令`、`列出目录`、`搜索关键字`、`写文件`、`打补丁`
 - 本阶段不引入 `tool-search-tool`（Advisor）和 `tool-searcher-vectorstore`（向量），原因见 plan §3.2。
 - Context7 和 `javap` 已确认 `LuceneToolSearcher` 使用 `StandardAnalyzer`。它支持 Unicode/CJK token、lowercase 和 stop words，但不做英文 stemming；因此验收用例以 `"read file"` 和中文 `"读取"` 为准。
 
@@ -131,6 +135,7 @@ rg -n "FallbackLexicalCapabilitySearchService|FALLBACK_LEXICAL" src/main/java sr
 - `.\mvnw.cmd clean verify`：通过，后端全量回归成功。
 - `.\gradlew.bat test`：通过，桌面端回归成功。
 - 中文 query 验收由 `LuceneCapabilitySearchServiceTest.search_should_support_cjk_query_tokens` 覆盖：`"读取"` 能命中 `local.read_file`，并且不会把 `local.write_file` 排在结果里。
+- 中文别名富化补强由 `CapabilityAliasDictionaryTest`、`CapabilityCatalogSyncServiceTest` 和 `LuceneCapabilitySearchServiceTest.search_should_match_chinese_query_matrix` 覆盖：本地工具和 MCP 工具的 searchText 在同步阶段自动追加中文别名，典型中文 query 可以命中对应能力。
 - 明确说明未 push
 
 ## 下一步
