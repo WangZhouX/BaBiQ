@@ -40,12 +40,12 @@ babiq:
       type: OPENAI_COMPATIBLE
       base-url: https://api.deepseek.com
       api-key: ${DEEPSEEK_API_KEY:}
-      model: deepseek-chat
+      model: deepseek-v4-pro
     - id: oneapi-relay
       name: "我的中转 (OneAPI)"
       type: OPENAI_COMPATIBLE
       base-url: ${ONEAPI_BASE_URL:https://my-relay.example.com/v1}
-      api-key: ${ONEAPI_KEY:placeholder}
+      api-key: ${ONEAPI_KEY:}
       model: ${ONEAPI_MODEL:gpt-4o}
     - id: ollama-local
       name: "本地 Llama3"

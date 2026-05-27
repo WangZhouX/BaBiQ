@@ -99,7 +99,7 @@ P3 的原则是“复用官方组件承载能力，BaBiQ 自己掌控策略和�
 | P3-3 | 已完成 | ShortTermCompaction 实现：触发、摘要、历史替换、恢复和运行记录 | `docs/superpowers/plans/p3-3-short-term-compaction/plan.md` | P3-2 |
 | P3-3A | 已完成 | ShortTermCompaction 鲁棒性补强：审计字段、事务安装、ordinal 乐观锁和启动恢复 | `docs/superpowers/plans/p3-3a-compaction-hardening/plan.md` | P3-3 |
 | P3-4 | 已完成 | LongTermMemoryPipeline 实现：异步提取、归并、memory summary 注入 | `docs/superpowers/plans/p3-4-long-term-memory/plan.md` | P3-3 |
-| P3-5 | 待计划 | 按需能力装配、记忆检索增强和桌面控制：VectorStore、引用、记忆开关和污染模式 | 后续创建 | P3-4 |
+| P3-5 | 待确认 | 按需能力装配、记忆检索增强和桌面控制：VectorStore、引用、记忆开关和污染模式 | `docs/superpowers/plans/p3-5-capability-retrieval-control/plan.md` | P3-4 |
 
 说明：`P3-1` 已按用户要求落地最小可运行底座，包括 `ContextAssembler`、`ContextSnapshot` 和能力目录摘要。`P3-2` 已把该底座接入真实 `AgentLoop`，并完成持久化快照、JSON-RPC 查询和桌面上下文指示。`P3-3` 已实现短期压缩预算策略、summary 持久化、active window 替换、`ContextCompactionItem` 事件、`context/compact` 手动入口和桌面上下文压缩状态展示。`P3-3A` 已补齐压缩审计字段、事务安装边界、`window_ordinal` 乐观校验、启动恢复和关键失败路径测试。`P3-4` 已完成长期记忆异步流水线、SQLite 审计、Markdown mirror、长期记忆 summary 注入和桌面最小控制。
 
@@ -287,6 +287,6 @@ P3 任一子阶段完成前，至少需要满足：
 
 ## 9. 下一步
 
-1. 编写并确认 P3-5 详细计划。
-2. P3-5 再实现按需 tool/skill/MCP 装配策略、VectorStore/RAG 检索增强和更完整的桌面记忆管理 UI。
-3. 在 P3-5 前继续保持 P3-4 的 SQLite 事实源和 read path summary-only 边界，不把完整 `MEMORY.md` 直接塞入每轮模型上下文。
+1. 确认 `docs/superpowers/plans/p3-5-capability-retrieval-control/plan.md`。
+2. 用户确认后，P3-5 再实现按需 tool/skill/MCP 装配策略、VectorStore/RAG 检索增强和更完整的桌面记忆管理 UI。
+3. 在 P3-5 实施前继续保持 P3-4 的 SQLite 事实源和 read path summary-only 边界，不把完整 `MEMORY.md` 直接塞入每轮模型上下文。

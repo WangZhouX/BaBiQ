@@ -48,3 +48,29 @@ backend/.omc/
 ### Git worktrees ###
 .worktrees/
 
+### Local secrets and runtime data ###
+.env
+.env.*
+!.env.example
+*.db
+*.sqlite
+*.sqlite3
+*.jceks
+*.keystore
+*.p12
+*.pem
+*.key
+*.log
+logs/
+backend/logs/
+backend/data/
+backend/*.db
+backend/*.sqlite
+backend/*.sqlite3
+backend/src/main/resources/application-local.yml
+backend/src/main/resources/application-local.yaml
+backend/src/main/resources/application-local.properties
+backend/src/main/resources/application-secret.yml
+backend/src/main/resources/application-secret.yaml
+backend/src/main/resources/application-secret.properties
+
