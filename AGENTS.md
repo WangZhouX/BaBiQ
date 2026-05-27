@@ -203,6 +203,9 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
   - 后端已移除自实现 `FallbackLexicalCapabilitySearchService`，默认 `CapabilitySearchService` 改为薄封装 Spring AI Community `LuceneToolSearcher`；仍不接入 `tool-search-tool` Advisor，避免绕过 BaBiQ 审批、沙箱、Spotlighting 和 SQLite 审计链路。
   - 后端新增 `CapabilityCatalogChangedEvent` 和目录同步事件，能力目录同步后会重建 Lucene 内存索引；新增 V12 migration 刷新搜索策略字段中文说明，不改写已发布 V11 migration。
   - 已验证：`cd backend; .\mvnw.cmd "-Dtest=LuceneCapabilitySearchServiceTest,CapabilityCatalogSyncServiceTest,CapabilityExposurePlannerTest,ToolSearchToolTest,CapabilityHandlersTest,SchemaCommentsCoverageTest" test`。
+- 能力 searchText 已支持中文 query：本地工具和 MCP 工具的 searchText 通过
+  `CapabilityCatalogSyncService` 内置中文别名字典自动富化；Lucene/BM25 现在
+  可以命中典型中文 query。
 - **下一步**：进行 P3 总体验收复盘；用户确认后再编写 P4 或新的专项增强详细计划。
 
 如果仓库状态发生变化，不要盲信本检查点；必须重新核对代码、文档、测试和 `git status`。
@@ -262,6 +265,38 @@ P1-4 已完成范围：
   - 简单字段、直观赋值和样板 getter/setter 不强行逐行注释；如果逐行注释会降低可读性，应使用方法级注释加关键行注释。
   - 注释必须解释意图和边界，不写“把 A 赋给 A”这类空注释。
 - 必需验收测试禁止用 `@Disabled` 占位。
+
+## 4.1 工具能力 / Skill 命名与搜索文本规则
+
+BaBiQ 是中文为主的项目，但模型 function calling 协议（OpenAI / DashScope / Anthropic）强制工具 `name` 必须是 ASCII。为了让中文 query 能在 Lucene/BM25 能力搜索中命中正确工具，工具相关字段按以下规则分工：
+
+- **`name` / `capability_id`**：必须是 ASCII 技术标识，例如 `read_file`、`exec_shell`、`mcp.filesystem.read_text_file`。**不允许中文**，否则 function calling 报错。
+- **`displayName`**：必须是中文短语，作为桌面端 UI 给用户看的展示名，例如 `读取文件`、`执行命令`、`列出目录`。
+- **`description`**：推荐中英双语，英文给模型理解工具语义，中文短语帮助中文 query 命中。示例：
+  ```
+  Read a file from the workspace. 读取工作区中的文件内容。
+  ```
+- **`searchText`**（写入 `bq_capabilities.search_text`）：必须**显式包含中文同义词关键词**，覆盖典型中文 query 词面。示例：
+  ```
+  read_file 读取文件 查看文件 打开文件 文件内容 cat
+  read a file from the workspace
+  关键词: 文件 读 查看 打开 内容
+  ```
+- **MCP 工具的 searchText**：由 `CapabilityCatalogSyncService` 在同步时根据 tool name 前缀自动追加中文别名关键词（按 BaBiQ 内置 category 别名字典）。
+- **本地工具的 searchText**：在工具注册或 capability 同步时统一通过 `CapabilityCatalogSyncService` 的别名字典富化，不要在每个 `@Tool` 注解里手写中文。
+
+中文别名字典 (`CapabilityCatalogSyncService` 内置) 至少覆盖：
+
+- `read` 相关：读取、查看、打开、文件内容
+- `write` / `edit` 相关：写入、写文件、保存、修改、创建
+- `exec` / `shell` / `command` 相关：执行、运行、命令、终端
+- `list` / `dir` 相关：列出、目录、文件夹、浏览
+- `grep` / `search` 相关：搜索、查找、全文搜索
+- `patch` / `diff` 相关：补丁、修改、应用补丁
+- `git` 相关：版本控制、提交、仓库
+- `http` / `fetch` 相关：请求、网络、调用接口
+
+新增能力（local 工具、Skill、MCP 工具）时必须确认 searchText 命中以上至少一类中文别名；如果是全新领域（如多模态、数据库），同步更新别名字典并补测试用例。
 
 ## 5. 测试与验收
 
