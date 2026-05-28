@@ -30,7 +30,7 @@ import com.wzx.babiq.desktop.ui.theme.BaBiQColors
  * 左侧导航栏。
  *
  * 项目列表来自后端历史会话中真实出现过的 cwd，并把当前工作区合并进去；这样重启后也能看到曾经新增过的工作目录。
- * 搜索和自动化仍然只是禁用占位，本地 MCP 入口继续保留。
+ * 搜索已经接入 P3 搜索工作台；自动化仍然只是后续阶段的禁用占位。
  */
 @Composable
 fun Sidebar(
@@ -54,9 +54,11 @@ fun Sidebar(
 			onSelectScreen(Screen.Chat)
 			onNewChat()
 		}
-		SidebarAction("搜索", enabled = false) { }
-		SidebarAction("本地 MCP", enabled = true) { onSelectScreen(Screen.Mcp) }
-		SidebarAction("自动化", enabled = false) { }
+		sidebarNavigationItems().forEach { item ->
+			SidebarAction(item.label, enabled = item.enabled) {
+				item.screen?.let(onSelectScreen)
+			}
+		}
 
 		Text(
 			text = "项目",
@@ -95,6 +97,33 @@ fun Sidebar(
 		SidebarAction("设置", enabled = true) { onSelectScreen(Screen.Settings) }
 	}
 }
+
+/**
+ * Sidebar 顶部的固定导航项。
+ *
+ * 这里把“搜索是否可点、点到哪个 Screen”从 Composable 中抽出来，避免后续再出现 UI 文案可见但没有真实路由的问题。
+ *
+ * @property label 侧边栏展示文案。
+ * @property screen 点击后进入的产品页；为空表示当前只是未来阶段占位。
+ * @property enabled false 时只展示灰色文案，不绑定点击事件。
+ */
+data class SidebarNavigationItem(
+	val label: String,
+	val screen: Screen?,
+	val enabled: Boolean,
+)
+
+/**
+ * 构造侧边栏固定导航项。
+ *
+ * 00 交互总览-P3 是 Figma 索引页，不会出现在这里；这里只保留真实产品入口。
+ */
+fun sidebarNavigationItems(): List<SidebarNavigationItem> =
+	listOf(
+		SidebarNavigationItem("搜索", Screen.Search, enabled = true),
+		SidebarNavigationItem("本地 MCP", Screen.Mcp, enabled = true),
+		SidebarNavigationItem("自动化", screen = null, enabled = false),
+	)
 
 /**
  * Sidebar 的单行操作入口。

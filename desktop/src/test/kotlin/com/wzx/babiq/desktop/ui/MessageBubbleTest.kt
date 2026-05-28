@@ -19,6 +19,18 @@ class MessageBubbleTest {
 	}
 
 	@Test
+	fun `completed 工具默认只展示摘要 不把原始输出铺在聊天区`() {
+		val message = ChatMessage.Tool(
+			id = "tool-1",
+			title = "read_file path=H:\\aaa\\index.html",
+			status = "completed",
+			detail = "<untrusted-data source=\"tool:read_file\">大家好</untrusted-data>",
+		)
+
+		assertEquals("read_file path=H:\\aaa\\index.html", bodyFor(message))
+	}
+
+	@Test
 	fun `上下文压缩事件显示为 P3 上下文卡片`() {
 		val message = ChatMessage.Tool(
 			id = "ctx-1",

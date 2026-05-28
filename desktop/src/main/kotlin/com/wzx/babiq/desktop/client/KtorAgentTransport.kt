@@ -13,6 +13,7 @@ import io.ktor.websocket.readText
 import io.ktor.websocket.send
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
@@ -45,6 +46,7 @@ class KtorAgentTransport(
 
 	// 当前活跃 WebSocket session；重连时会先关闭旧 session 再创建新 session。
 	private var session: WebSocketSession? = null
+	private var readerJob: Job? = null
 
 	override val incoming: Flow<String> = _incoming
 
@@ -52,20 +54,27 @@ class KtorAgentTransport(
 	 * 建立 WebSocket 连接，并启动一个后台协程持续读取文本帧。
 	 */
 	override suspend fun connect() {
+		readerJob?.cancel()
 		session?.close()
-		session = client.webSocketSession(
+		val connectedSession = client.webSocketSession(
 			method = HttpMethod.Get,
 			host = config.backendHost,
 			port = config.backendPort,
 			path = config.backendPath,
 		)
-		val connectedSession = requireNotNull(session)
+		session = connectedSession
 
-		scope.launch {
+		readerJob = scope.launch {
 			// 后端所有 JSON-RPC response/notification 都是文本帧，二进制帧在 P1 协议里没有意义。
-			for (frame in connectedSession.incoming) {
-				if (frame is Frame.Text) {
-					_incoming.emit(frame.readText())
+			try {
+				for (frame in connectedSession.incoming) {
+					if (frame is Frame.Text) {
+						_incoming.emit(frame.readText())
+					}
+				}
+			} finally {
+				if (session === connectedSession) {
+					session = null
 				}
 			}
 		}
@@ -83,6 +92,8 @@ class KtorAgentTransport(
 	 * 关闭 transport，释放协程和 Ktor client。
 	 */
 	override fun close() {
+		readerJob?.cancel()
+		session = null
 		scope.cancel()
 		client.close()
 	}

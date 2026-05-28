@@ -20,6 +20,7 @@ import com.wzx.babiq.desktop.protocol.McpToolsListResult
 import com.wzx.babiq.desktop.protocol.MemoryArtifactsListResult
 import com.wzx.babiq.desktop.protocol.MemoryConsolidateResult
 import com.wzx.babiq.desktop.protocol.MemoryJobsListResult
+import com.wzx.babiq.desktop.protocol.MemoryScanResult
 import com.wzx.babiq.desktop.protocol.MemorySearchResult
 import com.wzx.babiq.desktop.protocol.MemorySettingsSetParams
 import com.wzx.babiq.desktop.protocol.MemorySettingsSetResult
@@ -183,6 +184,9 @@ interface AgentGateway {
 
 	/** 手动触发长期记忆 Phase2 归并。 */
 	suspend fun consolidateMemory(force: Boolean = false): MemoryConsolidateResult
+
+	/** 手动触发长期记忆 Phase1 idle 扫描，用于设置页“立即扫描”。 */
+	suspend fun scanMemory(): MemoryScanResult
 
 	/** 读取统一能力目录状态，设置页用它控制工具、MCP 和 Skill 的暴露模式。 */
 	suspend fun getCapabilityStatus(): CapabilityStatusResult
@@ -723,14 +727,23 @@ class AgentClient(
 		val deferred = CompletableDeferred<JsonRpcResponse>()
 		pending[id] = deferred
 		val request = JsonRpcRequest(id = id, method = method, params = params)
-		// 先注册 pending 再发送，确保响应即使立刻回来也能找到等待者。
-		transport.send(protocolJson.encodeToString(request))
-		val response = withTimeout(config.requestTimeout) { deferred.await() }
-		// 后端返回 JSON-RPC error 时，转成普通异常，Controller 可以统一展示错误提示。
-		response.error?.let { error ->
-			throw AgentClientException(error.code, error.message)
+		try {
+			// 先注册 pending 再发送，确保响应即使立刻回来也能找到等待者。
+			transport.send(protocolJson.encodeToString(request))
+			val response = withTimeout(config.requestTimeout) { deferred.await() }
+			// 后端返回 JSON-RPC error 时，转成普通异常，Controller 可以统一展示错误提示。
+			response.error?.let { error ->
+				throw AgentClientException(error.code, error.message)
+			}
+			return response
+		} catch (exception: Exception) {
+			if (exception.isTransportDisconnectedSignal()) {
+				throw AgentClientException(-32098, "后端连接已断开，请重新连接后重试")
+			}
+			throw exception
+		} finally {
+			pending.remove(id)
 		}
-		return response
 	}
 
 	/**
@@ -749,6 +762,36 @@ class AgentClient(
 		if ("method" in root) {
 			// JSON-RPC notification：没有 request/response 配对，直接作为后端事件广播。
 			_events.emit(protocolJson.decodeFromString(ServerEvent.serializer(), text))
+		}
+	}
+
+	/**
+	 * 调用后端 `memory/scan`，手动触发 Phase1 idle 扫描。
+	 */
+	override suspend fun scanMemory(): MemoryScanResult {
+		val response = request("memory/scan", buildJsonObject {})
+		return protocolJson.decodeFromJsonElement(MemoryScanResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 将底层 WebSocket/CIO 的关闭信号统一转换为可重连错误。
+	 *
+	 * Ktor 在旧 session 被关闭后可能抛出英文 "Channel was cancelled"，如果原样冒泡到 UI，
+	 * 用户会看到“已连接但发送没反应”。这里只识别传输关闭类信号，业务错误仍保留后端原始 JSON-RPC error。
+	 */
+	private fun Throwable.isTransportDisconnectedSignal(): Boolean {
+		val messages = generateSequence(this) { it.cause }
+			.mapNotNull { it.message }
+			.map { it.lowercase() }
+			.toList()
+		return messages.any { message ->
+			message.contains("后端连接已断开") ||
+				message.contains("尚未连接") ||
+				message.contains("已断开") ||
+				message.contains("channel was cancelled") ||
+				message.contains("channel was closed") ||
+				message.contains("connection has been closed") ||
+				(message.contains("websocket") && message.contains("closed"))
 		}
 	}
 }

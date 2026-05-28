@@ -1,5 +1,6 @@
 package com.wzx.babiq.server.memory;
 
+import com.wzx.babiq.server.recovery.StartupRecoveryCoordinator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
@@ -22,10 +23,22 @@ public class LongTermMemoryScheduler {
     private final LongTermMemoryPipeline pipeline;
     /** 运行时设置服务，用于读取用户是否暂停生成以及每批处理上限。 */
     private final MemoryStatusService statusService;
+    /** 启动恢复闸门，避免定时任务早于恢复流程写入 SQLite。 */
+    private final StartupRecoveryCoordinator startupRecoveryCoordinator;
 
-    public LongTermMemoryScheduler(LongTermMemoryPipeline pipeline, MemoryStatusService statusService) {
+    /**
+     * 创建长期记忆调度器。
+     *
+     * @param pipeline 长期记忆流水线，负责扫描、抽取和归并 job
+     * @param statusService 运行时设置服务，提供批处理上限等用户配置
+     * @param startupRecoveryCoordinator 启动恢复闸门，用于避免启动阶段和恢复流程抢 SQLite 写锁
+     */
+    public LongTermMemoryScheduler(LongTermMemoryPipeline pipeline,
+                                   MemoryStatusService statusService,
+                                   StartupRecoveryCoordinator startupRecoveryCoordinator) {
         this.pipeline = pipeline;
         this.statusService = statusService;
+        this.startupRecoveryCoordinator = startupRecoveryCoordinator;
     }
 
     /**
@@ -35,6 +48,9 @@ public class LongTermMemoryScheduler {
      */
     @EventListener(ApplicationReadyEvent.class)
     public void scanOnStartup() {
+        if (!recoveryCompleted("启动扫描")) {
+            return;
+        }
         LongTermMemoryProperties properties = statusService.properties();
         if (!properties.phase1OnStartup()) {
             return;
@@ -52,6 +68,9 @@ public class LongTermMemoryScheduler {
      */
     @Scheduled(fixedDelayString = "${babiq.memory.long-term.phase1-scan-interval-millis:3600000}")
     public void scanPhase1Periodically() {
+        if (!recoveryCompleted("Phase1 周期扫描")) {
+            return;
+        }
         try {
             int queued = pipeline.scanPhase1();
             int processed = runQueuedPhase1Batch();
@@ -66,6 +85,9 @@ public class LongTermMemoryScheduler {
      */
     @Scheduled(fixedDelayString = "${babiq.memory.long-term.phase2-scan-interval-millis:86400000}")
     public void scanPhase2Periodically() {
+        if (!recoveryCompleted("Phase2 周期扫描")) {
+            return;
+        }
         try {
             pipeline.consolidate(false);
             pipeline.runNextPhase2();
@@ -84,5 +106,21 @@ public class LongTermMemoryScheduler {
             processed++;
         }
         return processed;
+    }
+
+    /**
+     * 检查启动恢复闸门。
+     *
+     * <p>定时器线程可能早于 ApplicationRunner 执行；如果此时直接写库，会和启动恢复写事务竞争 SQLite 锁。</p>
+     *
+     * @param operation 当前准备执行的后台操作名称，用于日志定位
+     * @return true 表示可以继续执行，false 表示本轮调度应跳过
+     */
+    private boolean recoveryCompleted(String operation) {
+        if (startupRecoveryCoordinator.isRecoveryComplete()) {
+            return true;
+        }
+        log.debug("长期记忆{}跳过: 启动恢复尚未完成", operation);
+        return false;
     }
 }

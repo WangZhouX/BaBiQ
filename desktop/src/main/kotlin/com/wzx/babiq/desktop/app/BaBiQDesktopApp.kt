@@ -52,6 +52,7 @@ fun BaBiQDesktopApp() {
 				scope.launch { controller.selectProvider(providerId, modelId) }
 			},
 			onCreateProvider = { params -> scope.launch { controller.createProvider(params) } },
+			onUpdateProvider = { params -> scope.launch { controller.updateProvider(params) } },
 			onDeleteProvider = { providerId -> scope.launch { controller.deleteProvider(providerId) } },
 			onTestProvider = { providerId -> scope.launch { controller.testProvider(providerId) } },
 			onSaveSandboxMode = { mode -> scope.launch { controller.saveSandboxMode(mode) } },
@@ -59,6 +60,7 @@ fun BaBiQDesktopApp() {
 			onSaveMemorySettings = { enabled, generateEnabled, readEnabled, retrievalEnabled ->
 				scope.launch { controller.saveMemorySettings(enabled, generateEnabled, readEnabled, retrievalEnabled) }
 			},
+			onScanMemory = { controller.scanMemory() },
 			onConsolidateMemory = { controller.consolidateMemory(force = true) },
 			onSearchMemory = { query -> controller.searchMemory(query) },
 			onSaveCapabilitySettings = { capabilityId, enabled, exposureMode ->

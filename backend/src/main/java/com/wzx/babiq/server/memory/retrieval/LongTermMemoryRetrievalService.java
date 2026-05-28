@@ -75,13 +75,33 @@ public class LongTermMemoryRetrievalService {
                                                   String snapshotId,
                                                   String queryText,
                                                   int modelContextWindow) {
+        RetrievalSelection selection = selectReferences(queryText, modelContextWindow);
+        if (selection.auditEligible()) {
+            recordEvent(threadId, turnId, snapshotId, queryText,
+                    selection.candidateCount(), selection.references(), selection.tokenEstimate());
+        }
+        return selection.toResult();
+    }
+
+    /**
+     * 为设置页和调试入口执行只读预览检索。
+     *
+     * <p>预览检索没有真实 turn/snapshot 上下文，也不代表模型已经看到这些记忆片段，因此不能写入
+     * `bq_memory_retrieval_events` 这张“模型注入审计”表。正式 Agent read path 仍然使用
+     * {@link #retrieve(String, String, String, String, int)} 写入可追溯审计。</p>
+     */
+    public LongTermMemoryRetrievalResult retrievePreview(String queryText, int modelContextWindow) {
+        return selectReferences(queryText, modelContextWindow).toResult();
+    }
+
+    private RetrievalSelection selectReferences(String queryText, int modelContextWindow) {
         LongTermMemoryProperties properties = propertiesSupplier.get();
         if (!properties.enabled() || !properties.readEnabled() || !properties.retrievalEnabled()) {
-            return LongTermMemoryRetrievalResult.empty();
+            return RetrievalSelection.empty(false);
         }
         List<String> terms = terms(queryText);
         if (terms.isEmpty()) {
-            return LongTermMemoryRetrievalResult.empty();
+            return RetrievalSelection.empty(false);
         }
         int budget = Math.max(1, modelContextWindow * properties.retrievalBudgetWindowPercent() / 100);
         List<ScoredArtifact> scored = artifactRepository.listLatest(128).stream()
@@ -94,8 +114,7 @@ public class LongTermMemoryRetrievalService {
                 .toList();
         List<LongTermMemoryReference> references = selectWithinBudget(scored, budget);
         int tokenEstimate = references.stream().mapToInt(reference -> tokenEstimator.estimate(reference.text())).sum();
-        recordEvent(threadId, turnId, snapshotId, queryText, scored.size(), references, tokenEstimate);
-        return new LongTermMemoryRetrievalResult(references, tokenEstimate);
+        return new RetrievalSelection(references, tokenEstimate, scored.size(), true);
     }
 
     private List<LongTermMemoryReference> selectWithinBudget(List<ScoredArtifact> scored, int budget) {
@@ -185,5 +204,28 @@ public class LongTermMemoryRetrievalService {
      * @param score 词法相关度
      */
     private record ScoredArtifact(MemoryArtifactRecord record, int score) {
+    }
+
+    /**
+     * 检索中间结果，额外保留候选数量和是否需要审计，避免预览入口误写正式注入审计表。
+     *
+     * @param references 最终可注入或预览的记忆片段
+     * @param tokenEstimate 片段 token 估算
+     * @param candidateCount 初筛候选数量
+     * @param auditEligible 是否已经完成有效检索、可由正式 read path 写入审计
+     */
+    private record RetrievalSelection(
+            List<LongTermMemoryReference> references,
+            int tokenEstimate,
+            int candidateCount,
+            boolean auditEligible
+    ) {
+        private static RetrievalSelection empty(boolean auditEligible) {
+            return new RetrievalSelection(List.of(), 0, 0, auditEligible);
+        }
+
+        private LongTermMemoryRetrievalResult toResult() {
+            return new LongTermMemoryRetrievalResult(references, tokenEstimate);
+        }
     }
 }

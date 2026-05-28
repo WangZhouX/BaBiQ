@@ -27,6 +27,7 @@ data class MemoryStatusResult(
 	val pendingJobs: Long = 0,
 	val runningJobs: Long = 0,
 	val cleanCandidateCount: Long = 0,
+	val secretRiskCandidateCount: Long = 0,
 	val lastSummaryArtifactId: String? = null,
 	val lastConsolidatedAt: String? = null,
 	val phase2Generation: Int = 0,
@@ -52,6 +53,13 @@ data class MemorySettingsSetResult(
 	val generateEnabled: Boolean,
 	val readEnabled: Boolean,
 	val retrievalEnabled: Boolean = true,
+)
+
+/** memory/scan 手动扫描响应。 */
+@Serializable
+data class MemoryScanResult(
+	val queuedPhase1Jobs: Int = 0,
+	val status: String,
 )
 
 /** 记忆任务列表中的单条审计信息。 */

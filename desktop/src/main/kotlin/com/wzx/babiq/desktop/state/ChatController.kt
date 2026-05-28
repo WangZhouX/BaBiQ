@@ -134,6 +134,19 @@ class ChatController(
 				)
 			}
 		} catch (exception: Exception) {
+			if (exception.isTransportDisconnectedSignal()) {
+				val message = exception.message ?: "后端连接已断开，请稍后重试"
+				_state.update {
+					it.copy(
+						connectionState = ConnectionState.Reconnecting,
+						turnState = TurnState.Failed,
+						lastError = message,
+						bannerMessage = message,
+					)
+				}
+				scheduleReconnect()
+				return
+			}
 			_state.update {
 				it.copy(
 					turnState = TurnState.Failed,
@@ -494,12 +507,12 @@ class ChatController(
 
 	fun showScreen(screen: Screen) {
 		_state.update { it.copy(screen = screen) }
-		if (screen == Screen.Mcp) {
+		if (screen == Screen.Mcp || screen == Screen.Settings) {
 			scope.launch(start = CoroutineStart.UNDISPATCHED) {
 				loadMcpServers()
 			}
 		}
-		if (screen == Screen.Settings) {
+		if (screen == Screen.Settings || screen == Screen.Search) {
 			scope.launch(start = CoroutineStart.UNDISPATCHED) {
 				loadMemoryStatus(loadAudit = true)
 				loadCapabilityStatus()
@@ -682,6 +695,38 @@ class ChatController(
 	 *
 	 * 刷新动作只影响 MCP 状态页和下一轮 Agent 可见工具目录，不会修改正在运行的 turn。
 	 */
+	/**
+	 * 手动触发一次长期记忆 Phase1 idle 扫描。
+	 *
+	 * 扫描只负责把满足 idle 条件的 thread 入队，实际抽取仍由后端后台流水线执行；完成后刷新 jobs/artifacts，
+	 * 让设置页能立即看到新增任务和候选变化。
+	 */
+	fun scanMemory() {
+		scope.launch(start = CoroutineStart.UNDISPATCHED) {
+			_state.update { it.copy(memoryState = it.memoryState.copy(loading = true, error = null, notice = null)) }
+			try {
+				val result = gateway.scanMemory()
+				_state.update {
+					it.copy(
+						memoryState = it.memoryState.copy(
+							loading = false,
+							error = null,
+							notice = "长期记忆扫描完成，新增 Phase1 任务 ${result.queuedPhase1Jobs} 个",
+						),
+					)
+				}
+				loadMemoryStatus(loadAudit = true)
+			} catch (exception: Exception) {
+				_state.update {
+					it.copy(
+						memoryState = it.memoryState.copy(loading = false, error = exception.message ?: "触发长期记忆扫描失败"),
+						lastError = exception.message,
+					)
+				}
+			}
+		}
+	}
+
 	fun refreshMcpServer(serverId: String) {
 		scope.launch(start = CoroutineStart.UNDISPATCHED) {
 			_state.update {
@@ -768,6 +813,27 @@ class ChatController(
 		loadThreadHistory(state.value.workspace.cwd)
 		refreshContextStatusIfAvailable()
 		loadMemoryStatus(loadAudit = false)
+	}
+
+	/**
+	 * 判断异常是否代表底层 WebSocket 已经断开。
+	 *
+	 * 这类错误不属于本轮业务失败，而是连接生命周期已经失效；Controller 需要切到 Reconnecting，
+	 * 否则 UI 会继续显示“已连接”，用户再次发送时只会反复看到传输层错误。
+	 */
+	private fun Throwable.isTransportDisconnectedSignal(): Boolean {
+		val messages = generateSequence(this) { it.cause }
+			.mapNotNull { it.message }
+			.map { it.lowercase(Locale.ROOT) }
+			.toList()
+		return messages.any { message ->
+			message.contains("后端连接已断开") ||
+				message.contains("尚未连接") ||
+				message.contains("已断开") ||
+				message.contains("channel was cancelled") ||
+				message.contains("channel was closed") ||
+				message.contains("connection has been closed")
+		}
 	}
 
 	private fun handleConnectionFailure(exception: Exception) {

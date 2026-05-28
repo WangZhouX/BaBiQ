@@ -39,7 +39,7 @@ babiq:
       name: "DeepSeek (官方)"
       type: OPENAI_COMPATIBLE
       base-url: https://api.deepseek.com
-      api-key: ${DEEPSEEK_API_KEY:}
+      api-key: ${DEEPSEEK_API_KEY:sk-9b993755cd4e401283bd317e26caebbf}
       model: deepseek-v4-pro
     - id: oneapi-relay
       name: "我的中转 (OneAPI)"

@@ -39,6 +39,16 @@ public class SQLiteMemoryCandidateRepository implements MemoryCandidateRepositor
     }
 
     @Override
+    public long countUnmergedSecretRiskCandidates() {
+        Long count = jdbcTemplate.queryForObject("""
+                        SELECT COUNT(*) FROM bq_memory_candidates
+                        WHERE pollution_status = 'SECRET_RISK' AND selected_for_phase2 = 0
+                        """,
+                Long.class);
+        return count == null ? 0 : count;
+    }
+
+    @Override
     public List<MemoryCandidateRecord> selectForPhase2(int limit) {
         return jdbcTemplate.query("""
                         SELECT * FROM bq_memory_candidates

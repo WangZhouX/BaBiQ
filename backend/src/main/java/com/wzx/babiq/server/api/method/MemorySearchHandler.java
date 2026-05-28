@@ -38,14 +38,10 @@ public class MemorySearchHandler implements JsonRpcMethodHandler {
     @Override
     public Object handle(JsonNode params, WebSocketSession session) {
         String query = ContextStatusHandler.requiredText(params, "query");
-        String threadId = optionalText(params, "threadId");
-        String turnId = optionalText(params, "turnId");
-        String snapshotId = optionalText(params, "snapshotId");
         int modelContextWindow = params == null || !params.hasNonNull("modelContextWindow")
                 ? 32_768
                 : params.get("modelContextWindow").asInt(32_768);
-        LongTermMemoryRetrievalResult result = retrievalService.retrieve(
-                threadId, turnId, snapshotId, query, modelContextWindow);
+        LongTermMemoryRetrievalResult result = retrievalService.retrievePreview(query, modelContextWindow);
         return new MemorySearchResult(
                 LongTermMemoryRetrievalService.STRATEGY,
                 result.references().stream()
@@ -58,7 +54,4 @@ public class MemorySearchHandler implements JsonRpcMethodHandler {
                 result.tokenEstimate());
     }
 
-    private static String optionalText(JsonNode params, String fieldName) {
-        return params == null || !params.hasNonNull(fieldName) ? null : params.get(fieldName).asText();
-    }
 }

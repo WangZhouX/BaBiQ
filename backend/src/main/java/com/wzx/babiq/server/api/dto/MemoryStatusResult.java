@@ -14,6 +14,7 @@ package com.wzx.babiq.server.api.dto;
  * @param lastSummaryArtifactId 最近 memory_summary 产物 id
  * @param lastConsolidatedAt 最近归并完成时间
  * @param phase2Generation 最近 Phase2 generation
+ * @param secretRiskCandidateCount 尚未归并且被 SECRET_RISK 隔离的候选数
  */
 public record MemoryStatusResult(
         boolean enabled,
@@ -24,6 +25,7 @@ public record MemoryStatusResult(
         long pendingJobs,
         long runningJobs,
         long cleanCandidateCount,
+        long secretRiskCandidateCount,
         String lastSummaryArtifactId,
         String lastConsolidatedAt,
         int phase2Generation

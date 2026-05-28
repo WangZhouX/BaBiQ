@@ -19,17 +19,22 @@ public class RecoveryStartupRunner implements ApplicationRunner {
     private final TurnRecoveryService recoveryService;
     /** P3-3A 短期压缩恢复服务；使用 ObjectProvider 避免未来裁剪上下文模块时影响启动。 */
     private final ObjectProvider<ContextCompactionRecoveryService> compactionRecoveryService;
+    /** 启动恢复闸门，恢复完成后才允许长期记忆等后台调度器写库。 */
+    private final StartupRecoveryCoordinator startupRecoveryCoordinator;
 
     /**
      * 创建启动恢复 runner。
      *
      * @param recoveryService turn 恢复服务
      * @param compactionRecoveryService 短期压缩恢复服务提供器
+     * @param startupRecoveryCoordinator 启动恢复闸门，通知后台调度器恢复已经完成
      */
     public RecoveryStartupRunner(TurnRecoveryService recoveryService,
-                                 ObjectProvider<ContextCompactionRecoveryService> compactionRecoveryService) {
+                                 ObjectProvider<ContextCompactionRecoveryService> compactionRecoveryService,
+                                 StartupRecoveryCoordinator startupRecoveryCoordinator) {
         this.recoveryService = recoveryService;
         this.compactionRecoveryService = compactionRecoveryService;
+        this.startupRecoveryCoordinator = startupRecoveryCoordinator;
     }
 
     /**
@@ -41,5 +46,6 @@ public class RecoveryStartupRunner implements ApplicationRunner {
     public void run(ApplicationArguments args) {
         recoveryService.recoverAbandonedState();
         compactionRecoveryService.ifAvailable(ContextCompactionRecoveryService::scan);
+        startupRecoveryCoordinator.markRecoveryComplete();
     }
 }

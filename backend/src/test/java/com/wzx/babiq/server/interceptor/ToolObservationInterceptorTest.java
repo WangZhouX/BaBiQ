@@ -2,10 +2,14 @@ package com.wzx.babiq.server.interceptor;
 
 import com.alibaba.cloud.ai.graph.agent.interceptor.ToolCallRequest;
 import com.alibaba.cloud.ai.graph.agent.interceptor.ToolCallResponse;
+import com.wzx.babiq.server.conversation.ItemEmitter;
+import com.wzx.babiq.server.conversation.items.CommandExecutionItem;
+import com.wzx.babiq.server.conversation.items.ThreadItem;
 import com.wzx.babiq.server.observability.BaBiQMetrics;
 import com.wzx.babiq.server.observability.TurnObservationContext;
 import com.wzx.babiq.server.persistence.service.ToolCallPersistenceService;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.util.Map;
 
@@ -14,6 +18,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
 class ToolObservationInterceptorTest {
 
@@ -36,6 +41,35 @@ class ToolObservationInterceptorTest {
         assertThat(response.getResult()).isEqualTo("ok");
         assertThat(context.toolCalls()).isEqualTo(1);
         assertThat(metrics.snapshot().toolCallsByName()).containsEntry("read_file", 1L);
+    }
+
+    @Test
+    void interceptToolCall_should_emit_tool_detail_item_before_turn_summary() throws Exception {
+        BaBiQMetrics metrics = new BaBiQMetrics();
+        ToolObservationInterceptor interceptor = new ToolObservationInterceptor(metrics);
+        TurnObservationContext context = TurnObservationContext.start(
+                "thr_1", "turn_1", "provider-a", "qwen-plus");
+        ItemEmitter emitter = mock(ItemEmitter.class);
+        ToolCallRequest request = ToolCallRequest.builder()
+                .toolName("read_file")
+                .toolCallId("call_1")
+                .arguments("{\"path\":\"README.md\"}")
+                .context(Map.of(
+                        TurnObservationContext.METADATA_KEY, context,
+                        BaBiQSandboxInterceptor.CONTEXT_ITEM_EMITTER, emitter))
+                .build();
+
+        ToolCallResponse response = interceptor.interceptToolCall(request,
+                ignored -> ToolCallResponse.of("call_1", "read_file", "README content"));
+
+        assertThat(response.getResult()).isEqualTo("README content");
+        ArgumentCaptor<ThreadItem> captor = ArgumentCaptor.forClass(ThreadItem.class);
+        verify(emitter).emitCommandExecution(captor.capture());
+        assertThat(captor.getValue()).isInstanceOf(CommandExecutionItem.class);
+        CommandExecutionItem item = (CommandExecutionItem) captor.getValue();
+        assertThat(item.command()).contains("read_file").contains("README.md");
+        assertThat(item.status()).isEqualTo("completed");
+        assertThat(item.stdout()).contains("README content");
     }
 
     @Test

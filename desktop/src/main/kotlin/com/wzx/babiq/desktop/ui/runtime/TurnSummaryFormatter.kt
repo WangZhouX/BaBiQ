@@ -28,10 +28,8 @@ fun ThreadItem.TurnSummary.toSummaryMetrics(): List<SummaryMetric> {
 	// token 数用英文数字分组，和多数模型控制台显示习惯一致。
 	val integerFormat = NumberFormat.getIntegerInstance(Locale.US)
 	return listOf(
-		SummaryMetric("输入 ${integerFormat.format(promptTokens)}", "prompt tokens"),
-		SummaryMetric("输出 ${integerFormat.format(completionTokens)}", "completion tokens"),
-		// 前端只展示真实 token 用量，不再根据模型名或价格表展示估算费用。
-		SummaryMetric("总计 ${integerFormat.format(totalTokens)}", "total tokens"),
+		// 主聊天区只展示总用量，避免用户把 prompt tokens 误解成自己输入的字数。
+		SummaryMetric("总用量 ${integerFormat.format(totalTokens)}", "tokens"),
 		SummaryMetric(formatDuration(durationMs), "耗时"),
 		SummaryMetric("$toolCalls 工具", "工具调用"),
 	)

@@ -13,6 +13,7 @@ import com.wzx.babiq.desktop.state.Screen
 import com.wzx.babiq.desktop.protocol.ProviderSaveParams
 import com.wzx.babiq.desktop.ui.chat.ChatScreen
 import com.wzx.babiq.desktop.ui.runtime.RuntimeDetailsPanel
+import com.wzx.babiq.desktop.ui.search.SearchPanel
 import com.wzx.babiq.desktop.ui.settings.McpSettingsPanel
 import com.wzx.babiq.desktop.ui.settings.SettingsPanel
 import com.wzx.babiq.desktop.ui.theme.BaBiQColors
@@ -34,11 +35,13 @@ fun AppShell(
 	onSelectWorkspace: (String) -> Unit,
 	onSelectProvider: (String, String?) -> Unit,
 	onCreateProvider: (ProviderSaveParams) -> Unit,
+	onUpdateProvider: (ProviderSaveParams) -> Unit,
 	onDeleteProvider: (String) -> Unit,
 	onTestProvider: (String) -> Unit,
 	onSaveSandboxMode: (String) -> Unit,
 	onSaveApprovalPolicy: (String) -> Unit,
 	onSaveMemorySettings: (Boolean?, Boolean?, Boolean?, Boolean?) -> Unit,
+	onScanMemory: () -> Unit,
 	onConsolidateMemory: () -> Unit,
 	onSearchMemory: (String) -> Unit,
 	onSaveCapabilitySettings: (String, Boolean?, String?) -> Unit,
@@ -74,16 +77,27 @@ fun AppShell(
 					onToggleRuntime = onToggleRuntime,
 				)
 
+				Screen.Search -> SearchPanel(
+					state = state,
+					onSearchMemory = onSearchMemory,
+					onSaveCapabilitySettings = onSaveCapabilitySettings,
+					onSearchCapabilities = onSearchCapabilities,
+				)
+
 				Screen.Settings -> SettingsPanel(
 					state = state,
+					onBackToChat = { onSelectScreen(Screen.Chat) },
 					onSelectWorkspace = onSelectWorkspace,
 					onSelectProvider = { providerId -> onSelectProvider(providerId, null) },
 					onCreateProvider = onCreateProvider,
+					onUpdateProvider = onUpdateProvider,
 					onDeleteProvider = onDeleteProvider,
 					onTestProvider = onTestProvider,
 					onSaveSandboxMode = onSaveSandboxMode,
 					onSaveApprovalPolicy = onSaveApprovalPolicy,
+					onRefreshMcpServer = onRefreshMcpServer,
 					onSaveMemorySettings = onSaveMemorySettings,
+					onScanMemory = onScanMemory,
 					onConsolidateMemory = onConsolidateMemory,
 					onSearchMemory = onSearchMemory,
 					onSaveCapabilitySettings = onSaveCapabilitySettings,

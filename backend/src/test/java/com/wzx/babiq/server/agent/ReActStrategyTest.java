@@ -18,8 +18,11 @@ import com.wzx.babiq.server.sandbox.SandboxMode;
 import com.wzx.babiq.server.tool.ToolRegistry;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * ReActStrategy 单元测试。
@@ -62,6 +65,19 @@ class ReActStrategyTest {
                 .isEqualTo("DANGER_FULL_ACCESS");
     }
 
+    @Test
+    void always_policy_should_request_approval_for_every_visible_tool() {
+        ToolRegistry registry = mock(ToolRegistry.class);
+        when(registry.names()).thenReturn(List.of("read_file", "write_file", "exec_shell", "mcp.filesystem.read_text_file"));
+        ReActStrategy strategy = newStrategy(registry);
+
+        assertThat(strategy.approvalToolNamesFor(ApprovalPolicy.ALWAYS))
+                .containsExactly("read_file", "write_file", "exec_shell", "mcp.filesystem.read_text_file");
+        assertThat(strategy.approvalToolNamesFor(ApprovalPolicy.ON_REQUEST))
+                .containsExactly("write_file", "exec_shell", "apply_patch", "mcp.filesystem.read_text_file");
+        assertThat(strategy.approvalToolNamesFor(ApprovalPolicy.NEVER)).isEmpty();
+    }
+
     /**
      * 创建只用于配置测试的策略对象。
      *
@@ -69,9 +85,13 @@ class ReActStrategyTest {
      * 测试重点保持在 RunnableConfig 的元数据装配顺序上。</p>
      */
     private ReActStrategy newStrategy() {
+        return newStrategy(mock(ToolRegistry.class));
+    }
+
+    private ReActStrategy newStrategy(ToolRegistry toolRegistry) {
         return new ReActStrategy(
                 mock(ChatClientFactory.class),
-                mock(ToolRegistry.class),
+                toolRegistry,
                 mock(AgentLoopProperties.class),
                 mock(BaBiQSandboxInterceptor.class),
                 mock(ToolObservationInterceptor.class),

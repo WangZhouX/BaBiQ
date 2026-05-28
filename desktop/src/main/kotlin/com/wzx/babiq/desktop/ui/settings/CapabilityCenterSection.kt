@@ -1,10 +1,16 @@
 package com.wzx.babiq.desktop.ui.settings
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -33,6 +39,35 @@ data class CapabilityCenterGroups(
 )
 
 /**
+ * Figma 能力中心表格行模型。
+ */
+data class CapabilityCenterRowModel(
+	val capabilityId: String,
+	val displayName: String,
+	val source: String,
+	val exposureMode: String,
+	val enabled: Boolean,
+	val lastSeenAt: String,
+)
+
+/**
+ * 能力详情审计模型。
+ */
+data class CapabilityCenterDetailModel(
+	val capabilityId: String,
+	val auditText: String,
+)
+
+/**
+ * 能力中心页面模型。
+ */
+data class CapabilityCenterModel(
+	val headers: List<String>,
+	val rows: List<CapabilityCenterRowModel>,
+	val detail: CapabilityCenterDetailModel?,
+)
+
+/**
  * 根据能力类型分组。
  */
 fun groupCapabilitiesForCenter(capabilities: List<CapabilityInfo>): CapabilityCenterGroups =
@@ -43,9 +78,34 @@ fun groupCapabilitiesForCenter(capabilities: List<CapabilityInfo>): CapabilityCe
 	)
 
 /**
+ * 构造 Figma 能力中心表格与详情审计模型。
+ */
+fun buildCapabilityCenterModel(capabilities: List<CapabilityInfo>): CapabilityCenterModel {
+	val rows = capabilities.map { capability ->
+		CapabilityCenterRowModel(
+			capabilityId = capability.capabilityId,
+			displayName = capability.displayName,
+			source = "${capability.type} · ${capability.namespace}",
+			exposureMode = if (capability.enabled) capability.exposureMode else "DISABLED",
+			enabled = capability.enabled,
+			lastSeenAt = capability.lastSeenAt ?: "未记录",
+		)
+	}
+	val first = capabilities.firstOrNull()
+	return CapabilityCenterModel(
+		headers = listOf("能力", "来源", "暴露模式", "最近命中"),
+		rows = rows,
+		detail = first?.let {
+			CapabilityCenterDetailModel(
+				capabilityId = it.capabilityId,
+				auditText = "来源 ${it.namespace}，协议名 ${it.name}，当前暴露模式 ${it.exposureMode}，执行仍经过 ToolRegistry、审批、沙箱和 SQLite 审计。",
+			)
+		},
+	)
+}
+
+/**
  * 中文能力搜索示例。
- *
- * 这些 query 覆盖 P3-5a 中文别名字典的核心路径，用于让用户快速验证 Lucene/BM25 能否命中本地工具。
  */
 fun capabilityExampleQueries(): List<String> =
 	listOf("读取文件", "运行命令", "列出目录", "搜索关键字", "打补丁")
@@ -67,6 +127,7 @@ fun CapabilityCenterSection(
 	var query by remember { mutableStateOf("") }
 	val visibleList = if (capability.searchResults.isNotEmpty()) capability.searchResults else status?.capabilities.orEmpty()
 	val groups = groupCapabilitiesForCenter(visibleList)
+	val model = buildCapabilityCenterModel(visibleList)
 
 	SettingsSectionCard("能力中心") {
 		capability.notice?.let { Text(it, color = BaBiQColors.Success) }
@@ -100,55 +161,76 @@ fun CapabilityCenterSection(
 				}
 			}
 		}
-		CapabilityGroup("Local 工具", groups.local, state.canEditSettings, onSaveCapabilitySettings)
-		CapabilityGroup("MCP 工具", groups.mcp, state.canEditSettings, onSaveCapabilitySettings)
-		CapabilityGroup("Skill", groups.skills, state.canEditSettings, onSaveCapabilitySettings)
+		CapabilityTable(model, state.canEditSettings, onSaveCapabilitySettings)
+		model.detail?.let { detail ->
+			CapabilityAuditBlock(detail)
+		}
+		CapabilityGroupSummary("Local 工具", groups.local)
+		CapabilityGroupSummary("MCP 工具", groups.mcp)
+		CapabilityGroupSummary("Skill", groups.skills)
 	}
 }
 
 @Composable
-private fun CapabilityGroup(
-	title: String,
-	items: List<CapabilityInfo>,
+private fun CapabilityTable(
+	model: CapabilityCenterModel,
 	canEdit: Boolean,
 	onSaveCapabilitySettings: (String, Boolean?, String?) -> Unit,
+) {
+	if (model.rows.isEmpty()) {
+		Text("当前没有能力数据。", color = BaBiQColors.Muted)
+		return
+	}
+	Row(modifier = Modifier.fillMaxWidth().background(BaBiQColors.Background, RoundedCornerShape(6.dp)).padding(8.dp)) {
+		model.headers.forEachIndexed { index, header ->
+			val weight = if (index == 0) 1.4f else 1f
+			Text(header, modifier = Modifier.weight(weight), fontWeight = FontWeight.Bold)
+		}
+		Text("操作", modifier = Modifier.weight(1.6f), fontWeight = FontWeight.Bold)
+	}
+	model.rows.take(12).forEach { row ->
+		Row(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+			Text(row.displayName, modifier = Modifier.weight(1.4f), fontWeight = FontWeight.Medium)
+			Text(row.source, modifier = Modifier.weight(1f), color = BaBiQColors.Muted, style = MaterialTheme.typography.labelSmall)
+			Text(row.exposureMode, modifier = Modifier.weight(1f), color = BaBiQColors.Muted)
+			Text(row.lastSeenAt, modifier = Modifier.weight(1f), color = BaBiQColors.Muted, style = MaterialTheme.typography.labelSmall)
+			FlowRow(modifier = Modifier.weight(1.6f), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+				BooleanSettingButton("启用", row.enabled, canEdit) {
+					onSaveCapabilitySettings(row.capabilityId, !row.enabled, null)
+				}
+				listOf("VISIBLE", "DEFERRED", "DISABLED").forEach { mode ->
+					ExposureModeButton(mode, row.exposureMode, canEdit) {
+						onSaveCapabilitySettings(row.capabilityId, null, mode)
+					}
+				}
+			}
+		}
+		HorizontalDivider(color = BaBiQColors.Border)
+	}
+}
+
+@Composable
+private fun CapabilityAuditBlock(detail: CapabilityCenterDetailModel) {
+	Column(
+		modifier = Modifier.fillMaxWidth().background(BaBiQColors.Background, RoundedCornerShape(8.dp)).padding(12.dp),
+		verticalArrangement = Arrangement.spacedBy(6.dp),
+	) {
+		Text("详情审计", fontWeight = FontWeight.Bold)
+		Text(detail.capabilityId, style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace))
+		Text(detail.auditText, color = BaBiQColors.Muted)
+	}
+}
+
+@Composable
+private fun CapabilityGroupSummary(
+	title: String,
+	items: List<CapabilityInfo>,
 ) {
 	if (items.isEmpty()) {
 		return
 	}
-	Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-		Text(title, fontWeight = FontWeight.Bold)
-		items.take(8).forEach { item ->
-			CapabilityCenterRow(item, canEdit, onSaveCapabilitySettings)
-		}
-	}
-}
-
-@Composable
-private fun CapabilityCenterRow(
-	item: CapabilityInfo,
-	canEdit: Boolean,
-	onSaveCapabilitySettings: (String, Boolean?, String?) -> Unit,
-) {
-	Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-		Text(item.displayName, fontWeight = FontWeight.Medium)
-		Text(
-			"${item.capabilityId} · ${item.type} · ${item.exposureMode}",
-			style = androidx.compose.material3.MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-			color = BaBiQColors.Muted,
-		)
-		Text(item.description.take(140), color = BaBiQColors.Muted)
-		FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-			BooleanSettingButton("启用", item.enabled, canEdit) {
-				onSaveCapabilitySettings(item.capabilityId, !item.enabled, null)
-			}
-			listOf("VISIBLE", "DEFERRED", "DISABLED").forEach { mode ->
-				ExposureModeButton(mode, item.exposureMode, canEdit) {
-					onSaveCapabilitySettings(item.capabilityId, null, mode)
-				}
-			}
-		}
-	}
+	Text("$title · ${items.size}", fontWeight = FontWeight.Bold)
+	Text(items.take(5).joinToString("、") { it.displayName }, color = BaBiQColors.Muted)
 }
 
 @Composable
@@ -159,7 +241,7 @@ private fun ExposureModeButton(
 	onClick: () -> Unit,
 ) {
 	if (mode == current) {
-		androidx.compose.material3.Button(enabled = enabled, onClick = onClick) { Text(mode) }
+		Button(enabled = enabled, onClick = onClick) { Text(mode) }
 	} else {
 		OutlinedButton(enabled = enabled, onClick = onClick) { Text(mode) }
 	}

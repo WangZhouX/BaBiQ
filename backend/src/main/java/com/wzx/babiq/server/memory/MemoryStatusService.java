@@ -69,6 +69,7 @@ public class MemoryStatusService {
                 jobRepository.countByStatus("PENDING"),
                 jobRepository.countByStatus("RUNNING"),
                 candidateRepository.countUnmergedCleanCandidates(),
+                candidateRepository.countUnmergedSecretRiskCandidates(),
                 latestSummary == null ? null : latestSummary.artifactId(),
                 latestSummary == null ? null : latestSummary.createdAt().toString(),
                 Math.max(0, generation));

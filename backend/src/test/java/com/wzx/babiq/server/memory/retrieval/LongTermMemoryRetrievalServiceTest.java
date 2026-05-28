@@ -45,6 +45,24 @@ class LongTermMemoryRetrievalServiceTest {
         assertThat(eventRepository.events.get(0).selectedReferencesJson()).contains("memart_2");
     }
 
+    @Test
+    @DisplayName("预览检索不写入需要 thread/turn 的注入审计")
+    void retrieve_preview_should_not_record_injection_audit_event() {
+        InMemoryArtifactRepository artifactRepository = new InMemoryArtifactRepository();
+        InMemoryRetrievalEventRepository eventRepository = new InMemoryRetrievalEventRepository();
+        artifactRepository.save(artifact("memart_1", "MEMORY_SUMMARY", "html 页面和当前工作目录相关。"));
+        LongTermMemoryRetrievalService service = new LongTermMemoryRetrievalService(
+                artifactRepository,
+                eventRepository,
+                new ApproximateContextTokenEstimator(),
+                LongTermMemoryProperties.defaultsForTests().withRetrievalEnabled(true));
+
+        LongTermMemoryRetrievalResult result = service.retrievePreview("html", 32_768);
+
+        assertThat(result.references()).hasSize(1);
+        assertThat(eventRepository.events).isEmpty();
+    }
+
     private static MemoryArtifactRecord artifact(String id, String type, String text) {
         return new MemoryArtifactRecord(id, type, Path.of(id + ".md").toString(), "hash",
                 1, "job_1", "[]", text, 100,

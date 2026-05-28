@@ -56,14 +56,14 @@ class AppSettingsServiceTest {
         appSettingsService.update(new AppSettingsService.AppSettingsUpdate(
                 "deepseek-official",
                 SandboxMode.READ_ONLY.name(),
-                ApprovalPolicy.NEVER.name(),
+                ApprovalPolicy.ALWAYS.name(),
                 "D:\\Work"));
 
         AppSettings settings = appSettingsService.get();
 
         assertThat(settings.activeProviderId()).isEqualTo("deepseek-official");
         assertThat(settings.sandboxMode()).isEqualTo("READ_ONLY");
-        assertThat(settings.approvalPolicy()).isEqualTo("NEVER");
+        assertThat(settings.approvalPolicy()).isEqualTo("ALWAYS");
         assertThat(settings.defaultCwd()).isEqualTo("D:\\Work");
     }
 
@@ -81,7 +81,7 @@ class AppSettingsServiceTest {
         assertThatThrownBy(() -> appSettingsService.update(new AppSettingsService.AppSettingsUpdate(
                 null,
                 "WORKSPACE_WRITE",
-                "ALWAYS",
+                "PROMPT_ME",
                 null)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("approvalPolicy");

@@ -339,6 +339,38 @@ Button(enabled = state.canSend, onClick = { ... })
 
 > **设计原则**：业务规则尽量上提到状态模型，UI 只负责渲染。这是声明式 UI 的精髓。
 
+#### 1.2 章节示范 vs 真实 AppState 的差异（重要）
+
+本章是 P1-4 时代写的示范章。**真实代码里 `AppState` 在 P2 / P3 阶段又长了很多字段**——但讲解的"不可变 + copy + StateFlow"模式**没有任何变化**。
+
+为了让你看完章节后不被真实代码吓到，这里把"章节示范 vs 真实代码"列清楚：
+
+| 字段 | 章节示范 | 真实代码（当前）| 引入阶段 |
+|---|:---:|:---:|---|
+| `screen` / `connectionState` / `turnState` | ✅ | ✅ | P1-4 |
+| `workspace` / `providerState` / `messages` / `pendingApproval` | ✅ | ✅ | P1-4 |
+| `draft` / `bannerMessage` / `lastError` / `runtimeExpanded` | ✅ | ✅ | P1-4 |
+| `workspaceProjects`（左侧项目列表） | ❌ | ✅ | P2-2 多会话历史 |
+| `threadHistory`（最近会话列表） | ❌ | ✅ | P2-2 |
+| `settingsState`（Provider 编辑 / API key 草稿）| ❌ | ✅ | P2-3 设置系统 |
+| `runRecordState`（持久化运行记录详情） | ❌ | ✅ | P2-4 恢复 + 运行记录 |
+| `runRecordState.observability`（本地统计快照）| ❌ | ✅ | P2-5 可观测 |
+| `mcpState`（本地 MCP server / 工具）| ❌ | ✅ | P2-6 MCP Client |
+| 上下文相关字段（窗口压力 chip / 压缩状态等）| ❌ | ✅ | P3-2 / P3-3 |
+| 长期记忆字段（开关 / 状态 / 引用） | ❌ | ✅ | P3-4 |
+| 能力 + Skill 字段（按需装配状态）| ❌ | ✅ | P3-5 |
+
+**关键观察**：
+
+- AppState 字段数量翻了几倍，但**类型结构**没变——仍然是一个顶层 `data class`，每个子状态自己也是 `data class`（如 `WorkspaceProjectState`、`ThreadHistoryState`、`McpState`、`SettingsState`）
+- 每个子状态都遵循"不可变 + copy"模式，更新方式仍然是 `state.copy(mcpState = state.mcpState.copy(loading = true))`
+- Reducer 仍然是纯函数，只是分派的 `ServerEvent` 子类型更多了（如 `ServerEvent.McpServersUpdated`、`ServerEvent.MemoryStatusChanged`）
+- StateFlow + Compose 重组 + 派生属性的核心模式**完全不变**
+
+如果你现在打开 [`AppState.kt`](../../desktop/src/main/kotlin/com/wzx/babiq/desktop/state/AppState.kt) 看到一长串字段不要慌——把它们想成**多个独立的子状态树**，每个子树都是本章讲过的同一种模式的重复应用。
+
+> **教学价值**：本章只用 P1-4 时代精简版做示范，避免新手被字段数量淹没。等你看懂模式之后，真实代码就是同一首歌唱很多遍。
+
 ---
 
 ### 2. `UiModels` —— 用 sealed interface 表达"几种可能"
@@ -1098,11 +1130,25 @@ Button(onClick = {
 
 ## ➡️ 延伸阅读
 
-- **接下来看后端怎么处理这些请求**：（待写）02-reading-path/02-agent-core.md
-- **想看 UI 长什么样、怎么写**：（待写）02-reading-path/11-desktop-ui.md
+### 想继续看 BaBiQ 自己的代码
+
+- **AppState 在 P2/P3 长了哪些字段** → [`AppState.kt`](../../desktop/src/main/kotlin/com/wzx/babiq/desktop/state/AppState.kt) 完整源码（带中文注释）
+- **每个子状态对应的协议模型** → [`learn/code-index.md`](../code-index.md) "协议模型"段落，按阶段列出所有 `desktop/protocol/*.kt` 文件
+- **后端 ReactAgent 是怎么处理这些请求的** → 读 [`backend/.../agent/AgentLoop.java`](../../backend/src/main/java/com/wzx/babiq/server/agent/AgentLoop.java)（≤50 行主循环）+ [`ReActStrategy.java`](../../backend/src/main/java/com/wzx/babiq/server/agent/ReActStrategy.java)（装配所有 Hook/Interceptor）
+- **UI Composable 是怎么订阅 StateFlow 渲染的** → 读 [`ui/chat/ChatScreen.kt`](../../desktop/src/main/kotlin/com/wzx/babiq/desktop/ui/chat/ChatScreen.kt) 和 [`ui/settings/SettingsPanel.kt`](../../desktop/src/main/kotlin/com/wzx/babiq/desktop/ui/settings/SettingsPanel.kt)
+
+### 想看 BaBiQ 设计为什么这么写
+
+- **P1-4 桌面端架构原型** → [`docs/superpowers/plans/p1-4-compose-desktop-ui/plan.md`](../../docs/superpowers/plans/p1-4-compose-desktop-ui/plan.md)
+- **P2-2 多会话历史**（threadHistory 字段来源）→ [`docs/superpowers/plans/p2-2-thread-history/plan.md`](../../docs/superpowers/plans/p2-2-thread-history/plan.md)
+- **P2-3 设置系统**（settingsState 字段来源）→ [`docs/superpowers/plans/p2-3-settings-system/plan.md`](../../docs/superpowers/plans/p2-3-settings-system/plan.md)
+
+### 官方文档（深入学 Kotlin 生态）
+
 - **Kotlin 官方协程文档**：<https://kotlinlang.org/docs/coroutines-guide.html>
 - **StateFlow 设计文档（kotlinx.coroutines）**：<https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-core/kotlinx.coroutines.flow/-state-flow/>
 - **Compose Multiplatform Desktop 入门**：<https://www.jetbrains.com/compose-multiplatform/>
+- **Ktor Client WebSocket**：<https://ktor.io/docs/client-websockets.html>
 
 ---
 

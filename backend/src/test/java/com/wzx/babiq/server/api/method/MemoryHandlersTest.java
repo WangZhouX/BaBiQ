@@ -6,6 +6,7 @@ import com.wzx.babiq.server.api.dto.MemoryArtifactsListResult;
 import com.wzx.babiq.server.api.dto.MemoryConsolidateResult;
 import com.wzx.babiq.server.api.dto.MemoryJobInfo;
 import com.wzx.babiq.server.api.dto.MemoryJobsListResult;
+import com.wzx.babiq.server.api.dto.MemoryScanResult;
 import com.wzx.babiq.server.api.dto.MemorySettingsSetResult;
 import com.wzx.babiq.server.api.dto.MemoryStatusResult;
 import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
@@ -24,6 +25,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -41,7 +43,7 @@ class MemoryHandlersTest {
     void memory_status_should_delegate_to_service() throws Exception {
         MemoryStatusService service = mock(MemoryStatusService.class);
         MemoryStatusResult expected = new MemoryStatusResult(true, true, true, true,
-                "E:\\BaBiQ\\.babiq\\memories", 1, 0, 5, "memart_1", "2026-05-27T00:00:00Z", 2);
+                "E:\\BaBiQ\\.babiq\\memories", 1, 0, 5, 0, "memart_1", "2026-05-27T00:00:00Z", 2);
         when(service.status()).thenReturn(expected);
         MemoryStatusHandler handler = new MemoryStatusHandler(service);
 
@@ -55,7 +57,7 @@ class MemoryHandlersTest {
     @DisplayName("memory/search 返回长期记忆检索引用")
     void memory_search_should_return_retrieval_references() throws Exception {
         LongTermMemoryRetrievalService service = mock(LongTermMemoryRetrievalService.class);
-        when(service.retrieve(null, null, null, "权限", 32768)).thenReturn(new LongTermMemoryRetrievalResult(
+        when(service.retrievePreview("权限", 32768)).thenReturn(new LongTermMemoryRetrievalResult(
                 List.of(new LongTermMemoryReference("memart_1", "medium", "权限切换需要进入 Agent 运行时")),
                 20));
         MemorySearchHandler handler = new MemorySearchHandler(service, new ApproximateContextTokenEstimator());
@@ -64,6 +66,7 @@ class MemoryHandlersTest {
 
         assertThat(handler.method()).isEqualTo("memory/search");
         assertThat(result).isInstanceOf(com.wzx.babiq.server.api.dto.MemorySearchResult.class);
+        verify(service).retrievePreview("权限", 32768);
     }
 
     @Test
@@ -111,6 +114,19 @@ class MemoryHandlersTest {
 
         assertThat(handler.method()).isEqualTo("memory/consolidate");
         assertThat(result).isEqualTo(expected);
+    }
+
+    @Test
+    @DisplayName("memory/scan 手动触发 Phase1 idle 扫描并返回入队数量")
+    void memory_scan_should_delegate_to_pipeline() throws Exception {
+        LongTermMemoryPipeline pipeline = mock(LongTermMemoryPipeline.class);
+        when(pipeline.scanPhase1()).thenReturn(3);
+        MemoryScanHandler handler = new MemoryScanHandler(pipeline);
+
+        Object result = handler.handle(objectMapper.nullNode(), null);
+
+        assertThat(handler.method()).isEqualTo("memory/scan");
+        assertThat(result).isEqualTo(new MemoryScanResult(3, "QUEUED"));
     }
 
     @Test

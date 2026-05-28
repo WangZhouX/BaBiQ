@@ -9,6 +9,7 @@ import com.wzx.babiq.desktop.protocol.ContextStatusResult
 import com.wzx.babiq.desktop.protocol.MemoryArtifactsListResult
 import com.wzx.babiq.desktop.protocol.MemoryConsolidateResult
 import com.wzx.babiq.desktop.protocol.MemoryJobsListResult
+import com.wzx.babiq.desktop.protocol.MemoryScanResult
 import com.wzx.babiq.desktop.protocol.MemorySearchResult
 import com.wzx.babiq.desktop.protocol.MemorySettingsSetParams
 import com.wzx.babiq.desktop.protocol.MemoryStatusResult
@@ -336,6 +337,7 @@ class AgentClientTest {
 		val jobs: MemoryJobsListResult = client.listMemoryJobs(10)
 		val artifacts: MemoryArtifactsListResult = client.listMemoryArtifacts(10)
 		val consolidate: MemoryConsolidateResult = client.consolidateMemory(force = true)
+		val scan: MemoryScanResult = client.scanMemory()
 
 		assertEquals("memory/status", transport.sent[0].method)
 		assertEquals(true, status.enabled)
@@ -349,6 +351,8 @@ class AgentClientTest {
 		assertEquals("memory_summary.md", artifacts.artifacts.single().artifactPath)
 		assertEquals("memory/consolidate", transport.sent[4].method)
 		assertEquals(true, consolidate.queued)
+		assertEquals("memory/scan", transport.sent[5].method)
+		assertEquals(2, scan.queuedPhase1Jobs)
 	}
 
 	@Test
@@ -411,8 +415,23 @@ class AgentClientTest {
 		assertIs<ServerEvent.TurnStarted>(event)
 	}
 
+	@Test
+	fun `transport send cancelled is translated to reconnectable client error`() = runTest {
+		val transport = FakeAgentTransport(sendFailure = IllegalStateException("Channel was cancelled"))
+		val client = AgentClient(transport, backgroundScope)
+		client.connect()
+
+		val error = assertFailsWith<AgentClientException> {
+			client.createThread("E:\\BaBiQ")
+		}
+
+		assertEquals(-32098, error.code)
+		assertTrue(error.message.contains("后端连接已断开"))
+	}
+
 	private inner class FakeAgentTransport(
 		private val errorMethods: Set<String> = emptySet(),
+		private val sendFailure: RuntimeException? = null,
 	) : AgentTransport {
 		override val incoming = MutableSharedFlow<String>(extraBufferCapacity = 16)
 		val sent = mutableListOf<JsonRpcRequest>()
@@ -420,6 +439,7 @@ class AgentClientTest {
 		override suspend fun connect() = Unit
 
 		override suspend fun send(text: String) {
+			sendFailure?.let { throw it }
 			val request = protocolJson.decodeFromString(JsonRpcRequest.serializer(), text)
 			sent += request
 			incoming.emit(responseFor(request))
@@ -670,6 +690,10 @@ class AgentClientTest {
 					put("queued", true)
 					put("jobId", "memjob_2")
 					put("generation", 2)
+					put("status", "QUEUED")
+				}
+				"memory/scan" -> buildJsonObject {
+					put("queuedPhase1Jobs", 2)
 					put("status", "QUEUED")
 				}
 				"capability/status" -> capabilityStatus()

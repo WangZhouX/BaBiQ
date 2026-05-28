@@ -13,6 +13,11 @@ public interface MemoryCandidateRepository {
         return 0;
     }
 
+    /** 统计尚未归并且被隔离的 SECRET_RISK 候选，用于设置页安全指标。 */
+    default long countUnmergedSecretRiskCandidates() {
+        return 0;
+    }
+
     /** 按 Codex 风格排序选择 Phase2 输入。 */
     default List<MemoryCandidateRecord> selectForPhase2(int limit) {
         return List.of();

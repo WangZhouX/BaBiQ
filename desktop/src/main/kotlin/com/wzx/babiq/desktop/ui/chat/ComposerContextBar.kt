@@ -37,7 +37,7 @@ fun ComposerContextBar(
 	onChangeSandboxMode: ((String) -> Unit)? = null,
 	modifier: Modifier = Modifier,
 ) {
-	var p3StatusExpanded by remember { mutableStateOf(false) }
+	var p3StatusExpanded by remember { mutableStateOf<P3StatusPopoverKind?>(null) }
 	FlowRow(
 		modifier = modifier,
 		horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -63,29 +63,56 @@ fun ComposerContextBar(
 			StatusBadge(
 				text = contextWindowChipLabel(state.contextWindowState),
 				tone = contextWindowChipTone(state.contextWindowState),
-				modifier = Modifier.clickable { p3StatusExpanded = true },
+				modifier = Modifier.clickable { p3StatusExpanded = P3StatusPopoverKind.CONTEXT },
 			)
 			DropdownMenu(
-				expanded = p3StatusExpanded,
-				onDismissRequest = { p3StatusExpanded = false },
+				expanded = p3StatusExpanded == P3StatusPopoverKind.CONTEXT,
+				onDismissRequest = { p3StatusExpanded = null },
 			) {
 				ContextStatusPopover(
 					context = state.contextWindowState,
 					memory = state.memoryState,
 					capability = state.capabilityState,
+					kind = P3StatusPopoverKind.CONTEXT,
 				)
 			}
 		}
-		StatusBadge(
-			text = memoryChipLabel(state.memoryState),
-			tone = memoryChipTone(state.memoryState),
-			modifier = Modifier.clickable { p3StatusExpanded = true },
-		)
-		StatusBadge(
-			text = capabilityChipLabel(state.capabilityState),
-			tone = capabilityChipTone(state.capabilityState),
-			modifier = Modifier.clickable { p3StatusExpanded = true },
-		)
+		Box {
+			StatusBadge(
+				text = memoryChipLabel(state.memoryState),
+				tone = memoryChipTone(state.memoryState),
+				modifier = Modifier.clickable { p3StatusExpanded = P3StatusPopoverKind.MEMORY },
+			)
+			DropdownMenu(
+				expanded = p3StatusExpanded == P3StatusPopoverKind.MEMORY,
+				onDismissRequest = { p3StatusExpanded = null },
+			) {
+				ContextStatusPopover(
+					context = state.contextWindowState,
+					memory = state.memoryState,
+					capability = state.capabilityState,
+					kind = P3StatusPopoverKind.MEMORY,
+				)
+			}
+		}
+		Box {
+			StatusBadge(
+				text = capabilityChipLabel(state.capabilityState),
+				tone = capabilityChipTone(state.capabilityState),
+				modifier = Modifier.clickable { p3StatusExpanded = P3StatusPopoverKind.CAPABILITY },
+			)
+			DropdownMenu(
+				expanded = p3StatusExpanded == P3StatusPopoverKind.CAPABILITY,
+				onDismissRequest = { p3StatusExpanded = null },
+			) {
+				ContextStatusPopover(
+					context = state.contextWindowState,
+					memory = state.memoryState,
+					capability = state.capabilityState,
+					kind = P3StatusPopoverKind.CAPABILITY,
+				)
+			}
+		}
 		ProviderSelector(
 			providerState = state.providerState,
 			onSelectProvider = onSelectProvider,

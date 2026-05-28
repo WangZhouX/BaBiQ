@@ -32,12 +32,14 @@ import org.springframework.ai.tool.ToolCallback;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
-import java.util.LinkedHashMap;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -210,7 +212,9 @@ public class ReActStrategy {
             builder.hooks(limitHook, resumeJumpCleanupHook, tokenUsageHook);
         } else {
             // ON_REQUEST 和暂未单独实现的 ON_FAILURE 都保持需要确认的保守行为，避免权限设置解析异常时静默放行。
-            builder.hooks(buildHitlHook(), limitHook, resumeJumpCleanupHook, tokenUsageHook);
+            // ON_REQUEST 和暂未单独实现的 ON_FAILURE 保持高风险工具确认；
+            // ALWAYS 则把本轮可见工具全部挂进 HITL，确保设置页切换真正影响 Agent。
+            builder.hooks(buildHitlHook(effectivePolicy.approvalPolicy()), limitHook, resumeJumpCleanupHook, tokenUsageHook);
         }
         return builder.build();
     }
@@ -448,6 +452,63 @@ public class ReActStrategy {
      * <p>只有审批策略不是 NEVER 时才安装该 hook；因此“从不询问”会真正影响后端 Agent，
      * 而不只是改变桌面端按钮高亮。</p>
      */
+    private HumanInTheLoopHook buildHitlHook(ApprovalPolicy approvalPolicy) {
+        HumanInTheLoopHook.Builder hitlBuilder = HumanInTheLoopHook.builder();
+        for (String toolName : approvalToolNamesFor(approvalPolicy)) {
+            hitlBuilder.approvalOn(toolName, ToolConfig.builder().description(approvalDescription(toolName, approvalPolicy)).build());
+        }
+        return hitlBuilder.build();
+    }
+
+    /**
+     * 根据审批策略计算本轮需要 Human-in-the-loop 的工具名。
+     *
+     * <p>这个方法是设置页“按需询问 / 全部询问 / 永不询问”的后端事实源：
+     * UI 保存策略后，下一轮 turn 构建 ReactAgent 时会用同一组规则挂载官方 HITL Hook。</p>
+     *
+     * @param approvalPolicy 本轮审批策略
+     * @return 需要审批的工具名，按声明顺序去重
+     */
+    List<String> approvalToolNamesFor(ApprovalPolicy approvalPolicy) {
+        if (approvalPolicy == ApprovalPolicy.NEVER) {
+            return List.of();
+        }
+        if (approvalPolicy == ApprovalPolicy.ALWAYS) {
+            return toolRegistry.names();
+        }
+
+        Set<String> names = new LinkedHashSet<>();
+        names.add("write_file");
+        names.add("exec_shell");
+        names.add("apply_patch");
+        for (String toolName : toolRegistry.names()) {
+            if (toolName.startsWith("mcp.")) {
+                // MCP 工具来自外部 server，即使是读操作也先让用户确认，避免第三方工具越权访问本机数据。
+                names.add(toolName);
+            }
+        }
+        return List.copyOf(names);
+    }
+
+    /**
+     * 给 HITL 弹窗提供工具审批说明，保持高风险工具和全量审批的语义可读。
+     */
+    private String approvalDescription(String toolName, ApprovalPolicy approvalPolicy) {
+        if (approvalPolicy == ApprovalPolicy.ALWAYS) {
+            return "全部询问策略要求确认每一次工具调用";
+        }
+        if ("write_file".equals(toolName)) {
+            return "写入文件需要确认";
+        }
+        if ("exec_shell".equals(toolName)) {
+            return "执行 Shell 命令需要确认";
+        }
+        if ("apply_patch".equals(toolName)) {
+            return "应用补丁需要确认";
+        }
+        return "调用 MCP 工具需要确认";
+    }
+
     private HumanInTheLoopHook buildHitlHook() {
         HumanInTheLoopHook.Builder hitlBuilder = HumanInTheLoopHook.builder()
                 .approvalOn("write_file", ToolConfig.builder().description("写入文件需要确认").build())

@@ -44,6 +44,7 @@ enum class TurnState {
 /** 主内容区域当前显示的页面。 */
 enum class Screen {
 	Chat,
+	Search,
 	Settings,
 	Mcp,
 }

@@ -20,6 +20,7 @@ import com.wzx.babiq.desktop.protocol.MemoryArtifactInfo
 import com.wzx.babiq.desktop.protocol.MemoryConsolidateResult
 import com.wzx.babiq.desktop.protocol.MemoryJobInfo
 import com.wzx.babiq.desktop.protocol.MemoryJobsListResult
+import com.wzx.babiq.desktop.protocol.MemoryScanResult
 import com.wzx.babiq.desktop.protocol.MemoryReferenceInfo
 import com.wzx.babiq.desktop.protocol.MemorySearchResult
 import com.wzx.babiq.desktop.protocol.MemorySettingsSetParams
@@ -195,6 +196,31 @@ class ChatControllerTest {
 		assertEquals(listOf("listMcpServers", "listMcpTools:local-filesystem"), gateway.calls)
 		assertEquals("local-filesystem", controller.state.value.mcpState.servers.single().serverId)
 		assertEquals("read_file", controller.state.value.mcpState.toolsByServer["local-filesystem"]?.single()?.toolName)
+	}
+
+	@Test
+	fun `P3 Figma 真实产品页需要独立搜索工作台路由`() {
+		val screens = Screen.entries.map { it.name }
+
+		assertTrue("Search" in screens)
+		assertFalse("Overview" in screens)
+	}
+
+	@Test
+	fun `打开搜索工作台时加载长期记忆 能力目录和 Skill 元数据`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(gateway, backgroundScope, initialState = AppState(connectionState = ConnectionState.Connected))
+
+		controller.showScreen(Screen.Search)
+		advanceUntilIdle()
+
+		assertEquals(
+			listOf("getMemoryStatus", "listMemoryJobs:20", "listMemoryArtifacts:20", "getCapabilityStatus", "listSkills"),
+			gateway.calls,
+		)
+		assertEquals(Screen.Search, controller.state.value.screen)
+		assertEquals(5, controller.state.value.memoryState.status?.cleanCandidateCount)
+		assertEquals(1, controller.state.value.capabilityState.status?.totalCount)
 	}
 
 	@Test
@@ -446,7 +472,7 @@ class ChatControllerTest {
 		advanceUntilIdle()
 
 		assertEquals(
-			listOf("getMemoryStatus", "listMemoryJobs:20", "listMemoryArtifacts:20", "getCapabilityStatus", "listSkills"),
+			listOf("listMcpServers", "listMcpTools:local-filesystem", "getMemoryStatus", "listMemoryJobs:20", "listMemoryArtifacts:20", "getCapabilityStatus", "listSkills"),
 			gateway.calls,
 		)
 		assertEquals(5, controller.state.value.memoryState.status?.cleanCandidateCount)
@@ -479,6 +505,19 @@ class ChatControllerTest {
 		assertEquals(listOf("consolidateMemory:true", "getMemoryStatus", "listMemoryJobs:20", "listMemoryArtifacts:20"), gateway.calls)
 		assertEquals("长期记忆归并已入队：memjob_1", controller.state.value.memoryState.notice)
 		assertEquals("memart_1", controller.state.value.memoryState.artifacts.single().artifactId)
+	}
+
+	@Test
+	fun `手动扫描长期记忆会调用后端并刷新审计状态`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(gateway, backgroundScope, initialState = AppState(connectionState = ConnectionState.Connected))
+
+		controller.scanMemory()
+		advanceUntilIdle()
+
+		assertEquals(listOf("scanMemory", "getMemoryStatus", "listMemoryJobs:20", "listMemoryArtifacts:20"), gateway.calls)
+		assertEquals("长期记忆扫描完成，新增 Phase1 任务 2 个", controller.state.value.memoryState.notice)
+		assertEquals("phase2:1", controller.state.value.memoryState.jobs.single().jobKey)
 	}
 
 	@Test
@@ -604,6 +643,24 @@ class ChatControllerTest {
 		assertEquals("恢复后再发", controller.state.value.draft)
 	}
 
+	@Test
+	fun `sendMessage channel cancellation switches UI to reconnecting`() = runTest {
+		val gateway = FakeGateway(createThreadFailure = RuntimeException("后端连接已断开，请重新连接后重试"))
+		val controller = ChatController(
+			gateway,
+			backgroundScope,
+			reconnectPolicy = ReconnectPolicy(initialDelayMs = 60_000),
+		)
+		controller.connect()
+
+		controller.sendMessage("你好")
+
+		assertEquals(ConnectionState.Reconnecting, controller.state.value.connectionState)
+		assertEquals(TurnState.Failed, controller.state.value.turnState)
+		assertTrue(controller.state.value.bannerMessage.orEmpty().contains("连接已断开"))
+		assertTrue(controller.state.value.messages.any { it is ChatMessage.User && it.text == "你好" })
+	}
+
 	private fun sampleApproval() = com.wzx.babiq.desktop.protocol.ApprovalRequestPayload(
 		threadId = "thread-1",
 		turnId = "turn-1",
@@ -640,6 +697,7 @@ class ChatControllerTest {
 	private inner class FakeGateway(
 		private val connectFails: Boolean = false,
 		private var connectFailuresBeforeSuccess: Int = 0,
+		private val createThreadFailure: RuntimeException? = null,
 		private val settings: AppSettingsResult = AppSettingsResult("deepseek-official", "WORKSPACE_WRITE", "ON_REQUEST", "E:\\BaBiQ"),
 		private val policy: SandboxPolicyResult = SandboxPolicyResult("WORKSPACE_WRITE", "工作区可写"),
 		private val history: ThreadListResult = ThreadListResult(),
@@ -682,6 +740,7 @@ class ChatControllerTest {
 
 		override suspend fun createThread(cwd: String): String {
 			calls += "createThread:$cwd"
+			createThreadFailure?.let { throw it }
 			return "thread-1"
 		}
 
@@ -898,6 +957,11 @@ class ChatControllerTest {
 		override suspend fun consolidateMemory(force: Boolean): MemoryConsolidateResult {
 			calls += "consolidateMemory:$force"
 			return MemoryConsolidateResult(queued = true, jobId = "memjob_1", generation = 1, status = "QUEUED")
+		}
+
+		override suspend fun scanMemory(): MemoryScanResult {
+			calls += "scanMemory"
+			return MemoryScanResult(queuedPhase1Jobs = 2, status = "QUEUED")
 		}
 
 		override suspend fun getCapabilityStatus(): CapabilityStatusResult {

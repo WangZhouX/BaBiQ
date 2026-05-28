@@ -15,7 +15,7 @@ class TurnSummaryFormattingTest {
 	}
 
 	@Test
-	fun `summary maps backend protocol fields to ui labels`() {
+	fun `summary main feedback shows total usage without prompt completion split`() {
 		val summary = ThreadItem.TurnSummary(
 			id = "summary-1",
 			status = "completed",
@@ -29,11 +29,10 @@ class TurnSummaryFormattingTest {
 
 		val metrics = summary.toSummaryMetrics()
 
-		assertEquals("输入 1,824", metrics[0].label)
-		assertEquals("输出 386", metrics[1].label)
-		assertEquals("总计 2,210", metrics[2].label)
-		assertEquals("total tokens", metrics[2].helper)
-		assertEquals("8.2 秒", metrics[3].label)
-		assertEquals("5 工具", metrics[4].label)
+		assertEquals(3, metrics.size)
+		assertEquals("总用量 2,210", metrics[0].label)
+		assertEquals("tokens", metrics[0].helper)
+		assertEquals("8.2 秒", metrics[1].label)
+		assertEquals("5 工具", metrics[2].label)
 	}
 }
