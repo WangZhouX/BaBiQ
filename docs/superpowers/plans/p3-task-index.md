@@ -15,6 +15,7 @@
 | P3-4 | 已完成 | 长期记忆异步流水线 | `docs/superpowers/plans/p3-4-long-term-memory/plan.md` | P3-3 |
 | P3-5 | 已完成 | 按需能力装配、记忆检索增强和桌面控制 | `docs/superpowers/plans/p3-5-capability-retrieval-control/plan.md` | P3-4 |
 | P3-5a | 已完成 | Lucene 能力搜索替换：移除 fallback，接入 Spring AI Community LuceneToolSearcher | `docs/superpowers/plans/p3-5a-lucene-capability-search/plan.md` | P3-5 |
+| P3-UI | 待确认 | P3 Figma 原型刷新：补齐上下文、记忆、能力装配和中文能力搜索的用户可见表达 | `docs/superpowers/plans/p3-ui-prototype-refresh/plan.md` | P3-5a |
 
 ## 执行规则
 
@@ -26,5 +27,6 @@
 - P3-4 已完成长期记忆异步流水线：SQLite 事实源、Phase 1 idle 扫描抽取、secret redaction、Phase 2 generation 归并、Markdown mirror、memory summary read path 注入、JSON-RPC 状态/设置入口和桌面最小控制已接入。
 - P3-5 已完成按需能力装配、`tool_search`、本地 Skill metadata 注册、长期记忆有界检索增强、能力/记忆检索 JSON-RPC 和桌面最小控制；本阶段保持 Spring AI `1.1.6` 不升级。
 - P3-5a 已完成能力搜索底层替换：`CapabilitySearchService` 默认实现改为 Spring AI Community `tool-searcher-lucene:1.0.1`，旧 `FallbackLexicalCapabilitySearchService` 已移除，新事件策略写入 `LUCENE`。
-- 下一步应先做 P3 总体验收复盘，再由用户确认是否进入 P4 或新的专项增强计划。
+- P3-UI 待确认：该专项只刷新 Figma 原型，把 P3 已完成的上下文窗口、短期压缩、长期记忆、按需能力装配和中文能力搜索转成用户可见的交互表达；不直接修改 `desktop/` 或 `backend/` 代码。
+- 下一步应先确认是否执行 P3-UI 原型刷新；原型确认后再做 P3 总体验收复盘，或由用户决定是否进入 P4 / P3-6 等新的专项增强计划。
 - 任何阶段新增业务表或字段，都必须同步 SQL 中文注释、`bq_schema_comments`、Entity 注释和覆盖测试。

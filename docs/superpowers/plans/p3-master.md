@@ -101,8 +101,9 @@ P3 的原则是“复用官方组件承载能力，BaBiQ 自己掌控策略和�
 | P3-4 | 已完成 | LongTermMemoryPipeline 实现：异步提取、归并、memory summary 注入 | `docs/superpowers/plans/p3-4-long-term-memory/plan.md` | P3-3 |
 | P3-5 | 已完成 | 按需能力装配、记忆检索增强和桌面控制：tool_search、Skill metadata、能力策略、引用和记忆检索开关 | `docs/superpowers/plans/p3-5-capability-retrieval-control/plan.md` | P3-4 |
 | P3-5a | 已完成 | Lucene 能力搜索替换：移除 fallback，接入 Spring AI Community LuceneToolSearcher；中文别名富化已落地 | `docs/superpowers/plans/p3-5a-lucene-capability-search/plan.md` | P3-5 |
+| P3-UI | 待确认 | Figma 原型刷新：补齐上下文、记忆、能力装配和中文能力搜索的用户可见表达 | `docs/superpowers/plans/p3-ui-prototype-refresh/plan.md` | P3-5a |
 
-说明：`P3-1` 已按用户要求落地最小可运行底座，包括 `ContextAssembler`、`ContextSnapshot` 和能力目录摘要。`P3-2` 已把该底座接入真实 `AgentLoop`，并完成持久化快照、JSON-RPC 查询和桌面上下文指示。`P3-3` 已实现短期压缩预算策略、summary 持久化、active window 替换、`ContextCompactionItem` 事件、`context/compact` 手动入口和桌面上下文压缩状态展示。`P3-3A` 已补齐压缩审计字段、事务安装边界、`window_ordinal` 乐观校验、启动恢复和关键失败路径测试。`P3-4` 已完成长期记忆异步流水线、SQLite 审计、Markdown mirror、长期记忆 summary 注入和桌面最小控制。`P3-5` 已完成按需能力装配、`tool_search`、Skill metadata 注册、长期记忆有界检索增强和桌面控制。`P3-5a` 已把能力搜索底层从自实现 fallback 替换为 Spring AI Community `LuceneToolSearcher`，新搜索事件策略写入 `LUCENE`，并通过 `CapabilityCatalogSyncService` 中文别名字典富化 searchText。
+说明：`P3-1` 已按用户要求落地最小可运行底座，包括 `ContextAssembler`、`ContextSnapshot` 和能力目录摘要。`P3-2` 已把该底座接入真实 `AgentLoop`，并完成持久化快照、JSON-RPC 查询和桌面上下文指示。`P3-3` 已实现短期压缩预算策略、summary 持久化、active window 替换、`ContextCompactionItem` 事件、`context/compact` 手动入口和桌面上下文压缩状态展示。`P3-3A` 已补齐压缩审计字段、事务安装边界、`window_ordinal` 乐观校验、启动恢复和关键失败路径测试。`P3-4` 已完成长期记忆异步流水线、SQLite 审计、Markdown mirror、长期记忆 summary 注入和桌面最小控制。`P3-5` 已完成按需能力装配、`tool_search`、Skill metadata 注册、长期记忆有界检索增强和桌面控制。`P3-5a` 已把能力搜索底层从自实现 fallback 替换为 Spring AI Community `LuceneToolSearcher`，新搜索事件策略写入 `LUCENE`，并通过 `CapabilityCatalogSyncService` 中文别名字典富化 searchText。`P3-UI` 是原型刷新专项，目标是把 P3 已完成能力转化为 Figma 中用户可见、可验收的交互表达，不改变后端或桌面端运行时。
 
 ---
 
@@ -288,6 +289,7 @@ P3 任一子阶段完成前，至少需要满足：
 
 ## 9. 下一步
 
-1. 进行 P3 总体验收复盘，核对上下文窗口、短期压缩、长期记忆、按需能力装配、Lucene 能力搜索和桌面控制是否满足当前阶段目标。
-2. 用户确认后，再编写下一阶段详细计划；候选方向包括 P4 多 Agent / 更强沙箱 / A2A / 远程 MCP / 更完整记忆管理 UI。
-3. 继续保持 BaBiQ SQLite 事实源、ContextSnapshot 审计和“完整记忆/完整 Skill 正文不常驻注入”的边界。
+1. 先由用户确认是否执行 `P3-UI` 原型刷新，把 P3 上下文、记忆、能力装配和中文能力搜索补进 Figma 原型。
+2. 原型确认后进行 P3 总体验收复盘，核对上下文窗口、短期压缩、长期记忆、按需能力装配、Lucene 能力搜索和桌面控制是否满足当前阶段目标。
+3. 用户确认后，再编写下一阶段详细计划；候选方向包括 P3-6 VectorStore 语义能力搜索、P4 多 Agent / 更强沙箱 / A2A / 远程 MCP / 更完整记忆管理 UI。
+4. 继续保持 BaBiQ SQLite 事实源、ContextSnapshot 审计和“完整记忆/完整 Skill 正文不常驻注入”的边界。
