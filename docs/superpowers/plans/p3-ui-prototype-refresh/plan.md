@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED: Use `superpowers:executing-plans` to execute this plan, and use Figma MCP tools for prototype inspection or updates. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
-> **状态:** 待用户确认后执行。本计划只刷新 Figma 原型，不直接修改 `desktop/` 或 `backend/` 生产代码。
+> **状态:** 已完成。本计划只刷新 Figma 原型，不直接修改 `desktop/` 或 `backend/` 生产代码；执行记录见 `codex-handoff.md`。
 
 **Goal:** 把现有 P2 高保真交互原型升级为能表达 P3 上下文窗口、短期压缩、长期记忆、按需能力装配和 Lucene 中文能力搜索的 P3 原型。
 
