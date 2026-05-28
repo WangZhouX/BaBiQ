@@ -600,6 +600,55 @@ class ChatController(
 	}
 
 	/**
+	 * 手动检索长期记忆，用于设置页验证 read path 会命中哪些记忆片段。
+	 *
+	 * 这个动作只读后端 `memory/search`，不会把结果写入聊天历史，也不会强制下一轮模型一定注入这些片段；
+	 * 真正的注入仍由后端 ContextWindowRuntime 根据当前 turn、预算和记忆开关重新装配。
+	 */
+	fun searchMemory(query: String) {
+		val trimmedQuery = query.trim()
+		if (trimmedQuery.isEmpty()) {
+			return
+		}
+		scope.launch(start = CoroutineStart.UNDISPATCHED) {
+			_state.update {
+				it.copy(
+					memoryState = it.memoryState.copy(
+						loading = true,
+						error = null,
+						searchQuery = trimmedQuery,
+					),
+				)
+			}
+			try {
+				val result = gateway.searchMemory(trimmedQuery, state.value.currentThreadId)
+				_state.update {
+					it.copy(
+						memoryState = it.memoryState.copy(
+							loading = false,
+							searchQuery = trimmedQuery,
+							searchStrategy = result.strategy,
+							searchResults = result.references,
+							searchTokenEstimate = result.tokenEstimate,
+							error = null,
+						),
+					)
+				}
+			} catch (exception: Exception) {
+				_state.update {
+					it.copy(
+						memoryState = it.memoryState.copy(
+							loading = false,
+							error = exception.message ?: "搜索长期记忆失败",
+						),
+						lastError = exception.message,
+					)
+				}
+			}
+		}
+	}
+
+	/**
 	 * 手动触发一次长期记忆 Phase2 归并。
 	 */
 	fun consolidateMemory(force: Boolean = true) {

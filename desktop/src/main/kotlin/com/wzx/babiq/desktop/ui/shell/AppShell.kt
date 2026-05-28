@@ -40,6 +40,7 @@ fun AppShell(
 	onSaveApprovalPolicy: (String) -> Unit,
 	onSaveMemorySettings: (Boolean?, Boolean?, Boolean?, Boolean?) -> Unit,
 	onConsolidateMemory: () -> Unit,
+	onSearchMemory: (String) -> Unit,
 	onSaveCapabilitySettings: (String, Boolean?, String?) -> Unit,
 	onSearchCapabilities: (String) -> Unit,
 	onRefreshMcpServer: (String) -> Unit,
@@ -84,6 +85,7 @@ fun AppShell(
 					onSaveApprovalPolicy = onSaveApprovalPolicy,
 					onSaveMemorySettings = onSaveMemorySettings,
 					onConsolidateMemory = onConsolidateMemory,
+					onSearchMemory = onSearchMemory,
 					onSaveCapabilitySettings = onSaveCapabilitySettings,
 					onSearchCapabilities = onSearchCapabilities,
 				)

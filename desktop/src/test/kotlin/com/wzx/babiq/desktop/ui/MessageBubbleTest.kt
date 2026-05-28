@@ -18,12 +18,35 @@ class MessageBubbleTest {
 		assertEquals("文件 · patched", titleFor(ChatMessage.FileChange("file-1", "patch", "README.md", "patched", null)))
 	}
 
+	@Test
+	fun `上下文压缩事件显示为 P3 上下文卡片`() {
+		val message = ChatMessage.Tool(
+			id = "ctx-1",
+			title = "上下文压缩",
+			status = "SUCCESS",
+			detail = "旧历史已压缩为短期摘要\n摘要 summary-1",
+		)
+
+		assertEquals("上下文 · SUCCESS", titleFor(message))
+		assertEquals("旧历史已压缩为短期摘要\n摘要 summary-1", bodyFor(message))
+	}
+
 	/**
 	 * titleFor 是渲染文件的私有辅助函数；测试通过反射读取它，避免为了测试把 UI 内部细节暴露成 public API。
 	 */
 	private fun titleFor(message: ChatMessage): String {
 		val method = Class.forName("com.wzx.babiq.desktop.ui.chat.MessageBubbleKt")
 			.getDeclaredMethod("titleFor", ChatMessage::class.java)
+		method.isAccessible = true
+		return method.invoke(null, message) as String
+	}
+
+	/**
+	 * bodyFor 同样是渲染内部函数；这里只验证 P3 事件不会重复显示“上下文压缩”标题。
+	 */
+	private fun bodyFor(message: ChatMessage): String {
+		val method = Class.forName("com.wzx.babiq.desktop.ui.chat.MessageBubbleKt")
+			.getDeclaredMethod("bodyFor", ChatMessage::class.java)
 		method.isAccessible = true
 		return method.invoke(null, message) as String
 	}

@@ -2,6 +2,7 @@ package com.wzx.babiq.desktop.ui.chat
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material3.DropdownMenu
@@ -36,6 +37,7 @@ fun ComposerContextBar(
 	onChangeSandboxMode: ((String) -> Unit)? = null,
 	modifier: Modifier = Modifier,
 ) {
+	var p3StatusExpanded by remember { mutableStateOf(false) }
 	FlowRow(
 		modifier = modifier,
 		horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -57,17 +59,32 @@ fun ComposerContextBar(
 				onChangeSandboxMode = onChangeSandboxMode,
 			)
 		}
-		StatusBadge(
-			text = contextWindowChipLabel(state.contextWindowState),
-			tone = contextWindowChipTone(state.contextWindowState),
-		)
+		Box {
+			StatusBadge(
+				text = contextWindowChipLabel(state.contextWindowState),
+				tone = contextWindowChipTone(state.contextWindowState),
+				modifier = Modifier.clickable { p3StatusExpanded = true },
+			)
+			DropdownMenu(
+				expanded = p3StatusExpanded,
+				onDismissRequest = { p3StatusExpanded = false },
+			) {
+				ContextStatusPopover(
+					context = state.contextWindowState,
+					memory = state.memoryState,
+					capability = state.capabilityState,
+				)
+			}
+		}
 		StatusBadge(
 			text = memoryChipLabel(state.memoryState),
 			tone = memoryChipTone(state.memoryState),
+			modifier = Modifier.clickable { p3StatusExpanded = true },
 		)
 		StatusBadge(
 			text = capabilityChipLabel(state.capabilityState),
 			tone = capabilityChipTone(state.capabilityState),
+			modifier = Modifier.clickable { p3StatusExpanded = true },
 		)
 		ProviderSelector(
 			providerState = state.providerState,

@@ -60,6 +60,7 @@ fun BaBiQDesktopApp() {
 				scope.launch { controller.saveMemorySettings(enabled, generateEnabled, readEnabled, retrievalEnabled) }
 			},
 			onConsolidateMemory = { controller.consolidateMemory(force = true) },
+			onSearchMemory = { query -> controller.searchMemory(query) },
 			onSaveCapabilitySettings = { capabilityId, enabled, exposureMode ->
 				controller.saveCapabilitySettings(capabilityId, enabled, exposureMode)
 			},

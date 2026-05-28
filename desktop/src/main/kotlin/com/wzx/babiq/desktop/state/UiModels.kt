@@ -9,6 +9,7 @@ import com.wzx.babiq.desktop.protocol.McpServerInfo
 import com.wzx.babiq.desktop.protocol.McpToolInfo
 import com.wzx.babiq.desktop.protocol.MemoryArtifactInfo
 import com.wzx.babiq.desktop.protocol.MemoryJobInfo
+import com.wzx.babiq.desktop.protocol.MemoryReferenceInfo
 import com.wzx.babiq.desktop.protocol.MemoryStatusResult
 import com.wzx.babiq.desktop.protocol.ObservabilitySnapshotResult
 import com.wzx.babiq.desktop.protocol.ProviderInfo
@@ -192,6 +193,10 @@ data class ContextWindowUiState(
  * @property status 后端长期记忆开关、候选数量和最新 generation 摘要；为空表示尚未加载。
  * @property jobs 最近后台任务，设置页用于审计 Phase1/Phase2 是否在推进。
  * @property artifacts 最近 Markdown 产物，设置页用于确认 read path 可用的 summary 版本。
+ * @property searchQuery 设置页最近一次长期记忆检索 query；它只用于用户测试 read path，不会写入聊天历史。
+ * @property searchStrategy 后端 memory/search 返回的检索策略，帮助用户确认当前走 summary-only 还是增强检索。
+ * @property searchResults 设置页 memory/search 的引用片段结果；它们是审计预览，不代表下一轮一定注入模型。
+ * @property searchTokenEstimate 最近一次检索结果的 token 估算，用于提醒用户 read path 会消耗多少上下文预算。
  * @property error 最近一次读取或写入长期记忆设置失败的错误。
  * @property notice 最近一次长期记忆操作的短提示。
  */
@@ -200,6 +205,10 @@ data class MemoryUiState(
 	val status: MemoryStatusResult? = null,
 	val jobs: List<MemoryJobInfo> = emptyList(),
 	val artifacts: List<MemoryArtifactInfo> = emptyList(),
+	val searchQuery: String = "",
+	val searchStrategy: String? = null,
+	val searchResults: List<MemoryReferenceInfo> = emptyList(),
+	val searchTokenEstimate: Int = 0,
 	val error: String? = null,
 	val notice: String? = null,
 )

@@ -57,6 +57,7 @@ fun MessageBubble(message: ChatMessage) {
 private fun backgroundFor(message: ChatMessage): Color =
 	when (message) {
 		is ChatMessage.User -> Color(0xFFE4ECF7)
+		is ChatMessage.Tool if message.isContextEvent() -> Color(0xFFEAF3EF)
 		is ChatMessage.Tool, is ChatMessage.FileChange -> Color(0xFFF1EFE8)
 		else -> BaBiQColors.Panel
 	}
@@ -66,6 +67,7 @@ private fun titleFor(message: ChatMessage): String =
 	when (message) {
 		is ChatMessage.User -> ""
 		is ChatMessage.Agent -> ""
+		is ChatMessage.Tool if message.isContextEvent() -> "上下文 · ${message.status}"
 		is ChatMessage.Tool -> "工具 · ${message.status}"
 		is ChatMessage.FileChange -> "文件 · ${message.status}"
 		is ChatMessage.TurnSummary -> "摘要"
@@ -76,6 +78,7 @@ private fun bodyFor(message: ChatMessage): String =
 	when (message) {
 		is ChatMessage.User -> message.text
 		is ChatMessage.Agent -> message.text
+		is ChatMessage.Tool if message.isContextEvent() -> message.detail
 		is ChatMessage.Tool -> "${message.title}\n${message.detail}"
 		is ChatMessage.FileChange -> "${message.action}: ${message.path}\n${message.preview.orEmpty()}"
 		is ChatMessage.TurnSummary -> ""
@@ -84,8 +87,16 @@ private fun bodyFor(message: ChatMessage): String =
 /** 工具和文件变更使用等宽字体，便于阅读命令、路径和输出。 */
 @Composable
 private fun bodyStyleFor(message: ChatMessage) =
-	if (message is ChatMessage.Tool || message is ChatMessage.FileChange) {
+	if ((message is ChatMessage.Tool && !message.isContextEvent()) || message is ChatMessage.FileChange) {
 		MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
 	} else {
 		MaterialTheme.typography.bodyMedium
 	}
+
+/**
+ * P3 目前只有 contextCompaction 会作为聊天流中的上下文治理事件进入 UI。
+ *
+ * 它虽然复用 Tool 模型承载，但语义上不是一次用户触发的工具调用，所以用上下文卡片展示，
+ * 避免用户误以为 Agent 额外执行了工具。
+ */
+private fun ChatMessage.Tool.isContextEvent(): Boolean = title == "上下文压缩"

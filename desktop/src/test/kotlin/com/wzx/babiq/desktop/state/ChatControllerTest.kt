@@ -20,6 +20,7 @@ import com.wzx.babiq.desktop.protocol.MemoryArtifactInfo
 import com.wzx.babiq.desktop.protocol.MemoryConsolidateResult
 import com.wzx.babiq.desktop.protocol.MemoryJobInfo
 import com.wzx.babiq.desktop.protocol.MemoryJobsListResult
+import com.wzx.babiq.desktop.protocol.MemoryReferenceInfo
 import com.wzx.babiq.desktop.protocol.MemorySearchResult
 import com.wzx.babiq.desktop.protocol.MemorySettingsSetParams
 import com.wzx.babiq.desktop.protocol.MemorySettingsSetResult
@@ -481,6 +482,37 @@ class ChatControllerTest {
 	}
 
 	@Test
+	fun `搜索长期记忆会调用后端并把结果写入设置页状态`() = runTest {
+		val gateway = FakeGateway(
+			memorySearchResult = MemorySearchResult(
+				strategy = "LEXICAL",
+				references = listOf(
+					MemoryReferenceInfo(
+						artifactId = "memart_summary",
+						confidence = "HIGH",
+						text = "上下文窗口超过阈值后会触发短期压缩。",
+						tokenEstimate = 32,
+					),
+				),
+				tokenEstimate = 32,
+			),
+		)
+		val controller = ChatController(
+			gateway,
+			backgroundScope,
+			initialState = AppState(connectionState = ConnectionState.Connected, currentThreadId = "thr_1"),
+		)
+
+		controller.searchMemory("上下文窗口")
+		advanceUntilIdle()
+
+		assertEquals(listOf("searchMemory:上下文窗口:thr_1"), gateway.calls)
+		assertEquals("LEXICAL", controller.state.value.memoryState.searchStrategy)
+		assertEquals(32, controller.state.value.memoryState.searchTokenEstimate)
+		assertEquals("memart_summary", controller.state.value.memoryState.searchResults.single().artifactId)
+	}
+
+	@Test
 	fun `展开运行详情后加载恢复状态和历史 turn 详情`() = runTest {
 		val gateway = FakeGateway()
 		val controller = ChatController(
@@ -635,6 +667,7 @@ class ChatControllerTest {
 			serverId = "local-filesystem",
 			tools = listOf(sampleMcpTool()),
 		),
+		private val memorySearchResult: MemorySearchResult = MemorySearchResult("LEXICAL"),
 	) : AgentGateway {
 		override val events = MutableSharedFlow<ServerEvent>()
 		val calls = mutableListOf<String>()
@@ -911,7 +944,7 @@ class ChatControllerTest {
 
 		override suspend fun searchMemory(query: String, threadId: String?): MemorySearchResult {
 			calls += "searchMemory:$query:$threadId"
-			return MemorySearchResult("LEXICAL")
+			return memorySearchResult
 		}
 	}
 

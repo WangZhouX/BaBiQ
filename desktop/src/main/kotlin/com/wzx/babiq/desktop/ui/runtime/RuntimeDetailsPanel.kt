@@ -24,8 +24,10 @@ import androidx.compose.ui.unit.dp
 import com.wzx.babiq.desktop.protocol.RunApprovalInfo
 import com.wzx.babiq.desktop.protocol.RunToolCallInfo
 import com.wzx.babiq.desktop.protocol.RunTurnDetailResult
-import com.wzx.babiq.desktop.state.ObservabilityState
 import com.wzx.babiq.desktop.state.AppState
+import com.wzx.babiq.desktop.state.CapabilityUiState
+import com.wzx.babiq.desktop.state.MemoryUiState
+import com.wzx.babiq.desktop.state.ObservabilityState
 import com.wzx.babiq.desktop.state.RunRecordState
 import com.wzx.babiq.desktop.state.RunTurnListItem
 import com.wzx.babiq.desktop.ui.theme.BaBiQColors
@@ -57,6 +59,8 @@ fun RuntimeDetailsPanel(
 		}
 		RunRecordSection(
 			state = state.runRecordState,
+			memoryState = state.memoryState,
+			capabilityState = state.capabilityState,
 			onSelectRunTurn = onSelectRunTurn,
 		)
 		ObservabilitySection(
@@ -156,6 +160,8 @@ private fun RangeButton(
 @Composable
 private fun RunRecordSection(
 	state: RunRecordState,
+	memoryState: MemoryUiState,
+	capabilityState: CapabilityUiState,
 	onSelectRunTurn: (String) -> Unit,
 ) {
 	state.recoveryStatus?.let { recovery ->
@@ -184,7 +190,11 @@ private fun RunRecordSection(
 		}
 	}
 	state.selectedDetail?.let { detail ->
-		RunTurnDetail(detail)
+		RunTurnDetail(
+			detail = detail,
+			memoryState = memoryState,
+			capabilityState = capabilityState,
+		)
 	}
 }
 
@@ -220,7 +230,11 @@ private fun RunTurnRow(
  * 选中历史 turn 的详情。
  */
 @Composable
-private fun RunTurnDetail(detail: RunTurnDetailResult) {
+private fun RunTurnDetail(
+	detail: RunTurnDetailResult,
+	memoryState: MemoryUiState,
+	capabilityState: CapabilityUiState,
+) {
 	DetailCard(
 		title = "选中 turn",
 		detail = buildString {
@@ -231,18 +245,9 @@ private fun RunTurnDetail(detail: RunTurnDetailResult) {
 		},
 	)
 	detail.summary?.let { TurnSummaryBar(it) }
-	detail.contextSnapshot?.let { snapshot ->
-		DetailCard(
-			title = "上下文窗口",
-			detail = buildString {
-				append("snapshot: ").append(snapshot.snapshotId)
-				append("\n窗口: ").append(snapshot.windowOrdinal)
-				append("\n预估 token: ").append(snapshot.estimatedTokens)
-				append("\n真实 prompt token: ").append(snapshot.actualPromptTokens ?: "未返回")
-				append("\n纳入/排除: ").append(snapshot.includedItemCount).append("/").append(snapshot.excludedItemCount)
-			},
-		)
-	}
+	detail.contextSnapshot?.let { snapshot -> ContextSnapshotSection(snapshot) }
+	MemoryReferenceSection(memoryState)
+	CapabilitySearchAuditSection(capabilityState)
 	if (detail.toolCalls.isNotEmpty()) {
 		DetailCard("工具调用", detail.toolCalls.joinToString("\n") { it.toolLine() })
 	}
