@@ -6,6 +6,7 @@ import com.wzx.babiq.server.mcp.McpToolDescriptor;
 import com.wzx.babiq.server.skill.LocalSkillRegistry;
 import com.wzx.babiq.server.tool.ToolRegistry;
 import com.wzx.babiq.server.tool.impl.ReadFileTool;
+import com.wzx.babiq.server.tool.impl.UpdatePlanTool;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
@@ -90,6 +91,26 @@ class CapabilityCatalogSyncServiceTest {
 
         CapabilityDescriptor descriptor = repository.findById("mcp.filesystem.read_text_file").orElseThrow();
         assertThat(descriptor.searchText()).contains("文件系统", "文件", "读取", "查看");
+    }
+
+    @Test
+    @DisplayName("update_plan 是默认可见能力且 searchText 包含计划中文别名")
+    @SuppressWarnings("unchecked")
+    void sync_should_keep_update_plan_visible_and_searchable_in_chinese() {
+        ToolRegistry toolRegistry = new ToolRegistry(List.of(new UpdatePlanTool()));
+        ObjectProvider<McpToolCatalog> mcpProvider = mock(ObjectProvider.class);
+        ObjectProvider<LocalSkillRegistry> skillProvider = mock(ObjectProvider.class);
+        CapturingCapabilityRepository repository = new CapturingCapabilityRepository();
+        when(mcpProvider.getIfAvailable()).thenReturn(null);
+        when(skillProvider.getIfAvailable()).thenReturn(null);
+        CapabilityCatalogSyncService service = new CapabilityCatalogSyncService(
+                toolRegistry, mcpProvider, skillProvider, repository, new ObjectMapper(), null);
+
+        service.sync();
+
+        CapabilityDescriptor descriptor = repository.findById("local.update_plan").orElseThrow();
+        assertThat(descriptor.exposureMode()).isEqualTo(CapabilityExposureMode.VISIBLE);
+        assertThat(descriptor.searchText()).contains("计划", "任务清单", "待办", "步骤", "规划");
     }
 
     /**

@@ -85,6 +85,8 @@ public final class CapabilityAliasDictionary {
         map.put("http", List.of("请求", "网络", "调用接口"));
         map.put("fetch", List.of("拉取", "获取", "下载"));
         map.put("filesystem", List.of("文件系统", "文件"));
+        map.put("plan", List.of("计划", "任务清单", "待办", "步骤", "规划"));
+        map.put("todo", List.of("待办", "任务清单", "任务步骤"));
         return Map.copyOf(map);
     }
 

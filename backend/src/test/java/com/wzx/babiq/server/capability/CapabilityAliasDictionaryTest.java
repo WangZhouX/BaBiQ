@@ -44,4 +44,12 @@ class CapabilityAliasDictionaryTest {
 
         assertThat(enriched).isEqualTo("No operation");
     }
+
+    @Test
+    @DisplayName("update_plan 会追加计划和待办等中文别名")
+    void enrich_should_add_aliases_for_update_plan() {
+        String enriched = CapabilityAliasDictionary.enrich("update_plan", "Updates the task plan");
+
+        assertThat(enriched).contains("计划", "任务清单", "待办", "步骤", "规划");
+    }
 }
