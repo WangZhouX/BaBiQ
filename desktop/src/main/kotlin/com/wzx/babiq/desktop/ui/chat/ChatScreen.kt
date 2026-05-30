@@ -3,10 +3,13 @@ package com.wzx.babiq.desktop.ui.chat
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.wzx.babiq.desktop.state.AppState
@@ -64,11 +67,19 @@ private fun TopStatusLine(
 	onRetryConnection: () -> Unit,
 	onToggleRuntime: () -> Unit,
 ) {
-	Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+	val layout = topStatusLineLayoutSpec()
+	Column(
+		modifier = if (layout.fillMaxWidth) Modifier.fillMaxWidth() else Modifier,
+		verticalArrangement = Arrangement.spacedBy(8.dp),
+	) {
 		if (state.bannerMessage != null) {
 			Text(text = state.bannerMessage, color = BaBiQColors.Warning)
 		}
-		androidx.compose.foundation.layout.Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+		// 顶部状态入口属于主工作区右上角信息，而不是聊天正文的一部分；占满宽度后右对齐，避免贴在左侧内容起点。
+		Row(
+			modifier = if (layout.fillMaxWidth) Modifier.fillMaxWidth() else Modifier,
+			horizontalArrangement = Arrangement.spacedBy(8.dp, alignment = layout.horizontalArrangement),
+		) {
 			StatusBadge(
 				text = when (state.connectionState) {
 					com.wzx.babiq.desktop.state.ConnectionState.Connected -> "已连接"
@@ -88,6 +99,27 @@ private fun TopStatusLine(
 		}
 	}
 }
+
+/**
+ * 顶部状态条的布局规格。
+ *
+ * 它被单元测试锁住，避免后续改右侧运行面板时又把“已连接 / 运行详情”挤回聊天正文左侧。
+ */
+internal data class TopStatusLineLayoutSpec(
+	/** true 表示状态条占满聊天主区宽度，这样右对齐才有实际边界。 */
+	val fillMaxWidth: Boolean,
+	/** 状态 badge 在顶部状态条中的水平对齐方向。 */
+	val horizontalArrangement: Alignment.Horizontal,
+)
+
+/**
+ * 返回顶部状态条固定布局策略：占满主区宽度并靠右展示。
+ */
+internal fun topStatusLineLayoutSpec(): TopStatusLineLayoutSpec =
+	TopStatusLineLayoutSpec(
+		fillMaxWidth = true,
+		horizontalArrangement = Alignment.End,
+	)
 
 /**
  * 给 StatusBadge 加一个轻量点击修饰符，当前不定制 ripple。
