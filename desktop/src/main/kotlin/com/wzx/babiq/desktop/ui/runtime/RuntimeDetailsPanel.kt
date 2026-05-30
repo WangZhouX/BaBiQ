@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.wzx.babiq.desktop.protocol.CapabilityStatusResult
 import com.wzx.babiq.desktop.protocol.RunApprovalInfo
 import com.wzx.babiq.desktop.protocol.RunToolCallInfo
 import com.wzx.babiq.desktop.protocol.RunTurnDetailResult
@@ -57,6 +58,24 @@ fun RuntimeDetailsPanel(
 			Text("运行详情", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold))
 			TextButton(onClick = onClose) { Text("收起") }
 		}
+		PlanSection(state.planState)
+		DetailCard(
+			title = "执行环境",
+			detail = buildString {
+				append("目录: ").append(state.workspace.projectName).append(" / ").append(state.workspace.cwd)
+				append("\n权限: ").append(state.workspace.permissionLabel ?: state.workspace.permissionMode ?: "未加载")
+				append("\n模型: ").append(state.providerState.active.label)
+			},
+		)
+		DetailCard(
+			title = "上下文来源",
+			detail = buildString {
+				append("窗口: ").append(state.contextWindowState.status?.let { "${(it.usageRatio * 100).toInt()}%" } ?: "未生成")
+				append("\n短期压缩: ").append(state.contextWindowState.status?.activeSummaryId ?: "未启用")
+				append("\n长期记忆: ").append(if (state.memoryState.status?.readEnabled == true) "注入开启" else "注入关闭")
+				append("\n能力装配: ").append(state.capabilityState.status?.summaryText() ?: "未加载")
+			},
+		)
 		RunRecordSection(
 			state = state.runRecordState,
 			memoryState = state.memoryState,
@@ -270,6 +289,12 @@ private fun RunToolCallInfo.toolLine(): String =
  */
 private fun RunApprovalInfo.approvalLine(): String =
 	"$toolName / $status / ${decision ?: "未决策"}"
+
+/**
+ * 能力目录在运行面板里只展示汇总，避免把完整工具清单重复塞进辅助面板。
+ */
+private fun CapabilityStatusResult.summaryText(): String =
+	"常驻 $visibleCount / 按需 $deferredCount / 禁用 $disabledCount"
 
 /**
  * 详情面板中的单个信息块。

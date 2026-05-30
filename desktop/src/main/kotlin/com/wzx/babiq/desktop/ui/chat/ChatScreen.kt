@@ -13,6 +13,7 @@ import com.wzx.babiq.desktop.state.AppState
 import com.wzx.babiq.desktop.ui.common.EmptyState
 import com.wzx.babiq.desktop.ui.common.StatusBadge
 import com.wzx.babiq.desktop.ui.common.BadgeTone
+import com.wzx.babiq.desktop.ui.runtime.buildPlanReminderPill
 import com.wzx.babiq.desktop.ui.theme.BaBiQColors
 
 /**
@@ -78,6 +79,9 @@ private fun TopStatusLine(
 				tone = if (state.connectionState == com.wzx.babiq.desktop.state.ConnectionState.Connected) BadgeTone.Success else BadgeTone.Warning,
 			)
 			StatusBadge("运行详情", BadgeTone.Info, Modifier.clickableNoRipple(onToggleRuntime))
+			buildPlanReminderPill(state.planState)?.let { reminder ->
+				StatusBadge(reminder, BadgeTone.Info, Modifier.clickableNoRipple(onToggleRuntime))
+			}
 			if (state.connectionState != com.wzx.babiq.desktop.state.ConnectionState.Connected) {
 				StatusBadge("重试", BadgeTone.Warning, Modifier.clickableNoRipple(onRetryConnection))
 			}

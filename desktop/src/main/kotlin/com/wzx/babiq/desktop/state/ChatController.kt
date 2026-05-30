@@ -114,6 +114,7 @@ class ChatController(
 				lastError = null,
 				bannerMessage = null,
 				messages = it.messages + localMessage,
+				planState = PlanUiState(),
 			)
 		}
 
@@ -347,10 +348,11 @@ class ChatController(
 				runtimeEvents = emptyList(),
 				latestSummary = null,
 				pendingApproval = null,
-					runRecordState = RunRecordState(),
-					contextWindowState = ContextWindowUiState(),
-					memoryState = it.memoryState.copy(notice = null, error = null),
-					threadHistory = it.threadHistory.copy(selectedThreadId = null),
+				runRecordState = RunRecordState(),
+				contextWindowState = ContextWindowUiState(),
+				memoryState = it.memoryState.copy(notice = null, error = null),
+				planState = PlanUiState(),
+				threadHistory = it.threadHistory.copy(selectedThreadId = null),
 				bannerMessage = null,
 				lastError = null,
 			)
@@ -365,6 +367,7 @@ class ChatController(
 		try {
 			val loaded = gateway.loadThread(threadId)
 			val messages = ChatReducer.messagesFromItems(loaded.items)
+			val planState = ChatReducer.planStateFromItems(loaded.items)
 			_state.update {
 				it.copy(
 					workspace = it.workspace.copy(
@@ -381,6 +384,7 @@ class ChatController(
 					messages = messages,
 					runtimeEvents = emptyList(),
 					latestSummary = loaded.latestSummary ?: ChatReducer.latestSummaryFromItems(loaded.items),
+					planState = planState,
 					pendingApproval = null,
 					runRecordState = if (it.runtimeExpanded) {
 						it.runRecordState.copy(loading = true, error = null)
@@ -429,6 +433,7 @@ class ChatController(
 					latestSummary = if (wasCurrentThread) null else it.latestSummary,
 					runRecordState = if (wasCurrentThread) RunRecordState() else it.runRecordState,
 					contextWindowState = if (wasCurrentThread) ContextWindowUiState() else it.contextWindowState,
+					planState = if (wasCurrentThread) PlanUiState() else it.planState,
 					threadHistory = it.threadHistory.copy(
 						items = it.threadHistory.items.filterNot { item -> item.threadId == threadId },
 						selectedThreadId = it.threadHistory.selectedThreadId?.takeUnless { selected -> selected == threadId },
@@ -492,6 +497,7 @@ class ChatController(
 				pendingApproval = null,
 				runRecordState = RunRecordState(),
 				contextWindowState = ContextWindowUiState(),
+				planState = PlanUiState(),
 				lastError = null,
 				bannerMessage = "已切换工作目录: $selected",
 			)
@@ -761,8 +767,15 @@ class ChatController(
 	}
 
 	fun toggleRuntimeDetails() {
-		val shouldExpand = !state.value.runtimeExpanded
-		_state.update { it.copy(runtimeExpanded = shouldExpand) }
+		val current = state.value
+		val panelVisible = current.runtimeExpanded || (current.planState.visible && !current.planState.collapsed)
+		val shouldExpand = !panelVisible
+		_state.update {
+			it.copy(
+				runtimeExpanded = shouldExpand,
+				planState = if (it.planState.visible) it.planState.copy(collapsed = !shouldExpand) else it.planState,
+			)
+		}
 		if (shouldExpand) {
 			// 运行详情展开后才拉历史记录和统计快照，避免常规聊天路径承担额外数据库查询。
 			scope.launch(start = CoroutineStart.UNDISPATCHED) {
@@ -1087,7 +1100,7 @@ class ChatController(
 	 */
 	private suspend fun refreshRunRecordsIfVisible() {
 		val current = state.value
-		if (current.runtimeExpanded) {
+		if (current.runtimeExpanded || (current.planState.visible && !current.planState.collapsed)) {
 			current.currentThreadId?.let { loadRunRecords(it) }
 			loadObservabilitySnapshot(current.runRecordState.observability.range)
 		}
