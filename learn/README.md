@@ -64,7 +64,8 @@ learn/
 │   └── 04-protocol-websocket.md     # ✅ 协议层（JSON-RPC + WebSocket + Kotlin 协程）
 ├── 04-walkthroughs/                # 端到端实战讲解
 │   ├── 01-read-file-full-trace.md  # ✅ 「读 README 并总结」27 阶段全链路追踪
-│   └── 02-write-file-with-approval.md # ✅ 「写 notes.md + 审批弹窗」HITL 完整路径
+│   ├── 02-write-file-with-approval.md # ✅ 「写 notes.md + 审批弹窗」HITL 完整路径
+│   └── 03-memory-phase1-trace.md   # ✅ 长期记忆 Phase 1 后台流水线追踪
 ├── 05-exercises/                   # 动手练习（待写）
 ├── code-index.md                   # 🔍 反查表：从代码找文档
 └── glossary.md                     # 📖 术语表
