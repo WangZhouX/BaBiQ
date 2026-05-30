@@ -108,6 +108,79 @@ class ChatReducerTest {
 		assertNotNull(next.bannerMessage)
 	}
 
+	@Test
+	fun `plan item updates plan state without adding chat message`() {
+		val state = AppState.empty().copy(messages = listOf(ChatMessage.User("u1", "实现 P4")))
+		val plan = ThreadItem.Plan(
+			id = "it-plan-1",
+			steps = listOf(
+				ThreadItem.PlanStep(order = 1, description = "阅读计划", status = "completed"),
+				ThreadItem.PlanStep(order = 2, description = "实现工具", status = "in_progress", activeForm = "正在实现工具"),
+			),
+			reasoning = "复杂任务需要拆分",
+		)
+
+		val next = ChatReducer.reduce(
+			state,
+			AgentEvent.Server(ServerEvent.ItemAdded("thread-1", "turn-1", plan)),
+		)
+
+		assertEquals(1, next.messages.size)
+		assertEquals("it-plan-1", next.planState.current?.id)
+		assertEquals(false, next.planState.collapsed)
+		assertEquals(1, next.planState.completedCount)
+		assertEquals(2, next.planState.totalCount)
+	}
+
+	@Test
+	fun `plan item update replaces current plan and hides when all steps completed`() {
+		val state = AppState.empty().copy(
+			planState = PlanUiState(
+				current = ThreadItem.Plan(
+					id = "it-plan-1",
+					steps = listOf(ThreadItem.PlanStep(1, "阅读计划", "in_progress", "正在阅读计划")),
+				),
+			),
+		)
+		val completed = ThreadItem.Plan(
+			id = "it-plan-1",
+			steps = listOf(
+				ThreadItem.PlanStep(1, "阅读计划", "completed", null),
+				ThreadItem.PlanStep(2, "实现工具", "completed", null),
+			),
+		)
+
+		val next = ChatReducer.reduce(
+			state,
+			AgentEvent.Server(ServerEvent.ItemUpdated("thread-1", "turn-1", completed)),
+		)
+
+		assertEquals(null, next.planState.current)
+		assertEquals(false, next.planState.collapsed)
+		assertEquals(0, next.messages.size)
+	}
+
+	@Test
+	fun `plan state from history uses latest unfinished plan and ignores completed plan`() {
+		val oldPlan = ThreadItem.Plan(
+			id = "it-plan-old",
+			steps = listOf(ThreadItem.PlanStep(1, "旧任务", "in_progress", "正在处理旧任务")),
+		)
+		val completedPlan = ThreadItem.Plan(
+			id = "it-plan-completed",
+			steps = listOf(ThreadItem.PlanStep(1, "完成任务", "completed", null)),
+		)
+		val latestPlan = ThreadItem.Plan(
+			id = "it-plan-latest",
+			steps = listOf(ThreadItem.PlanStep(1, "新任务", "pending", null)),
+		)
+
+		val state = ChatReducer.planStateFromItems(listOf(oldPlan, completedPlan, latestPlan))
+
+		assertEquals("it-plan-latest", state.current?.id)
+		assertEquals(1, state.totalCount)
+	}
+
 	private fun sampleApproval() = ApprovalRequestPayload(
 		threadId = "thread-1",
 		turnId = "turn-1",

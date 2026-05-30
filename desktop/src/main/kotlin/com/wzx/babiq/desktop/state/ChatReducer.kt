@@ -17,7 +17,19 @@ object ChatReducer {
 	 * 这里复用实时 item 的转换规则，保证历史恢复和 WebSocket 推送看到的 UI 形态一致。
 	 */
 	fun messagesFromItems(items: List<ThreadItem>): List<ChatMessage> =
-		items.map { it.toChatMessage() }
+		items.filterNot { it is ThreadItem.Plan }.map { it.toChatMessage() }
+
+	/**
+	 * 从历史 item 中恢复最新未完成计划。
+	 *
+	 * plan item 是运行辅助状态，不进入聊天主流。历史加载时只取最后一条 plan；如果最后一条已经全部 completed，
+	 * 说明该计划已经收束，右侧面板也不需要继续常驻。
+	 */
+	fun planStateFromItems(items: List<ThreadItem>): PlanUiState {
+		val latestPlan = items.filterIsInstance<ThreadItem.Plan>().lastOrNull()
+			?: return PlanUiState()
+		return PlanUiState(current = latestPlan).hideIfCompleted()
+	}
 
 	/**
 	 * 从历史 item 中找出最新 turnSummary。
@@ -132,6 +144,10 @@ object ChatReducer {
 				),
 			)
 
+			is ThreadItem.Plan -> copy(
+				planState = PlanUiState(current = item, collapsed = false).hideIfCompleted(),
+			)
+
 			is ThreadItem.Unknown -> copy(
 				runtimeEvents = runtimeEvents + RuntimeEvent(
 					id = item.id,
@@ -169,6 +185,7 @@ object ChatReducer {
 			is ThreadItem.FileChange -> ChatMessage.FileChange(id, action, path, status, contentPreview)
 			is ThreadItem.Reasoning -> ChatMessage.Agent(id, text)
 			is ThreadItem.TurnSummary -> ChatMessage.TurnSummary(id, this)
+			is ThreadItem.Plan -> ChatMessage.Tool(id, "计划", "updated", steps.joinToString("\n") { it.description })
 			is ThreadItem.ContextCompaction -> ChatMessage.Tool(
 				id = id,
 				title = "上下文压缩",
@@ -184,6 +201,12 @@ object ChatReducer {
 			)
 			is ThreadItem.Unknown -> ChatMessage.Tool(id, type, "unknown", raw.toString())
 		}
+
+	/**
+	 * 最新计划全部完成后主动隐藏，避免右侧面板长期停在已经结束的 TODO 上。
+	 */
+	private fun PlanUiState.hideIfCompleted(): PlanUiState =
+		if (allCompleted) PlanUiState() else this
 
 	/**
 	 * item/updated 可能多次推送同一个 id。这里用 upsert 保持消息列表稳定：

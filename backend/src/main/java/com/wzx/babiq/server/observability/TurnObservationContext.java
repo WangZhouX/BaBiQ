@@ -4,6 +4,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
 
 /**
@@ -31,6 +32,8 @@ public final class TurnObservationContext {
     private final LongAdder completionTokens = new LongAdder();
     /** 工具名 -> 调用次数，用于 turnSummary 的工具数量和后端指标。 */
     private final ConcurrentHashMap<String, LongAdder> toolCallsByName = new ConcurrentHashMap<>();
+    /** 当前 turn 内最新 plan item id；update_plan 首次新增、后续更新同一条 item 时读取它。 */
+    private final AtomicReference<String> planItemId = new AtomicReference<>();
 
     private TurnObservationContext(String threadId,
                                    String turnId,
@@ -103,6 +106,27 @@ public final class TurnObservationContext {
         Map<String, Long> snapshot = new LinkedHashMap<>();
         toolCallsByName.forEach((name, count) -> snapshot.put(name, count.sum()));
         return Map.copyOf(snapshot);
+    }
+
+    /**
+     * 返回当前 turn 已经创建过的 plan item id。
+     *
+     * <p>它只服务 P4 的 update_plan 工具：plan 是运行中 UI 状态，不需要新数据库表；
+     * 同一 turn 内复用 item id 即可让桌面端做 item/updated 原地刷新。</p>
+     */
+    public String planItemId() {
+        return planItemId.get();
+    }
+
+    /**
+     * 记录当前 turn 的 plan item id，只允许第一次设置成功。
+     *
+     * @param itemId 首次 update_plan 生成的 item id
+     * @return 实际应该使用的 item id；并发重复设置时返回已存在值
+     */
+    public String rememberPlanItemId(String itemId) {
+        planItemId.compareAndSet(null, itemId);
+        return planItemId.get();
     }
 
     public long durationMs() {

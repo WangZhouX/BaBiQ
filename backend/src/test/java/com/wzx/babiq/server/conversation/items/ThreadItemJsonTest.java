@@ -72,4 +72,31 @@ class ThreadItemJsonTest {
                 .contains("\"durationMs\":1200");
         assertThat(restored).isInstanceOf(TurnSummaryItem.class);
     }
+
+    @Test
+    void plan_item_should_serialize_step_status_and_active_form() throws Exception {
+        ThreadItem item = new PlanItem(
+                "it_plan_1",
+                "plan",
+                null,
+                java.util.List.of(
+                        new PlanItem.PlanStep(1, "阅读计划文档", "completed", null),
+                        new PlanItem.PlanStep(2, "实现计划工具", "in_progress", "正在实现计划工具")),
+                "拆成后端协议和桌面 UI 两段推进");
+
+        String json = objectMapper.writeValueAsString(item);
+        ThreadItem restored = objectMapper.readValue(json, ThreadItem.class);
+
+        assertThat(json)
+                .contains("\"type\":\"plan\"")
+                .contains("\"status\":\"completed\"")
+                .contains("\"activeForm\":\"正在实现计划工具\"")
+                .doesNotContain("\"goal\":null");
+        assertThat(restored).isInstanceOf(PlanItem.class);
+        PlanItem plan = (PlanItem) restored;
+        assertThat(plan.goal()).isNull();
+        assertThat(plan.steps()).extracting(PlanItem.PlanStep::status)
+                .containsExactly("completed", "in_progress");
+        assertThat(plan.steps().get(1).activeForm()).isEqualTo("正在实现计划工具");
+    }
 }

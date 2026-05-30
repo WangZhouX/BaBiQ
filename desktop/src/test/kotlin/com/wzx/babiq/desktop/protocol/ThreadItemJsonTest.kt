@@ -85,4 +85,36 @@ class ThreadItemJsonTest {
 		assertEquals("qwen", providerList.providers.single().id)
 		assertEquals("qwen-plus", providerList.providers.single().models.single().id)
 	}
+
+	@Test
+	fun `可以解析 plan item 的步骤状态和进行时文案`() {
+		val json = """
+			{
+			  "jsonrpc": "2.0",
+			  "method": "item/added",
+			  "params": {
+			    "threadId": "thread-1",
+			    "turnId": "turn-1",
+			    "item": {
+			      "id": "it-plan-1",
+			      "type": "plan",
+			      "reasoning": "复杂任务需要拆分",
+			      "steps": [
+			        { "order": 1, "description": "阅读计划", "status": "completed" },
+			        { "order": 2, "description": "实现工具", "status": "in_progress", "activeForm": "正在实现工具" }
+			      ]
+			    }
+			  }
+			}
+		""".trimIndent()
+
+		val event = protocolJson.decodeFromString(ServerEvent.serializer(), json)
+		val added = assertIs<ServerEvent.ItemAdded>(event)
+		val plan = assertIs<ThreadItem.Plan>(added.item)
+
+		assertEquals("it-plan-1", plan.id)
+		assertEquals(null, plan.goal)
+		assertEquals("completed", plan.steps.first().status)
+		assertEquals("正在实现工具", plan.steps.last().activeForm)
+	}
 }

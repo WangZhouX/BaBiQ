@@ -145,6 +145,40 @@ data class RuntimeEvent(
 )
 
 /**
+ * 右侧运行面板中的计划状态。
+ *
+ * 计划来自后端 `update_plan` 协议 item，它是当前 turn 的执行辅助视图，不属于聊天消息正文。
+ * Reducer 会用最新 plan item 完整替换 current；当所有步骤完成时清空 current，让面板自动回到普通运行详情。
+ *
+ * @property current 当前未完成计划；为空表示本轮没有计划或最新计划已经完成。
+ * @property collapsed 用户是否把计划面板收起；收起后聊天顶部只显示一个轻量提醒胶囊。
+ */
+data class PlanUiState(
+	val current: ThreadItem.Plan? = null,
+	val collapsed: Boolean = false,
+) {
+	/** 当前计划是否应该显示在 UI 中。 */
+	val visible: Boolean
+		get() = current != null
+
+	/** 当前计划总步骤数，用于进度标题和提醒胶囊。 */
+	val totalCount: Int
+		get() = current?.steps?.size ?: 0
+
+	/** 已完成步骤数，只统计 status=completed 的步骤。 */
+	val completedCount: Int
+		get() = current?.steps?.count { it.status == "completed" } ?: 0
+
+	/** 当前正在执行的步骤；为空表示计划还没开始或已经全部结束。 */
+	val inProgressStep: ThreadItem.PlanStep?
+		get() = current?.steps?.firstOrNull { it.status == "in_progress" }
+
+	/** 判断最新计划是否已经全部完成，用于 reducer 决定是否隐藏。 */
+	val allCompleted: Boolean
+		get() = current != null && current.steps.isNotEmpty() && current.steps.all { it.status == "completed" }
+}
+
+/**
  * 运行详情面板里的持久化运行记录状态。
  *
  * P1-4 的 runtimeEvents 只代表“当前内存里刚收到的事件”，P2-4 增加这一层后，

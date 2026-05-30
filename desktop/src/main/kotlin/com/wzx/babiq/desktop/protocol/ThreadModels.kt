@@ -162,6 +162,43 @@ sealed interface ThreadItem {
 		val message: String? = null,
 	) : ThreadItem
 
+	@Serializable
+	/**
+	 * 计划可视化协议 item。
+	 *
+	 * 后端 `update_plan` 工具会用完整覆盖语义反复推送同一个 item：第一次是 `item/added`，
+	 * 后续更新是 `item/updated`。桌面端只把它放入右侧运行面板，不渲染成聊天气泡，避免计划状态污染对话正文。
+	 *
+	 * @property id 后端生成并在同一 turn 内复用的计划 item id。
+	 * @property type 协议类型固定为 plan。
+	 * @property goal 可选目标说明；为空表示模型只提供了步骤，没有额外目标标题。
+	 * @property steps 当前完整步骤列表；每次更新都会替换上一版步骤。
+	 * @property reasoning 可选的计划说明文本，用于右侧面板解释为什么这么拆分。
+	 */
+	data class Plan(
+		override val id: String,
+		override val type: String = "plan",
+		val goal: String? = null,
+		val steps: List<PlanStep> = emptyList(),
+		val reasoning: String? = null,
+	) : ThreadItem
+
+	@Serializable
+	/**
+	 * 计划步骤协议模型。
+	 *
+	 * @property order 后端给出的展示顺序，从 1 开始；UI 仍按列表顺序渲染，order 仅用于辅助展示和调试。
+	 * @property description 稳定的步骤描述，适合在 pending/completed 状态展示。
+	 * @property status 步骤状态：pending、in_progress 或 completed；未知值会在 UI 层按 pending 处理。
+	 * @property activeForm in_progress 状态下的动态文案，例如“正在运行测试”，用于比静态描述更贴近当前动作。
+	 */
+	data class PlanStep(
+		val order: Int,
+		val description: String,
+		val status: String,
+		val activeForm: String? = null,
+	)
+
 	/**
 	 * 未知协议 item。
 	 *
@@ -196,6 +233,7 @@ object ThreadItemSerializer : KSerializer<ThreadItem> {
 			"fileChange" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.FileChange.serializer(), raw)
 			"turnSummary" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.TurnSummary.serializer(), raw)
 			"contextCompaction" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.ContextCompaction.serializer(), raw)
+			"plan" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.Plan.serializer(), raw)
 			// 未知类型不丢弃，交给运行详情面板展示 raw JSON，方便后续协议扩展排查。
 			else -> ThreadItem.Unknown(
 				id = raw.optionalText("id") ?: "unknown",

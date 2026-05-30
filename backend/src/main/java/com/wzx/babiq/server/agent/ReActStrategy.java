@@ -474,7 +474,10 @@ public class ReActStrategy {
             return List.of();
         }
         if (approvalPolicy == ApprovalPolicy.ALWAYS) {
-            return toolRegistry.names();
+            return toolRegistry.names().stream()
+                    // update_plan 只更新桌面端进度 item，不触碰文件系统、网络或外部 MCP，因此即使“全部询问”也不打断模型。
+                    .filter(toolName -> !"update_plan".equals(toolName))
+                    .toList();
         }
 
         Set<String> names = new LinkedHashSet<>();
