@@ -1,9 +1,9 @@
-# P4 Plan/Todo 可视化专项计划（草案）
+# P4 Plan/Todo 可视化专项计划
 
-> **For agentic workers:** 本文件目前是**草案（DRAFT）**，尚未经用户确认，**不得据此开始实现**。
-> 实施前需：(1) ✅ §3 决策已定（D1/D2 双源印证，D3/D4 已用 Figma 原型确认）；(2) 完成 P3 总体验收复盘；(3) 用 `superpowers:writing-plans` 复核定稿；实施时用 `superpowers:executing-plans` + `superpowers:test-driven-development`；声称完成前用 `superpowers:verification-before-completion`。
+> **For agentic workers:** 本文件是**已定稿的正式执行计划**。实施时用 `superpowers:executing-plans` + `superpowers:test-driven-development`，声称完成前用 `superpowers:verification-before-completion`。交接见同目录 `codex-handoff.md`。
+> **唯一启动门禁（见 §8）：** 须先完成 P3 总体验收；通过后即可按 §4 Task 顺序执行，**不得混入任何 P3 收口提交**。
 >
-> **状态：** 草案 / 待用户确认。本计划新增一条「协议 → AgentLoop → 桌面 UI」纵向特性，属于 P3 之后的新阶段，**不在 P3 范围内**。
+> **状态：** 正式执行计划（2026-05-30 用户定稿）。§3 决策全部确认（D1/D2 双源印证、D3/D4/D5 已定）。本计划新增一条「协议 → AgentLoop → 桌面 UI」纵向特性，属于 P3 之后的新阶段，**不在 P3 范围内**。
 >
 > **设计依据：** 已交叉核对两套业界实现源码 —— Codex `update_plan`（`E:\wzx\codex`）和 Claude Code `TodoWrite`（`E:\wzx\claude-code`），并用 Context7 核对 Spring AI / Spring AI Alibaba 工具与 system prompt 能力。详见 §11。
 
@@ -124,6 +124,16 @@
 - **P3 12 会话-运行面板**（节点 `134:2`）：展开态，右侧 进度 / 环境信息 / 来源 三段。
 - **P3 13 会话-运行面板（收起）**（节点 `154:2`）：收起态，右上角 `◐ 计划进行中 3/5 展开▸` 提醒胶囊，主列变宽。
 - 「00 交互总览-P3」（节点 `35:3`）补 2 张索引卡（运行面板·进度 / 运行面板·收起）+ 更新主线说明。
+
+### D5：右侧运行面板与现有「运行详情」面板的收口 —— ✅ 已定（合并为单一右侧面板）
+
+BaBiQ 现有 `RuntimeDetailsPanel`（tab：概览 / 上下文快照 / 工具调用 / 记忆引用 / 能力搜索）是**针对选中历史 turn 的审计视图**；本计划新增的运行面板是**实时运行状态**。两者都在右侧，必须合并，不能并列两个右侧面板。最终方案：
+
+- **单一右侧面板**，分「实时层」与「审计层」：
+  - **实时层（默认、常驻顶部）**：进度 + 环境信息 + 来源（本计划新增）。
+  - **审计层**：现有"运行详情"的 快照 / 工具 / 记忆 / 能力搜索 tab，作为面板内可展开的「运行详情」分组或次级 tab，按需查看选中 turn。
+- 收起态：整个右侧面板收起 → 右上角进度提醒胶囊。
+- 结果：只保留一个右侧面板，实时状态在上、历史审计在下，职责清晰不重复。
 
 ---
 
@@ -282,13 +292,13 @@ rg -n "update_plan" src/main/java
 | 扩展 `PlanItem` schema 影响已发布协议 | 低 | `PlanItem` 是从未发出的占位 record，无存量数据 |
 | `AgentLoop.invoke` 50 行红线 | 中 | 计划产出走工具，**不进主循环**；`AgentLoopLineCountTest` 不受影响 |
 | plan item 落进 `messages` 导致聊天流堆卡 | 中 | reducer 明确放进 `PlanUiState` 而非 `messages`；测试覆盖 |
-| 右侧"运行面板"与现有"运行详情"面板职责重叠 | 中 | 实现时二选一收口：把现有"运行详情"审计 tab 并入右侧面板，或运行面板只做 进度/环境/来源、审计仍走原"运行详情"。定稿前明确，避免两个右侧面板 |
+| 右侧"运行面板"与现有"运行详情"面板职责重叠 | 中 | **已定（§3-D5）**：合并为单一右侧面板，实时层（进度/环境/来源）在上、审计层（现有运行详情 tab）在下，只保留一个右侧面板 |
 | 收编底部 chip 后，老用户找不到上下文/沙箱信息 | 低 | 信息平移到右侧"环境信息"区，收起态胶囊 + 标题仍可见关键状态；首次引导说明 |
 | `item/updated` 同 item id 跟踪在并发 turn 下错乱 | 低 | BaBiQ 单进程不并发跑多 turn；plan item id 绑定 turn 上下文 |
 
 ---
 
-## 7. 完成标准（草案，定稿后勾选）
+## 7. 完成标准（实现时逐条勾选）
 
 - [ ] `PlanItem`/`PlanStep` 已补 status + 可选 activeForm，JSON round-trip 测试通过
 - [ ] `UpdatePlanTool` 已实现（全量覆盖，首发 added / 续发 updated），单测通过
@@ -327,8 +337,9 @@ rg -n "update_plan" src/main/java
 
 1. ✅ §3 决策已定（D1/D2 双源印证，D3/D4 原型确认）。
 2. 完成 P3 总体验收复盘（唯一剩余门禁）。
-3. 用 `superpowers:writing-plans` 把本草案定稿为正式 plan，补 §5 具体命令和 §4 细化步骤；定稿时确认 §6 中「右侧运行面板 vs 现有运行详情面板」如何收口。
-4. 编写 `codex-handoff.md`。
+3. ✅ 本计划已定稿为正式执行计划；§6「右侧运行面板 vs 运行详情」收口已在 §3-D5 确定。
+4. ✅ 已编写同目录 `codex-handoff.md`。
+5. P3 总体验收通过后，按 §4 Task 顺序执行，每个 Task 中文 conventional commit，不 push。
 
 ---
 
