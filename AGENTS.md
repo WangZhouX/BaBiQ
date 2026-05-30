@@ -217,7 +217,15 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
   - 已验证：`cd backend; .\mvnw.cmd clean verify`。
   - 已验证：`cd desktop; .\gradlew.bat test --tests "*ThreadItemJsonTest" --tests "*ChatReducerTest" --tests "*PlanSectionTest"`。
   - 已验证：`cd desktop; .\gradlew.bat test`。
-- **下一步**：在真实 Provider/API Key 环境下做 P4 人工烟测；通过后可继续 P3/P4 总体验收复盘或进入新的专项增强计划。
+- P4 真实模型人工烟测已通过，并已合并入 master（含合并提交与顶部运行入口右对齐 UI 修复）；P4 Plan/Todo 可视化至此「代码 + 自动化 + 真实模型烟测 + 合并」全量闭环。
+- P3 总体验收复盘已完成（2026-05-30），结论：**通过**。验收证据（均为本次重新跑出的新鲜结果）：
+  - `cd backend; .\mvnw.cmd clean verify` 全绿（全部单测 + 22 个 IT，0 失败）。
+  - `cd desktop; .\gradlew.bat test` 全绿。
+  - 合并 P3 验收套件 27 个测试类 / 78 tests / 0 失败，覆盖 P3-1~P3-2 上下文装配与运行时、P3-3/3a 短期压缩与鲁棒性、P3-4 长期记忆流水线与脱敏、P3-5/5a 能力装配与 Lucene 中文检索。
+  - `SchemaCommentsCoverageTest` 通过，确认 P3 新增 `bq_*` 业务表字段中文注释无缺失。
+  - P4 改动（`ReActStrategy` / `PlanItem` / `ThreadItem` / capability）未回退任何 P3 测试（合并套件无 "No tests found" 漂移）。
+  - 7 个 P3 子阶段（p3-1~p3-5a）的 plan/handoff 文档全部健在。
+- **下一步**：进入 P3/P4 之后的新专项；推荐顺序 A. ReasoningItem 接通（小、复用 P4 模式、兑现最后一个 P1-1 占位）→ B. 语义检索（VectorStore + embedding，P3-5a 已预留）→ C. Multi-Agent/子 Agent（独立大阶段）。任一方向都须先写详细 plan 并由用户确认。
 
 如果仓库状态发生变化，不要盲信本检查点；必须重新核对代码、文档、测试和 `git status`。
 
