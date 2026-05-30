@@ -84,6 +84,19 @@ sealed interface ChatMessage {
 	) : ChatMessage
 
 	/**
+	 * 模型思考过程展示块。
+	 *
+	 * @property id 后端 reasoning item id；流式更新会复用同一个 id。
+	 * @property text 可展示的思考过程摘要，已经由后端做长度保护。
+	 * @property completed true 表示对应 turn 已结束，UI 默认折叠；false 表示仍在运行，UI 默认展开。
+	 */
+	data class Reasoning(
+		override val id: String,
+		val text: String,
+		val completed: Boolean = false,
+	) : ChatMessage
+
+	/**
 	 * 工具执行展示卡，例如 shell 命令或 MCP 调用。
 	 *
 	 * @property id 列表项唯一 id。

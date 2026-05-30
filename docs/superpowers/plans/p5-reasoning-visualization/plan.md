@@ -2,7 +2,7 @@
 
 > **For agentic workers:** 本文件是**已定稿的正式执行计划**。实施时用 `superpowers:executing-plans` + `superpowers:test-driven-development`，声称完成前用 `superpowers:verification-before-completion`。交接见同目录 `codex-handoff.md`。
 >
-> **状态：** 正式执行计划（2026-05-30 用户定稿）。§3 决策全部确认：D1=真实 `reasoning_content`、D2=聊天流内联折叠块、D3=思考中展开/完成后自动收起、D4=优雅缺省。本计划是 P1-1 最后一个未接通占位 item 的兑现，纵向特性「模型 → AgentLoop → 协议 → 桌面 UI」，属 P4 之后的新专项。
+> **状态：** 已完成代码实现与自动化验收（2026-05-30）。§3 决策全部按计划落地：D1=真实 `reasoning_content`、D2=聊天流内联折叠块、D3=思考中展开/完成后自动收起、D4=优雅缺省。本计划兑现了 P1-1 最后一个未接通占位 item；仍需在用户真实 Provider/API Key 环境做 DeepSeek V4 thinking 人工烟测。
 >
 > **设计依据：** 对标 Codex 的 reasoning 摘要展示与 Claude 的 thinking 块；BaBiQ 模型层 `DeepSeekV4OpenAiChatModel` 已解析 DeepSeek V4 的 `reasoning_content`。
 
@@ -10,7 +10,7 @@
 
 **Architecture:** 复用 BaBiQ 现成但**从未被调用**的管道：`ConversationService.emitReasoning(text)` + `ItemEmitter.emitReasoning(item)` + 协议 `ReasoningItem(type="reasoning")` + 桌面端 `ThreadItem.Reasoning` + serializer 分支。缺的只有两段：①agent loop 收尾处**真正调用** `emitReasoning`（从 AssistantMessage metadata 取 `reasoningContent`）；②桌面端把 reasoning 从「普通 agent 气泡」升级为**专属折叠块**。**不引入新机制、不新增数据库表**（reasoning 落已有 `bq_items`）。
 
-**Tech Stack:** 同 P3/P4，不升级 Spring AI / Spring AI Alibaba。后端：`AgentLoopOutputHandler`（收尾抽 reasoning）+ 现成 `emitReasoning` 管道。桌面端：`ChatReducer` + 新增 `ChatMessage.Reasoning` UI 模型 + Compose 折叠块。
+**Tech Stack:** 同 P3/P4，不升级 Spring AI / Spring AI Alibaba。后端：`AgentLoopOutputHandler` + `AgentStreamConsumer` 抽取 reasoning，复用现成 `emitReasoning` 管道。桌面端：`ChatReducer` + 新增 `ChatMessage.Reasoning` UI 模型 + `MessageBubble` 内联折叠块。
 
 ---
 
@@ -148,8 +148,7 @@ Codex 展示 reasoning 摘要，Claude 展示 thinking 块。对 Codex-like 学�
 **Files:**
 - Modify: `desktop/.../state/UiModels.kt`（新增 `ChatMessage.Reasoning`）
 - Modify: `desktop/.../state/ChatReducer.kt`（`ThreadItem.Reasoning` → `ChatMessage.Reasoning`，不再 fallback agent 气泡）
-- Create: `desktop/.../ui/chat/ReasoningBlock.kt`（折叠块）
-- Modify: `MessageList.kt` / `MessageBubble.kt`（渲染分支）
+- Modify: `desktop/.../ui/chat/MessageBubble.kt`（复用现有气泡组件承载 reasoning 折叠块）
 - Test: `ChatReducerTest` + `ReasoningBlockTest`
 
 **Steps:**
@@ -205,15 +204,15 @@ cd ..\desktop
 
 ## 7. 完成标准（实现时逐条勾选）
 
-- [ ] 收尾能从 AssistantMessage 取到 reasoning 并 emit ReasoningItem（在 assistant item 之前）；无 reasoning 不发
-- [ ] reasoning 落 `bq_items`，超长有上限保护
-- [ ] ReasoningItem 不进 ContextAssembler recent_history（有测试钉死）
-- [ ] 桌面端 `ChatMessage.Reasoning` + 折叠块（进行中展开 / turn 完成后自动收起 / 历史态收起 / 可手动切换 / 空态不渲染），不再 fallback 普通气泡
-- [ ] `thread/load` 历史恢复思考块（且因 turn 已完成默认收起）
-- [ ] 后端 `clean verify` + 桌面端 `gradlew.bat test` 全绿，`AgentLoopLineCountTest` 不退化
+- [x] 收尾能从 AssistantMessage 取到 reasoning 并 emit ReasoningItem（在 assistant item 之前）；无 reasoning 不发
+- [x] reasoning 落 `bq_items`，超长有上限保护
+- [x] ReasoningItem 不进 ContextAssembler recent_history（有测试钉死）
+- [x] 桌面端 `ChatMessage.Reasoning` + 折叠块（进行中展开 / turn 完成后自动收起 / 失败后自动收起 / 历史态收起 / 可手动切换 / 空态不渲染），不再 fallback 普通气泡
+- [x] `thread/load` 历史恢复思考块（且因 turn 已完成默认收起）
+- [x] 后端 `clean verify` + 桌面端 `gradlew.bat test` 全绿，`AgentLoopLineCountTest` 不退化
 - [ ] 真实模型烟测：thinking「思考中展开 → 完成收起 → 历史收起」/ 非 thinking 无块无错 / reasoning 不污染上下文
-- [ ] CLAUDE.md / AGENTS.md 检查点同步
-- [ ] 中文 conventional commit，未 push
+- [x] CLAUDE.md / AGENTS.md 检查点同步
+- [x] 中文 conventional commit，未 push
 
 ---
 
@@ -235,9 +234,10 @@ cd ..\desktop
 ## 10. 下一步
 
 1. ✅ §3 决策已定（D1 真实 `reasoning_content` / D2 内联折叠块 / D3 进行中展开-完成收起 / D4 优雅缺省）。
-2. ✅ 已编写同目录 `codex-handoff.md`。
-3. 按 §4 Task 1 → 5 顺序执行（Task 1 先验抽取点，决定流式早发 vs 收尾发）；每个 Task 中文 conventional commit、不 push。
-4. **原型已出**（Figma `frTp55zgrKf4NAWxn6LdI7` 页 `35:2`）：`P3 14 会话-思考过程（展开）`（节点 `171:2`，运行中展开 + 推理正文 + 收起入口）、`P3 15 会话-思考过程（收起）`（一行「思考过程 · 已完成　展开 ▸」+ 完整回答），「00 交互总览-P3」补 2 张索引卡（思考过程·展开/收起）+ 更新主线说明。实现按此原型对齐现有气泡风格。
+2. ✅ 代码实现已落地：后端抽取 reasoning 并发 `ReasoningItem`，桌面端按原型渲染内联折叠块。
+3. ✅ 自动化验收已通过：后端专项、后端 `clean verify`、桌面端专项、桌面端全量测试均为 BUILD SUCCESS。
+4. ⏳ 待用户真实 Provider/API Key 环境人工烟测：DeepSeek V4 thinking 出现思考块、完成后收起、历史加载收起；非 thinking 模型无块无错。
+5. 后续候选方向：语义检索（VectorStore + embedding，P3-5a 已预留）或 Multi-Agent/子 Agent（独立大阶段），均须先写详细 plan 并由用户确认。
 
 ---
 
@@ -248,6 +248,6 @@ cd ..\desktop
   - `backend/.../conversation/ConversationService.java#L276 emitReasoning` + `ItemEmitter.java#L152 emitReasoning`（管道已有、无调用者）
   - `backend/.../org/springframework/ai/openai/DeepSeekV4OpenAiChatModel.java`（`REASONING_METADATA_KEY="reasoningContent"`，已解析 reasoning_content，仅用于工具恢复回放）
   - `desktop/.../protocol/ThreadModels.kt`（`ThreadItem.Reasoning` + serializer 已有）
-  - `desktop/.../state/ChatReducer.kt`（现状 `is Reasoning -> ChatMessage.Agent` 普通气泡，待改）
+  - `desktop/.../state/ChatReducer.kt`（已改为 `ThreadItem.Reasoning` → `ChatMessage.Reasoning`，不再 fallback 普通气泡）
   - `backend/.../context/ContextAssembler.java`（`assembleHistory` else 分支已排除 reasoning）
 - 业界对标：Codex reasoning 摘要展示；Claude Code thinking 块（默认折叠）。

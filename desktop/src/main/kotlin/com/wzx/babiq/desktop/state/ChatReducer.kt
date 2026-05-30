@@ -17,7 +17,9 @@ object ChatReducer {
 	 * 这里复用实时 item 的转换规则，保证历史恢复和 WebSocket 推送看到的 UI 形态一致。
 	 */
 	fun messagesFromItems(items: List<ThreadItem>): List<ChatMessage> =
-		items.filterNot { it is ThreadItem.Plan }.map { it.toChatMessage() }
+		items.filterNot { it is ThreadItem.Plan }
+			.map { it.toChatMessage() }
+			.markReasoningCompleted()
 
 	/**
 	 * 从历史 item 中恢复最新未完成计划。
@@ -94,6 +96,7 @@ object ChatReducer {
 					else -> TurnState.Completed
 				},
 				pendingApproval = null,
+				messages = state.messages.markReasoningCompleted(),
 			)
 
 			is ServerEvent.TurnFailed -> state.copy(
@@ -103,6 +106,7 @@ object ChatReducer {
 				pendingApproval = null,
 				lastError = event.reason,
 				bannerMessage = event.reason,
+				messages = state.messages.markReasoningCompleted(),
 			)
 
 			is ServerEvent.Unknown -> state.copy(
@@ -183,7 +187,7 @@ object ChatReducer {
 			)
 
 			is ThreadItem.FileChange -> ChatMessage.FileChange(id, action, path, status, contentPreview)
-			is ThreadItem.Reasoning -> ChatMessage.Agent(id, text)
+			is ThreadItem.Reasoning -> ChatMessage.Reasoning(id, text)
 			is ThreadItem.TurnSummary -> ChatMessage.TurnSummary(id, this)
 			is ThreadItem.Plan -> ChatMessage.Tool(id, "计划", "updated", steps.joinToString("\n") { it.description })
 			is ThreadItem.ContextCompaction -> ChatMessage.Tool(
@@ -219,6 +223,20 @@ object ChatReducer {
 		}
 		return toMutableList().also { messages -> messages[existingIndex] = message }
 	}
+
+	/**
+	 * turn 进入终态或加载历史会话时，把 reasoning 标记为已完成。
+	 *
+	 * 已完成的 reasoning 在 UI 中默认折叠，既保留可展开审计能力，也避免历史对话被长篇思考过程撑开。
+	 */
+	private fun List<ChatMessage>.markReasoningCompleted(): List<ChatMessage> =
+		map { message ->
+			if (message is ChatMessage.Reasoning) {
+				message.copy(completed = true)
+			} else {
+				message
+			}
+		}
 
 	/**
 	 * 发送消息时 Controller 会先追加一条 local-user-* 临时气泡，后端随后会发正式 userMessage。

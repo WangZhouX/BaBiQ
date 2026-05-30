@@ -4,6 +4,7 @@ import com.alibaba.cloud.ai.graph.NodeOutput;
 import com.alibaba.cloud.ai.graph.streaming.StreamingOutput;
 import com.wzx.babiq.server.conversation.ItemEmitter;
 import com.wzx.babiq.server.conversation.items.AgentMessageItem;
+import com.wzx.babiq.server.conversation.items.ReasoningItem;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import reactor.core.Exceptions;
 import reactor.core.publisher.Flux;
@@ -38,7 +39,11 @@ final class AgentStreamConsumer {
                 throw Exceptions.propagate(exception);
             }
         }).blockLast();
-        return new StreamResult(Optional.ofNullable(lastOutput.get()), snapshot.itemId, snapshot.text.toString());
+        return new StreamResult(
+                Optional.ofNullable(lastOutput.get()),
+                snapshot.itemId,
+                snapshot.text.toString(),
+                snapshot.reasoning.itemId);
     }
 
     /** 只处理助手普通文本 chunk；工具调用 chunk 由现有工具回调和观测拦截器负责。 */
@@ -51,6 +56,14 @@ final class AgentStreamConsumer {
         if (!(streamingOutput.message() instanceof AssistantMessage assistantMessage)) {
             return;
         }
+        ReasoningContentSupport.extractDisplayText(assistantMessage)
+                .ifPresent(reasoning -> {
+                    try {
+                        snapshot.reasoning.update(reasoning, emitter);
+                    } catch (Exception exception) {
+                        throw Exceptions.propagate(exception);
+                    }
+                });
         if (assistantMessage.hasToolCalls()) {
             return;
         }
@@ -65,11 +78,18 @@ final class AgentStreamConsumer {
         private final String assistantItemId;
         /** 当前助手消息累计文本，complete 时用它固化最终气泡内容。 */
         private final String assistantText;
+        /** 已经发到前端的 reasoning item id；用于收尾阶段避免重复补发。 */
+        private final String reasoningItemId;
 
         StreamResult(Optional<NodeOutput> output, String assistantItemId, String assistantText) {
+            this(output, assistantItemId, assistantText, null);
+        }
+
+        StreamResult(Optional<NodeOutput> output, String assistantItemId, String assistantText, String reasoningItemId) {
             this.output = output;
             this.assistantItemId = assistantItemId;
             this.assistantText = assistantText;
+            this.reasoningItemId = reasoningItemId;
         }
 
         Optional<NodeOutput> output() {
@@ -78,6 +98,10 @@ final class AgentStreamConsumer {
 
         boolean hasAssistantContent() {
             return assistantItemId != null;
+        }
+
+        boolean hasReasoningContent() {
+            return reasoningItemId != null;
         }
 
         void completeAssistant(ItemEmitter emitter) throws Exception {
@@ -93,6 +117,8 @@ final class AgentStreamConsumer {
         private String itemId;
         /** 已收到的完整助手文本；前端收到的是累计快照，不需要自己拼 delta。 */
         private final StringBuilder text = new StringBuilder();
+        /** 本轮 reasoning 展示 item 的累积快照，保持它在首个 assistant 文本前输出。 */
+        private final ReasoningSnapshot reasoning = new ReasoningSnapshot();
 
         void append(String chunk, ItemEmitter emitter) throws Exception {
             if (chunk == null || chunk.isEmpty()) {
@@ -105,6 +131,27 @@ final class AgentStreamConsumer {
                 return;
             }
             emitter.emitItemUpdated(AgentMessageItem.full(itemId, text.toString()));
+        }
+    }
+
+    /** 单轮 turn 内的 reasoning 累积器；首帧 add，后续帧 update，避免 UI 自己拼 delta。 */
+    private static final class ReasoningSnapshot {
+        /** 首个 reasoning chunk 到达时生成的 item id，后续 updated 复用它。 */
+        private String itemId;
+        /** 已发送到前端的最新 reasoning 快照；重复 chunk 不再发 update，减少无意义刷新。 */
+        private String text;
+
+        void update(String nextText, ItemEmitter emitter) throws Exception {
+            if (nextText == null || nextText.isBlank() || nextText.equals(text)) {
+                return;
+            }
+            text = nextText;
+            if (itemId == null) {
+                itemId = AgentLoopSupport.newItemId();
+                emitter.emitReasoning(new ReasoningItem(itemId, "reasoning", text));
+                return;
+            }
+            emitter.emitItemUpdated(new ReasoningItem(itemId, "reasoning", text));
         }
     }
 }
