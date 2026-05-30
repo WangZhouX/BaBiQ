@@ -5,8 +5,10 @@ import com.wzx.babiq.desktop.protocol.ServerEvent
 import com.wzx.babiq.desktop.protocol.ThreadItem
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 
 class ChatReducerTest {
 
@@ -85,6 +87,68 @@ class ChatReducerTest {
 		assertEquals(TurnState.Failed, next.turnState)
 		assertEquals("模型超时", next.lastError)
 		assertEquals(1, next.messages.size)
+	}
+
+	@Test
+	fun `reasoning item becomes reasoning message instead of agent text`() {
+		val state = AppState.empty().copy(turnState = TurnState.Running)
+		val item = ThreadItem.Reasoning(
+			id = "it-reasoning-1",
+			text = "先查看目录，再决定是否读取文件。",
+		)
+
+		val next = ChatReducer.reduce(
+			state,
+			AgentEvent.Server(ServerEvent.ItemAdded("thread-1", "turn-1", item)),
+		)
+
+		val message = assertIs<ChatMessage.Reasoning>(next.messages.single())
+		assertEquals("it-reasoning-1", message.id)
+		assertEquals("先查看目录，再决定是否读取文件。", message.text)
+		assertFalse(message.completed)
+	}
+
+	@Test
+	fun `turn completed marks reasoning messages completed`() {
+		val state = AppState.empty().copy(
+			messages = listOf(ChatMessage.Reasoning("it-reasoning-1", "思考过程", completed = false)),
+			turnState = TurnState.Running,
+		)
+
+		val next = ChatReducer.reduce(
+			state,
+			AgentEvent.Server(ServerEvent.TurnCompleted("thread-1", "turn-1", "completed")),
+		)
+
+		val message = assertIs<ChatMessage.Reasoning>(next.messages.single())
+		assertTrue(message.completed)
+	}
+
+	@Test
+	fun `turn failed marks reasoning messages completed`() {
+		val state = AppState.empty().copy(
+			messages = listOf(ChatMessage.Reasoning("it-reasoning-1", "reasoning before failure", completed = false)),
+			turnState = TurnState.Running,
+		)
+
+		val next = ChatReducer.reduce(
+			state,
+			AgentEvent.Server(ServerEvent.TurnFailed("thread-1", "turn-1", "failed")),
+		)
+
+		val message = assertIs<ChatMessage.Reasoning>(next.messages.single())
+		assertTrue(message.completed)
+	}
+
+	@Test
+	fun `history reasoning messages are completed by default`() {
+		val messages = ChatReducer.messagesFromItems(
+			listOf(ThreadItem.Reasoning("it-reasoning-1", text = "历史思考过程")),
+		)
+
+		val message = assertIs<ChatMessage.Reasoning>(messages.single())
+		assertEquals("历史思考过程", message.text)
+		assertTrue(message.completed)
 	}
 
 	@Test

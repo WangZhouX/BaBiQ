@@ -7,6 +7,7 @@ import com.wzx.babiq.server.conversation.ItemEmitter;
 import com.wzx.babiq.server.conversation.Turn;
 import com.wzx.babiq.server.conversation.TurnStatus;
 import com.wzx.babiq.server.conversation.items.AgentMessageItem;
+import com.wzx.babiq.server.conversation.items.ReasoningItem;
 import com.wzx.babiq.server.observability.TurnObservationContext;
 import com.wzx.babiq.server.observability.TurnObservationRegistry;
 import com.wzx.babiq.server.observability.TurnSummaryEmitter;
@@ -125,6 +126,21 @@ final class AgentLoopOutputHandler {
                 .orElseThrow(() -> new IllegalStateException("ReactAgent 返回空输出"));
         AssistantMessage assistantMessage = strategy.extractAssistantMessage(completedNode);
         AgentLoopDiagnostics.assistantMessageExtracted(turn, assistantMessage);
+        emitReasoningIfPresent(emitter, result, assistantMessage);
         emitter.emitItemAdded(AgentMessageItem.full(AgentLoopSupport.newItemId(), assistantMessage.getText()));
+    }
+
+    /** 把 AssistantMessage metadata 中的 reasoningContent 转成独立展示 item，且避免流式阶段重复补发。 */
+    private void emitReasoningIfPresent(ItemEmitter emitter,
+                                        AgentStreamConsumer.StreamResult result,
+                                        AssistantMessage assistantMessage) throws Exception {
+        if (result.hasReasoningContent()) {
+            return;
+        }
+        Optional<String> reasoning = ReasoningContentSupport.extractDisplayText(assistantMessage);
+        if (reasoning.isEmpty()) {
+            return;
+        }
+        emitter.emitReasoning(new ReasoningItem(AgentLoopSupport.newItemId(), "reasoning", reasoning.get()));
     }
 }

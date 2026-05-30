@@ -1,6 +1,7 @@
 package com.wzx.babiq.desktop.ui.chat
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -40,16 +41,22 @@ fun MessageBubble(message: ChatMessage) {
 			modifier = Modifier.fillMaxWidth(),
 			horizontalArrangement = if (message is ChatMessage.User) Arrangement.End else Arrangement.Start,
 		) {
+			val shape = shapeFor(message)
 			Column(
 				modifier = Modifier
 					.widthIn(max = 680.dp)
-					.background(backgroundFor(message), RoundedCornerShape(8.dp))
-					.padding(12.dp),
+					.background(backgroundFor(message), shape)
+					.then(borderFor(message, shape))
+					.padding(paddingFor(message)),
 				verticalArrangement = Arrangement.spacedBy(6.dp),
 				horizontalAlignment = Alignment.Start,
 			) {
 				// completed 工具默认收起，避免把 stdout/stderr 或 spotlighting 原文铺满聊天区；点击标题可临时展开查看。
-				var expanded by remember(message.id, (message as? ChatMessage.Tool)?.status) {
+				var expanded by remember(
+					message.id,
+					(message as? ChatMessage.Tool)?.status,
+					(message as? ChatMessage.Reasoning)?.completed,
+				) {
 					mutableStateOf(!shouldCollapseByDefault(message))
 				}
 				val title = titleFor(message)
@@ -57,7 +64,7 @@ fun MessageBubble(message: ChatMessage) {
 					// 普通聊天气泡不再显示“你 / BaBiQ”，只给工具和文件卡片保留语义标题，降低对话区噪音。
 					MessageTitle(
 						title = title,
-						expandable = message is ChatMessage.Tool && !message.isContextEvent() && message.detail.isNotBlank(),
+						expandable = isExpandable(message),
 						expanded = expanded,
 						onToggle = { expanded = !expanded },
 					)
@@ -105,16 +112,34 @@ private fun MessageTitle(
 private fun backgroundFor(message: ChatMessage): Color =
 	when (message) {
 		is ChatMessage.User -> Color(0xFFE4ECF7)
+		is ChatMessage.Reasoning -> Color(0xFFF7F8FA)
 		is ChatMessage.Tool if message.isContextEvent() -> Color(0xFFEAF3EF)
 		is ChatMessage.Tool, is ChatMessage.FileChange -> Color(0xFFF1EFE8)
 		else -> BaBiQColors.Panel
 	}
+
+/** 根据消息类型选择边框和圆角，reasoning 块按 Figma 原型使用更轻的灰边框。 */
+private fun borderFor(message: ChatMessage, shape: RoundedCornerShape): Modifier =
+	if (message is ChatMessage.Reasoning) {
+		Modifier.border(1.dp, Color(0xFFE2E5EA), shape)
+	} else {
+		Modifier
+	}
+
+/** 根据消息类型选择外观圆角。 */
+private fun shapeFor(message: ChatMessage): RoundedCornerShape =
+	if (message is ChatMessage.Reasoning) RoundedCornerShape(12.dp) else RoundedCornerShape(8.dp)
+
+/** reasoning 块在原型里横向 padding 更大，和普通消息气泡区分开。 */
+private fun paddingFor(message: ChatMessage) =
+	if (message is ChatMessage.Reasoning) 16.dp else 12.dp
 
 /** 根据消息类型选择气泡标题。 */
 private fun titleFor(message: ChatMessage): String =
 	when (message) {
 		is ChatMessage.User -> ""
 		is ChatMessage.Agent -> ""
+		is ChatMessage.Reasoning -> if (message.completed) "💭 思考过程 · 已完成" else "💭 思考过程"
 		is ChatMessage.Tool if message.isContextEvent() -> "上下文 · ${message.status}"
 		is ChatMessage.Tool -> "工具 · ${message.status}"
 		is ChatMessage.FileChange -> "文件 · ${message.status}"
@@ -135,6 +160,7 @@ private fun bodyFor(message: ChatMessage, expanded: Boolean): String =
 	when (message) {
 		is ChatMessage.User -> message.text
 		is ChatMessage.Agent -> message.text
+		is ChatMessage.Reasoning -> if (expanded) message.text else ""
 		is ChatMessage.Tool if message.isContextEvent() -> message.detail
 		is ChatMessage.Tool -> if (shouldCollapseByDefault(message) && !expanded) {
 			message.title
@@ -150,8 +176,18 @@ private fun bodyFor(message: ChatMessage, expanded: Boolean): String =
 private fun bodyStyleFor(message: ChatMessage) =
 	if ((message is ChatMessage.Tool && !message.isContextEvent()) || message is ChatMessage.FileChange) {
 		MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
+	} else if (message is ChatMessage.Reasoning) {
+		MaterialTheme.typography.bodySmall.copy(color = Color(0xFF5F6368))
 	} else {
 		MaterialTheme.typography.bodyMedium
+	}
+
+/** reasoning 与 completed 工具都支持点击标题展开/收起。 */
+private fun isExpandable(message: ChatMessage): Boolean =
+	when (message) {
+		is ChatMessage.Reasoning -> message.text.isNotBlank()
+		is ChatMessage.Tool -> !message.isContextEvent() && message.detail.isNotBlank()
+		else -> false
 	}
 
 /**
@@ -164,6 +200,8 @@ private fun ChatMessage.Tool.isContextEvent(): Boolean = title == "上下文压�
 
 /** 工具完成后默认折叠，运行中或失败时保留详细输出帮助判断状态。 */
 private fun shouldCollapseByDefault(message: ChatMessage): Boolean =
-	message is ChatMessage.Tool &&
-		!message.isContextEvent() &&
-		message.status.equals("completed", ignoreCase = true)
+	when (message) {
+		is ChatMessage.Reasoning -> message.completed
+		is ChatMessage.Tool -> !message.isContextEvent() && message.status.equals("completed", ignoreCase = true)
+		else -> false
+	}
