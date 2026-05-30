@@ -4,13 +4,60 @@
 
 ## 当前状态
 
+- **代码已实现并通过自动化验证**（2026-05-30）。本次实现未新增数据库表，计划仍复用 `bq_items` payload。
 - **计划已定稿为正式执行计划**（2026-05-30）。§3 决策（D1-D5）全部确认。
 - **Figma 原型已出并经用户确认**（页 `35:2` "P3 上下文与记忆平台原型"）：
   - `P3 12 会话-运行面板`（节点 `134:2`）：展开态，右侧固定面板竖向三段 **进度 / 环境信息 / 来源**。
   - `P3 13 会话-运行面板（收起）`（节点 `154:2`）：收起态，右上角 `◐ 计划进行中 · 3/5 展开▸` 提醒胶囊，主列变宽。
   - `00 交互总览-P3`（节点 `35:3`）已补 2 张索引卡 + 更新主线说明。
-- **代码尚未实现**。这是接下来要做的事。
-- **唯一启动门禁：先完成 P3 总体验收**（CLAUDE.md §3）。验收通过前不得开始 P4 实现，且 P4 任何提交不得混入 P3 收口。
+- **自动化验证已完成**：后端专项测试、后端 `clean verify`、桌面端专项测试、桌面端 `gradlew.bat test` 均成功。
+- **真实模型人工烟测未在本次自动化会话内执行**：简单任务是否不触发计划、复杂任务是否主动调 `update_plan`，仍需在可用 Provider/API Key 环境下人工验收。
+
+## 本次完成证据
+
+- 后端新增 `UpdatePlanTool`，使用 Spring AI `@Tool` / `@ToolParam` / `ToolContext` 接入现有工具链；首次调用发 `item/added`，同一 turn 后续调用发同 id 的 `item/updated`，保持 Codex/Claude Code 的全量覆盖语义。
+- `PlanItem.PlanStep` 已补 `status` 与可选 `activeForm`，`goal` / `reasoning` 保持可选，不新增 `planId`。
+- `SystemPromptSecurityRule` 已加入计划使用规则：简单/单步/纯咨询不建计划；复杂多步、依赖阶段或用户明确 TODO 时使用；最多一步 `in_progress`；调用后不在正文重复整份计划。
+- `update_plan` 默认进入能力目录且保持 VISIBLE；已补 `plan` / `todo` 中文别名，支持中文 query 命中。
+- `update_plan` 不在 `BaBiQSandboxInterceptor.WRITE_TOOLS`，并在 `ReActStrategy.approvalToolNamesFor(ALWAYS)` 中被排除，不触发审批。
+- 桌面端新增 `ThreadItem.Plan`、`PlanUiState`、`PlanSection`，计划 item 进入右侧运行面板，不进入聊天消息流；全部 completed 后自动隐藏。
+- 右侧运行面板已合并实时层：进度、执行环境、上下文来源；收起后在聊天顶部保留计划提醒胶囊。
+
+## 验证结果
+
+```powershell
+cd E:\BaBiQ\backend
+.\mvnw.cmd "-Dtest=UpdatePlanToolTest,ThreadItemJsonTest,CapabilityAliasDictionaryTest,CapabilityCatalogSyncServiceTest,ReActStrategyTest,SystemPromptSecurityRuleTest,AgentLoopLineCountTest" test
+```
+
+实际结果：`BUILD SUCCESS`，`Tests run: 23, Failures: 0, Errors: 0, Skipped: 0`。
+
+```powershell
+cd E:\BaBiQ\backend
+.\mvnw.cmd clean verify
+```
+
+实际结果：`BUILD SUCCESS`，总耗时 `44.182 s`。
+
+```powershell
+cd E:\BaBiQ\desktop
+.\gradlew.bat test --tests "*ThreadItemJsonTest" --tests "*ChatReducerTest" --tests "*PlanSectionTest"
+```
+
+实际结果：`BUILD SUCCESSFUL`。
+
+```powershell
+cd E:\BaBiQ\desktop
+.\gradlew.bat test
+```
+
+实际结果：`BUILD SUCCESSFUL in 1s`。
+
+```powershell
+rg -n "complexity|isComplex|simpleTask|trivialTask|singleStep|complexTask|复杂度" backend/src/main/java desktop/src/main/kotlin
+```
+
+实际结果：无命中，说明没有新增复杂度检测代码；“简单任务不出现”只由 system prompt 约束模型。
 
 ## 一句话目标
 

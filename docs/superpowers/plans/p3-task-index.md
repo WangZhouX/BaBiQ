@@ -17,6 +17,7 @@
 | P3-5a | 已完成 | Lucene 能力搜索替换：移除 fallback，接入 Spring AI Community LuceneToolSearcher | `docs/superpowers/plans/p3-5a-lucene-capability-search/plan.md` | P3-5 |
 | P3-UI | 已完成 | P3 Figma 原型刷新：补齐上下文、记忆、能力装配和中文能力搜索的用户可见表达 | `docs/superpowers/plans/p3-ui-prototype-refresh/plan.md` | P3-5a |
 | P3-UI-Desktop | 已完成 | Compose Desktop UI 跟进：按 P3 Figma 原型落地上下文、记忆、能力中心和中文能力搜索界面 | `docs/superpowers/plans/p3-ui-desktop-implementation/plan.md` | P3-UI |
+| P4-Plan/Todo | 已完成 | Plan/Todo 可视化：接入 `update_plan`、计划协议状态、右侧进度面板和收起提醒胶囊 | `docs/superpowers/plans/p4-plan-todo-visualization/plan.md` | P3-UI-Desktop |
 
 ## 执行规则
 
@@ -30,5 +31,6 @@
 - P3-5a 已完成能力搜索底层替换：`CapabilitySearchService` 默认实现改为 Spring AI Community `tool-searcher-lucene:1.0.1`，旧 `FallbackLexicalCapabilitySearchService` 已移除，新事件策略写入 `LUCENE`。
 - P3-UI 已完成：Figma 页面 `35:2` 已刷新为 `P3 上下文与记忆平台原型`，新增 `P3 01` 到 `P3 11` 专项 Frame，把上下文窗口、短期压缩、长期记忆、按需能力装配和中文能力搜索转成用户可见的交互表达；未修改 `desktop/` 或 `backend/` 代码。
 - P3-UI-Desktop 已完成：Compose Desktop 已按 P3 Figma 原型落地输入栏 P3 状态弹层、运行详情上下文/记忆/能力审计分区、记忆设置、能力中心、中文能力搜索和聊天流上下文压缩事件卡片；`00 交互总览-P3` 只作为原型索引页，没有进入产品 UI。
-- 下一步应进行 P3 总体验收复盘，并由用户决定是否进入 P4 / P3-6 等新的专项增强计划。
+- P4-Plan/Todo 已完成：后端新增 `update_plan` 本地工具和计划使用 system prompt，桌面端新增 `ThreadItem.Plan`、`PlanUiState`、右侧进度面板和收起提醒胶囊；真实模型人工烟测仍需在可用 Provider/API Key 环境下确认。
+- 下一步应进行 P3/P4 总体验收复盘，并由用户决定是否进入 P3-6、P4 后续或新的专项增强计划。
 - 任何阶段新增业务表或字段，都必须同步 SQL 中文注释、`bq_schema_comments`、Entity 注释和覆盖测试。

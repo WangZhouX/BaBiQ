@@ -3,7 +3,7 @@
 > **For agentic workers:** 本文件是**已定稿的正式执行计划**。实施时用 `superpowers:executing-plans` + `superpowers:test-driven-development`，声称完成前用 `superpowers:verification-before-completion`。交接见同目录 `codex-handoff.md`。
 > **唯一启动门禁（见 §8）：** 须先完成 P3 总体验收；通过后即可按 §4 Task 顺序执行，**不得混入任何 P3 收口提交**。
 >
-> **状态：** 正式执行计划（2026-05-30 用户定稿）。§3 决策全部确认（D1/D2 双源印证、D3/D4/D5 已定）。本计划新增一条「协议 → AgentLoop → 桌面 UI」纵向特性，属于 P3 之后的新阶段，**不在 P3 范围内**。
+> **状态：** 已实现并通过自动化验证（2026-05-30）。§3 决策全部确认（D1/D2 双源印证、D3/D4/D5 已定）。本计划新增一条「协议 → AgentLoop → 桌面 UI」纵向特性，属于 P3 之后的新阶段，**不在 P3 范围内**。
 >
 > **设计依据：** 已交叉核对两套业界实现源码 —— Codex `update_plan`（`E:\wzx\codex`）和 Claude Code `TodoWrite`（`E:\wzx\claude-code`），并用 Context7 核对 Spring AI / Spring AI Alibaba 工具与 system prompt 能力。详见 §11。
 
@@ -12,6 +12,8 @@
 **Architecture:** 复用 BaBiQ 现有「工具发 item → emitter 落库 → WebSocket notification → 桌面 reducer → Compose 渲染」链路，**不引入新机制**。计划由本地工具 `update_plan` 产生（和 `write_file` 发 `fileChange` item 同一模式）。**全量覆盖语义**（对齐 Codex + Claude Code）：每次调用携带完整计划列表，最新一份生效；首次 `item/added`、同一计划后续 `item/updated`（原地刷新，不在聊天流堆卡）；全部 completed 时面板隐藏。
 
 **Tech Stack:** 同 P3，不升级 Spring AI / Spring AI Alibaba。后端：扩展已存在的 `PlanItem` 协议 record + 新增 `UpdatePlanTool`（`@Tool`）+ system prompt 计划规则段。桌面端：扩展 `ThreadItem`/`ChatReducer`/`AppState` + 新增 Compose 进度面板。**不新增数据库表**（计划落在已有 `bq_items` payload）。
+
+**Implementation Result（2026-05-30）:** 本计划已落地为后端 `update_plan` 工具、可选 `goal/reasoning` 的 `PlanItem` 协议扩展、system prompt 计划规则、能力目录中文别名、桌面端 `ThreadItem.Plan` / `PlanUiState` / 右侧进度面板和收起提醒胶囊。已完成后端专项测试、后端 `clean verify`、桌面端专项测试和桌面端全量测试。真实模型人工烟测仍需在可用 Provider/API Key 环境下验收模型是否按 prompt 主动调用 `update_plan`。
 
 ---
 
@@ -300,18 +302,18 @@ rg -n "update_plan" src/main/java
 
 ## 7. 完成标准（实现时逐条勾选）
 
-- [ ] `PlanItem`/`PlanStep` 已补 status + 可选 activeForm，JSON round-trip 测试通过
-- [ ] `UpdatePlanTool` 已实现（全量覆盖，首发 added / 续发 updated），单测通过
-- [ ] `update_plan` 默认 VISIBLE（不 defer）、有中文别名、**不触发审批 / 不算写类工具**
-- [ ] system prompt 已加计划使用规则（含"简单不用 / 一个 in_progress / 不重复正文"），**无任何复杂度检测代码**
-- [ ] 桌面端 `ThreadItem.Plan` + reducer + `PlanUiState` 完成，plan 不进 messages，全完成隐藏
-- [ ] 右侧运行面板三段（进度/环境信息/来源）+ 收起提醒胶囊渲染完成，对齐原型 `134:2` / `154:2`，Compose 测试通过
-- [ ] 底部 chip 已收编到「环境信息」区，无重复展示
-- [ ] `thread/load` 能恢复历史计划
-- [ ] 后端 `clean verify` + 桌面端 `gradlew.bat test` 全绿，`AgentLoopLineCountTest` 不退化
-- [ ] 人工烟测：简单任务不出现 / 复杂任务出现并更新 / 全完成隐藏
-- [ ] CLAUDE.md / AGENTS.md 当前检查点同步
-- [ ] 中文 conventional commit，未 push
+- [x] `PlanItem`/`PlanStep` 已补 status + 可选 activeForm，JSON round-trip 测试通过
+- [x] `UpdatePlanTool` 已实现（全量覆盖，首发 added / 续发 updated），单测通过
+- [x] `update_plan` 默认 VISIBLE（不 defer）、有中文别名、**不触发审批 / 不算写类工具**
+- [x] system prompt 已加计划使用规则（含"简单不用 / 一个 in_progress / 不重复正文"），**无任何复杂度检测代码**
+- [x] 桌面端 `ThreadItem.Plan` + reducer + `PlanUiState` 完成，plan 不进 messages，全完成隐藏
+- [x] 右侧运行面板三段（进度/环境信息/来源）+ 收起提醒胶囊渲染完成，对齐原型 `134:2` / `154:2`，Compose 测试通过
+- [x] 底部 chip 已收编到「环境信息」区，无重复展示
+- [x] `thread/load` 能恢复历史计划
+- [x] 后端 `clean verify` + 桌面端 `gradlew.bat test` 全绿，`AgentLoopLineCountTest` 不退化
+- [ ] 人工烟测：简单任务不出现 / 复杂任务出现并更新 / 全完成隐藏（需真实 Provider/API Key 环境）
+- [x] CLAUDE.md / AGENTS.md 当前检查点同步
+- [x] 中文 conventional commit，未 push
 
 ---
 
@@ -336,10 +338,10 @@ rg -n "update_plan" src/main/java
 ## 10. 下一步
 
 1. ✅ §3 决策已定（D1/D2 双源印证，D3/D4 原型确认）。
-2. 完成 P3 总体验收复盘（唯一剩余门禁）。
+2. P4 Plan/Todo 可视化已完成代码实现与自动化验证；真实模型人工烟测留作运行环境验收。
 3. ✅ 本计划已定稿为正式执行计划；§6「右侧运行面板 vs 运行详情」收口已在 §3-D5 确定。
 4. ✅ 已编写同目录 `codex-handoff.md`。
-5. P3 总体验收通过后，按 §4 Task 顺序执行，每个 Task 中文 conventional commit，不 push。
+5. 后续如要做 plan.md/artifact 查看器、用户手动编辑计划、`ReasoningItem` 接通，均属于新的专项计划，不混入本阶段。
 
 ---
 
