@@ -1,9 +1,9 @@
 # P6 Multi-Agent / 子 Agent 平台 — Master 计划（草案）
 
-> 状态：**草案，待用户确认**（2026-05-31 创建）。
+> 状态：**草案，待用户确认**（2026-05-31 创建；同日完成原型评审与文档梳理）。
 > 本文件是 P6 大阶段的总纲，对标 `2026-05-21-p1-master.md` / `p2-master.md` / `p3-master.md`。
-> 确认后再按 §5 子阶段拆出各自的 `plan.md` + `codex-handoff.md`，逐子阶段实现并验收。
-> 本阶段任何实现都未开始；当前只有调研结论与路线规划。
+> 确认后再按 §5.6 子阶段拆出各自的 `plan.md` + `codex-handoff.md`，逐子阶段实现并验收。
+> **进度**：调研结论已核对、UI 模型已评审定稿、Figma 原型已出 8 帧（见 §5.5）；后端任何实现都未开始。
 
 ---
 
@@ -43,9 +43,9 @@
   1. **Task 子 Agent**（`src/tools/Task{Create,Get,List}Tool`、`src/components/agents/.../Task{Output,Stop}Tool`）：spawn 一个 `subagent_type` 子 Agent，带自己的 tools / model，结果回传。`utils/model/agent.ts` 已读：子 Agent model 默认 `inherit` 父级，可选 sonnet/opus/haiku；agent 定义带 name/description/tools/model（`loadPluginAgents.ts` 从目录加载）。
   2. **swarm / team 实时协作**（`src/utils/swarm/`）：leader + teammates，`SendMessage` 互发消息，`permissionSync.ts`(27KB) 权限同步，`inProcessRunner.ts`(55KB)，后端 `backends/{InProcessBackend, PaneBackendExecutor}`（进程内 or tmux pane），`leaderPermissionBridge`、`teammate*`。**这是重型实时协作模型**，但仍是本机进程内 / pane，不是跨网络。
 
-### 2.3 Spring AI Alibaba `1.1.2.3`（本机 jar 反编译核对，比 Context7 更贴合锁定版）
+### 2.3 Spring AI Alibaba `1.1.2.3`（本机 jar 反编译核对 + Context7 官方文档交叉印证）
 
-> 证据来源：`spring-ai-alibaba-agent-framework-1.1.2.3.jar` 的类清单 + `javap -public` 签名。Context7 本次因 "Monthly quota exceeded" 不可用，故改用 jar 直查。
+> 证据：`spring-ai-alibaba-agent-framework-1.1.2.3.jar` 类清单 + `javap -public` 签名，并经 Context7（repo `v1.1.2.2` + 文档站 `java2ai`）逐条交叉印证。
 
 | BaBiQ 需求 | 官方类（包 `com.alibaba.cloud.ai.graph.agent`） | 已核对 API |
 |---|---|---|
@@ -57,20 +57,20 @@
 | flow 编排 | `flow.agent.{FlowAgent, SequentialAgent, ParallelAgent, LlmRoutingAgent, LoopAgent}` + `flow.builder.*` + `flow.strategy.*` + `flow.node.{RoutingNode, ParallelResultAggregator, ...}` | builder/strategy 齐全；Loop 含 Array/Condition/Count 策略；README 称 `RoutingAgent`，jar 路由实现类为 `LlmRoutingAgent` |
 | 远程 Agent（**本阶段不做**）| `a2a.{A2aRemoteAgent, AgentCardProvider, RemoteAgentCardProvider, AgentCardWrapper}` | A2A 跨进程，CLAUDE.md 已划后续 |
 
-**结论**：三类能力（委派 / 编排 / 拦截器子 Agent）在锁定版**官方已内置且 API 可用**。实时 swarm/team（P6-3）官方无直接对应，需自研编排层，但仍应尽量复用官方 `AgentTool` / 子 Agent 构件做 worker。
+**结论**：委派 / 编排 / 拦截器子 Agent / agent-as-node 在锁定版**官方已内置且 API 可用**。实时 swarm/team（P6-3）官方无直接对应，需自研薄编排层，但 worker 仍尽量复用官方 `AgentTool` / 子 Agent 构件。
 
-> **Context7 官方文档交叉印证（2026-05-31；repo `v1.1.2.2` + 文档站 `java2ai`，jar 反编译结论逐条命中）**：
-> - **agent 即工具**：`AgentTool.getFunctionToolCallback(agent)` 把专家 Agent 包成工具供 supervisor 调用（官方 `examples/multiagent-patterns/supervisor`）。
-> - **Task 委派**：`TaskToolsBuilder.builder().subAgent("name", agent).addAgentResource(resource).build()`；子 Agent 可 **API 定义**（`ReactAgent.builder()`）或 **Markdown 定义**（目录 + YAML front matter，等价 Claude Code agent frontmatter）；编排器用 `write_todos` + `Task`/`TaskOutput` 委派（官方 `examples/multiagent-patterns/subagent`）。
-> - **agent 即图节点（对 §7 风险关键）**：官方 HITL workflow 示例用 `agent.asNode(includeContents, includeReasoning)` 把 ReactAgent 嵌进 `StateGraph`，**工作流与子 Agent 共享同一 `MemorySaver`**，HITL 中断经父 `compiledGraph.invokeAndGetOutput(...)` 上浮（文档 `frameworks/agent-framework/advanced/human-in-the-loop`）。
-> - **A2A**：`A2aRemoteAgent.builder().agentCardProvider(...)` 从 **Nacos 注册中心**发现远程 Agent，确认 A2A = 跨进程/分布式，**P6 不做**（文档 `frameworks/agent-framework/advanced/a2a`）。
+> **Context7 交叉印证要点（2026-05-31）**：
+> - **agent 即工具**：`AgentTool.getFunctionToolCallback(agent)`（官方 `examples/multiagent-patterns/supervisor`）。
+> - **Task 委派**：子 Agent 可 **API 定义**（`ReactAgent.builder()`）或 **Markdown 定义**（目录 + YAML front matter，等价 Claude Code agent frontmatter）；编排器用 `write_todos` + `Task`/`TaskOutput` 委派（官方 `examples/multiagent-patterns/subagent`）。
+> - **agent 即图节点（对 §7 风险关键）**：官方 HITL workflow 示例用 `agent.asNode(...)` 把 ReactAgent 嵌进 `StateGraph`，工作流与子 Agent 共享同一 `MemorySaver`，HITL 中断经父 `compiledGraph.invokeAndGetOutput(...)` 上浮（`frameworks/agent-framework/advanced/human-in-the-loop`）。
+> - **A2A**：`A2aRemoteAgent` + `AgentCardProvider` 从 **Nacos 注册中心**发现远程 Agent，确认 A2A = 跨进程/分布式，**P6 不做**（`frameworks/agent-framework/advanced/a2a`）。
 
 ---
 
 ## 3. 官方能力映射与「薄封装」原则（CLAUDE.md §4 红线）
 
 - **委派 / 编排**：必须薄封装 `AgentTool` / `TaskToolsBuilder` / `AgentSpec` / `flow.agent.*`，**禁止自研子 Agent 执行引擎**。
-- **子 Agent 本体**：复用现有 `ReactAgent.builder()`（与主 Agent 同一构建器），只是换 systemPrompt / 工具子集 / 可选模型。
+- **子 Agent 本体**：复用现有 `ReactAgent.builder()`（与主 Agent 同一构建器），只换 systemPrompt（任务）/ 工具子集 / 模型。
 - **A2A**：本阶段不引入 `a2a.*`，不升级 SAA / Spring AI 版本。
 - **只有在官方缺失时才自研**：仅 P6-3 实时协作的「在线消息总线 / 权限同步」可能需要自研薄层（官方无直接等价），且必须在 P6-3 plan 里说明自研理由。
 
@@ -84,47 +84,91 @@
 
 每个子阶段都必须确认下列横切项在子 Agent 上的行为：
 
-1. **HITL 审批**：子 Agent 内部 `write_file`/`exec_shell`/`apply_patch`/`mcp.*` 是否要审批？默认**要**。难点：嵌套中断（子 Agent 在父工具调用内部触发 HITL，而当前中断/恢复由主 `AgentLoop` + `MemorySaver` + `InterruptionMetadata` 驱动）。**这是 P6-0 spike 的头号问题。**
+1. **HITL 审批**：子 Agent 内部 `write_file`/`exec_shell`/`apply_patch`/`mcp.*` 是否要审批？默认**要**。难点：嵌套中断（子 Agent 在父工具调用内部触发 HITL，而当前中断/恢复由主 `AgentLoop` + `MemorySaver` + `InterruptionMetadata` 驱动）。**这是 P6-0 spike 的头号问题**（已找到官方 `asNode` 解路径，见 §7）。
 2. **沙箱 + PathGuard**：子 Agent 的 cwd / 可写根边界（默认继承父 turn 的 `AgentRunPolicy` 与 writableRoots）。
-3. **Spotlighting**：子 Agent 工具输出同样 `<untrusted-data>` 包裹；子 Agent 回传给父 Agent 的「最终结果」是否也算 untrusted（建议算，防子 Agent 间接注入）。
-4. **工具观测 + 运行记录**：子 Agent 工具调用要落 `bq_tool_calls`、计入 turn 观测；需要区分「主 Agent 调用」与「子 Agent 调用」（新增归属字段 / 子 turn 概念）。
-5. **协议 + 桌面 UI（分两种模式，见 §5）**：需要新协议表示「子 Agent 在跑什么 / 委派了什么 / 子 Agent 结果」。**模式 A（委派）**复用现有单聊天 + 右侧运行面板「委派 / 子 Agent」区（新增 ThreadItem 类型即可，不切界面）；**模式 B（编排 / team）**是显式进入的独立「多 Agent 工作台」视图（拓扑图 / 多 Agent 分栏 / 互发消息时间线）。参考 Codex agent-graph、Claude Code teammate pane（`teammateLayoutManager` 多 pane + 颜色）/ `TaskCreateTool` 内联工具块。
-6. **上下文工程**：子 Agent 有**独立上下文窗口**（不复用父窗口）；结果如何回灌父 Agent 而不污染父历史（建议只回灌「结果摘要」，类比 P3 的 summary-only read path）。
-7. **能力装配 + token 统计**：子 Agent 可见的工具子集（P3-5 `CapabilityExposurePlanner` 是否对子 Agent 生效）；子 Agent 的 token 是否计入本 turn TurnSummary（建议计入，标注归属）。
+3. **Spotlighting**：子 Agent 工具输出同样 `<untrusted-data>` 包裹；子 Agent 回传给父 Agent 的「最终结果」也应算 untrusted（防子 Agent 间接注入）。
+4. **工具观测 + 运行记录**：子 Agent 工具调用要落 `bq_tool_calls`、计入 turn 观测；需区分「主 Agent 调用」与「子 Agent 调用」（新增归属字段 / 子 turn 概念）。
+5. **协议 + 桌面 UI**：需要新协议表示「子 Agent 在跑什么 / 委派了什么 / 子 Agent 结果 / Agent 间消息」。**UI 模型见 §5**——对话始终是主体，委派 / 编排 / 团队都是「对话 + 内联块 + 右侧面板（可展开详情分屏）」，不另开全屏、不隐藏对话。
+6. **上下文工程**：子 Agent 有**独立上下文窗口**（不复用父窗口）；结果只以「结果摘要」回灌父 Agent，避免污染父历史（类比 P3 summary-only read path）。
+7. **能力装配 + token 统计**：子 Agent 可见的工具子集（P3-5 `CapabilityExposurePlanner` 是否对子 Agent 生效）；子 Agent token 计入本 turn TurnSummary 并标注归属。
 
 ---
 
-## 5. 子阶段路线图
+## 5. UI 模型与原型（2026-05-31 评审确认，已落地 Figma 8 帧）
+
+### 5.1 核心 UI 模型
+
+**对话视图始终是主体，不被替换。** 委派 / 编排 / 团队都是「对话（聊天 + 内联折叠块）+ 右侧面板增强」，按需展开「详情分屏」；**详情分屏（执行时间线 / 拓扑）从不隐藏对话、对话始终可用**。早先"模式 B = 独立全屏工作台"的设想已在评审中**否决**（团队 / 编排若丢掉对话不可接受）。
+
+统一交互骨架（三模式完全一致）：
+- **主体**：左侧聊天（你 ↔ 主 Agent），底部输入框始终可用。
+- **内联**：聊天流里一个折叠块，标记本轮的委派 / 编排 / 组队。
+- **增强**：右侧「常驻紧凑卡 →（可选）点入口展开详情分屏」。展开时对话栏收窄但保留、仍可对话，可「收起」还原。
+
+### 5.2 三种模式（同一套骨架，区别只在右侧内容）
+
+| 模式 | 内联块 | 右侧常驻卡 | 可展开详情分屏 | 入口 |
+|---|---|---|---|---|
+| 委派（P6-1）| 🤝 委派 | 「子 Agent」卡 | —（子 Agent 转瞬即逝、被主 Agent 调用即返回）| 自动出现 |
+| 编排（P6-2）| 🧩 编排 | 「编排」卡（阶段进度，紧凑竖向）| 「编排详情」拓扑 + 节点增删 / 配置 | 「编排详情 ▸」 |
+| 团队（P6-3）| 👥 团队 | 「团队」卡 + 消息时间线 | 「团队执行」消息时间线 / 交互详情 | 「团队执行 ▸」/「⚙ 团队设置」 |
+
+### 5.3 Agent 角色（同一批 agent 的不同关系，不是不同 agent）
+
+- **主 Agent**：你对话的本体（BaBiQ）。委派模式里它直接委派；团队模式里它就是 **Leader / 协调者**。
+- **子 Agent**：explorer / worker / analyzer / tester，均建立在官方 `ReactAgent` + `AgentTool` / `Task` / `AgentSpec` 上。
+- **对话入口始终面向主 Agent**；**子 Agent 不单独对话**。例外：**团队模式**可切换「对话对象」直接喊话某个常驻子 Agent（纠偏 / 插话），Leader 仍是协调者、不绕过编排。委派模式不适用（子 Agent 无常驻会话）。
+
+### 5.4 子 Agent / 编排节点配置（任务 + 模型）
+
+- 每个子 Agent / 编排节点 = 一个官方 `AgentSpec(name, description, systemPrompt=任务, toolNames, model=模型)`。
+- **模型默认继承主 Agent，可逐个覆盖**（只读子 Agent 用便宜快的模型、执行子 Agent 用强模型）。官方 `AgentSpec.model` / `SubAgentSpec.model(...)` 直接支持，复用 BaBiQ P2-3 Provider 体系 + `ChatClientFactory.resolveChatModel(providerId)`，零额外造轮子。对标 Claude Code 子 Agent `inherit` 默认、Codex role 可钉 `model`。
+- **编排可视化编辑**：点节点 → 配「任务 / 模型 / 删除」；「+ 添加节点」加一个子 Agent 步骤、「✕ / 删除节点」减一个（= 往 flow 增减子 Agent）。
+- **分期边界（重要，防膨胀）**：P6 只做"在顺序 / 并行结构里增删节点 + 配置任务 / 模型"；**自由连边 / 任意分支的可视化图编辑器留作后续独立增强**，不在 P6 范围。
+
+### 5.5 Figma 原型清单（页 `35:2`，8 帧）
+
+| # | 帧 | 节点 | 演示要点 |
+|---|---|---|---|
+| 1 | P6 01 会话-子 Agent 委派 | `184:2` | 对话内委派 + 内联「🤝 委派」块 + 右侧「子 Agent」卡（并行 explorer / worker 待命）|
+| 2 | P6 02 会话-编排 | `206:2` | 对话 + 内联「🧩 编排」块 + 右侧「编排」卡（含「编排详情 ▸」入口）|
+| 3 | P6 03 会话-团队协作 | `202:2` | 对话 + 内联「👥 团队」块 + 右侧「团队」卡 + 消息时间线（含「⚙ 团队设置」「团队执行 ▸」入口）|
+| 4 | P6 04 团队设置-子 Agent 模型 | `211:2` | 每个子 Agent 模型：默认继承主 Agent、可逐个覆盖（tester 覆盖为 flash）|
+| 5 | P6 05 团队执行-分屏（展开）| `221:2` | 窄对话（仍可对话）+ 宽执行时间线 + 「对话对象」切换直接喊话子 Agent |
+| 6 | P6 06 编排详情-分屏（展开）| `230:2` | 窄对话（仍可对话）+ 宽竖向拓扑（START → explorer →（analyzer ∥ tester）→ 汇总 → END）|
+| 7 | P6 07 编排-节点设置（任务+模型）| `237:2` | 点节点 → 弹层配「任务」+「模型」+「删除节点」|
+| 8 | P6 08 编排-编辑（增删节点）| `242:2` | 「+ 添加节点」+ 各节点 ✕ 删除（编辑模式）|
+
+文件：`https://www.figma.com/design/frTp55zgrKf4NAWxn6LdI7/?node-id=184-2`
+
+### 5.6 子阶段路线图（累进）
 
 > 命名沿用仓库惯例：`p6-N-<slug>/plan.md` + `codex-handoff.md`，并建 `p6-task-index.md`。
 
-> **两种 UI 模式（重要，Codex / Claude Code 源码已印证）**：
-> - **模式 A — 对话内委派（P6-1，默认、透明）**：仍在现有单聊天界面里；explorer/worker 作为**常驻可用能力**注册，主 Agent 在回答**一次**用户请求时**自行决定**是否委派，子 Agent 活动显示在**右侧运行面板「委派 / 子 Agent」区**（可收起），结果回灌主回答。**不切换界面**，是现有 UI 的延伸，UI 风险低。对标 Claude Code `Task`（内联工具块，`TaskCreateTool.renderToolUseMessage`）。
-> - **模式 B — 多 Agent 工作台（P6-2 + P6-3，显式进入的独立模式）**：一个**新视图 / 入口**，用户显式进入。flow 编排显示拓扑图 + 各节点 agent 进度；team/swarm 显示**多 Agent 分栏 + 互发消息时间线**。对标 Claude Code swarm 独立「swarm view」（`teammateLayoutManager` 多 pane + 颜色、`It2SetupPrompt` 显式 setup 向导）和 Codex agent-graph。**P6-2、P6-3 共享这一个新 surface，是本阶段最大的 UI 投入；具体控件待 Figma 原型确认。**
-
-### P6-0：机制 spike + 协议/数据骨架（先验，**不发布完整功能**）
+#### P6-0：机制 spike + 协议/数据骨架（先验，**不发布完整功能**）
 - **spike 目标**：在隔离实验里对比四种官方 agent 组合机制，回答「BaBiQ 用哪个做基座」：
   - (a) `AgentTool.create/getFunctionToolCallback(ReactAgent)`：最薄，子 Agent = 一个 ToolCallback（官方 supervisor 范式）。
   - (b) `TaskToolsBuilder` + `AgentSpec` + `TaskRepository`：最全，含后台任务 + agent 目录加载（官方 subagent 范式）。
   - (c) `extension.interceptor.SubAgentInterceptor` + `SubAgentSpec`：拦截器式。
   - (d) `ReactAgent.asNode(includeContents, includeReasoning)` 嵌入 `StateGraph` + 共享 `MemorySaver`：**官方 HITL 示例采用此式，最可能解决 HITL 嵌套中断**。
-- **必须回答**：① 子 Agent 内层工具调用能否携带父 toolContext（emitter / cwd / observation）；② **HITL 嵌套中断**能否工作（最关键）——先验官方 `asNode` + 共享 `MemorySaver` + `invokeAndGetOutput` 上浮中断的示例能否对接 BaBiQ `approval/respond` 链路；③ 子 Agent token / 观测能否归集；④ 子 Agent 是否需要 per-turn 构建（emitter 时效性）。
-- **产物**：spike 结论文档 + 选定基座；最小协议骨架（委派/子 Agent ThreadItem 草案）。**不接真实业务、不改桌面正式 UI。**
+- **必须回答**：① 子 Agent 内层工具调用能否携带父 toolContext（emitter / cwd / observation）；② **HITL 嵌套中断**能否工作（最关键）——先验官方 `asNode` + 共享 `MemorySaver` + `invokeAndGetOutput` 上浮中断能否对接 BaBiQ `approval/respond` 链路；③ 子 Agent token / 观测能否归集；④ 子 Agent 是否需要 per-turn 构建（emitter 时效性）；⑤ 子 Agent / 节点的「任务 + 模型」配置如何承载（`AgentSpec` 落库 / 运行时构建）。
+- **产物**：spike 结论文档 + 选定基座；最小协议骨架（委派 / 子 Agent / 节点配置 ThreadItem 草案）。**不接真实业务、不改桌面正式 UI。**
 
-### P6-1：子 Agent 委派（最小可行，对标 Codex explorer/worker + Claude Code Task）
+#### P6-1：子 Agent 委派（最小可行，对标 Codex explorer/worker + Claude Code Task）
 - 主 Agent 可委派 **1–2 个内置专家子 Agent**（先做只读 `explorer`，再评估 `worker`），结果回传父 Agent。
 - 子 Agent 复用 §4 横切层（至少：沙箱、Spotlighting、观测、运行记录；HITL 按 spike 结论）。
-- 新增协议 item + 桌面运行面板「委派 / 子 Agent」区；子 Agent 输出不直接灌父聊天流，只回传摘要。
+- 桌面端（对应 P6 01）：对话 + 内联「委派」块 + 右侧「子 Agent」卡；子 Agent 输出不直接灌父聊天流，只回传摘要。
+- 子 Agent 模型默认继承主 Agent、可覆盖（对应 P6 04 的配置语义）。
 - system prompt 借鉴 Codex `explorer`/`worker` 的 whenToUse + ownership 规则。
 
-### P6-2：flow 编排（Sequential / Parallel / Routing / Loop）
+#### P6-2：flow 编排（Sequential / Parallel / Routing / Loop）
 - 薄封装 `flow.agent.{Sequential,Parallel,LlmRouting,Loop}Agent`，支持多子 Agent 顺序 / 并行 / 路由 / 循环。
-- 桌面端进入**模式 B「多 Agent 工作台」**（新 surface）：可视化编排拓扑（Sequential/Parallel/Routing/Loop）与各节点 agent 进度。
+- 桌面端（对应 P6 02 / 06 / 07 / 08）：对话 + 右侧「编排」卡 → 可展开「编排详情」分屏（拓扑 + 各节点状态）；点节点配「任务 / 模型」；「+ 添加 / ✕ 删除」节点（限顺序 / 并行结构，见 §5.4 分期边界）。**对话始终保留**。
 - 明确并行下的运行记录归属、token 归集、审批并发语义。
 
-### P6-3：实时 swarm/team 协作（重型，对标 Claude Code swarm）
-- 多 Agent 同时在线、`SendMessage` 互发消息、共享/同步权限与审批。
-- 桌面端在**模式 B「多 Agent 工作台」**用多 Agent 分栏 + 互发消息时间线呈现（对标 Claude Code swarm 多 pane + 颜色）。
+#### P6-3：实时 swarm/team 协作（重型，对标 Claude Code swarm）
+- 多 Agent 同时在线、`SendMessage` 互发消息、共享 / 同步权限与审批。
+- 桌面端（对应 P6 03 / 05）：对话 + 右侧「团队」卡 + 消息时间线 → 可展开「团队执行」分屏；可切换「对话对象」直接喊话某常驻子 Agent。**对话始终保留**。
 - 官方无直接等价，需自研薄编排层（消息总线 + 权限同步），worker 仍尽量复用官方子 Agent 构件。
 - **仅限本机进程内协作**；跨网络 A2A 仍划后续阶段。
 
@@ -135,13 +179,15 @@
 **P6 做**：
 
 - 薄封装官方委派（P6-1）、flow 编排（P6-2）、自研薄层实时协作（P6-3）。
+- 子 Agent / 编排节点的「任务 + 模型」配置（默认继承主 Agent、可覆盖）。
 - 子 Agent 全程复用 BaBiQ 审批 / 沙箱 / Spotlighting / 观测 / 运行记录 / 协议 UI。
-- 必要的新业务表 / 字段（如子 Agent 运行归属），并同步 SQL 中文注释 + `bq_schema_comments` + 覆盖测试。
+- 必要的新业务表 / 字段（如子 Agent 运行归属、节点配置），并同步 SQL 中文注释 + `bq_schema_comments` + 覆盖测试。
 
 **P6 不做（划后续独立阶段）**：
 
 - `a2a.A2aRemoteAgent` 跨进程 / 跨网络远程 Agent、Agent Card 发布。
 - 真 OS 级沙箱隔离（子 Agent 仍用现有 PathGuard + 三档沙箱）。
+- **自由连边 / 任意分支的可视化工作流图编辑器**（P6 编排编辑仅限顺序 / 并行结构里增删节点 + 配置）。
 - 多模态子 Agent、插件市场 / 用户自定义 agent 目录的完整 UI 编辑。
 - 升级 Spring AI / Spring AI Alibaba 版本（保持 `1.1.6` / `1.1.2.3`）。
 - 改动 `AgentLoop.invoke` 主循环行数约束以外的无关重构（`AgentLoopLineCountTest` 不得退化）。
@@ -154,9 +200,10 @@
 2. **emitter 时效性**：子 Agent toolContext 里的 `emitter` 必须指向当前 WebSocket turn ⇒ 子 Agent 很可能需要 per-turn 构建，不能用静态单例 `AgentTool`。
 3. **运行记录 / 观测归属**：需要「子 turn」或归属字段区分主/子 Agent 的工具调用与 token。
 4. **上下文回灌**：子 Agent 独立窗口的结果如何只以摘要回灌父 Agent，避免污染父历史与上下文预算。
-5. **协议 / UI 表达**：委派、子 Agent 状态、子 Agent 结果的协议 item 与桌面渲染（不进主聊天流 or 进？建议进右侧运行面板）。
-6. **并发（P6-2/P6-3）**：并行子 Agent 的 SQLite 写入、审批并发、token 累计线程安全。
-7. **能力搜索一致性**：中文 query 命中委派/子 Agent 相关能力，需在 `CapabilityAliasDictionary` 补「子代理 / 委派 / 子任务 / 协作 / 团队」等中文别名（CLAUDE.md §4.1）。
+5. **节点 / 子 Agent 配置承载**：`AgentSpec`（任务 + 模型）如何落库与运行时构建；模型覆盖如何走 `ChatClientFactory`。
+6. **协议 / UI 表达**：委派 / 子 Agent 状态 / 子 Agent 结果 / Agent 间消息 / 编排拓扑的协议 item 与桌面渲染（按 §5：对话不被替换，详情进右侧可展开分屏）。
+7. **并发（P6-2/P6-3）**：并行子 Agent 的 SQLite 写入、审批并发、token 累计线程安全。
+8. **能力搜索一致性**：中文 query 命中委派/子 Agent 相关能力，需在 `CapabilityAliasDictionary` 补「子代理 / 委派 / 子任务 / 协作 / 团队 / 编排」等中文别名（CLAUDE.md §4.1）。
 
 ---
 
@@ -164,7 +211,8 @@
 
 - 每子阶段：`cd backend; .\mvnw.cmd clean verify` 全绿 + `cd desktop; .\gradlew.bat test` 全绿 + 子阶段专项测试。
 - 涉及新业务表：`SchemaCommentsCoverageTest` 通过。
-- 真实模型人工烟测：子 Agent 委派 / 编排 / 协作的真实场景可见可用；HITL、token、运行记录归属正确。
+- 真实模型人工烟测：子 Agent 委派 / 编排 / 协作的真实场景可见可用；HITL、token、运行记录归属、模型覆盖正确。
+- 桌面端视觉对齐本阶段 Figma 原型（§5.5）。
 - 不得用 `@Disabled` 占位；没有新鲜验证证据前不得声称完成（CLAUDE.md §5/§8）。
 
 ---
@@ -175,12 +223,12 @@
 - **Claude Code**：`src/tools/Task{Create,Get,List}Tool`、`src/components/agents/.../Task{Output,Stop}Tool`、`src/utils/swarm/{inProcessRunner.ts, permissionSync.ts, teamHelpers.ts, spawnInProcess.ts, backends/*, leaderPermissionBridge.ts, teammate*}`、`src/utils/model/agent.ts`、`src/utils/plugins/loadPluginAgents.ts`。
 - **Spring AI Alibaba 1.1.2.3（本机 jar）**：`com.alibaba.cloud.ai.graph.agent.{AgentTool, ReactAgent（含 asNode）}`、`agent.tools.task.{TaskToolsBuilder, AgentSpec, TaskRepository, AgentSpecReactAgentFactory}`、`agent.extension.interceptor.{SubAgentInterceptor, SubAgentSpec}`、`agent.flow.agent.{SequentialAgent, ParallelAgent, LlmRoutingAgent, LoopAgent}`。
 - **Spring AI Alibaba 官方示例 / 文档（Context7 核对，2026-05-31）**：`examples/multiagent-patterns/{subagent, supervisor}`（repo `v1.1.2.2`）；文档站 `java2ai.com/docs/frameworks/agent-framework/{tutorials/hooks, advanced/human-in-the-loop, advanced/a2a}`。
-- **BaBiQ 现有挂点**：`backend/.../agent/ReActStrategy.java`（横切装配事实源）、`AgentLoop`、`interceptor/*`、`hook/*`、`conversation/items/ThreadItem.java`、`capability/CapabilityExposurePlanner.java`。
+- **BaBiQ 现有挂点**：`backend/.../agent/ReActStrategy.java`（横切装配事实源）、`AgentLoop`、`interceptor/*`、`hook/*`、`conversation/items/ThreadItem.java`、`capability/CapabilityExposurePlanner.java`、`model/ChatClientFactory.java`（Provider/模型解析，子 Agent 模型覆盖复用它）。
 
 ---
 
 ## 10. 下一步
 
-1. **本 master 由用户确认**（路线、三层累进、边界、风险）。
-2. 确认后写 **P6-0 spike plan**（机制对比 + HITL 嵌套中断先验），spike 结论锁定基座后再写 P6-1 详细 plan。
+1. **本 master + 8 帧原型由用户确认**（路线、三层累进、UI 模型、边界、风险）。
+2. 确认后写 **P6-0 spike plan**（四机制对比 + HITL 嵌套中断先验 + 节点/子 Agent 配置承载），spike 结论锁定基座后再写 P6-1 详细 plan。
 3. 每子阶段：详细 plan → codex-handoff → TDD 实现 → 自动化 + 真实烟测 → 文档同步（CLAUDE.md / AGENTS.md / p6-task-index）。
