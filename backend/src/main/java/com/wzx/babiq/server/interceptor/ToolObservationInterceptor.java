@@ -6,6 +6,8 @@ import com.alibaba.cloud.ai.graph.agent.interceptor.ToolCallResponse;
 import com.alibaba.cloud.ai.graph.agent.interceptor.ToolInterceptor;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wzx.babiq.server.agent.delegation.BuiltInSubAgents;
+import com.wzx.babiq.server.agent.delegation.SubAgentDelegationContext;
 import com.wzx.babiq.server.conversation.ItemEmitter;
 import com.wzx.babiq.server.conversation.items.CommandExecutionItem;
 import com.wzx.babiq.server.observability.BaBiQMetrics;
@@ -111,6 +113,9 @@ public class ToolObservationInterceptor extends ToolInterceptor {
                     context.turnId(),
                     request.getToolName(),
                     request.getArguments(),
+                    agentName(request),
+                    parentAgentName(request),
+                    delegationId(request),
                     Instant.now());
         } catch (RuntimeException exception) {
             // 运行记录属于观测增强，不能反向影响工具执行；例如旧测试或内存 turn 没有先落库时会触发外键失败。
@@ -161,6 +166,14 @@ public class ToolObservationInterceptor extends ToolInterceptor {
      * “工具调用过程 -> 本轮运行反馈”顺序一致。</p>
      */
     private void emitToolDetailIfPossible(ToolCallRequest request, ToolCallResponse response, long durationMs) {
+        SubAgentDelegationContext delegation = delegationContext(request);
+        if (delegation != null) {
+            delegation.recordChildToolCall(request.getToolName());
+            return;
+        }
+        if (BuiltInSubAgents.EXPLORER_NAME.equals(request.getToolName())) {
+            return;
+        }
         ItemEmitter emitter = itemEmitter(request);
         if (emitter == null) {
             return;
@@ -182,6 +195,14 @@ public class ToolObservationInterceptor extends ToolInterceptor {
      * 工具以异常方式失败时也发明细卡片，避免用户只看到 turn 失败而看不到是哪次工具调用出错。
      */
     private void emitFailedToolDetailIfPossible(ToolCallRequest request, RuntimeException exception, long durationMs) {
+        SubAgentDelegationContext delegation = delegationContext(request);
+        if (delegation != null) {
+            delegation.recordChildToolCall(request.getToolName());
+            return;
+        }
+        if (BuiltInSubAgents.EXPLORER_NAME.equals(request.getToolName())) {
+            return;
+        }
         ItemEmitter emitter = itemEmitter(request);
         if (emitter == null) {
             return;
@@ -217,6 +238,28 @@ public class ToolObservationInterceptor extends ToolInterceptor {
             return emitter;
         }
         return null;
+    }
+
+    private SubAgentDelegationContext delegationContext(ToolCallRequest request) {
+        Object candidate = request.getContext() == null
+                ? null
+                : request.getContext().get(SubAgentDelegationContext.METADATA_KEY);
+        return candidate instanceof SubAgentDelegationContext delegation ? delegation : null;
+    }
+
+    private String agentName(ToolCallRequest request) {
+        SubAgentDelegationContext delegation = delegationContext(request);
+        return delegation == null ? BuiltInSubAgents.MAIN_AGENT_NAME : delegation.childAgent();
+    }
+
+    private String parentAgentName(ToolCallRequest request) {
+        SubAgentDelegationContext delegation = delegationContext(request);
+        return delegation == null ? null : delegation.parentAgent();
+    }
+
+    private String delegationId(ToolCallRequest request) {
+        SubAgentDelegationContext delegation = delegationContext(request);
+        return delegation == null ? null : delegation.delegationId();
     }
 
     /**

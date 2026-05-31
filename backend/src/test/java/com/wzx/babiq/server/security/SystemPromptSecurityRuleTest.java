@@ -21,4 +21,14 @@ class SystemPromptSecurityRuleTest {
                 .contains("不要在正文重复")
                 .contains("untrusted-data");
     }
+
+    @Test
+    void prompt_should_include_explorer_delegation_boundaries() {
+        assertThat(SystemPromptSecurityRule.PROMPT)
+                .contains("explorer")
+                .contains("READ-ONLY")
+                .contains("只读")
+                .contains("委派")
+                .contains("untrusted-data");
+    }
 }

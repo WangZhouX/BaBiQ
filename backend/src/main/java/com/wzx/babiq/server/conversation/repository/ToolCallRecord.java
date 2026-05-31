@@ -28,6 +28,9 @@ public record ToolCallRecord(
         String status,
         String resultPreview,
         String errorMessage,
+        String agentName,
+        String parentAgentName,
+        String delegationId,
         Instant startedAt,
         Instant completedAt
 ) {

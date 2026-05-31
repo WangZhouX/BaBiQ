@@ -2,6 +2,10 @@ package com.wzx.babiq.server.interceptor;
 
 import com.alibaba.cloud.ai.graph.agent.interceptor.ToolCallRequest;
 import com.alibaba.cloud.ai.graph.agent.interceptor.ToolCallResponse;
+import com.wzx.babiq.server.agent.delegation.BabiqAgentMode;
+import com.wzx.babiq.server.agent.delegation.BuiltInSubAgents;
+import com.wzx.babiq.server.agent.delegation.SubAgentDelegationContext;
+import com.wzx.babiq.server.conversation.items.AgentDelegationItem;
 import com.wzx.babiq.server.conversation.ItemEmitter;
 import com.wzx.babiq.server.conversation.items.CommandExecutionItem;
 import com.wzx.babiq.server.conversation.items.ThreadItem;
@@ -18,6 +22,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 class ToolObservationInterceptorTest {
@@ -95,5 +100,45 @@ class ToolObservationInterceptorTest {
         assertThat(response.getResult()).isEqualTo("ok");
         assertThat(context.toolCalls()).isEqualTo(1);
         assertThat(metrics.snapshot().toolCallsByName()).containsEntry("read_file", 1L);
+    }
+
+    @Test
+    void interceptToolCall_should_fold_child_tool_event_into_delegation_item() throws Exception {
+        BaBiQMetrics metrics = new BaBiQMetrics();
+        ToolObservationInterceptor interceptor = new ToolObservationInterceptor(metrics);
+        TurnObservationContext context = TurnObservationContext.start(
+                "thr_1", "turn_1", "provider-a", "qwen-plus");
+        ItemEmitter emitter = mock(ItemEmitter.class);
+        SubAgentDelegationContext delegation = SubAgentDelegationContext.started(
+                "it_delegate_1",
+                "dlg_1",
+                BuiltInSubAgents.MAIN_AGENT_NAME,
+                "explorer",
+                BabiqAgentMode.READ_ONLY_TOOL,
+                emitter,
+                context);
+        ToolCallRequest request = ToolCallRequest.builder()
+                .toolName("read_file")
+                .toolCallId("call_child_1")
+                .arguments("{\"path\":\"README.md\"}")
+                .context(Map.of(
+                        TurnObservationContext.METADATA_KEY, context,
+                        BaBiQSandboxInterceptor.CONTEXT_ITEM_EMITTER, emitter,
+                        SubAgentDelegationContext.METADATA_KEY, delegation))
+                .build();
+
+        ToolCallResponse response = interceptor.interceptToolCall(request,
+                ignored -> ToolCallResponse.of("call_child_1", "read_file", "README content"));
+
+        assertThat(response.getResult()).isEqualTo("README content");
+        assertThat(delegation.toolCallCount()).isEqualTo(1);
+        verify(emitter, never()).emitCommandExecution(any());
+        ArgumentCaptor<ThreadItem> captor = ArgumentCaptor.forClass(ThreadItem.class);
+        verify(emitter).emitItemUpdated(captor.capture());
+        assertThat(captor.getValue()).isInstanceOf(AgentDelegationItem.class);
+        AgentDelegationItem item = (AgentDelegationItem) captor.getValue();
+        assertThat(item.delegationId()).isEqualTo("dlg_1");
+        assertThat(item.status()).isEqualTo("running");
+        assertThat(item.toolCallCount()).isEqualTo(1);
     }
 }

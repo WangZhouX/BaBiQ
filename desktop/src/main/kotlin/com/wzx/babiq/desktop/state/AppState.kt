@@ -23,6 +23,7 @@ import com.wzx.babiq.desktop.protocol.ThreadItem
  * @property capabilityState P3-5 统一能力目录状态，用于控制按需工具和 Skill 暴露。
  * @property skillState 本地 Skill metadata 状态，用于设置页查看按需装配来源。
  * @property planState 当前 turn 的计划可视化状态，来自 `plan` 协议 item，只在运行面板展示。
+ * @property subAgentState 当前 turn 最近一次子 Agent 委派状态，用于右侧运行面板展示层级执行。
  * @property currentThreadId 后端 thread id；为空表示还没有为当前工作区创建会话。
  * @property currentThreadTitle 当前打开会话的标题；新对话或未加载历史时为空。
  * @property currentTurnId 当前正在执行或刚结束的 turn id，用于取消、审批和事件归属。
@@ -51,6 +52,7 @@ data class AppState(
 	val capabilityState: CapabilityUiState = CapabilityUiState(),
 	val skillState: SkillUiState = SkillUiState(),
 	val planState: PlanUiState = PlanUiState(),
+	val subAgentState: SubAgentUiState = SubAgentUiState(),
 	val currentThreadId: String? = null,
 	val currentThreadTitle: String? = null,
 	val currentTurnId: String? = null,

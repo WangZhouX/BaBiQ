@@ -1,6 +1,6 @@
 # P6-1 子 Agent 委派 — 正式实现 plan（草案）
 
-> 状态：**草案，待用户确认**（2026-05-31 创建）。
+> 状态：**已实现，待真实模型人工烟测**（2026-06-01 完成自动化验收）。
 > 隶属：`docs/superpowers/plans/p6-master.md` §5.6 P6-1；前置 `p6-0-mechanism-spike/`（spike 结论）。
 > 性质：**P6 第一段真实生产实现**（TDD、生产级、合并进主路径），对齐 Figma 原型 `P6 01 会话-子 Agent 委派`（`184:2`）与 `P6 04 团队设置-子 Agent 模型`（`211:2`）。
 
@@ -181,5 +181,5 @@ cd ..\desktop
 ## 11. 下一步
 
 1. 本 plan 由用户确认。
-2. 确认后写 `p6-1-subagent-delegation/codex-handoff.md`，再按 §7 Task 1→9 TDD 实现。
+2. 真实模型人工烟测：确认主 Agent 能自行调用 `explorer`，并且 explorer 内部只读工具调用归属为 `agent_name=explorer`。
 3. P6-1 闭环（自动化 + 真实烟测）后：评估 **P6-1b 写类委派（asNode）**——**借鉴 Codex「子 Agent 的 exec/patch 审批上浮到父 session」范式**（`codex_delegate.rs` 的 `handle_exec_approval` / `handle_patch_approval`：子 Agent 审批不就地处理，而是 `Initiate approval via parent session`），用 SAA `asNode + invokeAndGetOutput 中断 + addHumanFeedback 恢复` 落地（与 P6-0 spike 结论一致）——或直接进 **P6-2 flow 编排**。

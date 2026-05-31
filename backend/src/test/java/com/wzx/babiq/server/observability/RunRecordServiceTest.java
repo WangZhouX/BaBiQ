@@ -65,7 +65,8 @@ class RunRecordServiceTest {
         conversationRepository.saveTurnSummary(TurnSummaryRecord.of(
                 "turn_record", 12, 8, 20, 3000, 1, now));
         toolCallPersistenceService.recordStarted("call_1", "thr_record", "turn_record",
-                "read_file", "{\"path\":\"README.md\"}", now);
+                "read_file", "{\"path\":\"README.md\"}",
+                "explorer", "babiq_agent", "dlg_1", now);
         toolCallPersistenceService.recordFinished("call_1", "completed", "ok", null, now.plusMillis(20));
 
         RunTurnListResult list = runRecordService.listTurns("thr_record", 10, null);
@@ -78,5 +79,8 @@ class RunRecordServiceTest {
         assertThat(detail.summary().get("totalTokens").asLong()).isEqualTo(20L);
         assertThat(detail.summary().has("estimatedCostUsd")).isFalse();
         assertThat(detail.toolCalls()).extracting("toolName").containsExactly("read_file");
+        assertThat(detail.toolCalls()).extracting("agentName").containsExactly("explorer");
+        assertThat(detail.toolCalls()).extracting("parentAgentName").containsExactly("babiq_agent");
+        assertThat(detail.toolCalls()).extracting("delegationId").containsExactly("dlg_1");
     }
 }

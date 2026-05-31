@@ -29,6 +29,7 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
         @JsonSubTypes.Type(value = ImageViewItem.class, name = "imageView"),
         @JsonSubTypes.Type(value = ReviewModeItem.class, name = "reviewMode"),
         @JsonSubTypes.Type(value = ContextCompactionItem.class, name = "contextCompaction"),
+        @JsonSubTypes.Type(value = AgentDelegationItem.class, name = "agentDelegation"),
         @JsonSubTypes.Type(value = TurnSummaryItem.class, name = "turnSummary")
 })
 public sealed interface ThreadItem permits
@@ -44,6 +45,7 @@ public sealed interface ThreadItem permits
         ImageViewItem,
         ReviewModeItem,
         ContextCompactionItem,
+        AgentDelegationItem,
         TurnSummaryItem {
 
     /**

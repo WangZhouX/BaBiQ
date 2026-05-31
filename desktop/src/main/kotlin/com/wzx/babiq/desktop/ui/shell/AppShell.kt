@@ -111,7 +111,10 @@ fun AppShell(
 			}
 		}
 		// RuntimeDetailsPanel 是辅助面板；计划存在且未收起时也会自动常驻，避免用户看不到模型的当前 TODO。
-		if (state.runtimeExpanded || (state.planState.visible && !state.planState.collapsed)) {
+		if (state.runtimeExpanded ||
+			(state.planState.visible && !state.planState.collapsed) ||
+			(state.subAgentState.visible && !state.subAgentState.terminal)
+		) {
 			RuntimeDetailsPanel(
 				state = state,
 				modifier = Modifier.width(360.dp),

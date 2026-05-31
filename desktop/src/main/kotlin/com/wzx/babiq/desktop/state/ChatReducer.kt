@@ -34,6 +34,14 @@ object ChatReducer {
 	}
 
 	/**
+	 * 从历史 item 中恢复最近一次子 Agent 委派状态。
+	 *
+	 * 委派 item 会进入聊天流，但右侧面板也需要一份结构化状态，方便和计划区一起展示当前执行层级。
+	 */
+	fun subAgentStateFromItems(items: List<ThreadItem>): SubAgentUiState =
+		SubAgentUiState(current = items.filterIsInstance<ThreadItem.AgentDelegation>().lastOrNull())
+
+	/**
 	 * 从历史 item 中找出最新 turnSummary。
 	 */
 	fun latestSummaryFromItems(items: List<ThreadItem>): ThreadItem.TurnSummary? =
@@ -152,6 +160,23 @@ object ChatReducer {
 				planState = PlanUiState(current = item, collapsed = false).hideIfCompleted(),
 			)
 
+			is ThreadItem.AgentDelegation -> copy(
+				messages = messages.upsert(item.toChatMessage()),
+				subAgentState = SubAgentUiState(current = item),
+				runtimeEvents = runtimeEvents + RuntimeEvent(
+					id = item.id,
+					title = "SubAgent:${item.childAgent}",
+					detail = listOfNotNull(
+						"${item.parentAgent} -> ${item.childAgent}",
+						"状态 ${item.status}",
+						"模式 ${item.mode}",
+						item.toolCallCount?.let { "只读工具 $it 次" },
+						item.tokenEstimate?.let { "token 估算 $it" },
+						item.summary,
+					).joinToString("\n"),
+				),
+			)
+
 			is ThreadItem.Unknown -> copy(
 				runtimeEvents = runtimeEvents + RuntimeEvent(
 					id = item.id,
@@ -190,6 +215,18 @@ object ChatReducer {
 			is ThreadItem.Reasoning -> ChatMessage.Reasoning(id, text)
 			is ThreadItem.TurnSummary -> ChatMessage.TurnSummary(id, this)
 			is ThreadItem.Plan -> ChatMessage.Tool(id, "计划", "updated", steps.joinToString("\n") { it.description })
+			is ThreadItem.AgentDelegation -> ChatMessage.Tool(
+				id = id,
+				title = "子 Agent · $childAgent",
+				status = status,
+				detail = listOfNotNull(
+					summary,
+					"父级 $parentAgent",
+					"模式 $mode",
+					toolCallCount?.let { "只读工具 $it 次" },
+					tokenEstimate?.let { "token 估算 $it" },
+				).joinToString("\n").ifBlank { "正在委派子 Agent" },
+			)
 			is ThreadItem.ContextCompaction -> ChatMessage.Tool(
 				id = id,
 				title = "上下文压缩",

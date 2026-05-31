@@ -205,6 +205,26 @@ data class PlanUiState(
  * @property recoveryStatus 后端最近一次启动恢复报告，用于解释 interrupted/expired 状态。
  * @property observability 当前工作目录的本地可观测统计快照。
  */
+/**
+ * 右侧运行面板中的子 Agent 委派状态。
+ *
+ * P6-1 首个子 Agent 是 explorer。它只允许读取类工具，因此 UI 要把它和普通写入/命令工具区分开：
+ * 用户能看到“主 Agent 正在委派谁、处于什么状态、内部用了几个只读工具”，但不会把内部工具输出直接散落成多张主聊天卡片。
+ *
+ * @property current 当前或最近一次子 Agent 委派 item；为空表示本轮没有发生委派。
+ */
+data class SubAgentUiState(
+	val current: ThreadItem.AgentDelegation? = null,
+) {
+	/** 是否有可展示的委派轨迹。 */
+	val visible: Boolean
+		get() = current != null
+
+	/** 终态委派仍可在手动运行详情中查看，但不会自动常驻右侧面板。 */
+	val terminal: Boolean
+		get() = current?.status?.lowercase() in setOf("completed", "failed", "canceled")
+}
+
 data class RunRecordState(
 	val loading: Boolean = false,
 	val error: String? = null,

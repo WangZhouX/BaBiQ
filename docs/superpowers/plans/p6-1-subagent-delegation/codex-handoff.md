@@ -6,10 +6,29 @@
 
 ## 当前状态
 
-- **plan 已定稿（草案待用户确认）**（2026-05-31，已并入与 Codex/Claude Code 源码对照后的 2 处微调：D10 explorer 精简上下文、P6-1b 借鉴 Codex 审批上浮）。
-- **实现尚未开始**：无任何 P6-1 生产代码。
+- **代码已实现，自动化验收已通过**（2026-06-01）。
+- **仍待真实模型人工烟测**：需要可用 Provider/API Key 复验主 Agent 是否会主动调用 `explorer`，以及桌面端真实流式展示。
 - **这是 P6 第一段真实实现**（TDD、生产级、合并主路径），对齐 Figma 原型 `P6 01`（`184:2`）/ `P6 04`（`211:2`）。
 - **组合态原型已补**：已放入 `BabiQ总原型UI` page，节点为 `P6 01b 会话-计划+子 Agent 组合态`（`249:2`）和 `P6 01c 会话-计划+子 Agent 组合态（收起）`（`249:91`），用于约束 P4 计划与 P6-1 子 Agent 同时出现时的右侧面板展示。
+
+## 本次完成证据（2026-06-01）
+
+- Context7 / 本地 jar 复核：
+  - Spring AI `ToolContext` 可作为工具运行态上下文，且 `toolContext` 不发送给模型。
+  - Spring AI Alibaba `AgentTool.getFunctionToolCallback(ReactAgent)` 可把子 `ReactAgent` 薄封装成工具；本地 jar 反查确认会复制父 `RunnableConfig` metadata，但会清空 config context，因此 BaBiQ 使用 metadata + child builder `toolContext` 显式传 `cwd / sandbox / observation / delegation`。
+- 后端：
+  - 新增 `BabiqAgentSpec` / `BuiltInSubAgents` / `SubAgentRuntimeFactory` / `ExplorerSubAgentTool`，`explorer` 工具集固定为 `read_file / list_dir / grep`，不包含写工具，也不包含尚未落地的 `glob`。
+  - `explorer` 作为主 Agent 可见工具接入，内部调用官方 `AgentTool`；子 Agent 强制 `READ_ONLY` 沙箱，并带独立 READ-ONLY / untrusted-data 安全 prompt。
+  - 新增 `agentDelegation` 协议 item；子 Agent 内部工具过程不作为普通父聊天工具卡片外泄，而是聚合到委派 item。
+  - `bq_tool_calls` 新增 `agent_name / parent_agent_name / delegation_id`，运行记录可区分主 Agent 与子 Agent 工具调用。
+  - `CapabilityAliasDictionary` 和 `SystemPromptSecurityRule` 已补委派 / explorer 中文别名与主 Agent 使用规则。
+- 桌面端：
+  - `ThreadItem.AgentDelegation`、`SubAgentUiState`、`ChatReducer` 和 `SubAgentSection` 已接入。
+  - 右侧运行面板固定顺序为「计划」→「子 Agent」→「执行环境」→「上下文来源」，计划与子 Agent 同轮出现时只使用一个运行面板。
+  - 历史加载、切换工作区、新建会话会正确恢复或清理子 Agent 状态；运行详情工具行展示 agent 归因。
+- 验证：
+  - `cd E:\BaBiQ\backend; .\mvnw.cmd "-Dtest=BabiqAgentSpecTest,SubAgentRuntimeFactoryTest,ToolObservationInterceptorTest,ThreadItemJsonTest,RunRecordServiceTest,SystemPromptSecurityRuleTest,CapabilityAliasDictionaryTest,SchemaCommentsCoverageTest,AgentLoopLineCountTest" test`：BUILD SUCCESS，24 tests，0 failures/errors/skips。
+  - `cd E:\BaBiQ\desktop; .\gradlew.bat test --tests "*ThreadItemJsonTest" --tests "*ChatReducerTest" --tests "*SubAgentSectionTest"`：BUILD SUCCESS。
 
 ## 一句话目标
 
@@ -111,4 +130,5 @@ cd ..\desktop
 
 ## 下一步
 
-- plan + 本 handoff 由用户确认 → 按 Task 1→9 TDD 实现 → 自动化 + 真实烟测闭环 → 评估 **P6-1b 写类委派（asNode，借鉴 Codex 审批上浮）** 或进 **P6-2 flow 编排**。
+- 先做 P6-1 真实模型人工烟测：让主 Agent 针对代码库问题主动委派 `explorer`，确认只读工具归属、委派 item 更新、桌面端右侧子 Agent 卡可见。
+- 烟测通过后评估 **P6-1b 写类委派（asNode，借鉴 Codex 审批上浮）** 或进入 **P6-2 flow 编排**。

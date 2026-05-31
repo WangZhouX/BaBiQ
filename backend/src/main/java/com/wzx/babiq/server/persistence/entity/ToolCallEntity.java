@@ -42,6 +42,18 @@ public class ToolCallEntity {
     @TableField("tool_name")
     private String toolName;
 
+    /** 实际执行工具的 Agent 名称；主 Agent 默认为 babiq_agent，子 Agent 调用时为 explorer 等名称。 */
+    @TableField("agent_name")
+    private String agentName;
+
+    /** 委派来源的父 Agent 名称；主 Agent 直接调用工具时为空。 */
+    @TableField("parent_agent_name")
+    private String parentAgentName;
+
+    /** 子 Agent 委派 id；非委派工具调用为空，用于把运行记录和 agentDelegation item 串起来。 */
+    @TableField("delegation_id")
+    private String delegationId;
+
     /** 工具原始参数 JSON；读取和展示时都必须视为不可信数据。 */
     @TableField("args_json")
     private String argsJson;

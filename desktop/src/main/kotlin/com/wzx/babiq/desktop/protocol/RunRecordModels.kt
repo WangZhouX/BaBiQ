@@ -96,6 +96,12 @@ data class RunToolCallInfo(
 	val status: String,
 	val resultPreview: String? = null,
 	val errorMessage: String? = null,
+	/** 执行该工具的 Agent 名；为空表示旧数据或后端尚未写入归因。 */
+	val agentName: String? = null,
+	/** 子 Agent 工具调用对应的父 Agent；主 Agent 直接调用工具时为空。 */
+	val parentAgentName: String? = null,
+	/** 同一次子 Agent 委派的关联 id；用于把多次只读工具调用串回一个 delegation item。 */
+	val delegationId: String? = null,
 	val startedAt: String,
 	val completedAt: String? = null,
 )

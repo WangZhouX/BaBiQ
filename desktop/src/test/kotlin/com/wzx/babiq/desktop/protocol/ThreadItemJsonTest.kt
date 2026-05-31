@@ -117,4 +117,38 @@ class ThreadItemJsonTest {
 		assertEquals("completed", plan.steps.first().status)
 		assertEquals("正在实现工具", plan.steps.last().activeForm)
 	}
+	@Test
+	fun `can parse agent delegation item`() {
+		val json = """
+			{
+			  "jsonrpc": "2.0",
+			  "method": "item/added",
+			  "params": {
+			    "threadId": "thread-1",
+			    "turnId": "turn-1",
+			    "item": {
+			      "id": "it-agent-1",
+			      "type": "agentDelegation",
+			      "delegationId": "delegation-1",
+			      "parentAgent": "babiq_agent",
+			      "childAgent": "explorer",
+			      "status": "running",
+			      "mode": "READ_ONLY_TOOL",
+			      "summary": "正在只读查看目录",
+			      "toolCallCount": 2,
+			      "tokenEstimate": 321
+			    }
+			  }
+			}
+		""".trimIndent()
+
+		val event = protocolJson.decodeFromString(ServerEvent.serializer(), json)
+		val added = assertIs<ServerEvent.ItemAdded>(event)
+		val item = assertIs<ThreadItem.AgentDelegation>(added.item)
+
+		assertEquals("delegation-1", item.delegationId)
+		assertEquals("explorer", item.childAgent)
+		assertEquals("READ_ONLY_TOOL", item.mode)
+		assertEquals(2, item.toolCallCount)
+	}
 }

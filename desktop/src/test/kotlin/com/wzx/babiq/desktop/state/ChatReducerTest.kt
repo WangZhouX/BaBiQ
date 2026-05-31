@@ -245,6 +245,50 @@ class ChatReducerTest {
 		assertEquals(1, state.totalCount)
 	}
 
+	@Test
+	fun `agent delegation item updates chat and runtime subagent state`() {
+		val item = ThreadItem.AgentDelegation(
+			id = "it-agent-1",
+			delegationId = "delegation-1",
+			parentAgent = "babiq_agent",
+			childAgent = "explorer",
+			status = "running",
+			mode = "READ_ONLY_TOOL",
+			summary = "正在只读查看目录",
+			toolCallCount = 2,
+			tokenEstimate = 321,
+		)
+
+		val next = ChatReducer.reduce(
+			AppState.empty(),
+			AgentEvent.Server(ServerEvent.ItemAdded("thread-1", "turn-1", item)),
+		)
+
+		val message = assertIs<ChatMessage.Tool>(next.messages.single())
+		assertEquals("it-agent-1", message.id)
+		assertEquals("explorer", next.subAgentState.current?.childAgent)
+		assertEquals(false, next.subAgentState.terminal)
+		assertEquals(1, next.runtimeEvents.size)
+	}
+
+	@Test
+	fun `subagent state from history uses latest delegation item`() {
+		val oldItem = ThreadItem.AgentDelegation(
+			id = "it-agent-old",
+			delegationId = "delegation-old",
+			parentAgent = "babiq_agent",
+			childAgent = "explorer",
+			status = "completed",
+			mode = "READ_ONLY_TOOL",
+		)
+		val latestItem = oldItem.copy(id = "it-agent-new", delegationId = "delegation-new", status = "running")
+
+		val state = ChatReducer.subAgentStateFromItems(listOf(oldItem, latestItem))
+
+		assertEquals("delegation-new", state.current?.delegationId)
+		assertEquals(false, state.terminal)
+	}
+
 	private fun sampleApproval() = ApprovalRequestPayload(
 		threadId = "thread-1",
 		turnId = "turn-1",

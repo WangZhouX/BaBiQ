@@ -59,6 +59,7 @@ fun RuntimeDetailsPanel(
 			TextButton(onClick = onClose) { Text("收起") }
 		}
 		PlanSection(state.planState)
+		SubAgentSection(state.subAgentState)
 		DetailCard(
 			title = "执行环境",
 			detail = buildString {
@@ -281,8 +282,17 @@ private fun RunTurnDetail(
 /**
  * 将工具调用详情压成一行，避免右侧面板被长 JSON 输出撑开。
  */
-private fun RunToolCallInfo.toolLine(): String =
-	"$toolName / $status / ${errorMessage ?: resultPreview ?: "无预览"}"
+private fun RunToolCallInfo.toolLine(): String {
+	val agentPrefix = agentName
+		?.takeIf { it.isNotBlank() }
+		?.let { agent -> "[$agent] " }
+		.orEmpty()
+	val delegationSuffix = delegationId
+		?.takeIf { it.isNotBlank() }
+		?.let { delegation -> " / delegation $delegation" }
+		.orEmpty()
+	return "$agentPrefix$toolName / $status / ${errorMessage ?: resultPreview ?: "无预览"}$delegationSuffix"
+}
 
 /**
  * 将审批详情压成一行，突出工具、状态和最终决策。

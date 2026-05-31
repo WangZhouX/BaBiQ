@@ -52,4 +52,16 @@ class CapabilityAliasDictionaryTest {
 
         assertThat(enriched).contains("计划", "任务清单", "待办", "步骤", "规划");
     }
+
+    @Test
+    @DisplayName("explorer 能力会追加子 Agent 委派相关中文别名")
+    void enrich_should_add_aliases_for_explorer_delegation() {
+        String enriched = CapabilityAliasDictionary.enrich("explorer", "Delegate read-only exploration to a sub agent");
+
+        assertThat(enriched)
+                .contains("子Agent")
+                .contains("委派")
+                .contains("探索")
+                .contains("只读");
+    }
 }

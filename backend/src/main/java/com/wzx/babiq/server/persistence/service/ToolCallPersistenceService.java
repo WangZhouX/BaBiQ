@@ -48,6 +48,28 @@ public class ToolCallPersistenceService {
     @Transactional
     public void recordStarted(String toolCallId, String threadId, String turnId,
                               String toolName, String argsJson, Instant startedAt) {
+        recordStarted(toolCallId, threadId, turnId, toolName, argsJson,
+                "babiq_agent", null, null, startedAt);
+    }
+
+    /**
+     * 记录带 Agent 归属信息的工具调用开始。
+     *
+     * @param toolCallId SAA 工具调用 id
+     * @param threadId 所属 thread
+     * @param turnId 所属 turn
+     * @param toolName 工具名
+     * @param argsJson 工具参数 JSON
+     * @param agentName 实际执行该工具的 Agent 名称；主 Agent 默认为 babiq_agent
+     * @param parentAgentName 委派来源 Agent；主 Agent 直接调用时为空
+     * @param delegationId 子 Agent 委派 id；非委派调用时为空
+     * @param startedAt 开始时间
+     */
+    @Transactional
+    public void recordStarted(String toolCallId, String threadId, String turnId,
+                              String toolName, String argsJson,
+                              String agentName, String parentAgentName,
+                              String delegationId, Instant startedAt) {
         ToolCallEntity existing = findEntity(toolCallId);
         ToolCallEntity entity = new ToolCallEntity();
         entity.setToolCallId(toolCallId);
@@ -55,6 +77,9 @@ public class ToolCallPersistenceService {
         entity.setTurnId(turnId);
         entity.setToolName(toolName);
         entity.setArgsJson(argsJson == null ? "{}" : argsJson);
+        entity.setAgentName(agentName == null || agentName.isBlank() ? "babiq_agent" : agentName);
+        entity.setParentAgentName(parentAgentName);
+        entity.setDelegationId(delegationId);
         entity.setStatus("running");
         entity.setStartedAt(PersistenceTime.write(startedAt));
         if (existing == null) {
@@ -120,6 +145,9 @@ public class ToolCallPersistenceService {
                 entity.getStatus(),
                 entity.getResultPreview(),
                 entity.getErrorMessage(),
+                entity.getAgentName(),
+                entity.getParentAgentName(),
+                entity.getDelegationId(),
                 PersistenceTime.read(entity.getStartedAt()),
                 PersistenceTime.read(entity.getCompletedAt()));
     }

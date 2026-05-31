@@ -87,6 +87,9 @@ public final class CapabilityAliasDictionary {
         map.put("filesystem", List.of("文件系统", "文件"));
         map.put("plan", List.of("计划", "任务清单", "待办", "步骤", "规划"));
         map.put("todo", List.of("待办", "任务清单", "任务步骤"));
+        map.put("explorer", List.of("子Agent", "子代理", "委派", "探索", "探查", "只读"));
+        map.put("agent", List.of("Agent", "子Agent", "代理", "委派"));
+        map.put("delegate", List.of("委派", "下放", "子任务"));
         return Map.copyOf(map);
     }
 

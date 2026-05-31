@@ -99,4 +99,34 @@ class ThreadItemJsonTest {
                 .containsExactly("completed", "in_progress");
         assertThat(plan.steps().get(1).activeForm()).isEqualTo("正在实现计划工具");
     }
+
+    @Test
+    void agent_delegation_item_should_serialize_and_deserialize_by_type_tag() throws Exception {
+        ThreadItem item = new AgentDelegationItem(
+                "it_delegate_1",
+                "agentDelegation",
+                "dlg_1",
+                "babiq_agent",
+                "explorer",
+                "completed",
+                "READ_ONLY_TOOL",
+                "read README and summarize entry points",
+                2,
+                128);
+
+        String json = objectMapper.writeValueAsString(item);
+        ThreadItem restored = objectMapper.readValue(json, ThreadItem.class);
+
+        assertThat(json)
+                .contains("\"type\":\"agentDelegation\"")
+                .contains("\"delegationId\":\"dlg_1\"")
+                .contains("\"childAgent\":\"explorer\"")
+                .contains("\"mode\":\"READ_ONLY_TOOL\"")
+                .contains("\"toolCallCount\":2")
+                .contains("\"tokenEstimate\":128");
+        assertThat(restored).isInstanceOf(AgentDelegationItem.class);
+        AgentDelegationItem delegation = (AgentDelegationItem) restored;
+        assertThat(delegation.parentAgent()).isEqualTo("babiq_agent");
+        assertThat(delegation.summary()).contains("README");
+    }
 }

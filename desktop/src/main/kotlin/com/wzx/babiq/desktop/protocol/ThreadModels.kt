@@ -164,6 +164,38 @@ sealed interface ThreadItem {
 
 	@Serializable
 	/**
+	 * 子 Agent 委派协议 item。
+	 *
+	 * 后端在主 Agent 调用 explorer 等子 Agent 时推送这个 item：它不是普通工具输出，
+	 * 而是一段“父 Agent -> 子 Agent”的执行轨迹摘要。桌面端既会把它渲染成聊天流中的折叠卡片，
+	 * 也会放进右侧运行面板，帮助用户区分主 Agent 思考、子 Agent 探索和底层只读工具调用。
+	 *
+	 * @property id 后端生成并在同一次委派中复用的 item id。
+	 * @property type 协议类型固定为 agentDelegation。
+	 * @property delegationId 后端生成的委派业务 id，用于和工具调用审计记录关联。
+	 * @property parentAgent 父 Agent 名称，当前通常是 babiq_agent。
+	 * @property childAgent 子 Agent 名称，P6-1 首个内置值是 explorer。
+	 * @property status 委派状态，常见值为 running/completed/failed。
+	 * @property mode 委派安全模式，P6-1 使用 READ_ONLY_TOOL 表示只读工具子 Agent。
+	 * @property summary 给用户看的短摘要，由后端在开始、工具调用、完成或失败时更新。
+	 * @property toolCallCount 子 Agent 内部已完成的工具调用次数；为空表示后端暂未统计。
+	 * @property tokenEstimate 子 Agent 期间新增 token 估算；为空表示本轮还没有用量信息。
+	 */
+	data class AgentDelegation(
+		override val id: String,
+		override val type: String = "agentDelegation",
+		val delegationId: String,
+		val parentAgent: String,
+		val childAgent: String,
+		val status: String,
+		val mode: String,
+		val summary: String? = null,
+		val toolCallCount: Int? = null,
+		val tokenEstimate: Int? = null,
+	) : ThreadItem
+
+	@Serializable
+	/**
 	 * 计划可视化协议 item。
 	 *
 	 * 后端 `update_plan` 工具会用完整覆盖语义反复推送同一个 item：第一次是 `item/added`，
@@ -233,6 +265,7 @@ object ThreadItemSerializer : KSerializer<ThreadItem> {
 			"fileChange" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.FileChange.serializer(), raw)
 			"turnSummary" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.TurnSummary.serializer(), raw)
 			"contextCompaction" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.ContextCompaction.serializer(), raw)
+			"agentDelegation" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.AgentDelegation.serializer(), raw)
 			"plan" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.Plan.serializer(), raw)
 			// 未知类型不丢弃，交给运行详情面板展示 raw JSON，方便后续协议扩展排查。
 			else -> ThreadItem.Unknown(
