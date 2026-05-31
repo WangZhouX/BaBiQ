@@ -29,6 +29,14 @@ P6 的“子 Agent 内部触发 HITL 审批，然后由父流程恢复”可以�
   - `E:\wzx\claude-code\src\utils\model\agent.ts`
   - `E:\wzx\claude-code\src\tools\AgentTool\runAgent.ts`
 
+#### 2026-05-31 复核补充
+
+补充配置 Context7 API Key 后，已重新用 Context7 核对 Spring AI / Spring AI Alibaba 文档。复核结论支持本 spike 的主体判断：
+
+- Spring AI Alibaba 文档确认了 `ReactAgent.asNode(...) + StateGraph` 的工作流组合，并在 Human-in-the-Loop 示例中展示了 `HumanInTheLoopHook.approvalOn(...)`、`MemorySaver`、`SaverConfig.register(saver)` 和 `RunnableConfig.threadId(...)` 的组合用法。
+- Spring AI 文档确认 `ToolContext` 是运行时传给工具执行阶段的上下文，不会作为模型输入发送给模型。这支持 BaBiQ 在 P6 中按 turn 注入 `cwd`、`emitter`、`ObservationContext`、沙箱和审批策略，而不是把这些运行态长期绑定到静态子 Agent 实例。
+- Context7 当前可检索到的 Spring AI Alibaba 文档版本最高接近 `v1.1.2.2`，而 BaBiQ 仓库锁定的是 Spring AI Alibaba `1.1.2.3`。因此官方文档用于确认机制方向，精确 API 和边界行为仍以本地 `1.1.2.3` jar、`javap` 字节码和本 spike 实测为准。
+
 ### 1.2 本地 API 事实
 
 通过 `javap` 确认当前 Spring AI Alibaba `1.1.2.3` 已具备以下机制：
