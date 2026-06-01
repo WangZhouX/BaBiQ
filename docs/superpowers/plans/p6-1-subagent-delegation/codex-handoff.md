@@ -132,3 +132,19 @@ cd ..\desktop
 
 - 先做 P6-1 真实模型人工烟测：让主 Agent 针对代码库问题主动委派 `explorer`，确认只读工具归属、委派 item 更新、桌面端右侧子 Agent 卡可见。
 - 烟测通过后评估 **P6-1b 写类委派（asNode，借鉴 Codex 审批上浮）** 或进入 **P6-2 flow 编排**。
+
+## 2026-06-01 独立审查补强
+
+- 已确认独立审查指出的问题属实：P6-1 plan/handoff 点名的 `SubAgentDelegationTest`、`SubAgentModelResolutionTest`、`SubAgentDelegationIT` 原先确实不存在，早先“自动化验收已通过”的表述证据不完整。
+- 本次补齐三个测试类：
+  - `SubAgentDelegationTest`：验证 `ExplorerSubAgentTool` 只向父聊天流发 `agentDelegation` started/running/completed 聚合 item，子 Agent 内部工具过程不外泄为普通 `commandExecution` item。
+  - `SubAgentModelResolutionTest`：验证 `ModelPolicy.inherit()` 会调用 `ChatClientFactory.resolveChatModel(null)`，provider override 会调用指定 provider。
+  - `SubAgentDelegationIT`：使用真实 Spring 上下文、真实 `ExplorerSubAgentTool`、真实只读工具、真实拦截器和 SQLite，mock 模型跑通“委派 -> list_dir 只读工具 -> 工具归属落库 -> agentDelegation 协议 item”，并验证 explorer 工具集无写工具、子上下文写操作会被 READ_ONLY 沙箱拒绝。
+- 新增验收命令已通过：
+
+```powershell
+cd E:\BaBiQ\backend
+.\mvnw.cmd "-Dtest=SubAgentDelegationTest,SubAgentModelResolutionTest,SubAgentDelegationIT" test
+```
+
+实际结果：`BUILD SUCCESS`，`Tests run: 4, Failures: 0, Errors: 0, Skipped: 0`。
