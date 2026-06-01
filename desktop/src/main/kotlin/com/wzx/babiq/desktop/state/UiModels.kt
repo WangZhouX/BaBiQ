@@ -266,6 +266,80 @@ data class OrchestrationUiState(
 		get() = current?.status?.lowercase() in setOf("completed", "failed", "canceled")
 }
 
+/**
+ * 右侧运行面板中的团队协作状态。
+ *
+ * P6-3 的 team/teamMessage item 共同构成一条团队运行时间线。Team 表示当前团队快照，
+ * TeamMessage 表示 supervisor 路由、成员摘要或用户直发队友的消息。它们不进入聊天主正文，
+ * 只在运行详情里辅助用户观察和干预多 Agent 协作。
+ *
+ * @property current 当前或最近一次团队协作 item；为空表示本轮没有触发 coordinate_team。
+ * @property messages 当前团队的消息时间线，按接收顺序保留，重复 messageId 会被后来的 item 覆盖。
+ * @property selectedAgent 用户在右侧直发输入中选择的目标队友；为空时 UI 使用第一个成员。
+ * @property directDraft 右侧团队直发输入框草稿。
+ * @property sendingDirect true 表示正在调用 team/message/send。
+ * @property directError 最近一次直发失败原因。
+ */
+data class TeamUiState(
+	val current: ThreadItem.Team? = null,
+	val messages: List<ThreadItem.TeamMessage> = emptyList(),
+	val selectedAgent: String? = null,
+	val directDraft: String = "",
+	val sendingDirect: Boolean = false,
+	val directError: String? = null,
+) {
+	/** 是否有可展示的团队协作轨迹。 */
+	val visible: Boolean
+		get() = current != null
+
+	/** 团队是否已进入终态；终态仍保留给用户复盘，不自动隐藏。 */
+	val terminal: Boolean
+		get() = current?.status?.lowercase() in setOf("completed", "failed", "canceled")
+
+	/** 当前可选择的成员名列表，直发消息只能发给这里面的成员。 */
+	val memberNames: List<String>
+		get() = current?.members?.map { it.name } ?: emptyList()
+
+	/**
+	 * 合并新的 team item。
+	 *
+	 * 新团队到来时清空旧团队的消息时间线，避免不同 teamId 的路由消息串台。
+	 * selectedAgent 如果仍属于新团队就保留，否则回退到当前成员或第一个成员。
+	 */
+	fun withTeam(item: ThreadItem.Team): TeamUiState {
+		val nextMessages = messages.filter { it.teamId == item.teamId }
+		val nextSelected = selectedAgent
+			?.takeIf { selected -> item.members.any { member -> member.name == selected } }
+			?: item.currentAgent
+				?.takeIf { current -> item.members.any { member -> member.name == current } }
+			?: item.members.firstOrNull()?.name
+		return copy(
+			current = item,
+			messages = nextMessages,
+			selectedAgent = nextSelected,
+			directError = null,
+		)
+	}
+
+	/**
+	 * 合并新的团队消息。
+	 *
+	 * 只接收当前 teamId 的消息；如果消息比 team item 更早到达，也先缓存，等 team item 到来时再按 teamId 过滤。
+	 */
+	fun withMessage(item: ThreadItem.TeamMessage): TeamUiState {
+		val nextMessages = (messages.filterNot { it.messageId == item.messageId } + item)
+			.filter { current == null || it.teamId == current.teamId }
+		val nextSelected = selectedAgent
+			?: item.toAgent.takeIf { target -> target != "all" && target != "supervisor" }
+			?: current?.members?.firstOrNull()?.name
+		return copy(messages = nextMessages, selectedAgent = nextSelected, directError = null)
+	}
+
+	/** 更新右侧直发目标成员。 */
+	fun selectAgent(agentName: String): TeamUiState =
+		if (memberNames.contains(agentName)) copy(selectedAgent = agentName) else this
+}
+
 data class RunRecordState(
 	val loading: Boolean = false,
 	val error: String? = null,

@@ -117,6 +117,7 @@ class ChatController(
 				planState = PlanUiState(),
 				subAgentState = SubAgentUiState(),
 				orchestrationState = OrchestrationUiState(),
+				teamState = TeamUiState(),
 			)
 		}
 
@@ -356,6 +357,7 @@ class ChatController(
 				planState = PlanUiState(),
 				subAgentState = SubAgentUiState(),
 				orchestrationState = OrchestrationUiState(),
+				teamState = TeamUiState(),
 				threadHistory = it.threadHistory.copy(selectedThreadId = null),
 				bannerMessage = null,
 				lastError = null,
@@ -374,6 +376,7 @@ class ChatController(
 			val planState = ChatReducer.planStateFromItems(loaded.items)
 			val subAgentState = ChatReducer.subAgentStateFromItems(loaded.items)
 			val orchestrationState = ChatReducer.orchestrationStateFromItems(loaded.items)
+			val teamState = ChatReducer.teamStateFromItems(loaded.items)
 			_state.update {
 				it.copy(
 					workspace = it.workspace.copy(
@@ -393,6 +396,7 @@ class ChatController(
 					planState = planState,
 					subAgentState = subAgentState,
 					orchestrationState = orchestrationState,
+					teamState = teamState,
 					pendingApproval = null,
 					runRecordState = if (it.runtimeExpanded) {
 						it.runRecordState.copy(loading = true, error = null)
@@ -444,6 +448,7 @@ class ChatController(
 					planState = if (wasCurrentThread) PlanUiState() else it.planState,
 					subAgentState = if (wasCurrentThread) SubAgentUiState() else it.subAgentState,
 					orchestrationState = if (wasCurrentThread) OrchestrationUiState() else it.orchestrationState,
+					teamState = if (wasCurrentThread) TeamUiState() else it.teamState,
 					threadHistory = it.threadHistory.copy(
 						items = it.threadHistory.items.filterNot { item -> item.threadId == threadId },
 						selectedThreadId = it.threadHistory.selectedThreadId?.takeUnless { selected -> selected == threadId },
@@ -510,6 +515,7 @@ class ChatController(
 				planState = PlanUiState(),
 				subAgentState = SubAgentUiState(),
 				orchestrationState = OrchestrationUiState(),
+				teamState = TeamUiState(),
 				lastError = null,
 				bannerMessage = "已切换工作目录: $selected",
 			)
@@ -783,7 +789,8 @@ class ChatController(
 		val panelVisible = current.runtimeExpanded ||
 			(current.planState.visible && !current.planState.collapsed) ||
 			current.subAgentState.visible ||
-			current.orchestrationState.visible
+			current.orchestrationState.visible ||
+			current.teamState.visible
 		val shouldExpand = !panelVisible
 		_state.update {
 			it.copy(
@@ -810,6 +817,41 @@ class ChatController(
 	 */
 	fun dismissSubAgentCard() {
 		_state.update { it.copy(subAgentState = it.subAgentState.dismissCurrent()) }
+	}
+
+	/**
+	 * 向团队协作中的某个队友发送补充消息。
+	 *
+	 * 这个动作不会新开 turn，也不修改聊天正文；它只调用后端 `team/message/send`，
+	 * 由后端把消息写入团队时间线，再把返回的 teamMessage item 合并到右侧面板。
+	 */
+	fun sendTeamMessage(toAgent: String, content: String) {
+		val teamId = state.value.teamState.current?.teamId
+		val trimmed = content.trim()
+		if (teamId.isNullOrBlank() || trimmed.isEmpty()) {
+			return
+		}
+		scope.launch(start = CoroutineStart.UNDISPATCHED) {
+			_state.update {
+				it.copy(teamState = it.teamState.copy(sendingDirect = true, directError = null))
+			}
+			try {
+				val result = gateway.sendTeamMessage(teamId, toAgent, trimmed)
+				_state.update {
+					it.copy(teamState = it.teamState.withMessage(result.item).copy(sendingDirect = false, directDraft = ""))
+				}
+			} catch (exception: Exception) {
+				_state.update {
+					it.copy(
+						teamState = it.teamState.copy(
+							sendingDirect = false,
+							directError = exception.message ?: "团队消息发送失败",
+						),
+						lastError = exception.message,
+					)
+				}
+			}
+		}
 	}
 
 	/**
@@ -1127,7 +1169,9 @@ class ChatController(
 		val current = state.value
 		if (current.runtimeExpanded ||
 			(current.planState.visible && !current.planState.collapsed) ||
-			current.subAgentState.visible
+			current.subAgentState.visible ||
+			current.orchestrationState.visible ||
+			current.teamState.visible
 		) {
 			current.currentThreadId?.let { loadRunRecords(it) }
 			loadObservabilitySnapshot(current.runRecordState.observability.range)

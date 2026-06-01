@@ -3,6 +3,8 @@ package com.wzx.babiq.server.agent.delegation;
 import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.agent.AgentTool;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
+import com.alibaba.cloud.ai.graph.CompileConfig;
+import com.alibaba.cloud.ai.graph.checkpoint.BaseCheckpointSaver;
 import com.alibaba.cloud.ai.graph.agent.extension.interceptor.LargeResultEvictionInterceptor;
 import com.alibaba.cloud.ai.graph.agent.hook.modelcalllimit.ModelCallLimitHook;
 import com.alibaba.cloud.ai.graph.checkpoint.savers.MemorySaver;
@@ -94,7 +96,8 @@ public class SubAgentRuntimeFactory {
                            ToolContext parentToolContext,
                            SubAgentDelegationContext delegationContext) {
         ToolContext childToolContext = withDelegationContext(parentToolContext, delegationContext);
-        ToolCallback callback = AgentTool.getFunctionToolCallback(buildChildAgent(spec, childToolContext, null));
+        ToolCallback callback = AgentTool.getFunctionToolCallback(
+                buildChildAgent(spec, childToolContext, null, new MemorySaver(), null));
         return callback.call(agentToolInput(input), childToolContext);
     }
 
@@ -147,10 +150,36 @@ public class SubAgentRuntimeFactory {
      * @param outputKey 节点输出写入 SAA state 的 key；为空时保持 P6-1 兼容行为
      */
     public ReactAgent buildChildAgentForFlow(BabiqAgentSpec spec, ToolContext childToolContext, String outputKey) {
-        return buildChildAgent(spec, childToolContext, outputKey);
+        return buildChildAgent(spec, childToolContext, outputKey, new MemorySaver(), null);
     }
 
-    private ReactAgent buildChildAgent(BabiqAgentSpec spec, ToolContext childToolContext, String outputKey) {
+    /**
+     * 为 P6-3 supervisor StateGraph 构建团队成员 ReactAgent。
+     *
+     * <p>团队协作要求 supervisor graph 和所有 teammate 共享同一个 saver/config，
+     * 这样官方图的检查点、中断恢复和状态读写都落在同一条运行链路里。该方法只开放
+     * saver/config 注入点，其他横切层仍复用 BaBiQ 既有工具链。</p>
+     *
+     * @param spec 成员对应的子 Agent 规格
+     * @param childToolContext 已注入 delegation、cwd、沙箱和观测上下文的 ToolContext
+     * @param outputKey 成员输出写入 SAA state 的 key
+     * @param sharedSaver 团队 supervisor 与所有成员共享的官方 checkpoint saver
+     * @param compileConfig 团队 supervisor 与所有成员共享的官方编译配置
+     */
+    public ReactAgent buildChildAgentForTeam(BabiqAgentSpec spec,
+                                             ToolContext childToolContext,
+                                             String outputKey,
+                                             BaseCheckpointSaver sharedSaver,
+                                             CompileConfig compileConfig) {
+        BaseCheckpointSaver effectiveSaver = sharedSaver == null ? new MemorySaver() : sharedSaver;
+        return buildChildAgent(spec, childToolContext, outputKey, effectiveSaver, compileConfig);
+    }
+
+    private ReactAgent buildChildAgent(BabiqAgentSpec spec,
+                                       ToolContext childToolContext,
+                                       String outputKey,
+                                       BaseCheckpointSaver saver,
+                                       CompileConfig compileConfig) {
         ChatModel chatModel = chatClientFactory.resolveChatModel(spec.modelPolicy().providerId());
         ToolCallback[] childCallbacks = toolRegistryProvider.getObject().callbacksForNames(spec.toolNames());
         ModelCallLimitHook limitHook = ModelCallLimitHook.builder()
@@ -171,7 +200,10 @@ public class SubAgentRuntimeFactory {
                 .streamingInterceptors(streamingTokenUsageInterceptor)
                 .interceptors(sandboxInterceptor, toolObservationInterceptor, spotlightingInterceptor, evictionInterceptor)
                 .hooks(limitHook, tokenUsageHook)
-                .saver(new MemorySaver());
+                .saver(saver == null ? new MemorySaver() : saver);
+        if (compileConfig != null) {
+            builder.compileConfig(compileConfig);
+        }
         if (outputKey != null && !outputKey.isBlank()) {
             builder.outputKey(outputKey);
         }

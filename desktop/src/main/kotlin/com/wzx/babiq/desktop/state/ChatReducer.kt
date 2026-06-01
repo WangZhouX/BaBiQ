@@ -17,7 +17,12 @@ object ChatReducer {
 	 * 这里复用实时 item 的转换规则，保证历史恢复和 WebSocket 推送看到的 UI 形态一致。
 	 */
 	fun messagesFromItems(items: List<ThreadItem>): List<ChatMessage> =
-		items.filterNot { it is ThreadItem.Plan || it is ThreadItem.Orchestration }
+		items.filterNot {
+			it is ThreadItem.Plan ||
+				it is ThreadItem.Orchestration ||
+				it is ThreadItem.Team ||
+				it is ThreadItem.TeamMessage
+		}
 			.map { it.toChatMessage() }
 			.markReasoningCompleted()
 
@@ -48,6 +53,19 @@ object ChatReducer {
 	 */
 	fun orchestrationStateFromItems(items: List<ThreadItem>): OrchestrationUiState =
 		OrchestrationUiState(current = items.filterIsInstance<ThreadItem.Orchestration>().lastOrNull())
+
+	/**
+	 * 从历史 item 中恢复最近一次团队协作状态。
+	 *
+	 * 只保留最新 teamId 对应的 teamMessage，避免打开历史会话时多个团队运行的消息交织在一起。
+	 */
+	fun teamStateFromItems(items: List<ThreadItem>): TeamUiState {
+		val latestTeam = items.filterIsInstance<ThreadItem.Team>().lastOrNull()
+			?: return TeamUiState()
+		val messages = items.filterIsInstance<ThreadItem.TeamMessage>()
+			.filter { it.teamId == latestTeam.teamId }
+		return TeamUiState().withTeam(latestTeam).copy(messages = messages)
+	}
 
 	/**
 	 * 从历史 item 中找出最新 turnSummary。
@@ -200,6 +218,34 @@ object ChatReducer {
 				),
 			)
 
+			is ThreadItem.Team -> copy(
+				teamState = teamState.withTeam(item),
+				runtimeEvents = runtimeEvents + RuntimeEvent(
+					id = item.id,
+					title = "Team:${item.title}",
+					detail = listOfNotNull(
+						"状态 ${item.status}",
+						item.currentAgent?.let { "当前 $it" },
+						item.round?.let { round -> item.maxRounds?.let { max -> "轮次 $round/$max" } ?: "轮次 $round" },
+						if (item.approved == true && item.frozen == true) "已审批并冻结" else null,
+						item.summary,
+					).joinToString("\n"),
+				),
+			)
+
+			is ThreadItem.TeamMessage -> copy(
+				teamState = teamState.withMessage(item),
+				runtimeEvents = runtimeEvents + RuntimeEvent(
+					id = item.id,
+					title = "TeamMessage:${item.messageType}",
+					detail = listOfNotNull(
+						"${item.fromAgent} -> ${item.toAgent}",
+						item.round?.let { "第 $it 轮" },
+						item.content,
+					).joinToString("\n"),
+				),
+			)
+
 			is ThreadItem.Unknown -> copy(
 				runtimeEvents = runtimeEvents + RuntimeEvent(
 					id = item.id,
@@ -259,6 +305,22 @@ object ChatReducer {
 					summary,
 					"节点 ${nodes.size}",
 				).joinToString("\n").ifBlank { "正在运行流程编排" },
+			)
+			is ThreadItem.Team -> ChatMessage.Tool(
+				id = id,
+				title = "团队协作 · $title",
+				status = status,
+				detail = listOfNotNull(
+					summary,
+					currentAgent?.let { "当前 $it" },
+					"成员 ${members.size}",
+				).joinToString("\n").ifBlank { "正在运行团队协作" },
+			)
+			is ThreadItem.TeamMessage -> ChatMessage.Tool(
+				id = id,
+				title = "团队消息 · $messageType",
+				status = "completed",
+				detail = "$fromAgent -> $toAgent\n$content",
 			)
 			is ThreadItem.ContextCompaction -> ChatMessage.Tool(
 				id = id,

@@ -485,6 +485,7 @@ public class ReActStrategy {
         names.add("exec_shell");
         names.add("apply_patch");
         names.add("orchestrate_flow");
+        names.add("coordinate_team");
         for (String toolName : toolRegistry.names()) {
             if (toolName.startsWith("mcp.")) {
                 // MCP 工具来自外部 server，即使是读操作也先让用户确认，避免第三方工具越权访问本机数据。
@@ -512,6 +513,9 @@ public class ReActStrategy {
         }
         if ("orchestrate_flow".equals(toolName)) {
             return "运行多 Agent 流程需要先确认节点、工具和写入范围";
+        }
+        if ("coordinate_team".equals(toolName)) {
+            return "运行团队协作需要先确认成员、工具、轮数和写入范围";
         }
         return "调用 MCP 工具需要确认";
     }

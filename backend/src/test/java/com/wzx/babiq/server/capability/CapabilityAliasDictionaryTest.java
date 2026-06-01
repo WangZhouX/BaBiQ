@@ -72,4 +72,12 @@ class CapabilityAliasDictionaryTest {
 
         assertThat(enriched).contains("流程", "编排", "多节点", "并行", "顺序");
     }
+
+    @Test
+    @DisplayName("coordinate_team 会追加团队协作和主管调度相关中文别名")
+    void enrich_should_add_aliases_for_team_coordination() {
+        String enriched = CapabilityAliasDictionary.enrich("coordinate_team", "Coordinate a supervisor-led team");
+
+        assertThat(enriched).contains("团队", "协作", "协调", "调度", "主管", "队友");
+    }
 }

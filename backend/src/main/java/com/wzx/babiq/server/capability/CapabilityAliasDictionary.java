@@ -92,6 +92,10 @@ public final class CapabilityAliasDictionary {
         map.put("delegate", List.of("委派", "下放", "子任务"));
         map.put("orchestrate", List.of("流程", "编排", "多节点", "顺序", "并行", "路由"));
         map.put("flow", List.of("流程", "编排", "多Agent", "多节点"));
+        map.put("coordinate", List.of("团队", "协作", "协调", "调度", "主管"));
+        map.put("team", List.of("团队", "队友", "多Agent", "协作", "成员"));
+        map.put("supervisor", List.of("主管", "调度", "协调", "路由"));
+        map.put("member", List.of("成员", "队友", "协作者"));
         return Map.copyOf(map);
     }
 

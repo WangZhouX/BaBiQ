@@ -208,4 +208,90 @@ class ThreadItemJsonTest {
 		assertEquals(2, item.nodes.size)
 		assertEquals("WORKSPACE_TOOL", item.nodes.last().mode)
 	}
+
+	@Test
+	fun `可以解析 team item 的成员状态`() {
+		val json = """
+			{
+			  "jsonrpc": "2.0",
+			  "method": "item/added",
+			  "params": {
+			    "threadId": "thread-1",
+			    "turnId": "turn-1",
+			    "item": {
+			      "id": "it_team_1",
+			      "type": "team",
+			      "teamId": "team_1",
+			      "title": "团队协作",
+			      "status": "running",
+			      "summary": "正在协调成员",
+			      "approved": true,
+			      "frozen": true,
+			      "currentAgent": "explorer",
+			      "round": 1,
+			      "maxRounds": 5,
+			      "members": [
+			        {
+			          "memberId": "member_explorer",
+			          "name": "explorer",
+			          "displayName": "探索成员",
+			          "status": "running",
+			          "mode": "READ_ONLY_TOOL",
+			          "task": "读取目录",
+			          "toolCallCount": 2,
+			          "tokenEstimate": 128,
+			          "summary": "正在读取"
+			        }
+			      ]
+			    }
+			  }
+			}
+		""".trimIndent()
+
+		val event = protocolJson.decodeFromString(ServerEvent.serializer(), json)
+		val added = assertIs<ServerEvent.ItemAdded>(event)
+		val item = assertIs<ThreadItem.Team>(added.item)
+
+		assertEquals("team_1", item.teamId)
+		assertEquals("explorer", item.currentAgent)
+		assertEquals(5, item.maxRounds)
+		assertEquals("探索成员", item.members.single().displayName)
+		assertEquals(2, item.members.single().toolCallCount)
+	}
+
+	@Test
+	fun `可以解析 teamMessage item 的直发消息`() {
+		val json = """
+			{
+			  "jsonrpc": "2.0",
+			  "method": "item/added",
+			  "params": {
+			    "threadId": "thread-1",
+			    "turnId": "turn-1",
+			    "item": {
+			      "id": "it_team_msg_1",
+			      "type": "teamMessage",
+			      "messageId": "msg_1",
+			      "teamId": "team_1",
+			      "fromAgent": "user",
+			      "toAgent": "explorer",
+			      "messageType": "direct_user",
+			      "content": "请重点看 README",
+			      "round": 2,
+			      "createdAt": "2026-06-01T10:00:00Z"
+			    }
+			  }
+			}
+		""".trimIndent()
+
+		val event = protocolJson.decodeFromString(ServerEvent.serializer(), json)
+		val added = assertIs<ServerEvent.ItemAdded>(event)
+		val item = assertIs<ThreadItem.TeamMessage>(added.item)
+
+		assertEquals("msg_1", item.messageId)
+		assertEquals("user", item.fromAgent)
+		assertEquals("explorer", item.toAgent)
+		assertEquals("direct_user", item.messageType)
+		assertEquals("请重点看 README", item.content)
+	}
 }

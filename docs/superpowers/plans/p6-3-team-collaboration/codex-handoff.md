@@ -6,9 +6,9 @@
 
 ## 当前状态
 
-- **plan 已补齐并等待用户确认**（2026-06-01）：已明确 `coordinate_team` 入口工具、shared `MemorySaver` 构建路径、`team/message/send` 直接喊话协议、结构化 supervisor 路由、`team` / `teamMessage` 协议拆分，以及 P6-2 真实模型烟测前置。
-- **实现尚未开始**：当前只有计划文档更新，没有 P6-3 生产代码、测试、migration 或桌面端代码。
-- **技术基座已确认**：P6-3 使用 Spring AI Alibaba graph-core 官方原语自搭 supervisor 模式，不依赖 `SupervisorAgent` 类。
+- **实现已完成并通过自动化验证**（2026-06-01）：已落地 `coordinate_team`、shared `MemorySaver` supervisor 图、`team/message/send`、`team` / `teamMessage` 协议、SQLite 持久化和桌面端右侧团队面板。
+- **技术基座已确认**：P6-3 使用 Spring AI Alibaba graph-core 官方原语自搭 supervisor 模式，不依赖 `SupervisorAgent` 类；本地 `1.1.2.3` jar 已确认没有可直接复用的 `SupervisorAgent`。
+- **真实模型烟测未执行**：本次完成的是代码、测试和文档闭环；真实 DeepSeek/DashScope 团队协作烟测仍需在可用模型环境下补做。
 
 ## 一句话目标
 
@@ -110,14 +110,31 @@
 ## 验收命令
 
 ```powershell
-cd E:\BaBiQ\backend
-.\mvnw.cmd "-Dtest=BabiqTeamSpecTest,TeamCoordinationToolTest,SubAgentGraphRuntimeFactoryTest,SupervisorRoutingNodeTest,TeamCoordinationServiceTest,TeamApprovalTest,TeamTerminationTest,DirectTeammateMessageTest,ThreadItemJsonTest,TeamRepositoryTest,SchemaCommentsCoverageTest,SystemPromptSecurityRuleTest,CapabilityAliasDictionaryTest,AgentLoopLineCountTest" test
+cd E:\BaBiQ\.worktrees\p6-3-team-collaboration\backend
+.\mvnw.cmd -q "-Dtest=BabiqTeamSpecTest,TeamApprovalServiceTest,DefaultTeamMemberAgentFactoryTest,TeamCoordinationServiceTest,TeamItemJsonTest,TeamRepositoryTest,TeamMessageSendHandlerTest,CapabilityAliasDictionaryTest,SystemPromptSecurityRuleTest" test
 .\mvnw.cmd clean verify
 
-cd ..\desktop
+cd E:\BaBiQ\.worktrees\p6-3-team-collaboration\desktop
+.\gradlew.bat test --tests "*ThreadItemJsonTest" --tests "*ChatReducerTest" --tests "*AgentClientTest" --tests "*TeamSectionTest"
 .\gradlew.bat test --tests "*ThreadItemJsonTest" --tests "*ChatReducerTest" --tests "*TeamSectionTest"
 .\gradlew.bat test
 ```
+
+## 本次实现记录（2026-06-01）
+
+- **后端团队领域**：新增 `BabiqTeamSpec`、`BabiqTeamMember`、`TeamCoordinationService`、`SpringAiSupervisorRoutingStrategy`、`DefaultTeamMemberAgentFactory`、`TeamApprovalService` 和 `TeamDirectMessageService`，以 BaBiQ 自身服务层封装官方 graph-core 原语。
+- **官方 graph-core 接入**：`TeamCoordinationService` 使用 `StateGraph` + `AsyncNodeAction` supervisor + `ReactAgent.asNode(true, false)` teammate + `addConditionalEdges(...)` 到 `FINISH`；父图和 teammate 共享同一个 `MemorySaver` / `CompileConfig`。
+- **P6-1 横切复用**：`SubAgentRuntimeFactory` 新增团队图构建入口，允许显式传入 shared saver、compile config 和 output key，避免走隐式 `new MemorySaver()` 的普通委派路径。
+- **入口工具与审批**：新增 `TeamCoordinationTool` (`coordinate_team`)，并把 `coordinate_team` 纳入 `ReActStrategy` 可审批工具集合；能力别名字典补齐“团队 / 协调 / 主管 / 成员”等中文搜索词。
+- **协议与持久化**：新增 `TeamItem` / `TeamMessageItem`；新增 `V15__team_collaboration.sql`、`bq_teams`、`bq_team_members`、`bq_team_messages`、对应 Entity / Mapper / `SQLiteTeamRepository`，字段中文注释已纳入 `SchemaCommentsCoverageTest`。
+- **直发喊话**：新增 JSON-RPC `team/message/send`，桌面端可选中 teammate 直接发送团队消息，返回 `teamMessage` item 并写入团队消息表。
+- **桌面 UI**：新增 `TeamUiState`、`TeamSection`、`TeamModels`，`ChatReducer` 从 `team` / `teamMessage` 聚合右侧团队面板；两类 item 不进入父聊天消息流。
+- **自动化验证**：
+  - `cd E:\BaBiQ\.worktrees\p6-3-team-collaboration\backend; .\mvnw.cmd -q "-Dtest=BabiqTeamSpecTest,TeamApprovalServiceTest,DefaultTeamMemberAgentFactoryTest,TeamCoordinationServiceTest,TeamItemJsonTest,TeamRepositoryTest,TeamMessageSendHandlerTest,CapabilityAliasDictionaryTest,SystemPromptSecurityRuleTest" test`：通过。
+  - `cd E:\BaBiQ\.worktrees\p6-3-team-collaboration\backend; .\mvnw.cmd clean verify`：`BUILD SUCCESS`，Surefire 367 tests + Failsafe 23 tests 全绿。
+  - `cd E:\BaBiQ\.worktrees\p6-3-team-collaboration\desktop; .\gradlew.bat test --tests "*ThreadItemJsonTest" --tests "*ChatReducerTest" --tests "*AgentClientTest" --tests "*TeamSectionTest"`：`BUILD SUCCESSFUL`。
+  - `cd E:\BaBiQ\.worktrees\p6-3-team-collaboration\desktop; .\gradlew.bat test`：`BUILD SUCCESSFUL`。
+- **已知边界**：本阶段仍是 Leader/Supervisor 中枢协调，不做 teammate 点对点并发 swarm、不做 A2A、不做跨 turn 常驻 team；真实模型人工烟测需后续补做。
 
 ## 真实模型烟测
 
@@ -154,6 +171,6 @@ cd ..\desktop
 
 ## 下一步
 
-1. 用户确认本 handoff。
-2. 先补 P6-2 真实模型烟测记录。
-3. 按 Task 0→13 TDD 实现 P6-3。
+1. 用户在可用模型环境补做 P6-3 真实模型烟测：`coordinate_team` 发起团队任务、观察 supervisor 路由、确认 `FINISH` 终止和右侧团队面板。
+2. 若烟测通过，可合并本分支进入 `master`。
+3. 后续增强另开阶段：P6-3b 点对点并发 swarm、A2A 远程协作、运行中逐工具恢复。

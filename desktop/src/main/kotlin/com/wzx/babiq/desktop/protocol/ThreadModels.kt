@@ -255,6 +255,99 @@ sealed interface ThreadItem {
 
 	@Serializable
 	/**
+	 * 团队协作整体状态协议 item。
+	 *
+	 * P6-3 的 coordinate_team 工具会推送这个 item，它描述 supervisor 图里的团队整体状态。
+	 * 桌面端把它放进右侧运行详情，不进入聊天正文；这样用户能看到团队成员和轮次，
+	 * 但不会把子成员的中间消息混入主对话历史。
+	 *
+	 * @property id 后端生成并在同一团队运行中复用的 item id。
+	 * @property type 协议类型固定为 team。
+	 * @property teamId 团队运行 id，用于 direct message 和持久化审计关联。
+	 * @property title 用户可读标题，通常来自 coordinate_team 的任务摘要。
+	 * @property status 团队状态：pending、running、completed、failed。
+	 * @property summary 团队整体短摘要；为空表示还没有可展示结论。
+	 * @property approved true 表示团队规格已经通过运行前整体审批。
+	 * @property frozen true 表示成员、工具和写入范围已冻结，执行期不能再改。
+	 * @property currentAgent 当前或最近一次被 supervisor 调度的成员。
+	 * @property round 当前 supervisor 调度轮数。
+	 * @property maxRounds 本次团队运行允许的最大调度轮数。
+	 * @property members 成员聚合状态列表，按后端稳定顺序展示。
+	 */
+	data class Team(
+		override val id: String,
+		override val type: String = "team",
+		val teamId: String,
+		val title: String,
+		val status: String,
+		val summary: String? = null,
+		val approved: Boolean? = null,
+		val frozen: Boolean? = null,
+		val currentAgent: String? = null,
+		val round: Int? = null,
+		val maxRounds: Int? = null,
+		val members: List<TeamMember> = emptyList(),
+	) : ThreadItem
+
+	@Serializable
+	/**
+	 * 团队协作成员聚合状态。
+	 *
+	 * @property memberId 成员协议 id，用于稳定列表 key。
+	 * @property name 成员 ASCII 技术名，和后端 Agent name 对应。
+	 * @property displayName 中文展示名；为空时 UI 回退到 name。
+	 * @property status 成员状态：pending、running、completed、failed。
+	 * @property mode 成员工具权限模式，例如 READ_ONLY_TOOL 或 WORKSPACE_TOOL。
+	 * @property task 分配给该成员的任务描述。
+	 * @property toolCallCount 成员已完成工具调用次数；为空表示后端暂未统计。
+	 * @property tokenEstimate 成员 token 粗估；为空表示暂未统计。
+	 * @property summary 成员短摘要。
+	 */
+	data class TeamMember(
+		val memberId: String,
+		val name: String,
+		val displayName: String? = null,
+		val status: String,
+		val mode: String,
+		val task: String? = null,
+		val toolCallCount: Int? = null,
+		val tokenEstimate: Int? = null,
+		val summary: String? = null,
+	)
+
+	@Serializable
+	/**
+	 * 团队协作消息时间线协议 item。
+	 *
+	 * 它展示 supervisor 路由、成员摘要和用户直发 teammate 的消息。和 Team 一样，
+	 * 它只属于运行详情，不会进入主聊天正文或下一轮上下文。
+	 *
+	 * @property id 后端生成的协议 item id。
+	 * @property type 协议类型固定为 teamMessage。
+	 * @property messageId 团队消息 id，用于幂等 upsert。
+	 * @property teamId 所属团队运行 id。
+	 * @property fromAgent 发送方：user、supervisor 或成员名。
+	 * @property toAgent 接收方：supervisor、成员名或 all。
+	 * @property messageType 消息类型：route、member_summary、direct_user、system。
+	 * @property content 消息正文或短摘要。
+	 * @property round 所属调度轮数；直发消息可为空。
+	 * @property createdAt 创建时间，ISO-8601 文本。
+	 */
+	data class TeamMessage(
+		override val id: String,
+		override val type: String = "teamMessage",
+		val messageId: String,
+		val teamId: String,
+		val fromAgent: String,
+		val toAgent: String,
+		val messageType: String,
+		val content: String,
+		val round: Int? = null,
+		val createdAt: String? = null,
+	) : ThreadItem
+
+	@Serializable
+	/**
 	 * 计划可视化协议 item。
 	 *
 	 * 后端 `update_plan` 工具会用完整覆盖语义反复推送同一个 item：第一次是 `item/added`，
@@ -326,6 +419,8 @@ object ThreadItemSerializer : KSerializer<ThreadItem> {
 			"contextCompaction" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.ContextCompaction.serializer(), raw)
 			"agentDelegation" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.AgentDelegation.serializer(), raw)
 			"orchestration" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.Orchestration.serializer(), raw)
+			"team" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.Team.serializer(), raw)
+			"teamMessage" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.TeamMessage.serializer(), raw)
 			"plan" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.Plan.serializer(), raw)
 			// 未知类型不丢弃，交给运行详情面板展示 raw JSON，方便后续协议扩展排查。
 			else -> ThreadItem.Unknown(

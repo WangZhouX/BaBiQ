@@ -49,6 +49,7 @@ fun AppShell(
 	onRefreshMcpServer: (String) -> Unit,
 	onToggleRuntime: () -> Unit,
 	onDismissSubAgent: () -> Unit,
+	onSendTeamMessage: (String, String) -> Unit,
 	onSelectRunTurn: (String) -> Unit,
 	onSelectObservabilityRange: (String) -> Unit,
 ) {
@@ -115,13 +116,15 @@ fun AppShell(
 		if (state.runtimeExpanded ||
 			(state.planState.visible && !state.planState.collapsed) ||
 			state.subAgentState.visible ||
-			state.orchestrationState.visible
+			state.orchestrationState.visible ||
+			state.teamState.visible
 		) {
 			RuntimeDetailsPanel(
 				state = state,
 				modifier = Modifier.width(360.dp),
 				onClose = onToggleRuntime,
 				onDismissSubAgent = onDismissSubAgent,
+				onSendTeamMessage = onSendTeamMessage,
 				onSelectRunTurn = onSelectRunTurn,
 				onSelectObservabilityRange = onSelectObservabilityRange,
 			)

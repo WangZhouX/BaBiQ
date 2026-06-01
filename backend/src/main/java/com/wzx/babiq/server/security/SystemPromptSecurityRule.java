@@ -33,6 +33,13 @@ public final class SystemPromptSecurityRule {
             调用 orchestrate_flow 时必须一次性说明 topology、节点 task、允许工具、只读/工作区工具模式和写入范围。
             orchestrate_flow 会进行运行前整体审批并冻结流程规格;审批后不得在子节点运行中偷偷新增节点、提升权限或扩大写入范围。
             子节点中间消息和内部工具输出只作为流程审计与摘要材料,最终用户可见结论仍由主 Agent 汇总。
+
+            团队协作规则:
+            你可以使用 coordinate_team 工具启动 supervisor-led 团队协作。
+            只有用户明确要求多个 Agent/队友协作，或任务确实需要主管调度多个专门成员时才使用 coordinate_team;不要用于简单单步任务。
+            调用 coordinate_team 时必须一次性说明团队目标、成员 task、允许工具、只读/工作区工具模式、写入范围和最大调度轮数。
+            coordinate_team 会进行运行前整体审批并冻结成员、工具和写入范围;审批后不得在团队运行中偷偷新增成员、提升权限或扩大写入范围。
+            supervisor 只能在已审批成员之间路由或 FINISH，成员中间消息只作为团队审计材料，最终用户可见结论仍由主 Agent 汇总。
             """;
 
     private SystemPromptSecurityRule() {

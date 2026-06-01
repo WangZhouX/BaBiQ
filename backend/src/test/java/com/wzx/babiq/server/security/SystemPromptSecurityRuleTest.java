@@ -42,4 +42,15 @@ class SystemPromptSecurityRuleTest {
                 .contains("运行前整体审批")
                 .contains("不要用于简单单步任务");
     }
+
+    @Test
+    void prompt_should_include_team_coordination_boundaries() {
+        assertThat(SystemPromptSecurityRule.PROMPT)
+                .contains("coordinate_team")
+                .contains("supervisor")
+                .contains("团队协作")
+                .contains("最大调度轮数")
+                .contains("FINISH")
+                .contains("不要用于简单单步任务");
+    }
 }

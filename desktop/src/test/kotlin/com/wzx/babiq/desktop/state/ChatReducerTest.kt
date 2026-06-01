@@ -369,6 +369,106 @@ class ChatReducerTest {
 		assertEquals("Flow:parallel", next.runtimeEvents.single().title)
 	}
 
+	@Test
+	fun `team item updates runtime team state without adding chat message`() {
+		val item = ThreadItem.Team(
+			id = "it_team_1",
+			teamId = "team_1",
+			title = "团队协作",
+			status = "running",
+			summary = "正在协调成员",
+			approved = true,
+			frozen = true,
+			currentAgent = "explorer",
+			round = 1,
+			maxRounds = 5,
+			members = listOf(
+				ThreadItem.TeamMember(
+					memberId = "member_explorer",
+					name = "explorer",
+					displayName = "探索成员",
+					status = "running",
+					mode = "READ_ONLY_TOOL",
+					task = "读取目录",
+					toolCallCount = 2,
+					tokenEstimate = 128,
+					summary = "正在读取",
+				),
+			),
+		)
+
+		val next = ChatReducer.reduce(
+			AppState.empty().copy(messages = listOf(ChatMessage.User("u1", "组织团队处理"))),
+			AgentEvent.Server(ServerEvent.ItemAdded("thread-1", "turn-1", item)),
+		)
+
+		assertEquals(1, next.messages.size)
+		assertEquals("team_1", next.teamState.current?.teamId)
+		assertEquals("explorer", next.teamState.current?.currentAgent)
+		assertTrue(next.teamState.visible)
+		assertEquals(1, next.runtimeEvents.size)
+		assertEquals("Team:团队协作", next.runtimeEvents.single().title)
+	}
+
+	@Test
+	fun `team message item appends runtime timeline without adding chat message`() {
+		val team = ThreadItem.Team(
+			id = "it_team_1",
+			teamId = "team_1",
+			title = "团队协作",
+			status = "running",
+			members = emptyList(),
+		)
+		val message = ThreadItem.TeamMessage(
+			id = "it_team_msg_1",
+			messageId = "msg_1",
+			teamId = "team_1",
+			fromAgent = "user",
+			toAgent = "explorer",
+			messageType = "direct_user",
+			content = "请重点看 README",
+			round = 2,
+			createdAt = "2026-06-01T10:00:00Z",
+		)
+
+		val next = ChatReducer.reduce(
+			AppState.empty().copy(teamState = TeamUiState(current = team), messages = listOf(ChatMessage.User("u1", "继续"))),
+			AgentEvent.Server(ServerEvent.ItemAdded("thread-1", "turn-1", message)),
+		)
+
+		assertEquals(1, next.messages.size)
+		assertEquals("msg_1", next.teamState.messages.single().messageId)
+		assertEquals("explorer", next.teamState.selectedAgent)
+		assertEquals(1, next.runtimeEvents.size)
+		assertEquals("TeamMessage:direct_user", next.runtimeEvents.single().title)
+	}
+
+	@Test
+	fun `team state from history keeps latest team and matching messages`() {
+		val oldTeam = ThreadItem.Team(id = "it_team_old", teamId = "team_old", title = "旧团队", status = "completed")
+		val latestTeam = ThreadItem.Team(id = "it_team_new", teamId = "team_new", title = "新团队", status = "running")
+		val oldMessage = ThreadItem.TeamMessage(
+			id = "it_msg_old",
+			messageId = "msg_old",
+			teamId = "team_old",
+			fromAgent = "supervisor",
+			toAgent = "all",
+			messageType = "system",
+			content = "旧消息",
+		)
+		val latestMessage = oldMessage.copy(
+			id = "it_msg_new",
+			messageId = "msg_new",
+			teamId = "team_new",
+			content = "新消息",
+		)
+
+		val state = ChatReducer.teamStateFromItems(listOf(oldTeam, oldMessage, latestTeam, latestMessage))
+
+		assertEquals("team_new", state.current?.teamId)
+		assertEquals(listOf("msg_new"), state.messages.map { it.messageId })
+	}
+
 	private fun sampleApproval() = ApprovalRequestPayload(
 		threadId = "thread-1",
 		turnId = "turn-1",

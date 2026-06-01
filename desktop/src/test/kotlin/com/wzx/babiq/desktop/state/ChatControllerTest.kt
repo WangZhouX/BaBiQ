@@ -45,6 +45,7 @@ import com.wzx.babiq.desktop.protocol.ServerEvent
 import com.wzx.babiq.desktop.protocol.SettingsUpdateParams
 import com.wzx.babiq.desktop.protocol.SkillListResult
 import com.wzx.babiq.desktop.protocol.SkillGetResult
+import com.wzx.babiq.desktop.protocol.TeamMessageSendResult
 import com.wzx.babiq.desktop.protocol.ThreadArchiveResult
 import com.wzx.babiq.desktop.protocol.ThreadItem
 import com.wzx.babiq.desktop.protocol.ThreadListResult
@@ -1009,6 +1010,22 @@ class ChatControllerTest {
 		override suspend fun searchMemory(query: String, threadId: String?): MemorySearchResult {
 			calls += "searchMemory:$query:$threadId"
 			return memorySearchResult
+		}
+
+		override suspend fun sendTeamMessage(teamId: String, toAgent: String, content: String): TeamMessageSendResult {
+			calls += "sendTeamMessage:$teamId:$toAgent:$content"
+			return TeamMessageSendResult(
+				ThreadItem.TeamMessage(
+					id = "it_team_msg_1",
+					messageId = "msg_1",
+					teamId = teamId,
+					fromAgent = "user",
+					toAgent = toAgent,
+					messageType = "direct_user",
+					content = content,
+					createdAt = "2026-06-01T10:00:00Z",
+				),
+			)
 		}
 	}
 

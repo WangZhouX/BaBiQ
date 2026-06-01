@@ -44,6 +44,7 @@ fun RuntimeDetailsPanel(
 	modifier: Modifier = Modifier,
 	onClose: () -> Unit,
 	onDismissSubAgent: () -> Unit = {},
+	onSendTeamMessage: (String, String) -> Unit = { _, _ -> },
 	onSelectRunTurn: (String) -> Unit,
 	onSelectObservabilityRange: (String) -> Unit,
 ) {
@@ -61,6 +62,7 @@ fun RuntimeDetailsPanel(
 		}
 		PlanSection(state.planState)
 		OrchestrationSection(state.orchestrationState)
+		TeamSection(state.teamState, onSendTeamMessage = onSendTeamMessage)
 		SubAgentSection(state.subAgentState, onDismiss = onDismissSubAgent)
 		DetailCard(
 			title = "执行环境",

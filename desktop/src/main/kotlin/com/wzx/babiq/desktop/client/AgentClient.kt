@@ -44,6 +44,8 @@ import com.wzx.babiq.desktop.protocol.ServerEvent
 import com.wzx.babiq.desktop.protocol.SettingsUpdateParams
 import com.wzx.babiq.desktop.protocol.SkillGetResult
 import com.wzx.babiq.desktop.protocol.SkillListResult
+import com.wzx.babiq.desktop.protocol.TeamMessageSendParams
+import com.wzx.babiq.desktop.protocol.TeamMessageSendResult
 import com.wzx.babiq.desktop.protocol.protocolJson
 import com.wzx.babiq.desktop.protocol.ThreadArchiveResult
 import com.wzx.babiq.desktop.protocol.ThreadListResult
@@ -205,6 +207,9 @@ interface AgentGateway {
 
 	/** 手动检索长期记忆，用于设置页确认 read path 的候选来源。 */
 	suspend fun searchMemory(query: String, threadId: String? = null): MemorySearchResult
+
+	/** 向当前团队协作中的某个队友直发补充消息。 */
+	suspend fun sendTeamMessage(teamId: String, toAgent: String, content: String): TeamMessageSendResult
 }
 
 /**
@@ -683,6 +688,20 @@ class AgentClient(
 			},
 		)
 		return protocolJson.decodeFromJsonElement(MemorySearchResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `team/message/send`，把用户补充信息写入团队协作时间线。
+	 */
+	override suspend fun sendTeamMessage(teamId: String, toAgent: String, content: String): TeamMessageSendResult {
+		val response = request(
+			method = "team/message/send",
+			params = protocolJson.encodeToJsonElement(
+				TeamMessageSendParams.serializer(),
+				TeamMessageSendParams(teamId, toAgent, content),
+			),
+		)
+		return protocolJson.decodeFromJsonElement(TeamMessageSendResult.serializer(), response.requireResult())
 	}
 
 	/**

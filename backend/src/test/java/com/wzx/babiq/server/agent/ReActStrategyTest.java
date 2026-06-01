@@ -68,13 +68,13 @@ class ReActStrategyTest {
     @Test
     void always_policy_should_request_approval_for_every_visible_tool() {
         ToolRegistry registry = mock(ToolRegistry.class);
-        when(registry.names()).thenReturn(List.of("read_file", "write_file", "exec_shell", "update_plan", "orchestrate_flow", "mcp.filesystem.read_text_file"));
+        when(registry.names()).thenReturn(List.of("read_file", "write_file", "exec_shell", "update_plan", "orchestrate_flow", "coordinate_team", "mcp.filesystem.read_text_file"));
         ReActStrategy strategy = newStrategy(registry);
 
         assertThat(strategy.approvalToolNamesFor(ApprovalPolicy.ALWAYS))
-                .containsExactly("read_file", "write_file", "exec_shell", "orchestrate_flow", "mcp.filesystem.read_text_file");
+                .containsExactly("read_file", "write_file", "exec_shell", "orchestrate_flow", "coordinate_team", "mcp.filesystem.read_text_file");
         assertThat(strategy.approvalToolNamesFor(ApprovalPolicy.ON_REQUEST))
-                .containsExactly("write_file", "exec_shell", "apply_patch", "orchestrate_flow", "mcp.filesystem.read_text_file");
+                .containsExactly("write_file", "exec_shell", "apply_patch", "orchestrate_flow", "coordinate_team", "mcp.filesystem.read_text_file");
         assertThat(strategy.approvalToolNamesFor(ApprovalPolicy.NEVER)).isEmpty();
     }
 

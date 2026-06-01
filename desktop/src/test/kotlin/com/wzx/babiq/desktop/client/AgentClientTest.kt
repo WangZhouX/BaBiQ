@@ -382,6 +382,23 @@ class AgentClientTest {
 	}
 
 	@Test
+	fun `team message send 调用后端直发接口并解析 teamMessage item`() = runTest {
+		val transport = FakeAgentTransport()
+		val client = AgentClient(transport, backgroundScope)
+		client.connect()
+
+		val result = client.sendTeamMessage("team_1", "explorer", "请重点看 README")
+
+		val request = transport.sent.single()
+		assertEquals("team/message/send", request.method)
+		assertEquals("team_1", request.paramsText("teamId"))
+		assertEquals("explorer", request.paramsText("toAgent"))
+		assertEquals("请重点看 README", request.paramsText("content"))
+		assertEquals("msg_1", result.item.messageId)
+		assertEquals("direct_user", result.item.messageType)
+	}
+
+	@Test
 	fun `json rpc error 会转成 AgentClientException`() = runTest {
 		val transport = FakeAgentTransport(errorMethods = setOf("thread/create"))
 		val client = AgentClient(transport, backgroundScope)
@@ -734,6 +751,23 @@ class AgentClientTest {
 						},
 					)
 					put("tokenEstimate", 12)
+				}
+				"team/message/send" -> buildJsonObject {
+					put(
+						"item",
+						buildJsonObject {
+							put("id", "it_team_msg_1")
+							put("type", "teamMessage")
+							put("messageId", "msg_1")
+							put("teamId", request.paramsText("teamId"))
+							put("fromAgent", "user")
+							put("toAgent", request.paramsText("toAgent"))
+							put("messageType", "direct_user")
+							put("content", request.paramsText("content"))
+							put("round", 2)
+							put("createdAt", "2026-06-01T10:00:00Z")
+						},
+					)
 				}
 				else -> buildJsonObject { put("ok", true) }
 			}
