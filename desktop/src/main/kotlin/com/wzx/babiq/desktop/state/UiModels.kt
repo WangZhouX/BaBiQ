@@ -212,17 +212,37 @@ data class PlanUiState(
  * 用户能看到“主 Agent 正在委派谁、处于什么状态、内部用了几个只读工具”，但不会把内部工具输出直接散落成多张主聊天卡片。
  *
  * @property current 当前或最近一次子 Agent 委派 item；为空表示本轮没有发生委派。
+ * @property dismissedDelegationId 用户手动移除的委派 id；同一委派后续更新仍保持隐藏，新委派会自动重新显示。
  */
 data class SubAgentUiState(
 	val current: ThreadItem.AgentDelegation? = null,
+	val dismissedDelegationId: String? = null,
 ) {
 	/** 是否有可展示的委派轨迹。 */
 	val visible: Boolean
-		get() = current != null
+		get() = current != null && current.delegationId != dismissedDelegationId
 
-	/** 终态委派仍可在手动运行详情中查看，但不会自动常驻右侧面板。 */
+	/** 终态委派会保留给用户手动移除；这个字段只负责状态翻译和样式判断。 */
 	val terminal: Boolean
 		get() = current?.status?.lowercase() in setOf("completed", "failed", "canceled")
+
+	/**
+	 * 接收后端新的委派 item。
+	 *
+	 * 同一个 delegationId 如果已被用户移除，就继续隐藏；换成新的 delegationId 时自动清空移除标记，
+	 * 让新一轮子 Agent 执行能重新出现在运行详情里。
+	 */
+	fun withCurrent(item: ThreadItem.AgentDelegation): SubAgentUiState =
+		copy(
+			current = item,
+			dismissedDelegationId = dismissedDelegationId.takeIf { it == item.delegationId },
+		)
+
+	/**
+	 * 用户点击“移除”时只隐藏当前卡片，不删除聊天记录或后端运行审计。
+	 */
+	fun dismissCurrent(): SubAgentUiState =
+		copy(dismissedDelegationId = current?.delegationId)
 }
 
 data class RunRecordState(

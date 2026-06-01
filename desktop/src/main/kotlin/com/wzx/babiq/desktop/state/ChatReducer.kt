@@ -162,7 +162,7 @@ object ChatReducer {
 
 			is ThreadItem.AgentDelegation -> copy(
 				messages = messages.upsert(item.toChatMessage()),
-				subAgentState = SubAgentUiState(current = item),
+				subAgentState = subAgentState.withCurrent(item),
 				runtimeEvents = runtimeEvents + RuntimeEvent(
 					id = item.id,
 					title = "SubAgent:${item.childAgent}",

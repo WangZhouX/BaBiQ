@@ -776,7 +776,7 @@ class ChatController(
 		val current = state.value
 		val panelVisible = current.runtimeExpanded ||
 			(current.planState.visible && !current.planState.collapsed) ||
-			(current.subAgentState.visible && !current.subAgentState.terminal)
+			current.subAgentState.visible
 		val shouldExpand = !panelVisible
 		_state.update {
 			it.copy(
@@ -793,6 +793,16 @@ class ChatController(
 				loadObservabilitySnapshot(state.value.runRecordState.observability.range)
 			}
 		}
+	}
+
+	/**
+	 * 手动移除右侧子 Agent 卡片。
+	 *
+	 * 这个动作只影响桌面端运行面板，不删除聊天流里的 agentDelegation 消息，也不修改后端运行记录。
+	 * 如果后续同一个 delegationId 继续更新，卡片保持隐藏；新的 delegationId 到来时会自动重新显示。
+	 */
+	fun dismissSubAgentCard() {
+		_state.update { it.copy(subAgentState = it.subAgentState.dismissCurrent()) }
 	}
 
 	/**
@@ -1110,7 +1120,7 @@ class ChatController(
 		val current = state.value
 		if (current.runtimeExpanded ||
 			(current.planState.visible && !current.planState.collapsed) ||
-			(current.subAgentState.visible && !current.subAgentState.terminal)
+			current.subAgentState.visible
 		) {
 			current.currentThreadId?.let { loadRunRecords(it) }
 			loadObservabilitySnapshot(current.runRecordState.observability.range)

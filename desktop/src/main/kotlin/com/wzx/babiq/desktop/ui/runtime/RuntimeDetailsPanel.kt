@@ -43,6 +43,7 @@ fun RuntimeDetailsPanel(
 	state: AppState,
 	modifier: Modifier = Modifier,
 	onClose: () -> Unit,
+	onDismissSubAgent: () -> Unit = {},
 	onSelectRunTurn: (String) -> Unit,
 	onSelectObservabilityRange: (String) -> Unit,
 ) {
@@ -59,7 +60,7 @@ fun RuntimeDetailsPanel(
 			TextButton(onClick = onClose) { Text("收起") }
 		}
 		PlanSection(state.planState)
-		SubAgentSection(state.subAgentState)
+		SubAgentSection(state.subAgentState, onDismiss = onDismissSubAgent)
 		DetailCard(
 			title = "执行环境",
 			detail = buildString {

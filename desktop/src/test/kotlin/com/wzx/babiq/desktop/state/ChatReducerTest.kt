@@ -289,6 +289,42 @@ class ChatReducerTest {
 		assertEquals(false, state.terminal)
 	}
 
+	@Test
+	fun `dismissed subagent remains hidden for same delegation and resets for new delegation`() {
+		val firstItem = ThreadItem.AgentDelegation(
+			id = "it-agent-1",
+			delegationId = "delegation-1",
+			parentAgent = "babiq_agent",
+			childAgent = "explorer",
+			status = "completed",
+			mode = "READ_ONLY_TOOL",
+		)
+		val dismissedState = AppState.empty().copy(
+			subAgentState = SubAgentUiState(current = firstItem, dismissedDelegationId = "delegation-1"),
+		)
+
+		val sameDelegation = ChatReducer.reduce(
+			dismissedState,
+			AgentEvent.Server(ServerEvent.ItemUpdated("thread-1", "turn-1", firstItem.copy(summary = "更新后的摘要"))),
+		)
+		assertFalse(sameDelegation.subAgentState.visible)
+		assertEquals("delegation-1", sameDelegation.subAgentState.dismissedDelegationId)
+
+		val secondItem = firstItem.copy(
+			id = "it-agent-2",
+			delegationId = "delegation-2",
+			status = "running",
+		)
+		val nextDelegation = ChatReducer.reduce(
+			sameDelegation,
+			AgentEvent.Server(ServerEvent.ItemAdded("thread-1", "turn-2", secondItem)),
+		)
+
+		assertTrue(nextDelegation.subAgentState.visible)
+		assertEquals("delegation-2", nextDelegation.subAgentState.current?.delegationId)
+		assertEquals(null, nextDelegation.subAgentState.dismissedDelegationId)
+	}
+
 	private fun sampleApproval() = ApprovalRequestPayload(
 		threadId = "thread-1",
 		turnId = "turn-1",

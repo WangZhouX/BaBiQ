@@ -12,12 +12,16 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.wzx.babiq.desktop.state.SubAgentUiState
 import com.wzx.babiq.desktop.ui.theme.BaBiQColors
+
+private const val SummaryPreviewMaxChars = 120
 
 /**
  * 子 Agent 运行区的纯展示模型。
@@ -28,13 +32,15 @@ import com.wzx.babiq.desktop.ui.theme.BaBiQColors
  * @property visible 是否存在需要展示的委派。
  * @property title 面板标题，通常是子 Agent 名称。
  * @property subtitle 父子 Agent 关系和当前状态。
- * @property rows 结构化明细行，包含模式、工具次数、token 估算和摘要。
+ * @property rows 结构化明细行，只放稳定短字段，避免长文本撑开右侧面板。
+ * @property summaryPreview 子 Agent 最终摘要的短预览；完整 Markdown 仍留在聊天流或运行记录里。
  */
 data class SubAgentSectionModel(
 	val visible: Boolean,
 	val title: String,
 	val subtitle: String,
 	val rows: List<SubAgentSectionRow>,
+	val summaryPreview: String? = null,
 )
 
 /**
@@ -58,17 +64,25 @@ fun buildSubAgentSectionModel(state: SubAgentUiState): SubAgentSectionModel {
 		subtitle = "",
 		rows = emptyList(),
 	)
+	if (!state.visible) {
+		return SubAgentSectionModel(
+			visible = false,
+			title = "",
+			subtitle = "",
+			rows = emptyList(),
+		)
+	}
 	val rows = listOfNotNull(
 		SubAgentSectionRow("模式", item.mode),
 		item.toolCallCount?.let { SubAgentSectionRow("只读工具", "$it 次") },
 		item.tokenEstimate?.let { SubAgentSectionRow("token 估算", it.toString()) },
-		item.summary?.takeIf { it.isNotBlank() }?.let { SubAgentSectionRow("摘要", it) },
 	)
 	return SubAgentSectionModel(
 		visible = true,
 		title = "子 Agent · ${item.childAgent}",
 		subtitle = "${item.parentAgent} -> ${item.childAgent} / ${statusLabel(item.status)}",
 		rows = rows,
+		summaryPreview = compactSummaryPreview(item.summary),
 	)
 }
 
@@ -76,7 +90,10 @@ fun buildSubAgentSectionModel(state: SubAgentUiState): SubAgentSectionModel {
  * 渲染右侧运行面板里的子 Agent 委派状态。
  */
 @Composable
-fun SubAgentSection(state: SubAgentUiState) {
+fun SubAgentSection(
+	state: SubAgentUiState,
+	onDismiss: () -> Unit = {},
+) {
 	val model = buildSubAgentSectionModel(state)
 	if (!model.visible) {
 		return
@@ -90,10 +107,16 @@ fun SubAgentSection(state: SubAgentUiState) {
 			modifier = Modifier.fillMaxWidth().padding(12.dp),
 			verticalArrangement = Arrangement.spacedBy(8.dp),
 		) {
-			Text(model.title, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
+			Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+				Text(model.title, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
+				TextButton(onClick = onDismiss) { Text("移除") }
+			}
 			Text(model.subtitle, style = MaterialTheme.typography.labelMedium, color = BaBiQColors.Muted)
 			model.rows.forEach { row ->
 				SubAgentRow(row)
+			}
+			model.summaryPreview?.let { preview ->
+				SubAgentSummaryPreview(preview)
 			}
 		}
 	}
@@ -117,6 +140,60 @@ private fun SubAgentRow(row: SubAgentSectionRow) {
 }
 
 /**
+ * 子 Agent 摘要短预览。
+ *
+ * 右侧运行面板只承担“当前执行层级”的轻量说明，完整 Markdown 摘要如果直接放进这里会压缩主聊天区。
+ * 因此这里限制最多三行，并交给模型构建阶段提前去掉代码围栏、表格分隔线等噪声。
+ */
+@Composable
+private fun SubAgentSummaryPreview(preview: String) {
+	Column(
+		modifier = Modifier
+			.fillMaxWidth()
+			.background(BaBiQColors.Accent.copy(alpha = 0.06f), RoundedCornerShape(6.dp))
+			.padding(horizontal = 8.dp, vertical = 6.dp),
+		verticalArrangement = Arrangement.spacedBy(4.dp),
+	) {
+		Text("结果预览", style = MaterialTheme.typography.bodySmall, color = BaBiQColors.Muted)
+		Text(
+			preview,
+			style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+			maxLines = 3,
+			overflow = TextOverflow.Ellipsis,
+		)
+	}
+}
+
+/**
+ * 把子 Agent 返回的长 Markdown 摘要压成侧栏预览。
+ *
+ * explorer 常会返回目录树、代码围栏和表格；这些内容适合放在主对话或详情，不适合常驻侧栏。
+ * 这里保留前两条有语义的短行，并做字符上限保护，让右侧面板稳定保持“状态卡片”的信息密度。
+ */
+private fun compactSummaryPreview(summary: String?): String? {
+	val compact = summary.orEmpty()
+		.lineSequence()
+		.map { it.trim() }
+		.filter { it.isNotBlank() }
+		.filterNot { it == "```" || it == "---" || it.startsWith("|---") }
+		.map { it.trimStart('#').trim().replace("`", "") }
+		.filter { it.isNotBlank() }
+		.take(2)
+		.joinToString(" · ")
+		.replace(Regex("\\s+"), " ")
+		.trim()
+
+	if (compact.isBlank()) {
+		return null
+	}
+	return if (compact.length <= SummaryPreviewMaxChars) {
+		compact
+	} else {
+		compact.take(SummaryPreviewMaxChars - 3).trimEnd() + "..."
+	}
+}
+
+/**
  * 将后端状态码翻译成桌面端中文短语；未知状态保留原文，便于排查新协议。
  */
 private fun statusLabel(status: String): String =
@@ -124,5 +201,6 @@ private fun statusLabel(status: String): String =
 		"running" -> "运行中"
 		"completed" -> "已完成"
 		"failed" -> "失败"
+		"canceled" -> "已取消"
 		else -> status
 	}

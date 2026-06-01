@@ -48,6 +48,7 @@ fun AppShell(
 	onSearchCapabilities: (String) -> Unit,
 	onRefreshMcpServer: (String) -> Unit,
 	onToggleRuntime: () -> Unit,
+	onDismissSubAgent: () -> Unit,
 	onSelectRunTurn: (String) -> Unit,
 	onSelectObservabilityRange: (String) -> Unit,
 ) {
@@ -110,15 +111,16 @@ fun AppShell(
 				)
 			}
 		}
-		// RuntimeDetailsPanel 是辅助面板；计划存在且未收起时也会自动常驻，避免用户看不到模型的当前 TODO。
+		// RuntimeDetailsPanel 是辅助面板；计划或子 Agent 卡片存在时自动常驻，用户可分别收起或移除。
 		if (state.runtimeExpanded ||
 			(state.planState.visible && !state.planState.collapsed) ||
-			(state.subAgentState.visible && !state.subAgentState.terminal)
+			state.subAgentState.visible
 		) {
 			RuntimeDetailsPanel(
 				state = state,
 				modifier = Modifier.width(360.dp),
 				onClose = onToggleRuntime,
+				onDismissSubAgent = onDismissSubAgent,
 				onSelectRunTurn = onSelectRunTurn,
 				onSelectObservabilityRange = onSelectObservabilityRange,
 			)

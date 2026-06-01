@@ -69,6 +69,7 @@ fun BaBiQDesktopApp() {
 			onSearchCapabilities = { query -> controller.searchCapabilities(query) },
 			onRefreshMcpServer = { serverId -> controller.refreshMcpServer(serverId) },
 			onToggleRuntime = { controller.toggleRuntimeDetails() },
+			onDismissSubAgent = { controller.dismissSubAgentCard() },
 			onSelectRunTurn = { turnId -> controller.selectRunTurn(turnId) },
 			onSelectObservabilityRange = { range -> controller.selectObservabilityRange(range) },
 		)
