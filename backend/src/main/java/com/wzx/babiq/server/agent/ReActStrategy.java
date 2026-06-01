@@ -484,6 +484,7 @@ public class ReActStrategy {
         names.add("write_file");
         names.add("exec_shell");
         names.add("apply_patch");
+        names.add("orchestrate_flow");
         for (String toolName : toolRegistry.names()) {
             if (toolName.startsWith("mcp.")) {
                 // MCP 工具来自外部 server，即使是读操作也先让用户确认，避免第三方工具越权访问本机数据。
@@ -508,6 +509,9 @@ public class ReActStrategy {
         }
         if ("apply_patch".equals(toolName)) {
             return "应用补丁需要确认";
+        }
+        if ("orchestrate_flow".equals(toolName)) {
+            return "运行多 Agent 流程需要先确认节点、工具和写入范围";
         }
         return "调用 MCP 工具需要确认";
     }

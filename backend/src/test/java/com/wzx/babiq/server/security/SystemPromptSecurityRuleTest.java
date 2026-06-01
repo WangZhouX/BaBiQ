@@ -31,4 +31,15 @@ class SystemPromptSecurityRuleTest {
                 .contains("委派")
                 .contains("untrusted-data");
     }
+
+    @Test
+    void prompt_should_include_flow_orchestration_boundaries() {
+        assertThat(SystemPromptSecurityRule.PROMPT)
+                .contains("orchestrate_flow")
+                .contains("SequentialAgent")
+                .contains("ParallelAgent")
+                .contains("RoutingAgent")
+                .contains("运行前整体审批")
+                .contains("不要用于简单单步任务");
+    }
 }

@@ -325,6 +325,50 @@ class ChatReducerTest {
 		assertEquals(null, nextDelegation.subAgentState.dismissedDelegationId)
 	}
 
+	@Test
+	fun `orchestration item updates runtime state without adding chat message`() {
+		val item = ThreadItem.Orchestration(
+			id = "it_orch_1",
+			orchestrationId = "orch_1",
+			title = "并行检查登录页",
+			topology = "parallel",
+			status = "running",
+			summary = "流程已审批并开始执行",
+			approved = true,
+			frozen = true,
+			nodes = listOf(
+				ThreadItem.OrchestrationNode(
+					nodeId = "node_scan",
+					name = "scan",
+					displayName = "扫描",
+					status = "completed",
+					mode = "READ_ONLY_TOOL",
+					task = "读取文件",
+					toolCallCount = 2,
+				),
+				ThreadItem.OrchestrationNode(
+					nodeId = "node_write",
+					name = "write",
+					displayName = "修改",
+					status = "running",
+					mode = "WORKSPACE_TOOL",
+					task = "写入文件",
+				),
+			),
+		)
+
+		val next = ChatReducer.reduce(
+			AppState.empty().copy(messages = listOf(ChatMessage.User("u1", "并行检查"))),
+			AgentEvent.Server(ServerEvent.ItemAdded("thread-1", "turn-1", item)),
+		)
+
+		assertEquals(1, next.messages.size)
+		assertEquals("orch_1", next.orchestrationState.current?.orchestrationId)
+		assertEquals(true, next.orchestrationState.visible)
+		assertEquals(1, next.runtimeEvents.size)
+		assertEquals("Flow:parallel", next.runtimeEvents.single().title)
+	}
+
 	private fun sampleApproval() = ApprovalRequestPayload(
 		threadId = "thread-1",
 		turnId = "turn-1",

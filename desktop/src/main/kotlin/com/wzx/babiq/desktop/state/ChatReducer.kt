@@ -17,7 +17,7 @@ object ChatReducer {
 	 * 这里复用实时 item 的转换规则，保证历史恢复和 WebSocket 推送看到的 UI 形态一致。
 	 */
 	fun messagesFromItems(items: List<ThreadItem>): List<ChatMessage> =
-		items.filterNot { it is ThreadItem.Plan }
+		items.filterNot { it is ThreadItem.Plan || it is ThreadItem.Orchestration }
 			.map { it.toChatMessage() }
 			.markReasoningCompleted()
 
@@ -40,6 +40,14 @@ object ChatReducer {
 	 */
 	fun subAgentStateFromItems(items: List<ThreadItem>): SubAgentUiState =
 		SubAgentUiState(current = items.filterIsInstance<ThreadItem.AgentDelegation>().lastOrNull())
+
+	/**
+	 * 从历史 item 中恢复最近一次流程编排状态。
+	 *
+	 * 编排 item 不进入聊天流，但历史会话重新打开时右侧运行详情仍应该能看到最后一次拓扑和节点状态。
+	 */
+	fun orchestrationStateFromItems(items: List<ThreadItem>): OrchestrationUiState =
+		OrchestrationUiState(current = items.filterIsInstance<ThreadItem.Orchestration>().lastOrNull())
 
 	/**
 	 * 从历史 item 中找出最新 turnSummary。
@@ -177,6 +185,21 @@ object ChatReducer {
 				),
 			)
 
+			is ThreadItem.Orchestration -> copy(
+				orchestrationState = OrchestrationUiState(current = item),
+				runtimeEvents = runtimeEvents + RuntimeEvent(
+					id = item.id,
+					title = "Flow:${item.topology}",
+					detail = listOfNotNull(
+						item.title,
+						"状态 ${item.status}",
+						"节点 ${item.nodes.size}",
+						if (item.approved == true && item.frozen == true) "已审批并冻结" else null,
+						item.summary,
+					).joinToString("\n"),
+				),
+			)
+
 			is ThreadItem.Unknown -> copy(
 				runtimeEvents = runtimeEvents + RuntimeEvent(
 					id = item.id,
@@ -226,6 +249,16 @@ object ChatReducer {
 					toolCallCount?.let { "只读工具 $it 次" },
 					tokenEstimate?.let { "token 估算 $it" },
 				).joinToString("\n").ifBlank { "正在委派子 Agent" },
+			)
+			is ThreadItem.Orchestration -> ChatMessage.Tool(
+				id = id,
+				title = "流程编排 · $topology",
+				status = status,
+				detail = listOfNotNull(
+					title,
+					summary,
+					"节点 ${nodes.size}",
+				).joinToString("\n").ifBlank { "正在运行流程编排" },
 			)
 			is ThreadItem.ContextCompaction -> ChatMessage.Tool(
 				id = id,

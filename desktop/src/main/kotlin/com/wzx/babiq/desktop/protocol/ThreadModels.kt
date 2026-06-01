@@ -196,6 +196,65 @@ sealed interface ThreadItem {
 
 	@Serializable
 	/**
+	 * 多 Agent 流程编排协议 item。
+	 *
+	 * P6-2 后端用它把 Sequential/Parallel/Routing 流程的整体状态和节点状态推给桌面端。
+	 * 它是运行详情状态，不进入主聊天正文；主聊天只保留父 Agent 最终结论，避免流程节点中间输出污染对话历史。
+	 *
+	 * @property id 后端生成并在同一流程运行中复用的 item id。
+	 * @property type 协议类型固定为 orchestration。
+	 * @property orchestrationId 流程运行 id，用于关联后端 `bq_orchestrations` 审计记录。
+	 * @property title 用户可读流程标题，通常来自整体任务。
+	 * @property topology 流程拓扑，值为 sequential、parallel 或 routing。
+	 * @property status 流程状态，常见值为 running、completed、failed。
+	 * @property summary 流程整体短摘要或失败原因。
+	 * @property approved true 表示流程已通过运行前整体审批。
+	 * @property frozen true 表示拓扑、节点、工具和写入范围已冻结，后续执行不能改规格。
+	 * @property nodes 当前节点状态列表，按后端稳定顺序展示。
+	 */
+	data class Orchestration(
+		override val id: String,
+		override val type: String = "orchestration",
+		val orchestrationId: String,
+		val title: String,
+		val topology: String,
+		val status: String,
+		val summary: String? = null,
+		val approved: Boolean? = null,
+		val frozen: Boolean? = null,
+		val nodes: List<OrchestrationNode> = emptyList(),
+	) : ThreadItem
+
+	@Serializable
+	/**
+	 * 流程编排中的单个节点状态。
+	 *
+	 * @property nodeId 节点协议 id，用于稳定渲染列表。
+	 * @property name 节点 ASCII 技术名，和后端 Agent name 对应。
+	 * @property displayName 节点展示名，优先使用中文。
+	 * @property status 节点状态：pending、running、completed、failed。
+	 * @property mode 节点安全模式：READ_ONLY_TOOL 或 WORKSPACE_TOOL。
+	 * @property task 节点任务描述。
+	 * @property model 节点模型名；为空表示继承父 Agent。
+	 * @property toolCallCount 节点聚合工具调用次数。
+	 * @property tokenEstimate 节点 token 粗估。
+	 * @property summary 节点短摘要。
+	 */
+	data class OrchestrationNode(
+		val nodeId: String,
+		val name: String,
+		val displayName: String? = null,
+		val status: String,
+		val mode: String,
+		val task: String? = null,
+		val model: String? = null,
+		val toolCallCount: Int? = null,
+		val tokenEstimate: Int? = null,
+		val summary: String? = null,
+	)
+
+	@Serializable
+	/**
 	 * 计划可视化协议 item。
 	 *
 	 * 后端 `update_plan` 工具会用完整覆盖语义反复推送同一个 item：第一次是 `item/added`，
@@ -266,6 +325,7 @@ object ThreadItemSerializer : KSerializer<ThreadItem> {
 			"turnSummary" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.TurnSummary.serializer(), raw)
 			"contextCompaction" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.ContextCompaction.serializer(), raw)
 			"agentDelegation" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.AgentDelegation.serializer(), raw)
+			"orchestration" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.Orchestration.serializer(), raw)
 			"plan" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.Plan.serializer(), raw)
 			// 未知类型不丢弃，交给运行详情面板展示 raw JSON，方便后续协议扩展排查。
 			else -> ThreadItem.Unknown(

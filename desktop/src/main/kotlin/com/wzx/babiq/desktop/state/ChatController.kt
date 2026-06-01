@@ -116,6 +116,7 @@ class ChatController(
 				messages = it.messages + localMessage,
 				planState = PlanUiState(),
 				subAgentState = SubAgentUiState(),
+				orchestrationState = OrchestrationUiState(),
 			)
 		}
 
@@ -354,6 +355,7 @@ class ChatController(
 				memoryState = it.memoryState.copy(notice = null, error = null),
 				planState = PlanUiState(),
 				subAgentState = SubAgentUiState(),
+				orchestrationState = OrchestrationUiState(),
 				threadHistory = it.threadHistory.copy(selectedThreadId = null),
 				bannerMessage = null,
 				lastError = null,
@@ -371,6 +373,7 @@ class ChatController(
 			val messages = ChatReducer.messagesFromItems(loaded.items)
 			val planState = ChatReducer.planStateFromItems(loaded.items)
 			val subAgentState = ChatReducer.subAgentStateFromItems(loaded.items)
+			val orchestrationState = ChatReducer.orchestrationStateFromItems(loaded.items)
 			_state.update {
 				it.copy(
 					workspace = it.workspace.copy(
@@ -389,6 +392,7 @@ class ChatController(
 					latestSummary = loaded.latestSummary ?: ChatReducer.latestSummaryFromItems(loaded.items),
 					planState = planState,
 					subAgentState = subAgentState,
+					orchestrationState = orchestrationState,
 					pendingApproval = null,
 					runRecordState = if (it.runtimeExpanded) {
 						it.runRecordState.copy(loading = true, error = null)
@@ -439,6 +443,7 @@ class ChatController(
 					contextWindowState = if (wasCurrentThread) ContextWindowUiState() else it.contextWindowState,
 					planState = if (wasCurrentThread) PlanUiState() else it.planState,
 					subAgentState = if (wasCurrentThread) SubAgentUiState() else it.subAgentState,
+					orchestrationState = if (wasCurrentThread) OrchestrationUiState() else it.orchestrationState,
 					threadHistory = it.threadHistory.copy(
 						items = it.threadHistory.items.filterNot { item -> item.threadId == threadId },
 						selectedThreadId = it.threadHistory.selectedThreadId?.takeUnless { selected -> selected == threadId },
@@ -504,6 +509,7 @@ class ChatController(
 				contextWindowState = ContextWindowUiState(),
 				planState = PlanUiState(),
 				subAgentState = SubAgentUiState(),
+				orchestrationState = OrchestrationUiState(),
 				lastError = null,
 				bannerMessage = "已切换工作目录: $selected",
 			)
@@ -776,7 +782,8 @@ class ChatController(
 		val current = state.value
 		val panelVisible = current.runtimeExpanded ||
 			(current.planState.visible && !current.planState.collapsed) ||
-			current.subAgentState.visible
+			current.subAgentState.visible ||
+			current.orchestrationState.visible
 		val shouldExpand = !panelVisible
 		_state.update {
 			it.copy(

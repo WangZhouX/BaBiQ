@@ -245,6 +245,27 @@ data class SubAgentUiState(
 		copy(dismissedDelegationId = current?.delegationId)
 }
 
+/**
+ * 右侧运行面板中的流程编排状态。
+ *
+ * P6-2 的 orchestration item 表示一个由官方 Spring AI Alibaba FlowAgent 执行的多节点流程。
+ * 它不属于聊天正文，而是和 Plan/SubAgent 一样作为运行辅助层展示：用户可以看到拓扑、审批冻结状态、
+ * 每个节点的状态和工具次数，但不会看到子节点内部中间消息。
+ *
+ * @property current 当前或最近一次流程编排 item；为空表示本轮没有触发流程编排。
+ */
+data class OrchestrationUiState(
+	val current: ThreadItem.Orchestration? = null,
+) {
+	/** 是否有可展示的流程编排轨迹。 */
+	val visible: Boolean
+		get() = current != null
+
+	/** 终态用于 UI 样式区分；终态仍保留在右侧面板，方便用户复盘节点结果。 */
+	val terminal: Boolean
+		get() = current?.status?.lowercase() in setOf("completed", "failed", "canceled")
+}
+
 data class RunRecordState(
 	val loading: Boolean = false,
 	val error: String? = null,

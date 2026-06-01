@@ -111,10 +111,11 @@ fun AppShell(
 				)
 			}
 		}
-		// RuntimeDetailsPanel 是辅助面板；计划或子 Agent 卡片存在时自动常驻，用户可分别收起或移除。
+		// RuntimeDetailsPanel 是辅助面板；计划、子 Agent 或流程编排存在时自动常驻，避免执行层级丢在聊天正文里。
 		if (state.runtimeExpanded ||
 			(state.planState.visible && !state.planState.collapsed) ||
-			state.subAgentState.visible
+			state.subAgentState.visible ||
+			state.orchestrationState.visible
 		) {
 			RuntimeDetailsPanel(
 				state = state,

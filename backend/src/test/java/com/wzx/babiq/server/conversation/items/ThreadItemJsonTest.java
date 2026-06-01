@@ -129,4 +129,40 @@ class ThreadItemJsonTest {
         assertThat(delegation.parentAgent()).isEqualTo("babiq_agent");
         assertThat(delegation.summary()).contains("README");
     }
+
+    @Test
+    void orchestration_item_should_serialize_topology_and_node_status() throws Exception {
+        ThreadItem item = new OrchestrationItem(
+                "it_orch_1",
+                "orchestration",
+                "orch_1",
+                "整理项目",
+                "parallel",
+                "running",
+                "两个节点并行执行",
+                true,
+                true,
+                java.util.List.of(
+                        new OrchestrationItem.NodeStatus(
+                                "node_scan", "scan", "读取节点", "completed", "READ_ONLY_TOOL",
+                                "查看目录", "deepseek-v4-pro", 2, 128, "已读取目录"),
+                        new OrchestrationItem.NodeStatus(
+                                "node_write", "write", "写入节点", "running", "WORKSPACE_TOOL",
+                                "写入总结", "deepseek-v4-pro", 1, 64, "正在写入")));
+
+        String json = objectMapper.writeValueAsString(item);
+        ThreadItem restored = objectMapper.readValue(json, ThreadItem.class);
+
+        assertThat(json)
+                .contains("\"type\":\"orchestration\"")
+                .contains("\"orchestrationId\":\"orch_1\"")
+                .contains("\"topology\":\"parallel\"")
+                .contains("\"frozen\":true")
+                .contains("\"nodeId\":\"node_scan\"")
+                .contains("\"mode\":\"WORKSPACE_TOOL\"");
+        assertThat(restored).isInstanceOf(OrchestrationItem.class);
+        OrchestrationItem orchestration = (OrchestrationItem) restored;
+        assertThat(orchestration.nodes()).hasSize(2);
+        assertThat(orchestration.nodes().get(1).summary()).contains("写入");
+    }
 }

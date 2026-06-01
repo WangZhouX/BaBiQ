@@ -6,9 +6,9 @@
 
 ## 当前状态
 
-- **plan 已定稿（草案待用户确认）**（2026-05-31，已并入评审更正：节点**可读可写**、并行真实工作、approve-once 运行前整体批准的 4 条安全语义）。
-- **实现尚未开始**：无 P6-2 生产代码。
-- **真实生产实现**（TDD），对齐 Figma 原型 `P6 02`（`206:2`）/ `P6 06`（`230:2`）/ `P6 07`（`237:2`）/ `P6 08`（`242:2`）。
+- **P6-2 已完成代码实现与自动化验收（2026-06-01）**：后端接入官方 `SequentialAgent` / `ParallelAgent` / `LlmRoutingAgent` 薄封装，桌面端接入 `orchestration` 协议和右侧编排面板。
+- **计划边界保持不变**：节点可读可写、并行真实工作、写操作采用 approve-once（运行前整体批准 + 沙箱硬边界）；运行中逐工具审批 + 并发中断仍留给 P6-2b。
+- **真实模型人工烟测尚未执行**：当前闭环为 Context7 + 本地 jar 核对 + 自动化测试；如要验收真实模型效果，需要再用 DeepSeek/DashScope 进行一轮实际编排任务烟测。
 
 ## 一句话目标
 
@@ -100,6 +100,19 @@ cd ..\desktop
 - `clean verify` 全绿（含 IT）；`SchemaCommentsCoverageTest` 过；`AgentLoopLineCountTest` 不退化。
 - 真实模型人工烟测：编排「实现某模块 + 跑测试」→ explorer 探查→(worker 实现∥tester 跑测试)→汇总；**含写 flow 运行前整体批准一次**、运行中并行执行（含写）、运行记录按节点归属、无并发串味、写受沙箱边界；编排详情分屏 + 节点配置/增删生效；**对话栏全程可用**；视觉对齐原型。
 
+## 2026-06-01 实现完成证据
+
+- **官方能力核对**：已使用 Context7 核对 Spring AI Alibaba Agent Framework 的 `SequentialAgent`、`ParallelAgent`、`LlmRoutingAgent`、`AgentTool` / `ReactAgent` 边界，并用本地 `spring-ai-alibaba-agent-framework-1.1.2.3.jar` 通过 `jar tf` / `javap` 复核 builder 签名，避免自研编排引擎。
+- **后端实现**：新增 `BabiqFlowSpec`、`BabiqFlowNode`、`FlowApprovalService`、`FlowOrchestrationService`、`DefaultFlowNodeAgentFactory`、`FlowOrchestrationTool`；扩展 `SubAgentRuntimeFactory` 支持 flow 节点按沙箱模式构建子 Agent。
+- **协议与持久化**：新增 `OrchestrationItem`，`ThreadItem` 支持 `orchestration`；新增 V14 `bq_orchestrations` / `bq_orchestration_nodes` 及 `SQLiteOrchestrationRepository`，并同步中文 schema 注释覆盖。
+- **桌面端实现**：新增 `ThreadItem.Orchestration` 协议模型、`OrchestrationUiState`、`OrchestrationSection`，右侧运行详情可展示拓扑、节点状态、工具数和短摘要；编排 item 不进入聊天消息流，保持对话主体干净。
+- **系统 prompt / 能力搜索**：`ReActStrategy` 与 `SystemPromptSecurityRule` 已补充 `orchestrate_flow` 的使用边界；`CapabilityAliasDictionary` 已补充编排/流程/flow 中文别名。
+- **验证命令**：
+  - `cd E:\BaBiQ\backend; .\mvnw.cmd "-Dtest=BabiqFlowSpecTest,FlowOrchestrationServiceTest,FlowNodeRuntimeTest,FlowConcurrencyAttributionTest,FlowApprovalServiceTest,ThreadItemJsonTest,OrchestrationRepositoryTest,SubAgentModelResolutionTest,SchemaCommentsCoverageTest,SystemPromptSecurityRuleTest,CapabilityAliasDictionaryTest,AgentLoopLineCountTest" test`：`BUILD SUCCESS`，`Tests run: 32, Failures: 0, Errors: 0, Skipped: 0`。
+  - `cd E:\BaBiQ\backend; .\mvnw.cmd clean verify`：`BUILD SUCCESS`，Failsafe 汇总 `Tests run: 23, Failures: 0, Errors: 0, Skipped: 0`。
+  - `cd E:\BaBiQ\desktop; .\gradlew.bat test --tests "*ThreadItemJsonTest" --tests "*ChatReducerTest" --tests "*OrchestrationSectionTest"`：`BUILD SUCCESSFUL`。
+  - `cd E:\BaBiQ\desktop; .\gradlew.bat test`：`BUILD SUCCESSFUL`。
+
 ## 完成报告必须包含
 
 - Task 1–10 逐条 ✅/❌ + 跑过命令与**实际输出**（非预期）。
@@ -116,4 +129,4 @@ cd ..\desktop
 
 ## 下一步
 
-- plan + 本 handoff 由用户确认 → 按 Task 1→10 TDD 实现（**前置 P6-1 完成**）→ 自动化 + 真实烟测闭环 → 补 **P6-2b（运行中逐工具审批 + 并发中断，asNode）** 或进 **P6-3 实时 team 协作**。
+- 建议先做 P6-2 真实模型人工烟测；通过后进入 **P6-2b（运行中逐工具审批 + 并发中断，asNode）** 或 **P6-3 实时 team 协作**。

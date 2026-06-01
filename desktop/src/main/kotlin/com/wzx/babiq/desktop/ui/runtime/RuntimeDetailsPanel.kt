@@ -60,6 +60,7 @@ fun RuntimeDetailsPanel(
 			TextButton(onClick = onClose) { Text("收起") }
 		}
 		PlanSection(state.planState)
+		OrchestrationSection(state.orchestrationState)
 		SubAgentSection(state.subAgentState, onDismiss = onDismissSubAgent)
 		DetailCard(
 			title = "执行环境",

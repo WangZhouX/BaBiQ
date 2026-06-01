@@ -64,4 +64,12 @@ class CapabilityAliasDictionaryTest {
                 .contains("探索")
                 .contains("只读");
     }
+
+    @Test
+    @DisplayName("orchestrate_flow 会追加编排和流程相关中文别名")
+    void enrich_should_add_aliases_for_flow_orchestration() {
+        String enriched = CapabilityAliasDictionary.enrich("orchestrate_flow", "Run a multi-agent flow");
+
+        assertThat(enriched).contains("流程", "编排", "多节点", "并行", "顺序");
+    }
 }

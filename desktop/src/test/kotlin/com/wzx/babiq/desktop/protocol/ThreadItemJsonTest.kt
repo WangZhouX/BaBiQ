@@ -151,4 +151,61 @@ class ThreadItemJsonTest {
 		assertEquals("READ_ONLY_TOOL", item.mode)
 		assertEquals(2, item.toolCallCount)
 	}
+
+	@Test
+	fun `可以解析 orchestration item 的拓扑和节点状态`() {
+		val json = """
+			{
+			  "jsonrpc": "2.0",
+			  "method": "item/added",
+			  "params": {
+			    "threadId": "thread-1",
+			    "turnId": "turn-1",
+			    "item": {
+			      "id": "it_orch_1",
+			      "type": "orchestration",
+			      "orchestrationId": "orch_1",
+			      "title": "并行检查登录页",
+			      "topology": "parallel",
+			      "status": "running",
+			      "summary": "流程已审批并开始执行",
+			      "approved": true,
+			      "frozen": true,
+			      "nodes": [
+			        {
+			          "nodeId": "node_scan",
+			          "name": "scan",
+			          "displayName": "扫描",
+			          "status": "completed",
+			          "mode": "READ_ONLY_TOOL",
+			          "task": "读取文件",
+			          "toolCallCount": 2,
+			          "tokenEstimate": 300,
+			          "summary": "已读取 index.html"
+			        },
+			        {
+			          "nodeId": "node_write",
+			          "name": "write",
+			          "displayName": "修改",
+			          "status": "running",
+			          "mode": "WORKSPACE_TOOL",
+			          "task": "写入文件",
+			          "model": "deepseek-v4-pro"
+			        }
+			      ]
+			    }
+			  }
+			}
+		""".trimIndent()
+
+		val event = protocolJson.decodeFromString(ServerEvent.serializer(), json)
+		val added = assertIs<ServerEvent.ItemAdded>(event)
+		val item = assertIs<ThreadItem.Orchestration>(added.item)
+
+		assertEquals("orch_1", item.orchestrationId)
+		assertEquals("parallel", item.topology)
+		assertEquals(true, item.approved)
+		assertEquals(2, item.nodes.size)
+		assertEquals("WORKSPACE_TOOL", item.nodes.last().mode)
+	}
 }

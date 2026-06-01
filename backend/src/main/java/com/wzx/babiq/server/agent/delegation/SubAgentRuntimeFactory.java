@@ -94,7 +94,7 @@ public class SubAgentRuntimeFactory {
                            ToolContext parentToolContext,
                            SubAgentDelegationContext delegationContext) {
         ToolContext childToolContext = withDelegationContext(parentToolContext, delegationContext);
-        ToolCallback callback = AgentTool.getFunctionToolCallback(buildChildAgent(spec, childToolContext));
+        ToolCallback callback = AgentTool.getFunctionToolCallback(buildChildAgent(spec, childToolContext, null));
         return callback.call(agentToolInput(input), childToolContext);
     }
 
@@ -106,17 +106,31 @@ public class SubAgentRuntimeFactory {
      */
     public static ToolContext withDelegationContext(ToolContext parentToolContext,
                                                     SubAgentDelegationContext delegationContext) {
+        return withDelegationContext(parentToolContext, delegationContext, SandboxMode.READ_ONLY);
+    }
+
+    /**
+     * 为 P6-2 流程节点注入委派上下文，并按节点审批后的沙箱模式保留权限快照。
+     *
+     * <p>P6-1 的 explorer 仍调用无 mode 重载并强制 READ_ONLY；流程节点只有在
+     * run-before approve-once 完成后才会传入 WORKSPACE_WRITE 或 DANGER_FULL_ACCESS。
+     * 这里仍只是写入上下文，真正边界由沙箱拦截器逐次判断。</p>
+     */
+    public static ToolContext withDelegationContext(ToolContext parentToolContext,
+                                                    SubAgentDelegationContext delegationContext,
+                                                    SandboxMode sandboxMode) {
+        SandboxMode effectiveMode = sandboxMode == null ? SandboxMode.READ_ONLY : sandboxMode;
         Map<String, Object> context = parentToolContext == null
                 ? new LinkedHashMap<>()
                 : new LinkedHashMap<>(parentToolContext.getContext());
         context.put(SubAgentDelegationContext.METADATA_KEY, delegationContext);
-        context.put(BaBiQSandboxInterceptor.CONTEXT_SANDBOX_MODE, SandboxMode.READ_ONLY.name());
+        context.put(BaBiQSandboxInterceptor.CONTEXT_SANDBOX_MODE, effectiveMode.name());
 
         Object candidate = context.get(AGENT_CONFIG_KEY);
         if (candidate instanceof RunnableConfig parentConfig) {
             RunnableConfig.Builder builder = RunnableConfig.builder(parentConfig)
                     .addMetadata(SubAgentDelegationContext.METADATA_KEY, delegationContext)
-                    .addMetadata(BaBiQSandboxInterceptor.CONTEXT_SANDBOX_MODE, SandboxMode.READ_ONLY.name());
+                    .addMetadata(BaBiQSandboxInterceptor.CONTEXT_SANDBOX_MODE, effectiveMode.name());
             copyContextValueToMetadata(context, builder, BaBiQSandboxInterceptor.CONTEXT_CWD);
             copyContextValueToMetadata(context, builder, BaBiQSandboxInterceptor.CONTEXT_WRITABLE_ROOTS);
             copyContextValueToMetadata(context, builder, BaBiQSandboxInterceptor.CONTEXT_ITEM_EMITTER);
@@ -125,7 +139,18 @@ public class SubAgentRuntimeFactory {
         return new ToolContext(context);
     }
 
-    private ReactAgent buildChildAgent(BabiqAgentSpec spec, ToolContext childToolContext) {
+    /**
+     * 为 P6-2 流程节点构建可被官方 FlowAgent 编排的 ReactAgent。
+     *
+     * @param spec 节点对应的子 Agent 规格
+     * @param childToolContext 已注入 delegation、cwd、沙箱和观测上下文的 ToolContext
+     * @param outputKey 节点输出写入 SAA state 的 key；为空时保持 P6-1 兼容行为
+     */
+    public ReactAgent buildChildAgentForFlow(BabiqAgentSpec spec, ToolContext childToolContext, String outputKey) {
+        return buildChildAgent(spec, childToolContext, outputKey);
+    }
+
+    private ReactAgent buildChildAgent(BabiqAgentSpec spec, ToolContext childToolContext, String outputKey) {
         ChatModel chatModel = chatClientFactory.resolveChatModel(spec.modelPolicy().providerId());
         ToolCallback[] childCallbacks = toolRegistryProvider.getObject().callbacksForNames(spec.toolNames());
         ModelCallLimitHook limitHook = ModelCallLimitHook.builder()
@@ -136,7 +161,7 @@ public class SubAgentRuntimeFactory {
                 .toolTokenLimitBeforeEvict(properties.tools().output().maxTokens())
                 .build();
 
-        return ReactAgent.builder()
+        var builder = ReactAgent.builder()
                 .name(spec.name())
                 .description(spec.description())
                 .model(chatModel)
@@ -146,8 +171,11 @@ public class SubAgentRuntimeFactory {
                 .streamingInterceptors(streamingTokenUsageInterceptor)
                 .interceptors(sandboxInterceptor, toolObservationInterceptor, spotlightingInterceptor, evictionInterceptor)
                 .hooks(limitHook, tokenUsageHook)
-                .saver(new MemorySaver())
-                .build();
+                .saver(new MemorySaver());
+        if (outputKey != null && !outputKey.isBlank()) {
+            builder.outputKey(outputKey);
+        }
+        return builder.build();
     }
 
     private static void copyContextValueToMetadata(Map<String, Object> context,

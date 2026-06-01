@@ -3,7 +3,7 @@
 > 状态：**草案，待用户确认**（2026-05-31 创建；同日完成原型评审与文档梳理）。
 > 本文件是 P6 大阶段的总纲，对标 `2026-05-21-p1-master.md` / `p2-master.md` / `p3-master.md`。
 > 确认后再按 §5.6 子阶段拆出各自的 `plan.md` + `codex-handoff.md`，逐子阶段实现并验收。
-> **进度**：调研结论已核对、UI 模型已评审定稿、Figma 原型已出 8 帧（见 §5.5）；P6-0 spike 已完成，P6-1 只读 `explorer` 子 Agent 委派已完成自动化验收，仍待真实模型人工烟测。
+> **进度**：调研结论已核对、UI 模型已评审定稿、Figma 原型已出 8 帧（见 §5.5）；P6-0 spike 已完成，P6-1 只读 `explorer` 子 Agent 委派已完成自动化验收；P6-2 flow 编排已完成代码实现和自动化验收，仍待真实模型人工烟测。
 
 ---
 
@@ -165,6 +165,7 @@
 - 薄封装 `flow.agent.{Sequential,Parallel,LlmRouting,Loop}Agent`，支持多子 Agent 顺序 / 并行 / 路由 / 循环。
 - 桌面端（对应 P6 02 / 06 / 07 / 08）：对话 + 右侧「编排」卡 → 可展开「编排详情」分屏（拓扑 + 各节点状态）；点节点配「任务 / 模型」；「+ 添加 / ✕ 删除」节点（限顺序 / 并行结构，见 §5.4 分期边界）。**对话始终保留**。
 - 明确并行下的运行记录归属、token 归集、审批并发语义。
+- **2026-06-01 状态**：已落地 `orchestrate_flow` 工具、`OrchestrationItem` 协议、V14 编排持久化、桌面右侧编排卡，并通过后端专项 / 后端 `clean verify` / 桌面专项 / 桌面全量测试；真实模型烟测尚未执行。
 
 #### P6-3：团队协作（Supervisor 中枢协调，对标 Claude Code swarm 的 hub-and-spoke）
 - Leader（主 Agent）迭代协调少量常驻 teammate（explorer/worker），消息经 Leader 中转（hub-and-spoke）；teammate 点对点互发（同时在线、不经 Leader）留 **P6-3b**。
@@ -229,6 +230,6 @@
 
 ## 10. 下一步
 
-1. **本 master + 8 帧原型由用户确认**（路线、三层累进、UI 模型、边界、风险）。
-2. 确认后写 **P6-0 spike plan**（四机制对比 + HITL 嵌套中断先验 + 节点/子 Agent 配置承载），spike 结论锁定基座后再写 P6-1 详细 plan。
-3. 每子阶段：详细 plan → codex-handoff → TDD 实现 → 自动化 + 真实烟测 → 文档同步（CLAUDE.md / AGENTS.md / p6-task-index）。
+1. 对 P6-2 做真实模型人工烟测：验证 `orchestrate_flow` 在顺序 / 并行 / 路由场景下的可用性、右侧编排卡展示和运行记录归属。
+2. 烟测通过后，优先决策进入 **P6-2b**（运行中逐节点工具审批 / 并发中断恢复补强）还是 **P6-3**（团队协作 supervisor）。
+3. 每子阶段继续遵循：详细 plan → codex-handoff → TDD 实现 → 自动化 + 真实烟测 → 文档同步（CLAUDE.md / AGENTS.md / p6-task-index）。
