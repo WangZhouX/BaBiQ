@@ -248,15 +248,21 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
   - 已验证：`cd desktop; .\gradlew.bat test --tests "*ChatReducerTest" --tests "*ReasoningBlockTest" --tests "*ThreadHistoryModelsTest"`。
   - 已验证：`cd desktop; .\gradlew.bat test`。
   - 真实 DeepSeek V4 thinking Provider/API Key 人工烟测尚未执行，需要在可用模型环境复验。
-- P6-1 只读子 Agent 委派已完成代码实现与自动化验收：
+- P6-1 只读子 Agent 委派已全量闭环（代码 + 自动化验收 + 真实模型人工烟测，2026-06-01）：
   - 已按 Context7 和本地 jar 核对 Spring AI `ToolContext` 与 Spring AI Alibaba `AgentTool.getFunctionToolCallback(ReactAgent)`；实现选择薄封装官方 `AgentTool`，不自研子 Agent runner。
   - 后端新增 `BabiqAgentSpec`、`SubAgentRuntimeFactory`、`ExplorerSubAgentTool` 和 `agentDelegation` 协议 item；`explorer` 工具集固定为 `read_file / list_dir / grep`，并强制只读沙箱。
   - `bq_tool_calls` 新增 `agent_name`、`parent_agent_name`、`delegation_id`，运行记录可归属主 Agent / 子 Agent。
   - 桌面端新增 `ThreadItem.AgentDelegation`、`SubAgentUiState` 和右侧 `SubAgentSection`，计划与子 Agent 同时出现时按「计划 → 子 Agent → 环境 → 来源」展示。
   - 已验证：`cd backend; .\mvnw.cmd "-Dtest=BabiqAgentSpecTest,SubAgentRuntimeFactoryTest,ToolObservationInterceptorTest,ThreadItemJsonTest,RunRecordServiceTest,SystemPromptSecurityRuleTest,CapabilityAliasDictionaryTest,SchemaCommentsCoverageTest,AgentLoopLineCountTest" test`。
   - 已验证：`cd desktop; .\gradlew.bat test --tests "*ThreadItemJsonTest" --tests "*ChatReducerTest" --tests "*SubAgentSectionTest"`。
-  - 真实模型人工烟测尚未执行，需要在可用 Provider/API Key 环境复验主 Agent 是否会主动委派 explorer。
-- **下一步**：先做 P6-1 真实模型人工烟测；通过后评估 P6-1b 写类委派（`asNode` + 审批上浮）或进入 P6-2 flow 编排。
+  - 行为验收已补齐并通过：`SubAgentDelegationTest`（委派回传 + 子事件折叠不外泄）、`SubAgentModelResolutionTest`（模型 inherit/override）、`SubAgentDelegationIT`（端到端只读 + 沙箱拦 write_file + 运行记录归属）；`cd backend; .\mvnw.cmd clean verify` 全绿（含 23 IT）。
+  - 真实模型人工烟测已通过（2026-06-01）：主 Agent 会主动委派 explorer 子 Agent 并执行。
+- P6 规划链已齐备（master + 4 子阶段，均经 Context7 + 本地 jar 核对）：
+  - `docs/superpowers/plans/p6-master.md`：三层累进路线（委派 → flow 编排 → 实时 team）+ 8 帧 Figma 原型（页 `35:2`）+ UI 模型「对话始终是主体 + 右侧面板（可展开详情分屏），不另开全屏、不隐藏对话」。全程薄封装 SAA 官方多 Agent 构件、不自研子 Agent 引擎。
+  - P6-0 机制 spike 已完成（`p6-0-mechanism-spike/`）：四机制对比 + HITL 嵌套中断先验，结论=只读委派用 `AgentTool`、写类/审批用 `asNode + StateGraph + 共享 MemorySaver + addHumanFeedback`。
+  - P6-2 flow 编排计划就绪（`p6-2-flow-orchestration/`）：薄封装 `SequentialAgent / ParallelAgent / LlmRoutingAgent`，节点可读可写并行真实工作；写用 approve-once（运行前整体批准 + 沙箱，4 条安全语义：沙箱硬边界 / 弹窗列清范围 / 批准后 flow 冻结 / 危险不可逆操作由沙箱禁止）；运行中逐工具审批 + 并发中断留 P6-2b。
+  - P6-3 团队协作计划就绪（`p6-3-team-collaboration/`）：用 graph-core supervisor 模式（`StateGraph + 自定义 SupervisorNode + ReactAgent.asNode` 自搭）做 Leader 中枢协调；**注意 `SupervisorAgent` 类不在锁定的 1.1.2.3 jar（文档 v1.1.2.2 有，以本地 jar 为准）**；teammate 点对点真并发 swarm 留 P6-3b。
+- **下一步**：实现 **P6-2 flow 编排**（plan + codex-handoff 已就绪，前置 P6-1 已完成）；可选先做 P6-1b 写类委派（`asNode` + 审批上浮）。P6-3 实现前须先按 plan 用 graph-core 原语搭出 supervisor 图。
 
 如果仓库状态已发生变化，不要盲信本检查点；必须重新核对代码、文档、测试和 `git status`。
 
@@ -295,7 +301,7 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
 
 **下一阶段边界：**
 
-- P2-1、P2-2、P2-3、P2-4、P2-5、P2-6 已完成；用户已暂时验收 P2，P3-1 最小上下文底座、P3-2 当前窗口管理运行时、P3-3 短期记忆/上下文压缩、P3-3a 鲁棒性补强、P3-4 长期记忆异步流水线、P3-5 按需能力装配、P3-5a Lucene 能力搜索替换、P4 Plan/Todo 可视化、P5 ReasoningItem 接通和 P6-1 只读子 Agent 委派已完成自动化验收。
+- P2-1、P2-2、P2-3、P2-4、P2-5、P2-6 已完成；用户已暂时验收 P2，P3-1 最小上下文底座、P3-2 当前窗口管理运行时、P3-3 短期记忆/上下文压缩、P3-3a 鲁棒性补强、P3-4 长期记忆异步流水线、P3-5 按需能力装配、P3-5a Lucene 能力搜索替换、P4 Plan/Todo 可视化、P5 ReasoningItem 接通、P6-1 只读子 Agent 委派已全量闭环（代码 + 自动化 + 真实烟测）；P6-0 spike 完成、P6-2/P6-3 计划就绪。
 - P2-6 已完成 MCP Client 最小接入；后续如要扩展远程 MCP、OAuth、插件市场、MCP server 开发或复杂沙箱编排，必须进入新阶段计划，不得混入 P2 收口。
 - P3 当前限定为 Codex 级当前窗口管理、短期记忆/上下文压缩、长期记忆平台；Multi-Agent、真 OS 沙箱、A2A、多模态仍属于后续阶段，不能混入 P3。
 - P3-1 已完成最小底座；P3-2 已完成真实 Agent 前置接入、快照持久化和 UI 指示；P3-3 已完成短期压缩、summary 替换 active window 和 `ContextCompactionItem` 事件；P3-3a 已补齐压缩审计、事务安装、乐观锁和恢复服务；P3-4 已完成长期记忆异步提取、secret redaction、Phase 2 归并和 summary read path 注入；P3-5 已完成按需工具/Skill/MCP 能力装配、`tool_search`、长期记忆检索增强和桌面控制；P3-5a 已把能力搜索底层替换为 Spring AI Community Lucene/BM25 并移除自实现 fallback；P4 已完成计划/Todo 可视化的协议、工具、prompt 和桌面运行面板接入；P5 已接通真实 reasoning_content 到 ReasoningItem 和桌面思考过程折叠块；P6-1 已接通只读 `explorer` 子 Agent 委派、运行记录归属和桌面子 Agent 面板。后续专项增强必须先写详细 plan 并由用户确认。
