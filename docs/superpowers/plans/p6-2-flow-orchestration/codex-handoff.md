@@ -31,12 +31,13 @@
 - **`LoopAgent`（循环）**、自由连边图编辑器、用户自定义 agent 目录、实时 team（P6-3）、`a2a.*`、升级 SAA/Spring AI。
 - 不改 `AgentLoop.invoke` 行数约束（`AgentLoopLineCountTest` 不退化）。
 
-## 已确认的 flow.agent API（Context7 + jar，直接用）
+## flow.agent API（Context7 文档来源 + jar 已核对**类存在**；方法签名实现前必须 `jar tf` / `javap` 复核 1.1.2.3）
 
 - `SequentialAgent.builder().name().description().subAgents(List.of(a,b)).build()`；每子 Agent `.outputKey("k")`，后节点读 `{k}`；`.invoke(input)→Optional<OverAllState>`。
 - `ParallelAgent.builder().name().description().mergeOutputKey("merged").subAgents(List).mergeStrategy(new ParallelAgent.DefaultMergeStrategy()).build()`；并发 + 合并。
 - `LlmRoutingAgent.builder().name().description().model(chatModel).subAgents(List).build()`；LLM 路由选一个子 Agent。
 - 可嵌套：`SequentialAgent.subAgents(List.of(parallelAgent, analysisAgent, routingAgent))`。
+- **⚠️ jar 核对硬规则（SupervisorAgent 教训，必做）**：以上 builder 签名（`subAgents` / `outputKey` / `mergeOutputKey` / `mergeStrategy` / `ParallelAgent.DefaultMergeStrategy` / `.invoke`）来自 Context7 **v1.1.2.2 文档**，本仓只 jar 核实了**类存在**、未核实方法签名。**实现前必须 `javap` 锁定版 `1.1.2.3` jar 逐个确认方法/签名真实存在**——`SupervisorAgent` 已证「文档有、1.1.2.3 jar 无」。签名不符时以 jar 为准、相应调整实现，不得照搬文档。
 - **边界**：flow agent `.invoke()` run-to-completion，**不通过 `invokeAndGetOutput` surface `InterruptionMetadata`** ⇒ 写节点用 approve-once（运行前批），运行中不逐工具弹；逐工具中断 = P6-2b。
 
 ## 已定决策（plan §4，D1–D8）
