@@ -57,7 +57,7 @@
 | flow 编排 | `flow.agent.{FlowAgent, SequentialAgent, ParallelAgent, LlmRoutingAgent, LoopAgent}` + `flow.builder.*` + `flow.strategy.*` + `flow.node.{RoutingNode, ParallelResultAggregator, ...}` | builder/strategy 齐全；Loop 含 Array/Condition/Count 策略；README 称 `RoutingAgent`，jar 路由实现类为 `LlmRoutingAgent` |
 | 远程 Agent（**本阶段不做**）| `a2a.{A2aRemoteAgent, AgentCardProvider, RemoteAgentCardProvider, AgentCardWrapper}` | A2A 跨进程，CLAUDE.md 已划后续 |
 
-**结论**：委派 / 编排 / 拦截器子 Agent / agent-as-node 在锁定版**官方已内置且 API 可用**。实时 swarm/team（P6-3）官方无直接对应，需自研薄编排层，但 worker 仍尽量复用官方 `AgentTool` / 子 Agent 构件。
+**结论**：委派 / 编排 / 拦截器子 Agent / agent-as-node 在锁定版**官方已内置且 API 可用**。P6-3 团队中枢协调（hub-and-spoke）用 **graph-core supervisor 模式**（`StateGraph` + `SupervisorNode` + `asNode`，均 1.1.2.3 原语；**注意 `SupervisorAgent` 类不在 1.1.2.3**，见 §5.6 注）；只有 teammate 点对点真并发 swarm（P6-3b）才需自研消息总线。worker 全程复用官方 `ReactAgent`。
 
 > **Context7 交叉印证要点（2026-05-31）**：
 > - **agent 即工具**：`AgentTool.getFunctionToolCallback(agent)`（官方 `examples/multiagent-patterns/supervisor`）。
@@ -72,7 +72,7 @@
 - **委派 / 编排**：必须薄封装 `AgentTool` / `TaskToolsBuilder` / `AgentSpec` / `flow.agent.*`，**禁止自研子 Agent 执行引擎**。
 - **子 Agent 本体**：复用现有 `ReactAgent.builder()`（与主 Agent 同一构建器），只换 systemPrompt（任务）/ 工具子集 / 模型。
 - **A2A**：本阶段不引入 `a2a.*`，不升级 SAA / Spring AI 版本。
-- **只有在官方缺失时才自研**：仅 P6-3 实时协作的「在线消息总线 / 权限同步」可能需要自研薄层（官方无直接等价），且必须在 P6-3 plan 里说明自研理由。
+- **只有在官方缺失时才自研**：P6-3 中枢协调用 graph-core supervisor 模式（官方原语薄搭，非自研引擎）；**仅点对点真并发 swarm（P6-3b）的消息总线**官方无等价、才需自研，且必须在该 plan 说明理由。
 
 ---
 
@@ -166,10 +166,10 @@
 - 桌面端（对应 P6 02 / 06 / 07 / 08）：对话 + 右侧「编排」卡 → 可展开「编排详情」分屏（拓扑 + 各节点状态）；点节点配「任务 / 模型」；「+ 添加 / ✕ 删除」节点（限顺序 / 并行结构，见 §5.4 分期边界）。**对话始终保留**。
 - 明确并行下的运行记录归属、token 归集、审批并发语义。
 
-#### P6-3：实时 swarm/team 协作（重型，对标 Claude Code swarm）
-- 多 Agent 同时在线、`SendMessage` 互发消息、共享 / 同步权限与审批。
+#### P6-3：团队协作（Supervisor 中枢协调，对标 Claude Code swarm 的 hub-and-spoke）
+- Leader（主 Agent）迭代协调少量常驻 teammate（explorer/worker），消息经 Leader 中转（hub-and-spoke）；teammate 点对点互发（同时在线、不经 Leader）留 **P6-3b**。
 - 桌面端（对应 P6 03 / 05）：对话 + 右侧「团队」卡 + 消息时间线 → 可展开「团队执行」分屏；可切换「对话对象」直接喊话某常驻子 Agent。**对话始终保留**。
-- 官方无直接等价，需自研薄编排层（消息总线 + 权限同步），worker 仍尽量复用官方子 Agent 构件。
+- **用 graph-core supervisor 模式薄搭**（`StateGraph` + `SupervisorNode` 路由 teammate/`FINISH` + `ReactAgent.asNode` teammates + 共享 `MemorySaver`）；teammate = 官方 `ReactAgent`，approve-once 组队级授权。**注**：`SupervisorAgent` 类在文档（v1.1.2.2）但**不在 1.1.2.3 jar**（已 `jar tf` 核对），故用 graph-core 原语自搭。
 - **仅限本机进程内协作**；跨网络 A2A 仍划后续阶段。
 
 ---
@@ -178,7 +178,7 @@
 
 **P6 做**：
 
-- 薄封装官方委派（P6-1）、flow 编排（P6-2）、自研薄层实时协作（P6-3）。
+- 薄封装官方委派（P6-1）、flow 编排（P6-2）、graph-core supervisor 模式团队协调（P6-3）。
 - 子 Agent / 编排节点的「任务 + 模型」配置（默认继承主 Agent、可覆盖）。
 - 子 Agent 全程复用 BaBiQ 审批 / 沙箱 / Spotlighting / 观测 / 运行记录 / 协议 UI。
 - 必要的新业务表 / 字段（如子 Agent 运行归属、节点配置），并同步 SQL 中文注释 + `bq_schema_comments` + 覆盖测试。
