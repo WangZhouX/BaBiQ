@@ -122,7 +122,9 @@ class SkillMetadata {
 3. **`LocalSkillRegistry` / `SkillContentLoader` 的对外方法签名与 `SkillDescriptor` 字段完全不变**，消费方（`SkillCatalogService`、两个 handler、`CapabilityCatalogSyncService`）**零改动**。
 4. 删除 BaBiQ 自写的脆弱 front-matter 行解析、`Files.walk` 扫描逻辑。
 5. **采用工具中立的 `.agents/skills` 技能路径**（`~/.agents/skills` + `<cwd>/.agents/skills`，见 §3.0），对齐 agent 生态、开源 skill 零搬迁；`~/.codex` 等遗留目录降级为可选配置。
-6. 把官方免费携带的 `allowedTools` 透出到 `SkillDescriptor` → `SkillInfo`（**后端核心，官方 `getAllowedTools()` 零成本**）；桌面端展示仍列为可选后续项。
+6. 把官方免费携带的 `allowedTools` **仅作元数据**透出到 `SkillDescriptor` → `SkillInfo`（官方 `getAllowedTools()` 零成本）；**不参与工具授权**（授权仍由 `ToolRegistry`/审批/沙箱接管），桌面展示列为后续项（见 D7/D11）。
+
+> ⚠️ **澄清"行为不变"边界**：默认扫描目录从 `~/.codex` 切到 `.agents/skills` 是**有意的运行行为变更**，**不**属于"行为不变"承诺——后者只指**代码契约（方法签名/`SkillDescriptor` 字段/消费方代码）+ `bq_capabilities` 映射逻辑**不变。目录迁移策略见 D9。
 
 ### 2.2 非目标（明确不做）
 
@@ -189,14 +191,14 @@ BaBiQ 采用**工具中立的 `.agents/skills` 约定**（对齐 Codex 新位置
 
 > 遵循 CLAUDE.md §0/§5：先 `superpowers:test-driven-development` 心智；禁止 `@Disabled`；改前读代码。
 
-- **Step 0 — 行为基线（golden master）**：先写/补 `LocalSkillRegistryTest` + `SkillContentLoaderTest`，用临时目录放若干 `SKILL.md`（含 front-matter、嵌套 namespace、超长正文、缺失 front-matter 回退），断言当前 `listSkills()` 的 id/namespace/description/contentHash 和 `load()` 的截断行为。**这是重构安全网**——重构后必须全绿且输出逐字段一致。
+- **Step 0 — 行为基线（golden master）**：先写/补 `LocalSkillRegistryTest` + `SkillContentLoaderTest`，用临时目录放若干 `SKILL.md`，**显式覆盖**：正常 front-matter、嵌套 namespace、超长正文截断、**无 front-matter**、**非法 YAML**、**`description` 含冒号**、**多行 `description`**（D13）；断言 `listSkills()` 的 id/namespace/description/contentHash 与 `load()` 截断行为。再加**刷新用例**：改写 `SKILL.md` 后再 `list`/`get` 能看到新 `contentHash`/新正文（D12）。**这是重构安全网**——重构后全绿且字段逐一对齐；畸形输入若官方语义与现状不同，记录"官方为准"差异（D13）。
 - **Step 1 — 依赖与可见性确认**：确认 graph-core skills 包编译可见（见 §3.4），必要时显式声明依赖（不升级版本）。
 - **Step 1b — 路径与配置**：`SkillProperties` 默认改为 `~/.agents/skills`（用户级）+ `<cwd>/.agents/skills`（项目级），新增可选 `additional-directories`（默认空），去掉 `~/.codex` 写死默认。补 `SkillPropertiesTest` 断言默认值与可选目录。
 - **Step 2 — adapter 化 `LocalSkillRegistry`**：用户槽 `~/.agents/skills` + 项目槽 `<cwd>/.agents/skills` 建一个官方 `FileSystemSkillRegistry`（`autoLoad(true)`），`additional-directories` 每个再建一个聚合；`listSkills()` 聚合各 `listAll()` → 映射 `SkillDescriptor`（§3.1/§3.2）→ 按 id 排序去重；`findById()` 走聚合结果。**对外签名不变**。删除手写 `scanDirectory`/`readDescriptor`/`frontMatter`/`Files.walk`。
 - **Step 2b — cwd 切换重建**：在工作目录切换处（与现有文件工具/沙箱 cwd 来源一致）`reload()` 或重建项目槽 registry，保证项目级技能随当前工作区变化。补 `LocalSkillRegistryCwdReloadTest` 断言切 cwd 后 `<cwd>/.agents/skills` 的技能随之进出。
 - **Step 3 — `SkillContentLoader` 走官方读正文**：改为 `registry.readSkillContent(name)`（或 `loadFullContent()`）+ 截断；对外签名不变。
 - **Step 4 — 跑基线**：`LocalSkillRegistryTest`、`SkillContentLoaderTest` 全绿且字段逐一对齐（Step 0 的网兜住行为）。
-- **Step 5 — 消费方回归**：`SkillHandlersTest`（`skills/list`、`skills/get`）+ `CapabilityCatalogSyncServiceTest`（`skill.<id>` 映射、searchText、contentHash 变更检测）全绿，证明 deferred exposure / `bq_capabilities` 链路不变。
+- **Step 5 — 消费方回归**：`SkillHandlersTest`（`skills/list`、`skills/get`，**含 `allowedTools` 透出**）+ `CapabilityCatalogSyncServiceTest`（`skill.<id>` 映射、searchText、contentHash 变更检测）全绿，证明 deferred exposure / `bq_capabilities` 链路不变。**桌面**补 `SkillModelsTest`：反序列化含 `allowedTools` 的 `skills/list` 载荷成功不崩（D11）。
 - **Step 6 — 全量验证**：后端 `clean verify`（含 IT）+ 桌面 `gradlew test`（应无影响）。
 - **Step 7 — 文档同步**：更新 `CLAUDE.md` / `AGENTS.md` 检查点 + `p3-task-index.md`，记录"技能层已薄封装官方 registry，token/memory 评估后维持自研"。
 
@@ -230,18 +232,24 @@ BaBiQ 采用**工具中立的 `.agents/skills` 约定**（对齐 Codex 新位置
 - **D4**：`namespace`/`id` 沿用 BaBiQ 现算法（不用官方 `getSource()`），保 capability id 稳定。
 - **D5**：多目录用"每目录一个 `FileSystemSkillRegistry` 聚合"承载官方两槽限制。
 - **D6**：token 估算器、长期记忆存储层**评估后不改**（§5），理由入档。
-- **D7**：`allowedTools` 透出列为可选后续项，不混入本计划核心。
+- **D7（统一 allowedTools 范围，修订）**：`allowedTools` 本阶段**仅作为元数据透出到后端 `SkillInfo`**（官方 `getAllowedTools()` 免费携带），**不参与工具授权**（授权仍由 `ToolRegistry`/审批/沙箱接管）、**不做桌面展示**（桌面靠 `ignoreUnknownKeys` 忽略，见 D11）。← 解决 goal 6 / 字段映射 与原 D7 的自相矛盾。
 - **D8**：技能路径采用工具中立的 `.agents/skills` 约定 = `~/.agents/skills`（用户级 → 官方 `userSkillsDirectory`）+ `<cwd>/.agents/skills`（项目级，随工作区 → 官方 `projectSkillsDirectory`）。对齐 Codex 新位置与 agent 生态，开源 skill 零搬迁。
-- **D9**：`~/.codex/skills`（Codex 已 deprecated 的旧位置）、superpowers 等遗留目录不再是默认；保留为可选 `babiq.skills.additional-directories`（默认空），按目录聚合。
+- **D9（迁移策略，修订）**：默认目录从 `~/.codex/skills`+superpowers **切换**到 `.agents/skills` 是**有意行为变更**（见 §2.1 澄清）。为**不破坏**已有 `~/.codex` 技能，采用**非破坏式迁移**：`babiq.skills.additional-directories` **默认携带遗留目录**（`~/.codex/skills`、`~/.codex/superpowers/skills`，标注 deprecated、后续可移除），并补测试断言"默认同时扫 `.agents/skills` + 遗留目录""遗留目录可在配置中移除"。（若用户改要彻底 breaking，则默认空 + 迁移说明 + 对应测试，见 §9 待确认。）
 - **D10**：维持只读指令语义，**不自动执行 skill 捆绑脚本**；"第三方 skill 受管安装/市场"为独立未来阶段（§10），不在 P3-6。
+- **D11（桌面 JSON 兼容，新增）**：后端 `SkillInfo` 新增 `allowedTools` 后，桌面端**无需改模型**（`protocol/ProtocolJson.kt` 已 `ignoreUnknownKeys=true`，已核对）；但必须补桌面测试反序列化"含 `allowedTools` 的 `skills/list` 载荷"成功不崩，**钉住**兼容保证，避免后端绿、桌面运行时炸。
+- **D12（缓存/刷新语义，新增）**：`listSkills()`/`load()` 必须**反映磁盘最新状态**（保持现状"每次扫描即时生效"——现状 `Files.walk` 本就每次重扫）。官方 `AbstractSkillRegistry` 会缓存，故 adapter **读取前 `reload()` 或重建**以保即时性；补"改 `SKILL.md` 后再 `list`/`get` 看到新 `contentHash`/新正文"测试。**文件监听 + `skills/changed` 推送**（Codex `skills_watcher`）属未来增强，不在 P3-6。
+- **D13（front-matter 鲁棒性，新增）**：官方 `SkillScanner` 的 YAML 解析比现状手写更严格/正确（现状只认 `key:` 前缀，`description` 含冒号/多行会解析错）。Step 0 基线必须额外覆盖"**无 front-matter / 非法 YAML / `description` 含冒号 / 多行 `description`**"，并**记录官方语义为准**（畸形输入的行为变化视为修正，但必须被 characterize、不得静默）。
 
 ---
 
 ## 7. 风险与回滚
 
 - **风险 1：官方扫描的 namespace/id 与现状不一致** → 由 Step 0 golden master 兜底，字段逐一比对；不一致就在 adapter 里用 BaBiQ 算法纠正。
-- **风险 2：官方 front-matter 解析比手写宽松/严格，导致 skill 数量变化** → Step 5 `CapabilityCatalogSyncServiceTest` + 基线测试会暴露；按官方语义为准（更健壮是收益，但需在 handoff 里写清行为差异）。
+- **风险 2：官方 front-matter 解析比手写更严格/正确** → Step 0 额外覆盖 无FM / 非法YAML / 冒号 / 多行（D13），按官方语义为准并记录差异。
 - **风险 3：graph-core 仅运行期传递依赖** → Step 1 显式声明（锁版本）。
+- **风险 4：默认目录切换破坏已有 `~/.codex` 技能** → D9 非破坏式迁移（遗留目录默认进 `additional-directories`）+ 迁移测试。
+- **风险 5：官方缓存致 `SKILL.md` 编辑不即时生效** → D12 读取前 `reload()`/重建 + 刷新测试。
+- **风险 6：后端新增字段炸桌面反序列化** → 桌面 `ignoreUnknownKeys` 已开（D11）+ 兼容测试钉住。
 - **回滚**：纯内部重构，`git revert` 单个提交即可恢复手写实现；消费方未动，回滚无连锁。
 
 ---
@@ -254,11 +262,12 @@ cd backend
 .\mvnw.cmd clean verify
 
 cd ..\desktop
+.\gradlew.bat test --tests "*SkillModelsTest"
 .\gradlew.bat test
 ```
 
-- 通过标准：基线 + 消费方测试全绿且字段逐一对齐；`clean verify` 全绿（含 IT）；桌面无回归；`bq_capabilities` 里 `skill.<id>` 行无孤立/无漂移。
-- 真实烟测（可选）：放一个含 front-matter 的 `SKILL.md` 到配置目录，`skills/list` 能列出、`skills/get` 能读正文且按 16000 字符截断、`tool_search` 中文 query 能命中该 skill。
+- 通过标准：基线（含 无FM/非法YAML/冒号/多行/刷新 用例）+ 消费方测试全绿且字段逐一对齐；桌面 `SkillModelsTest`（含 `allowedTools`）过；`clean verify` 全绿（含 IT）；桌面无回归；`bq_capabilities` 里 `skill.<id>` 行无孤立/无漂移。
+- 真实烟测（可选）：放含 front-matter 的 `SKILL.md` 到 `~/.agents/skills` 与 `<cwd>/.agents/skills`，`skills/list` 列出、`skills/get` 读正文且按 16000 字符截断、`tool_search` 中文 query 命中、**改写 `SKILL.md` 后重新 `list` 立即生效**、放入遗留 `~/.codex/skills` 的技能仍能加载（迁移兼容）。
 
 ---
 
@@ -268,8 +277,10 @@ cd ..\desktop
 - ✅ 范围：只做技能层薄封装，token/memory 维持自研（已确认）。
 - ✅ 路径：工具中立 `~/.agents/skills` + `<cwd>/.agents/skills`，遗留目录降级为可选 `additional-directories`（已确认对齐生态）。
 - ✅ `contentHash`：方案 A（内容 sha256，行为完全一致）（已确认）。
-- ✅ `allowedTools`：官方 `getAllowedTools()` 免费携带 → 纳入 P3-6 后端核心（透出 `SkillInfo`，桌面展示后续项）。
+- ✅ `allowedTools`：官方 `getAllowedTools()` 免费携带 → **仅元数据**透出后端 `SkillInfo`，不参与授权、不做桌面展示（D7/D11，已统一）。
 - ✅ 一键安装/市场：独立未来阶段（§10），P3-6 不做（已确认）。
+- ✅ 已按独立审查（§11）修订 5 处边界：D7 allowedTools 矛盾、D9 迁移策略、D12 缓存/刷新语义、D11 桌面 JSON 兼容、D13 front-matter 鲁棒性。
+- ⬜ 迁移取向：**非破坏式**（遗留 `~/.codex` 进默认 `additional-directories`，**推荐**）还是**彻底 breaking**（默认仅 `.agents/skills` + 迁移说明）？
 - ⬜ 实现：交 Codex（出 `codex-handoff.md`）or 本会话直接实现？
 
 ---
@@ -286,3 +297,17 @@ P3-6 落地后，"手动 / `git clone` 进 `~/.agents/skills`"已可使用别人
   - 与 CLAUDE.md「插件市场属未来阶段」一致，不得混入 P3-6 或当前阶段收口。
 - **可复用 Codex 安装安全模板**（已核对 `core-skills/remote.rs`）：下载 zip → 校验 PK 魔数 → **路径穿越防护**（只允许 Normal 路径组件，挡 `..`）→ 解压到 `~/.agents/skills/<id>`；远程来源需鉴权/信任标注；可选 bundled 自带技能（Codex 放 `$CODEX_HOME/skills/.system`）。
 - **触发条件**：P3-6 完成后，若用户要做"一键安装/市场"，再写该阶段详细 plan。
+
+---
+
+## 11. 独立审查修订（2026-06-02）
+
+用户独立审查结论：**整体方向正确、可做，但不建议"原样直接开工"**，需先修订边界。5 点全部成立并已并入决策：
+
+1. **allowedTools 范围自相矛盾**（goal/字段映射说"核心"、原 D7 说"可选后续项"）→ **D7 重写**：仅元数据透出后端 `SkillInfo`，不参与授权、不做桌面展示；§2.1 goal 6 / §9 同步统一。
+2. **默认目录切换是行为变更，不能同时宣称"行为不变"** → **§2.1 澄清** + **D9 迁移策略**：非破坏式（遗留 `~/.codex` 默认进 `additional-directories`，可移除）+ 迁移测试；彻底 breaking 作为 §9 待确认备选。
+3. **缺缓存/刷新语义验收**（Codex 有 forceReload / `skills/changed` / cache clear）→ **D12**：保持"每次反映磁盘最新"，读取前 `reload()`/重建 + "改 `SKILL.md` 后即时生效"测试；文件监听 + 推送通知划为未来增强。
+4. **SkillInfo 增字段需确认桌面 JSON 兼容** → **D11**：已核对桌面 `ProtocolJson.kt` `ignoreUnknownKeys=true`（安全），补 `SkillModelsTest` 反序列化含 `allowedTools` 载荷钉住兼容。
+5. **官方 front-matter 解析更严格** → **D13**：Step 0 额外覆盖 无FM / 非法YAML / 冒号 / 多行，记录"官方语义为准"差异。
+
+**技术可行性（审查确认，与本计划一致）**：官方 `ClasspathSkillRegistry`/`SkillsAgentHook`/`read_skill`/`SkillsInterceptor`/progressive disclosure 等存在，证明"官方 Skill registry 可集成"成立；但**不接 `SkillsAgentHook`/`SkillPromptAugmentAdvisor`**（会绕过 BaBiQ 能力装配/审批/沙箱/SQLite 审计）是正确的——BaBiQ 只复用 **registry/metadata 解析**，暴露与执行继续由 `CapabilityCatalogSyncService`/`tool_search`/`ToolRegistry` 接管；Spring AI 的 `ToolCallbackProvider`/`ToolCallbackResolver`/MCP provider 属工具回调管理，不替代 Skill registry。P3-6 把 Skill 当"能力元数据 + 可按需读取正文"处理，方向成立。
