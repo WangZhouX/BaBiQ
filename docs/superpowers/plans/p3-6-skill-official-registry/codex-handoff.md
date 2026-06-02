@@ -139,7 +139,7 @@ cd ..\desktop
 
 用户独立审查通过方向，但要求先修订 5 处边界（详见 plan §11）。落地时**以下为准**：
 
-1. **allowedTools 范围（统一）**：**仅元数据透出后端 `SkillInfo`**，**不参与工具授权**（授权仍归 `ToolRegistry`/审批/沙箱）、**不做桌面展示**。上文凡与"可选后续项 / 桌面展示"冲突的，以此为准（plan D7）。
+1. **allowedTools 范围（统一）**：**仅元数据透出后端 `SkillInfo`**，**不参与工具授权**（授权仍归 `ToolRegistry`/审批/沙箱）。桌面技能库页面已落地展示（plan D14，2026-06-02 经用户确认接受扩入；仅展示不作授权、不新增后端协议）。上文凡写"不做桌面展示"的，以此为准（plan D7/D14）。
 2. **迁移策略（已定 = 彻底 breaking）**：默认目录切到 `.agents/skills` 是**有意 breaking change**；"行为不变"只指代码契约 + `bq_capabilities` 映射。`additional-directories` **默认空**——原先默认的 `~/.codex/skills`+superpowers **不再自动加载**，用户需手动加配置或把技能迁到 `~/.agents/skills`。必须写**迁移指引** + 补测试（"默认仅扫 `.agents/skills`""把 `~/.codex/skills` 加进 `additional-directories` 后恢复加载"）（plan D9）。
 3. **缓存/刷新语义**：`listSkills()`/`load()` 必须**反映磁盘最新**（保持现状即时性）；官方 `AbstractSkillRegistry` 有缓存 → **读取前 `reload()`/重建**；补"改 `SKILL.md` 后再 `list`/`get` 看到新 `contentHash`/新正文"测试。文件监听 + `skills/changed` 推送（Codex `skills_watcher`）**不在 P3-6**（plan D12）。
 4. **桌面 JSON 兼容**：桌面 `protocol/ProtocolJson.kt` 已 `ignoreUnknownKeys=true`（已核对，加字段安全）；仍补桌面 `SkillModelsTest` 反序列化"含 `allowedTools` 的 `skills/list` 载荷"成功不崩（plan D11）。

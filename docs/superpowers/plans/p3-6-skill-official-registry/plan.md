@@ -122,7 +122,7 @@ class SkillMetadata {
 3. **`LocalSkillRegistry` / `SkillContentLoader` 的对外方法签名与 `SkillDescriptor` 字段完全不变**，消费方（`SkillCatalogService`、两个 handler、`CapabilityCatalogSyncService`）**零改动**。
 4. 删除 BaBiQ 自写的脆弱 front-matter 行解析、`Files.walk` 扫描逻辑。
 5. **采用工具中立的 `.agents/skills` 技能路径**（`~/.agents/skills` + `<cwd>/.agents/skills`，见 §3.0），对齐 agent 生态、开源 skill 零搬迁；`~/.codex` 等遗留目录降级为可选配置。
-6. 把官方免费携带的 `allowedTools` **仅作元数据**透出到 `SkillDescriptor` → `SkillInfo`（官方 `getAllowedTools()` 零成本）；**不参与工具授权**（授权仍由 `ToolRegistry`/审批/沙箱接管），桌面展示列为后续项（见 D7/D11）。
+6. 把官方免费携带的 `allowedTools` **仅作元数据**透出到 `SkillDescriptor` → `SkillInfo`（官方 `getAllowedTools()` 零成本）；**不参与工具授权**（授权仍由 `ToolRegistry`/审批/沙箱接管）。桌面技能库页面已落地展示（见 D7/D14）。
 
 > ⚠️ **澄清"行为不变"边界**：默认扫描目录从 `~/.codex` 切到 `.agents/skills` 是**有意的运行行为变更（breaking change，见 D9）**，**不**属于"行为不变"承诺——后者只指**代码契约（方法签名/`SkillDescriptor` 字段/消费方代码）+ `bq_capabilities` 映射逻辑**不变。
 
@@ -133,7 +133,7 @@ class SkillMetadata {
 - ❌ 不改 token 估算器（见 §5.1）。
 - ❌ 不改长期记忆存储层（见 §5.2）。
 - ❌ 不新增数据库表 / migration（技能 metadata 不落 `bq_*` 业务表，只进 `bq_capabilities` 摘要，且字段不变）。
-- ❌ 不动桌面端（`allowedTools` 仅后端透出到 `SkillInfo`，桌面展示列为后续项）。
+- ✅（已扩入，D14）桌面技能库页面 `SkillLibraryPanel` 已落地：消费现有 `skills/list`+`skills/get`，**不新增后端协议/`bq_*`、不参与授权**（原 plan 此处为"不动桌面端"，2026-06-02 经用户确认接受扩入）。
 
 ---
 
@@ -232,7 +232,8 @@ BaBiQ 采用**工具中立的 `.agents/skills` 约定**（对齐 Codex 新位置
 - **D4**：`namespace`/`id` 沿用 BaBiQ 现算法（不用官方 `getSource()`），保 capability id 稳定。
 - **D5**：多目录用"每目录一个 `FileSystemSkillRegistry` 聚合"承载官方两槽限制。
 - **D6**：token 估算器、长期记忆存储层**评估后不改**（§5），理由入档。
-- **D7（统一 allowedTools 范围，修订）**：`allowedTools` 本阶段**仅作为元数据透出到后端 `SkillInfo`**（官方 `getAllowedTools()` 免费携带），**不参与工具授权**（授权仍由 `ToolRegistry`/审批/沙箱接管）、**不做桌面展示**（桌面靠 `ignoreUnknownKeys` 忽略，见 D11）。← 解决 goal 6 / 字段映射 与原 D7 的自相矛盾。
+- **D7（统一 allowedTools 范围，修订）**：`allowedTools` **仅作为元数据透出到后端 `SkillInfo`**（官方 `getAllowedTools()` 免费携带），**不参与工具授权**（授权仍由 `ToolRegistry`/审批/沙箱接管）。桌面技能库页面已落地（见 **D14**），可展示 allowedTools 等元数据，仍**仅展示、不作授权**。← 解决 goal 6 / 字段映射 与原 D7 的自相矛盾。
+- **D14（桌面技能库页面已落地，2026-06-02 经用户确认接受）**：实现期 Codex 额外落地桌面 `SkillLibraryPanel`（插件/技能分区、推荐/系统/项目/个人、正文按需加载、截断/按需注入提示、allowedTools 展示），**超出原 plan「不做桌面展示」**，经独立审查 + 用户确认**接受并入 P3-6**。约束：只消费现有 `skills/list`+`skills/get`，**不新增后端协议、不新增 `bq_*`、不参与授权**，授权/暴露仍归 `tool_search`/`ToolRegistry`/审批/沙箱。
 - **D8**：技能路径采用工具中立的 `.agents/skills` 约定 = `~/.agents/skills`（用户级 → 官方 `userSkillsDirectory`）+ `<cwd>/.agents/skills`（项目级，随工作区 → 官方 `projectSkillsDirectory`）。对齐 Codex 新位置与 agent 生态，开源 skill 零搬迁。
 - **D9（迁移策略，已定 = 彻底 breaking）**：默认**只扫** `.agents/skills`（`~/.agents/skills` + `<cwd>/.agents/skills`），`babiq.skills.additional-directories` **默认空**。这是**有意 breaking change**——原先默认的 `~/.codex/skills`+superpowers **不再自动加载**；用户需手动把旧目录加进 `additional-directories`，或把技能迁到 `~/.agents/skills`。必须：① README/配置说明写**迁移指引**；② 补测试断言"默认仅扫 `.agents/skills`""把 `~/.codex/skills` 加进 `additional-directories` 后旧技能恢复加载"。
 - **D10**：维持只读指令语义，**不自动执行 skill 捆绑脚本**；"第三方 skill 受管安装/市场"为独立未来阶段（§10），不在 P3-6。
@@ -277,7 +278,7 @@ cd ..\desktop
 - ✅ 范围：只做技能层薄封装，token/memory 维持自研（已确认）。
 - ✅ 路径：工具中立 `~/.agents/skills` + `<cwd>/.agents/skills`，遗留目录降级为可选 `additional-directories`（已确认对齐生态）。
 - ✅ `contentHash`：方案 A（内容 sha256，行为完全一致）（已确认）。
-- ✅ `allowedTools`：官方 `getAllowedTools()` 免费携带 → **仅元数据**透出后端 `SkillInfo`，不参与授权、不做桌面展示（D7/D11，已统一）。
+- ✅ `allowedTools`：官方 `getAllowedTools()` 免费携带 → **仅元数据**透出后端 `SkillInfo`，不参与授权（D7）；桌面技能库页面已展示（D14）。
 - ✅ 一键安装/市场：独立未来阶段（§10），P3-6 不做（已确认）。
 - ✅ 已按独立审查（§11）修订 5 处边界：D7 allowedTools 矛盾、D9 迁移策略、D12 缓存/刷新语义、D11 桌面 JSON 兼容、D13 front-matter 鲁棒性。
 - ✅ 迁移取向：**彻底 breaking**——默认仅扫 `.agents/skills`，`additional-directories` 默认空；旧 `~/.codex` 技能需手动加配置或迁到 `~/.agents/skills`（迁移说明 + 测试，见 D9）。
@@ -311,3 +312,23 @@ P3-6 落地后，"手动 / `git clone` 进 `~/.agents/skills`"已可使用别人
 5. **官方 front-matter 解析更严格** → **D13**：Step 0 额外覆盖 无FM / 非法YAML / 冒号 / 多行，记录"官方语义为准"差异。
 
 **技术可行性（审查确认，与本计划一致）**：官方 `ClasspathSkillRegistry`/`SkillsAgentHook`/`read_skill`/`SkillsInterceptor`/progressive disclosure 等存在，证明"官方 Skill registry 可集成"成立；但**不接 `SkillsAgentHook`/`SkillPromptAugmentAdvisor`**（会绕过 BaBiQ 能力装配/审批/沙箱/SQLite 审计）是正确的——BaBiQ 只复用 **registry/metadata 解析**，暴露与执行继续由 `CapabilityCatalogSyncService`/`tool_search`/`ToolRegistry` 接管；Spring AI 的 `ToolCallbackProvider`/`ToolCallbackResolver`/MCP provider 属工具回调管理，不替代 Skill registry。P3-6 把 Skill 当"能力元数据 + 可按需读取正文"处理，方向成立。
+
+---
+
+## 12. 实现验收记录（2026-06-02，独立审查）
+
+Codex 实现并合并入 master（`c23ef11` 薄封装官方 registry、`736b6b3` merge、`c097c79`/`d056f90` 技能页原型与落地）。独立审查结论：**核心通过**，桌面技能库页面超范围经用户确认**接受扩入（D14）**。
+
+**核对结论（与代码一致）**：
+- 真薄封装：`LocalSkillRegistry` import 并调用官方 `FileSystemSkillRegistry`/`SkillMetadata`/`SkillRegistry`；运行日志实证官方 `SkillScanner`/`AbstractSkillRegistry` reload+discover；手写 front-matter 解析已删。
+- 边界守住：生产代码**零** `SkillPromptAugmentAdvisor`/`SkillsAgentHook`/`SpringAiSkillAdvisor`；无新 migration/`bq_*`；47 个 RPC 无新增 skill 协议。
+- 决策落地：`.agents/skills` 默认 + `additional-directories` 默认空（D9 breaking✓）；`allowedTools` 仅元数据不授权（D7✓）；sha256（D3 方案A✓）；`reload()` 即时（D12✓）；namespace/id 算法保留、parity 实测✓。
+
+**新鲜验证证据**：
+- `cd backend; .\mvnw.cmd "-Dtest=LocalSkillRegistryTest,SkillContentLoaderTest,SkillPropertiesTest,SkillHandlersTest,CapabilityCatalogSyncServiceTest,SchemaCommentsCoverageTest" test` → `Tests run: 15, Failures: 0, Errors: 0, Skipped: 0`，BUILD SUCCESS。
+- `cd backend; .\mvnw.cmd clean verify` → BUILD SUCCESS，failsafe IT `Tests run: 23, Failures: 0`。
+- `cd desktop; .\gradlew.bat test --rerun-tasks` → `8 tasks executed`，BUILD SUCCESSFUL（真执行，非 up-to-date）；含 `SkillModelsTest`/`SkillLibraryPanelTest`/`ChatControllerTest`/`SidebarNavigationTest`。
+
+**遗留小 nits（非阻塞）**：
+1. `desktop/.../ui/skills/SkillLibraryPanel.kt:217` 用了已废弃 `LocalClipboardManager` → 建议换 `LocalClipboard`（仅编译警告）。
+2. `SkillProperties.directories`（P3-5 旧字段）进了 `allConfiguredDirectories()`，但 `LocalSkillRegistry.configuredRoots()` 只扫 user+additional+project，**未扫 `directories`** → 该旧字段对扫描为空操作（迁移走 `additional-directories` 即可）。建议接上或删字段免误解。

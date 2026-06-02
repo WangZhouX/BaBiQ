@@ -224,7 +224,8 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
   - `docs/superpowers/plans/p3-6-skill-official-registry/codex-handoff.md`
   - 已按 Context7 和本地 jar 核对 Spring AI Alibaba `SkillRegistry`、`FileSystemSkillRegistry` 和 `SkillMetadata`；后端 `LocalSkillRegistry` 改为薄封装官方 registry，不再手写 front-matter 解析。
   - 默认 Skill 目录迁移到 `~/.agents/skills` 与 `<cwd>/.agents/skills`；旧 `~/.codex/skills` 仅通过 `babiq.skills.additional-directories` 显式恢复。
-  - `allowedTools` 仅作为后端 `SkillInfo` 元数据透出，不参与工具授权，不做桌面展示；不接 `SkillPromptAugmentAdvisor`、`SpringAiSkillAdvisor`、`SkillsAgentHook`，继续走 BaBiQ `tool_search`、审批、沙箱和 SQLite 审计。
+  - `allowedTools` 仅作为元数据透出、不参与工具授权；桌面已落地技能库页面（`SkillLibraryPanel`：插件/技能分区、正文按需加载、allowedTools 展示，消费现有 `skills/list`+`skills/get`、不新增后端协议、不参与授权）；不接 `SkillPromptAugmentAdvisor`、`SpringAiSkillAdvisor`、`SkillsAgentHook`，继续走 BaBiQ `tool_search`、审批、沙箱和 SQLite 审计。
+  - 独立审查已通过（2026-06-02）：`cd backend; .\mvnw.cmd clean verify` BUILD SUCCESS（含 23 IT）；技能定向 `Tests run: 15, 0 失败`；`cd desktop; .\gradlew.bat test --rerun-tasks` BUILD SUCCESSFUL（真执行）。
 - P4 Plan/Todo 可视化已完成：
   - `docs/superpowers/plans/p4-plan-todo-visualization/plan.md`
   - `docs/superpowers/plans/p4-plan-todo-visualization/codex-handoff.md`

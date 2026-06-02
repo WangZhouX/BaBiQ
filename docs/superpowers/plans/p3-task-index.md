@@ -32,7 +32,7 @@
 - P3-5a 已完成能力搜索底层替换：`CapabilitySearchService` 默认实现改为 Spring AI Community `tool-searcher-lucene:1.0.1`，旧 `FallbackLexicalCapabilitySearchService` 已移除，新事件策略写入 `LUCENE`。
 - P3-UI 已完成：Figma 页面 `35:2` 已刷新为 `P3 上下文与记忆平台原型`，新增 `P3 01` 到 `P3 11` 专项 Frame，把上下文窗口、短期压缩、长期记忆、按需能力装配和中文能力搜索转成用户可见的交互表达；未修改 `desktop/` 或 `backend/` 代码。
 - P3-UI-Desktop 已完成：Compose Desktop 已按 P3 Figma 原型落地输入栏 P3 状态弹层、运行详情上下文/记忆/能力审计分区、记忆设置、能力中心、中文能力搜索和聊天流上下文压缩事件卡片；`00 交互总览-P3` 只作为原型索引页，没有进入产品 UI。
-- P3-6 已完成官方 SkillRegistry 薄封装：`LocalSkillRegistry` 改用 Spring AI Alibaba `FileSystemSkillRegistry` 聚合，默认路径迁移到 `~/.agents/skills` 与 `<cwd>/.agents/skills`，旧 `.codex/skills` 只通过 `babiq.skills.additional-directories` 显式恢复；`allowedTools` 仅作为后端元数据透出，不参与工具授权。
+- P3-6 已完成官方 SkillRegistry 薄封装：`LocalSkillRegistry` 改用 Spring AI Alibaba `FileSystemSkillRegistry` 聚合，默认路径迁移到 `~/.agents/skills` 与 `<cwd>/.agents/skills`，旧 `.codex/skills` 只通过 `babiq.skills.additional-directories` 显式恢复；`allowedTools` 仅作为后端元数据透出，不参与工具授权。桌面额外落地技能库页面 `SkillLibraryPanel`（D14，经用户确认扩入；消费现有 `skills/list`+`skills/get`、不新增后端协议、不参与授权）。独立审查已通过（2026-06-02，`clean verify` 含 23 IT + 桌面 fresh 重跑全绿）。
 - P4-Plan/Todo 已完成：后端新增 `update_plan` 本地工具和计划使用 system prompt，桌面端新增 `ThreadItem.Plan`、`PlanUiState`、右侧进度面板和收起提醒胶囊；真实模型人工烟测仍需在可用 Provider/API Key 环境下确认。
 - 下一步应进行 P3/P4/P6 总体验收复盘，并由用户决定是否进入 Skill 市场、运行中编排审批、P6-3 实时 team 协作或新的专项增强计划。
 - 任何阶段新增业务表或字段，都必须同步 SQL 中文注释、`bq_schema_comments`、Entity 注释和覆盖测试。
