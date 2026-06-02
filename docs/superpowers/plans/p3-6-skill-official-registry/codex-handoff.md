@@ -140,7 +140,7 @@ cd ..\desktop
 用户独立审查通过方向，但要求先修订 5 处边界（详见 plan §11）。落地时**以下为准**：
 
 1. **allowedTools 范围（统一）**：**仅元数据透出后端 `SkillInfo`**，**不参与工具授权**（授权仍归 `ToolRegistry`/审批/沙箱）、**不做桌面展示**。上文凡与"可选后续项 / 桌面展示"冲突的，以此为准（plan D7）。
-2. **迁移策略（非"行为不变"）**：默认目录切到 `.agents/skills` 是**有意行为变更**；"行为不变"只指代码契约 + `bq_capabilities` 映射。**默认非破坏式**：`additional-directories` **默认携带遗留 `~/.codex/skills` + `~/.codex/superpowers/skills`**（deprecated、可移除），补"默认同时扫 `.agents/skills`+遗留""遗留可移除"测试（plan D9）。彻底 breaking 是 §9 待用户确认的备选。
+2. **迁移策略（已定 = 彻底 breaking）**：默认目录切到 `.agents/skills` 是**有意 breaking change**；"行为不变"只指代码契约 + `bq_capabilities` 映射。`additional-directories` **默认空**——原先默认的 `~/.codex/skills`+superpowers **不再自动加载**，用户需手动加配置或把技能迁到 `~/.agents/skills`。必须写**迁移指引** + 补测试（"默认仅扫 `.agents/skills`""把 `~/.codex/skills` 加进 `additional-directories` 后恢复加载"）（plan D9）。
 3. **缓存/刷新语义**：`listSkills()`/`load()` 必须**反映磁盘最新**（保持现状即时性）；官方 `AbstractSkillRegistry` 有缓存 → **读取前 `reload()`/重建**；补"改 `SKILL.md` 后再 `list`/`get` 看到新 `contentHash`/新正文"测试。文件监听 + `skills/changed` 推送（Codex `skills_watcher`）**不在 P3-6**（plan D12）。
 4. **桌面 JSON 兼容**：桌面 `protocol/ProtocolJson.kt` 已 `ignoreUnknownKeys=true`（已核对，加字段安全）；仍补桌面 `SkillModelsTest` 反序列化"含 `allowedTools` 的 `skills/list` 载荷"成功不崩（plan D11）。
 5. **front-matter 鲁棒性**：Step 0 必须额外覆盖**无 front-matter / 非法 YAML / `description` 含冒号 / 多行 `description`**；官方 `SkillScanner` 比现状手写更严格/正确，**官方语义为准**并记录差异（plan D13）。
@@ -161,5 +161,5 @@ cd ..\desktop
 
 ## 下一步
 
-- 先解决 §9 唯一待确认项（迁移取向：非破坏式 vs 彻底 breaking），再按 plan §4 + 本修订 TDD 落地。
+- **决策已全部确认**：迁移取向 = **彻底 breaking**（默认仅 `.agents/skills`，`additional-directories` 默认空 + 迁移说明 + 测试）；实现 = **交 Codex**。无待确认项，直接按 plan §4 + 本修订段 TDD 落地。
 - 实现并通过 plan §8 验收后：评估是否做可选 ⚠️ 项（富 metadata 的 Java YAML 自解析），或进入 ⏭️ "第三方 skill 受管安装/市场"未来阶段（需先写该阶段详细 plan）。
