@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS bq_work_units (
     name TEXT NOT NULL,
     -- 归一化名称，用于服务端同名复用。
     normalized_name TEXT NOT NULL,
-    -- 容器状态：waiting_config、waiting_start、running、completed、failed、removed。
+    -- 容器状态：waiting_config、running、completed、failed、removed；待启动是 waiting_config 下的 UI 提示。
     status TEXT NOT NULL,
     -- 当前正在运行或最近激活的目标 id。
     current_goal_id TEXT,
@@ -81,7 +81,7 @@ INSERT OR REPLACE INTO bq_schema_comments(table_name, column_name, comment) VALU
 ('bq_work_units', 'kind', '容器类型：orchestration 或 team。'),
 ('bq_work_units', 'name', '用户可读名称。'),
 ('bq_work_units', 'normalized_name', '归一化名称，用于服务端同名复用。'),
-('bq_work_units', 'status', '容器状态：waiting_config、waiting_start、running、completed、failed、removed。'),
+('bq_work_units', 'status', '容器状态：waiting_config、running、completed、failed、removed；待启动是 waiting_config 下的 UI 提示。'),
 ('bq_work_units', 'current_goal_id', '当前正在运行或最近激活的目标 id。'),
 ('bq_work_units', 'cwd', '创建时工作目录快照。'),
 ('bq_work_units', 'sandbox_mode', '创建时沙箱模式快照，容器不得自动提升权限。'),

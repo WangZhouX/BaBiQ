@@ -29,6 +29,7 @@ cd E:\BaBiQ\backend
 .\mvnw.cmd "-Dtest=FlowOrchestrationToolWorkUnitTest,TeamCoordinationToolWorkUnitTest,WorkUnitServiceTest" test
 .\mvnw.cmd "-Dtest=WorkUnitManageToolTest" test
 .\mvnw.cmd "-Dtest=FlowOrchestrationToolWorkUnitTest,TeamCoordinationToolWorkUnitTest,WorkUnitServiceTest,WorkUnitHandlersTest,WorkUnitManageToolTest" test
+.\mvnw.cmd "-Dtest=WorkUnitSlashIntentIT" test
 
 cd E:\BaBiQ\desktop
 .\gradlew.bat test --tests "*ThreadItemJsonTest.can parse work unit item" --tests "*ChatReducerTest.work unit item updates runtime state without adding chat message" --tests "*ChatReducerTest.removed work unit item disappears from runtime state" --tests "*ChatReducerTest.work unit state from history keeps visible units and ignores removed units" --tests "*WorkUnitSectionTest" --tests "*ChatControllerTest.removeWorkUnit calls backend and hides runtime item" --tests "*AgentClientTest.work unit interfaces can list and remove containers"
@@ -45,12 +46,12 @@ cd E:\BaBiQ\desktop
 
 plan 已整体改为下面这套；落地时**以此为准**：
 
-1. **slash 只创建/复用容器，不自动执行**：slash intent 是结构化输入（mode+name+goal 已定）。在 **`submit()` 路径**调用 `WorkUnitService.createOrReuseAndAppendGoal(...)` 完成 create/reuse/append-goal，容器进入 `WAITING_CONFIG` / `WAITING_START`。**不要**让模型先调 `work_unit_manage` 才有容器，也不要让 slash 直接调 `orchestrate_flow` / `coordinate_team`。
+1. **slash 只创建/复用容器，不自动执行**：slash intent 是结构化输入（mode+name+goal 已定）。在 **`turn/start` 路径**调用 `WorkUnitService.createOrAppend(...)` 完成 create/reuse/append-goal，容器进入 `WAITING_CONFIG`；“待启动”只是该状态下的 UI/业务提示，不单独落库。**不要**让模型先调 `work_unit_manage` 才有容器，也不要让 slash 直接调 `orchestrate_flow` / `coordinate_team`。
 2. **配置和启动复用已有详情页**：编排配置走 `P6 06/07/08`（编排详情 / 节点设置 / 编辑节点），团队配置和执行走 `P6 03/04/05`（团队协作 / 团队设置 / 执行分屏）。P6-4 原型只保留两个创建入口页。
 3. **模型配置必须用户手动完成**：模型、Provider、高权限策略不允许主 Agent 自动改；主 Agent 只能按用户自然语言修改目标、节点职责或成员职责。
 4. **goalId 只在显式启动阶段经 ToolContext 注入**：用户点击详情页“开始执行”或明确告诉主 Agent 启动后，`AgentLoop` build agent 才把 `goalId` 写入 `ToolContext`（新 key `CONTEXT_WORK_UNIT_GOAL_ID`），与现有 `CONTEXT_CWD` 注入同一处、同一套路；`FlowOrchestrationTool`/`TeamCoordinationTool` 回写 `markGoalRunning/Completed`。
 5. **`work_unit_manage` 工具只用于自然语言管理**（修改目标/职责、running 时"补充 vs 排队"、追加新目标、启动、移除容器），**不是 slash 路径建容器的必经跳**。
-6. **intent 指令注入现有 `current_turn` 权威层**（`ContextAssembler` 已有、系统提示已赋最高优先级），不要新造弱层。
+6. **slash create-only 不注入模型指令**：slash 创建容器后直接完成 turn，不进入 AgentLoop，因此不需要 `WorkUnitIntentInstructionBuilder`；显式启动阶段才通过 ToolContext 关联 goalId。
 7. **审批闸门必须保留**：用户显式启动 flow/team 时仍走 P6-2/P6-3 approve-once 弹窗——**补测试钉死**（启动时弹审批、批准后才执行）。
 8. **名称唯一包事务**：create-or-reuse 用 `TransactionTemplate`（复用压缩链路同款）防 TOCTOU。
 
@@ -87,17 +88,17 @@ toolContext.getContext().get(BaBiQSandboxInterceptor.CONTEXT_CWD)   // 取 cwd/s
 - 容器是命名可复用 `WorkUnit`（不是一次 turn）；目标是容器里的批次（`WorkUnitGoal`）。
 - `/编排`、`/团队` 创建后停在待配置 / 待启动；启动必须由用户点击或明确自然语言触发。
 - 模型配置、Provider、高权限策略属于用户手动配置区；Agent 只能辅助修改目标和职责文本。
-- 同 thread 内 `removed=0` 且 `status in (queued,running)` 的 work unit 名称唯一。
+- 同 thread 内 `removed=0` 的同 kind + 同归一化名称 work unit 优先复用；运行中容器只追加 pending goal，不替换当前目标。
 - 移除只置 `removed=1`+`removed_at`，**不删**运行记录/工具调用/目标审计；被移除后同名 `/团队`/`/编排` 建新容器。
 - 工具 `name` ASCII（`work_unit_manage`）；中文检索靠 displayName/description/searchText（§4.1，含 `团队 编排 工作容器 目标 追加 移除`）。
 
 ## TDD 任务顺序（plan Chunk 1→6，先红后绿）
 
 - **Chunk 1**（桌面）：Task 1 `SlashCommandParser` → Task 2 命令面板/模式 chip → Task 3 `turn/start` 带 `executionIntent`（本地 optimistic 消息只显示目标文本）。
-- **Chunk 2**（后端 intent）：Task 4 `ExecutionIntent` 模型 → Task 5 `TurnStartHandler`/`submit` 接 intent **并服务端建容器/append-goal，状态为待配置/待启动** → Task 6 `current_turn` 注入"已创建，等待配置/启动"指令。
+- **Chunk 2**（后端 intent）：Task 4 桌面结构化 `executionIntent` → Task 5 `TurnStartHandler` 接 intent **并服务端建容器/append-goal，状态为待配置** → Task 6 确认 slash create-only 不进入模型、不注入额外指令。
 - **Chunk 3**（持久化/工具）：Task 7 `bq_work_units`/`bq_work_unit_goals`（V16，**SQL 中文注释 + `bq_schema_comments` + Entity 注释 + 覆盖测试**）→ Task 8 `WorkUnitService` 复用/队列 → Task 9 `work_unit_manage`（NL 管理）。
 - **Chunk 4**（关联/接口）：Task 10 显式启动后 flow/team 从 **ToolContext 读 goalId** 回写状态 → Task 11 `workunit/list`+`workunit/remove`。
-- **Chunk 5**（桌面 UI）：Task 12 协议/状态聚合（多 FLOW/TEAM 容器、待配置/待启动、removed 消失）→ Task 13 右侧 `WorkUnitSection` + 跳转已有详情页 + 移除。
+- **Chunk 5**（桌面 UI）：Task 12 协议/状态聚合（多 FLOW/TEAM 容器、待配置/待启动提示、removed 消失）→ Task 13 右侧 `WorkUnitSection` + 跳转已有详情页 + 移除。
 - **Chunk 6**：Task 14 端到端 IT（`WorkUnitSlashIntentIT` + 桌面 `ChatControllerTest`）→ Task 15 文档同步 → Task 16 全量验证。
 
 ## 执行规则
@@ -117,7 +118,7 @@ toolContext.getContext().get(BaBiQSandboxInterceptor.CONTEXT_CWD)   // 取 cwd/s
 
 ```powershell
 cd E:\BaBiQ\backend
-.\mvnw.cmd "-Dtest=ExecutionIntentTest,TurnStartHandlerTest,WorkUnitIntentInstructionBuilderTest,WorkUnitServiceTest,WorkUnitManageToolTest,WorkUnitHandlersTest,FlowOrchestrationToolTest,TeamCoordinationToolTest,SchemaCommentsCoverageTest,WorkUnitSlashIntentIT" test
+.\mvnw.cmd "-Dtest=TurnStartHandlerTest,WorkUnitServiceTest,WorkUnitManageToolTest,WorkUnitHandlersTest,FlowOrchestrationToolWorkUnitTest,TeamCoordinationToolWorkUnitTest,SchemaCommentsCoverageTest,WorkUnitSlashIntentIT" test
 .\mvnw.cmd clean verify
 
 cd ..\desktop
@@ -135,7 +136,7 @@ cd ..\desktop
 - "显式启动阶段 goalId 经 ToolContext（非模型串参）"的实现与测试证据。
 - "用户显式启动 flow/team 仍弹审批"的测试证据。
 - "模型/Provider/高权限策略只能用户手动配置"的 UI 与测试证据。
-- 用户正文不含 slash 语法、新表 schema 注释覆盖、`current_turn` 注入不污染 recent_history 的证据。
+- 用户正文不含 slash 语法、新表 schema 注释覆盖、slash create-only 不注入模型上下文的证据。
 - 中文 conventional commit 列表；明确未 push；是否执行真实模型烟测。
 
 ## 与 Codex / Claude Code 的关系

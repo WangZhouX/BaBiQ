@@ -4,7 +4,7 @@
 
 **Goal:** 在对话输入框提供 `/子代理`、`/编排`、`/团队` 显式入口，并把 `/编排`、`/团队` 变成“创建或复用命名工作容器”的前置动作。容器创建后保持 `待配置 / 待启动`，后续节点/成员配置、模型选择和开始执行复用已有编排详情 / 团队详情页面；同一容器可持续承接多个目标、并发存在、完成后移除并从 UI 消失。
 
-**Architecture:** 桌面端解析 slash 命令并把结构化 `executionIntent` 随 `turn/start` 发送；后端保留用户原始任务文本不污染聊天历史。**容器创建走服务端确定性逻辑**：slash intent 是确定性结构化输入（mode+name+goal 已由用户选定），`submit()` 路径 create-or-reuse `WorkUnit` 容器并 append 初始目标，随后把容器置为 `WAITING_CONFIG` 或 `WAITING_START`，向桌面端返回/刷新右侧工作容器状态。主 Agent 可以通过自然语言管理工具辅助修改目标、节点职责或成员职责，但**模型 / Provider / 高权限策略必须由用户在详情页手动配置**。开始执行必须来自用户显式动作：点击已有编排/团队详情页的“开始执行”，或在对话中明确要求主 Agent 启动；只有启动阶段才把 `goalId` 注入 `ToolContext` 并调用现有 `orchestrate_flow` / `coordinate_team` 回写目标状态。`work_unit_manage` 工具用于自然语言管理（追加目标、修改目标/职责、移除容器、按用户要求启动），不是 slash 路径建容器的必经跳。
+**Architecture:** 桌面端解析 slash 命令并把结构化 `executionIntent` 随 `turn/start` 发送；后端保留用户原始任务文本不污染聊天历史。**容器创建走服务端确定性逻辑**：slash intent 是确定性结构化输入（mode+name+goal 已由用户选定），`turn/start` 路径 create-or-reuse `WorkUnit` 容器并 append 初始目标，随后把容器置为 `WAITING_CONFIG`，向桌面端返回/刷新右侧工作容器状态。主 Agent 可以通过自然语言管理工具辅助修改目标、节点职责或成员职责，但**模型 / Provider / 高权限策略必须由用户在详情页手动配置**。开始执行必须来自用户显式动作：点击已有编排/团队详情页的“开始执行”，或在对话中明确要求主 Agent 启动；只有启动阶段才把 `goalId` 注入 `ToolContext` 并调用现有 `orchestrate_flow` / `coordinate_team` 回写目标状态。`work_unit_manage` 工具用于自然语言管理（追加目标、修改目标/职责、移除容器、按用户要求启动），不是 slash 路径建容器的必经跳。
 
 **Tech Stack:** Kotlin Compose Desktop、Ktor WebSocket JSON-RPC、Java 21、Spring Boot、SQLite + MyBatis-Plus + Flyway、Spring AI Alibaba ReactAgent / FlowAgent / StateGraph、BaBiQ 现有审批 / 沙箱 / 运行记录 / 协议 item 链路。
 
@@ -15,6 +15,8 @@
 - 已落地桌面 slash 解析、`executionIntent` 协议、服务端确定性 WorkUnit 创建/复用、目标队列、SQLite 事实源、`work_unit_manage`、`workunit/list`、`workunit/remove`、显式启动 goalId 关联和右侧工作容器 UI。
 - `/编排`、`/团队` 只创建/复用命名容器并追加目标，不自动调用 `orchestrate_flow` / `coordinate_team`；用户正文只保留目标文本，不写入 slash 控制语法。
 - 详情页模型/Provider/高权限策略仍由用户手动配置；显式启动时才把 `goalId` 关联到本轮工具上下文并回写目标状态。
+- 实现修订：后端没有单独落地 `ExecutionIntent` / `ExecutionIntentMode` 模型，也没有 `WorkUnitIntentInstructionBuilder`。桌面端仍发送结构化 `executionIntent`，后端由 `TurnStartHandler.parseWorkUnitCreateRequest(...)` 直接解析为 `WorkUnitCreateRequest` 并创建容器；slash create-only 路径跳过 AgentLoop，因此不需要向模型注入“已创建、等待配置/启动”的额外指令。
+- 实现修订：WorkUnit 当前事实源使用 5 个状态：`waiting_config`、`running`、`completed`、`failed`、`removed`。原计划中的 `waiting_start` 没有独立落库；“待启动”是 `waiting_config` 下的 UI/业务提示含义。
 - 定向测试已通过；全量验证和最终提交见 `codex-handoff.md` 与本次完成报告。
 
 ## 0. 用户确认后的心智模型
@@ -93,15 +95,14 @@ workUnitId: wu_...
 threadId: thr_...
 type: TEAM | FLOW
 name: 前端验收组
-status: WAITING_CONFIG | WAITING_START | RUNNING | COMPLETED | FAILED | REMOVED
+status: WAITING_CONFIG | RUNNING | COMPLETED | FAILED | REMOVED
 currentGoalId: goal_...
 removed: false
 ```
 
 状态语义补充：
 
-- `WAITING_CONFIG`：slash 创建 / 复用后，仍需要用户检查节点/成员职责或模型配置。
-- `WAITING_START`：职责已保存，等待用户点击“开始执行”或明确告知主 Agent 启动。
+- `WAITING_CONFIG`：slash 创建 / 复用后，仍需要用户检查节点/成员职责或模型配置；UI 可在此状态下提示“待启动”，但不单独落库 `WAITING_START`。
 - `RUNNING`：用户显式启动后，才进入真实编排 / 团队执行链路。
 - `COMPLETED` / `FAILED` / `REMOVED`：完成、失败或从页面移除；移除不删除审计事实。
 
@@ -118,7 +119,7 @@ runRefId: team_... 或 orch_...
 
 用户继续使用同名容器时（**slash 路径由服务端 `WorkUnitService` 确定性处理，不依赖模型先调工具**）：
 
-- 容器不存在：服务端创建容器，append 目标，得 `goalId`，容器进入 `WAITING_CONFIG` 或 `WAITING_START`，不自动执行。
+- 容器不存在：服务端创建容器，append 目标，得 `goalId`，容器进入 `WAITING_CONFIG`，不自动执行。
 - 容器存在且不是 running：服务端复用容器，append 目标，得 `goalId`，容器保持待配置 / 待启动，不自动执行。
 - 容器 running：服务端默认把目标 append 为 `pending`（排队），不会抢占当前执行。**仅当用户用自然语言要求**“补充当前目标 / 排到下一个”时，主 Agent 才调用 `work_unit_manage` 调整——这是需要语言判断、无法纯结构化决定的少数场景。
 - 用户点击详情页“开始执行”或明确说“启动某某编排/团队”时，才把目标切到 running，并由主 Agent 调用 `orchestrate_flow` / `coordinate_team`。
@@ -127,9 +128,9 @@ runRefId: team_... 或 orch_...
 
 ### 2.3 名称唯一
 
-- 同一 thread 内，`removed=0` 且 `status in ('queued','running')` 的 work unit 名称必须唯一。
-- 建议唯一键语义：`thread_id + type + normalized_name + active_status`，实现时可用 service 校验，不强依赖复杂 SQLite partial index。
-- 如果 `/团队 前端验收组：...` 时已有运行中的同名团队，返回明确错误或追加为该团队的 queued goal。
+- 同一 thread 内，`removed=0` 的同 kind + normalized_name 容器优先复用；运行中容器追加 pending goal，不替换当前执行目标。
+- 建议唯一键语义：`thread_id + kind + normalized_name + removed` 的服务层校验；实现时用 `WorkUnitService` 串行事务处理，不强依赖复杂 SQLite partial index。
+- 如果 `/团队 前端验收组：...` 时已有运行中的同名团队，服务端追加为该团队的 pending goal，并保持当前 running 目标不变。
 - 团队和编排可以允许同名，也可以全局唯一；本阶段推荐 **同一 thread 内运行中的团队/编排名称全局唯一**，减少用户说“前端验收组”时的歧义。
 
 ### 2.4 移除
@@ -144,13 +145,10 @@ runRefId: team_... 或 orch_...
 
 ### 后端新增
 
-- Create: `backend/src/main/java/com/wzx/babiq/server/agent/intent/ExecutionIntent.java`
-- Create: `backend/src/main/java/com/wzx/babiq/server/agent/intent/ExecutionIntentMode.java`
 - Create: `backend/src/main/java/com/wzx/babiq/server/workunit/WorkUnit.java`
 - Create: `backend/src/main/java/com/wzx/babiq/server/workunit/WorkUnitGoal.java`
 - Create: `backend/src/main/java/com/wzx/babiq/server/workunit/WorkUnitRepository.java`
 - Create: `backend/src/main/java/com/wzx/babiq/server/workunit/WorkUnitService.java`
-- Create: `backend/src/main/java/com/wzx/babiq/server/workunit/WorkUnitIntentInstructionBuilder.java`
 - Create: `backend/src/main/java/com/wzx/babiq/server/tool/impl/WorkUnitManageTool.java`
 - Create: `backend/src/main/java/com/wzx/babiq/server/api/method/WorkUnitListHandler.java`
 - Create: `backend/src/main/java/com/wzx/babiq/server/api/method/WorkUnitRemoveHandler.java`
@@ -201,16 +199,15 @@ runRefId: team_... 或 orch_...
 - Modify: `desktop/src/test/kotlin/com/wzx/babiq/desktop/state/ChatControllerTest.kt`
 - Create: `desktop/src/test/kotlin/com/wzx/babiq/desktop/ui/chat/SlashCommandMenuTest.kt`
 - Create: `desktop/src/test/kotlin/com/wzx/babiq/desktop/ui/runtime/WorkUnitSectionTest.kt`
-- Create: `backend/src/test/java/com/wzx/babiq/server/agent/intent/ExecutionIntentTest.java`
 - Create: `backend/src/test/java/com/wzx/babiq/server/workunit/WorkUnitServiceTest.java`
-- Create: `backend/src/test/java/com/wzx/babiq/server/workunit/WorkUnitIntentInstructionBuilderTest.java`
 - Create: `backend/src/test/java/com/wzx/babiq/server/tool/impl/WorkUnitManageToolTest.java`
 - Create: `backend/src/test/java/com/wzx/babiq/server/api/method/WorkUnitHandlersTest.java`
 - Modify: `backend/src/test/java/com/wzx/babiq/server/api/method/TurnStartHandlerTest.java`
 - Modify: `backend/src/test/java/com/wzx/babiq/server/context/ContextAssemblerTest.java`
-- Modify: `backend/src/test/java/com/wzx/babiq/server/tool/impl/FlowOrchestrationToolTest.java`
-- Modify: `backend/src/test/java/com/wzx/babiq/server/tool/impl/TeamCoordinationToolTest.java`
+- Modify: `backend/src/test/java/com/wzx/babiq/server/tool/impl/FlowOrchestrationToolWorkUnitTest.java`
+- Modify: `backend/src/test/java/com/wzx/babiq/server/tool/impl/TeamCoordinationToolWorkUnitTest.java`
 - Modify: `backend/src/test/java/com/wzx/babiq/server/persistence/SchemaCommentsCoverageTest.java`
+- Create: `backend/src/test/java/com/wzx/babiq/server/workunit/WorkUnitSlashIntentIT.java`
 
 ---
 
@@ -439,22 +436,22 @@ git commit -m "feat(p6-4): turn start 携带显式执行意图"
 
 ## Chunk 2: 后端 intent 接收和上下文注入
 
-### Task 4: 后端 ExecutionIntent 模型
+### Task 4: 后端 executionIntent 解析模型（已简化）
 
 **Files:**
 
-- Create: `backend/src/main/java/com/wzx/babiq/server/agent/intent/ExecutionIntent.java`
-- Create: `backend/src/main/java/com/wzx/babiq/server/agent/intent/ExecutionIntentMode.java`
-- Test: `backend/src/test/java/com/wzx/babiq/server/agent/intent/ExecutionIntentTest.java`
+- Modify: `backend/src/main/java/com/wzx/babiq/server/api/method/TurnStartHandler.java`
+- Use: `backend/src/main/java/com/wzx/babiq/server/workunit/WorkUnitCreateRequest.java`
+- Test: `backend/src/test/java/com/wzx/babiq/server/api/method/TurnStartHandlerTest.java`
 
 - [ ] **Step 1: 写失败测试**
 
 覆盖：
 
-- `TEAM` / `FLOW` 必须有 name 与 task。
-- `SUB_AGENT` 不需要 name。
-- mode 非法时报 `INVALID_PARAMS`。
-- 归一化名称会去除首尾空白和连续空格。
+- `executionIntent.type=create_work_unit` 时，`kind/name/goal` 必填。
+- `kind` 只允许 `orchestration` 或 `team`。
+- slash create-only 路径创建 WorkUnit 后完成 turn，不提交 `TurnExecutor`。
+- 缺少必填字段或非法 kind 时返回 `INVALID_PARAMS`。
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -462,27 +459,14 @@ Run:
 
 ```powershell
 cd E:\BaBiQ\backend
-.\mvnw.cmd "-Dtest=ExecutionIntentTest" test
+.\mvnw.cmd "-Dtest=TurnStartHandlerTest" test
 ```
 
 Expected: FAIL。
 
-- [ ] **Step 3: 实现模型**
+- [ ] **Step 3: 实现解析**
 
-Java record 示例：
-
-```java
-public record ExecutionIntent(
-        ExecutionIntentMode mode,
-        String source,
-        String name,
-        String task,
-        String rawCommand
-) {
-    public static ExecutionIntent none() { ... }
-    public ExecutionIntent normalized() { ... }
-}
-```
+实现选择：不额外新增 `ExecutionIntent` / `ExecutionIntentMode` 后端 record。桌面端仍发送结构化 `executionIntent`，后端在 `TurnStartHandler.parseWorkUnitCreateRequest(...)` 中直接解析为 `WorkUnitCreateRequest`，减少一层只转发字段的 DTO。
 
 - [ ] **Step 4: 运行测试确认通过**
 
@@ -490,7 +474,7 @@ Run:
 
 ```powershell
 cd E:\BaBiQ\backend
-.\mvnw.cmd "-Dtest=ExecutionIntentTest" test
+.\mvnw.cmd "-Dtest=TurnStartHandlerTest" test
 ```
 
 Expected: BUILD SUCCESS。
@@ -498,8 +482,8 @@ Expected: BUILD SUCCESS。
 - [ ] **Step 5: 中文 commit**
 
 ```powershell
-git add backend/src/main/java/com/wzx/babiq/server/agent/intent backend/src/test/java/com/wzx/babiq/server/agent/intent
-git commit -m "feat(p6-4): 增加后端执行意图模型"
+git add backend/src/main/java/com/wzx/babiq/server/api/method/TurnStartHandler.java backend/src/main/java/com/wzx/babiq/server/workunit backend/src/test/java/com/wzx/babiq/server/api/method/TurnStartHandlerTest.java
+git commit -m "feat(p6-4): 解析显式工作容器意图"
 ```
 
 ### Task 5: TurnStartHandler 解析 intent
@@ -538,7 +522,7 @@ Expected: FAIL。
 - `TurnExecutor.submit(turn, userText, providerId, cwd, emitter, runPolicy, executionIntent)`
 - `AgentLoop.invoke(turn, userText, providerId, cwd, emitter, runPolicy, executionIntent)`
 
-**TEAM / FLOW intent 在此路径服务端确定性建容器**：调用 `WorkUnitService.createOrReuseAndAppendGoal(threadId, type, name, goalText)` 拿到 `goalId`，但本阶段只把容器置为 `WAITING_CONFIG` / `WAITING_START`，刷新右侧工作容器状态，不把 `goalId` 立即传给 `AgentLoop` 执行。**不要**让模型先调 `work_unit_manage` 才有容器，也不要让 slash 命令自动启动 flow/team。
+**TEAM / FLOW intent 在此路径服务端确定性建容器**：调用 `WorkUnitService.createOrAppend(...)` 拿到 `goalId`，但本阶段只把容器置为 `WAITING_CONFIG`，刷新右侧工作容器状态，不把 `goalId` 立即传给 `AgentLoop` 执行。**不要**让模型先调 `work_unit_manage` 才有容器，也不要让 slash 命令自动启动 flow/team。
 
 不要把 `rawCommand` 写入 `bq_items` 的 user message。
 
@@ -560,24 +544,21 @@ git add backend/src/main/java/com/wzx/babiq/server/api/method/TurnStartHandler.j
 git commit -m "feat(p6-4): turn start 接收显式执行意图"
 ```
 
-### Task 6: 当前窗口注入 intent 指令
+### Task 6: slash create-only 路径不注入模型指令（已简化）
 
 **Files:**
 
-- Create: `backend/src/main/java/com/wzx/babiq/server/workunit/WorkUnitIntentInstructionBuilder.java`
-- Modify: `backend/src/main/java/com/wzx/babiq/server/context/ContextWindowRuntime.java`
-- Modify: `backend/src/main/java/com/wzx/babiq/server/context/ContextAssembler.java`
-- Test: `backend/src/test/java/com/wzx/babiq/server/workunit/WorkUnitIntentInstructionBuilderTest.java`
-- Test: `backend/src/test/java/com/wzx/babiq/server/context/ContextAssemblerTest.java`
+- Modify: none.
+- Test: `backend/src/test/java/com/wzx/babiq/server/api/method/TurnStartHandlerTest.java`
+- Test: `backend/src/test/java/com/wzx/babiq/server/workunit/WorkUnitSlashIntentIT.java`
 
 - [ ] **Step 1: 写失败测试**
 
-断言（**注入进现有 `current_turn` 权威层**，不新造弱层——`ContextAssembler` 的 `current_turn` 已被系统提示赋予最高优先级；若另起新层须确保同等权威）：
+断言：
 
-- `TEAM` intent 注入 `current_turn` 指令：容器与目标**已在服务端创建**，当前状态为待配置 / 待启动，要求主 Agent **不要自动调用 `coordinate_team`**，而是提示用户进入已有团队详情页配置成员职责、模型并手动启动。
-- `FLOW` intent 注入 `current_turn` 指令：容器与目标已在服务端创建，当前状态为待配置 / 待启动，要求主 Agent **不要自动调用 `orchestrate_flow`**，而是提示用户进入已有编排详情页配置节点职责、模型并手动启动。
-- `SUB_AGENT` intent 注入只读 explorer 委派指令。
-- 注入内容不出现在 recent_history，不污染下一轮历史。
+- `executionIntent.type=create_work_unit` 时服务端创建 WorkUnit 后直接完成 turn。
+- create-only slash 路径不提交 `TurnExecutor`，因此不会进入 `AgentLoop` / `ContextAssembler` / 模型上下文装配。
+- 后续显式启动通过 `work_unit_manage start` 或详情页动作进入 AgentLoop，并在启动阶段注入 `goalId` 到 `ToolContext`。
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -585,23 +566,14 @@ Run:
 
 ```powershell
 cd E:\BaBiQ\backend
-.\mvnw.cmd "-Dtest=WorkUnitIntentInstructionBuilderTest,ContextAssemblerTest" test
+.\mvnw.cmd "-Dtest=TurnStartHandlerTest,WorkUnitSlashIntentIT" test
 ```
 
 Expected: FAIL。
 
-- [ ] **Step 3: 实现指令构建器**
+- [ ] **Step 3: 保持确定性 create-only 实现**
 
-示例语义：
-
-```text
-用户通过 slash command 显式选择 TEAM 模式。
-目标容器名称：前端验收组。
-本轮目标：检查技能页。
-该团队容器与本轮目标已由系统创建/复用，当前处于待配置 / 待启动状态。
-你不应自动调用 coordinate_team；请提示用户进入团队详情页配置成员职责、模型与权限，然后由用户手动开始执行。
-只有当用户用自然语言要求“修改目标 / 修改成员职责 / 补充当前目标 / 排到下一个 / 启动某容器 / 移除某容器”时，才调用 work_unit_manage 调整。
-```
+不新增 `WorkUnitIntentInstructionBuilder`。理由：slash 创建容器本身不进入模型，直接由后端创建/复用容器并发 `workUnit` item。向模型注入“不要执行”的指令反而会扩大上下文和污染面；显式启动阶段已有 `ToolContext` goalId 关联和 flow/team 工具回写测试覆盖。
 
 - [ ] **Step 4: 运行测试确认通过**
 
@@ -609,7 +581,7 @@ Run:
 
 ```powershell
 cd E:\BaBiQ\backend
-.\mvnw.cmd "-Dtest=WorkUnitIntentInstructionBuilderTest,ContextAssemblerTest" test
+.\mvnw.cmd "-Dtest=TurnStartHandlerTest,WorkUnitSlashIntentIT" test
 ```
 
 Expected: BUILD SUCCESS。
@@ -617,8 +589,8 @@ Expected: BUILD SUCCESS。
 - [ ] **Step 5: 中文 commit**
 
 ```powershell
-git add backend/src/main/java/com/wzx/babiq/server/workunit backend/src/main/java/com/wzx/babiq/server/context backend/src/test/java/com/wzx/babiq/server/workunit backend/src/test/java/com/wzx/babiq/server/context
-git commit -m "feat(p6-4): 在上下文中注入显式模式指令"
+git add backend/src/main/java/com/wzx/babiq/server/api/method/TurnStartHandler.java backend/src/test/java/com/wzx/babiq/server/api/method/TurnStartHandlerTest.java backend/src/test/java/com/wzx/babiq/server/workunit/WorkUnitSlashIntentIT.java
+git commit -m "test(p6-4): 钉住 slash 工作容器 create-only 语义"
 ```
 
 ---
@@ -718,7 +690,7 @@ git commit -m "feat(p6-4): 建立命名工作容器事实源"
 覆盖：
 
 - 不存在同名容器时创建。
-- 已完成容器追加新目标并变为 queued / running。
+- 已完成容器追加新目标并回到 `waiting_config`；运行中容器追加 pending goal，但当前目标仍保持 running。
 - 运行中同名容器追加目标为 pending 或返回冲突，由 service 明确决定。
 - removed 容器不复用，同名创建新容器。
 - remove running 容器失败。
@@ -739,10 +711,10 @@ Expected: FAIL。
 
 推荐规则：
 
-- `createOrReuseAndAppendGoal(threadId, type, name, goalText)`
-- 如果同名容器 running，追加目标为 `pending` 并返回 `queued=true`。
-- 如果同名容器 idle / completed / failed，追加目标并设置容器状态为 `queued`。
-- `remove(workUnitId)` 只允许 `idle`、`completed`、`failed`。
+- `createOrAppend(request, thread, turn, cwd, runPolicy)`
+- 如果同名容器 running，追加目标为 `pending`，但不替换 `currentGoalId`，容器状态保持 `running`。
+- 如果同名容器 completed / failed / waiting_config，追加目标并设置容器状态为 `waiting_config`。
+- `remove(workUnitId)` 只允许 `waiting_config`、`completed`、`failed`。
 
 - [ ] **Step 4: 运行测试确认通过**
 
@@ -781,7 +753,7 @@ git commit -m "feat(p6-4): 支持工作容器复用和目标队列"
 - 能移除 completed 容器。
 - running 容器移除失败。
 - capability searchText 包含 `团队 编排 工作容器 目标 追加 移除` 中文别名。
-- system prompt 告诉主 Agent：**slash intent 的容器/目标已由服务端建好，但处于待配置 / 待启动状态，不能自动执行**；只有自然语言管理（修改目标/职责、补充/排队/追加、按用户明确要求启动、移除）才调 `work_unit_manage`。
+- system prompt 告诉主 Agent：**slash intent 的容器/目标已由服务端建好，但处于 waiting_config（待配置/待启动提示）状态，不能自动执行**；只有自然语言管理（修改目标/职责、补充/排队/追加、按用户明确要求启动、移除）才调 `work_unit_manage`。
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -849,8 +821,8 @@ git commit -m "feat(p6-4): 增加工作容器管理工具"
 
 - Modify: `backend/src/main/java/com/wzx/babiq/server/tool/impl/FlowOrchestrationTool.java`
 - Modify: `backend/src/main/java/com/wzx/babiq/server/tool/impl/TeamCoordinationTool.java`
-- Test: `backend/src/test/java/com/wzx/babiq/server/tool/impl/FlowOrchestrationToolTest.java`
-- Test: `backend/src/test/java/com/wzx/babiq/server/tool/impl/TeamCoordinationToolTest.java`
+- Test: `backend/src/test/java/com/wzx/babiq/server/tool/impl/FlowOrchestrationToolWorkUnitTest.java`
+- Test: `backend/src/test/java/com/wzx/babiq/server/tool/impl/TeamCoordinationToolWorkUnitTest.java`
 
 - [ ] **Step 1: 写失败测试**
 
@@ -867,7 +839,7 @@ Run:
 
 ```powershell
 cd E:\BaBiQ\backend
-.\mvnw.cmd "-Dtest=FlowOrchestrationToolTest,TeamCoordinationToolTest" test
+.\mvnw.cmd "-Dtest=FlowOrchestrationToolWorkUnitTest,TeamCoordinationToolWorkUnitTest" test
 ```
 
 Expected: FAIL。
@@ -889,7 +861,7 @@ Run:
 
 ```powershell
 cd E:\BaBiQ\backend
-.\mvnw.cmd "-Dtest=FlowOrchestrationToolTest,TeamCoordinationToolTest" test
+.\mvnw.cmd "-Dtest=FlowOrchestrationToolWorkUnitTest,TeamCoordinationToolWorkUnitTest" test
 ```
 
 Expected: BUILD SUCCESS。
@@ -1091,7 +1063,7 @@ git commit -m "feat(p6-4): 运行详情展示命名团队和编排"
 - `/团队 前端验收组：检查聊天页` 解析为 TEAM intent。
 - 创建 `前端验收组` work unit。
 - 追加 goal。
-- 容器进入 `WAITING_CONFIG` / `WAITING_START`，slash 本身不调用 `coordinate_team`。
+- 容器进入 `WAITING_CONFIG`，slash 本身不调用 `coordinate_team`。
 - `workunit/list` 返回该容器，状态和目标正确。
 - 用户显式启动后，主 Agent 才调用 `coordinate_team`。
 - goal 关联 `teamId` 并完成。
@@ -1195,7 +1167,7 @@ Run:
 
 ```powershell
 cd E:\BaBiQ\backend
-.\mvnw.cmd "-Dtest=ExecutionIntentTest,TurnStartHandlerTest,WorkUnitIntentInstructionBuilderTest,WorkUnitServiceTest,WorkUnitManageToolTest,WorkUnitHandlersTest,FlowOrchestrationToolTest,TeamCoordinationToolTest,SchemaCommentsCoverageTest,WorkUnitSlashIntentIT" test
+.\mvnw.cmd "-Dtest=TurnStartHandlerTest,WorkUnitServiceTest,WorkUnitManageToolTest,WorkUnitHandlersTest,FlowOrchestrationToolWorkUnitTest,TeamCoordinationToolWorkUnitTest,SchemaCommentsCoverageTest,WorkUnitSlashIntentIT" test
 ```
 
 Expected: BUILD SUCCESS。
@@ -1286,9 +1258,9 @@ git commit -m "fix(p6-4): 修正 slash 工作容器验收问题"
 - **slash 后误自动执行**：容器 create/reuse/append-goal 改为**服务端确定性**完成，但只进入待配置 / 待启动；测试必须钉住 slash 本身不调用 `coordinate_team`/`orchestrate_flow`。真正执行只在用户显式启动后发生，goalId 经 ToolContext 注入，不靠模型串参。
 - **名称唯一的并发（TOCTOU）**：create-or-reuse 必须包在**事务**里（复用 BaBiQ 压缩链路已有的 `TransactionTemplate` 同款），避免同名容器并发重复创建；SQLite 单写场景风险低，但仍按事务边界实现。
 - **审批闸门必须保留**：用户显式启动 flow/team 后仍走 P6-2/P6-3 的 approve-once 审批弹窗——复用同工具应自动保留，但**补一个测试钉死**（启动时弹审批、批准后才执行）。
-- **`current_turn` 层权威**：intent 指令注入**现有 `current_turn` 权威层**（系统提示已写其优先级最高）；若另起 `current_turn_instruction` 新层，必须确保拿到同等权威，否则注入指令可能不被当作本轮最高优先。
+- **slash create-only 不污染上下文**：slash 创建/复用容器后直接完成 turn，不向 `current_turn` 注入额外模型指令；真正启动时通过 ToolContext 传递 goalId，避免把控制语义混进对话上下文。
 - **名称歧义**：运行中的名称（同 thread 内）唯一；完成/移除后同名允许重新创建。
-- **目标排队太复杂**：第一版只支持追加 pending goal，运行中不自动并发启动 queued goal；下一轮由主 Agent 或用户继续触发。
+- **目标队列太复杂**：第一版只支持追加 pending goal，运行中不自动并发启动后续目标；下一轮由主 Agent 或用户继续触发。
 - **移除误解为删除历史**：UI 文案使用“从页面移除”，不写“删除历史”。
 - **协议污染历史**：测试必须钉住 `bq_items.userMessage.text` 不含 slash 控制语法。
 - **模型配置被 Agent 自动改写**：模型、Provider、高权限策略属于用户手动配置区；自然语言管理工具只能改目标和职责文本，不改模型配置。

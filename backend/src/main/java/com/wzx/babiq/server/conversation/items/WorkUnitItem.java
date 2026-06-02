@@ -13,7 +13,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
  * @param workUnitId 工作容器 id
  * @param kind orchestration 或 team
  * @param name 用户可读名称
- * @param status waiting_config、waiting_start、running、completed、failed 或 removed
+ * @param status waiting_config、running、completed、failed 或 removed；待启动是 waiting_config 下的 UI 提示
  * @param activeGoalId 当前最近追加的目标 id
  * @param activeGoal 当前最近追加的目标文本
  * @param goalCount 容器内目标数量

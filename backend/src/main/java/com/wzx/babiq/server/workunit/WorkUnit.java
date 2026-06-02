@@ -13,7 +13,7 @@ import java.time.Instant;
  * @param kind orchestration 或 team
  * @param name 用户可读名称
  * @param normalizedName 归一化名称，用于同名复用
- * @param status waiting_config、waiting_start、running、completed、failed 或 removed
+ * @param status waiting_config、running、completed、failed 或 removed；待启动是 waiting_config 下的 UI 提示
  * @param currentGoalId 当前正在执行或最近激活的目标 id
  * @param cwd 创建时工作目录快照
  * @param sandboxMode 创建时沙箱模式快照
