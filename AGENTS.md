@@ -206,6 +206,12 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
 - 能力 searchText 已支持中文 query：本地工具和 MCP 工具的 searchText 通过
   `CapabilityCatalogSyncService` 内置中文别名字典自动富化；Lucene/BM25 现在
   可以命中典型中文 query。
+- P3-6 官方 SkillRegistry 薄封装已完成：
+  - `docs/superpowers/plans/p3-6-skill-official-registry/plan.md`
+  - `docs/superpowers/plans/p3-6-skill-official-registry/codex-handoff.md`
+  - 已按 Context7 和本地 jar 核对 Spring AI Alibaba `SkillRegistry`、`FileSystemSkillRegistry` 和 `SkillMetadata`；后端 `LocalSkillRegistry` 改为薄封装官方 registry，不再手写 front-matter 解析。
+  - 默认 Skill 目录迁移到 `~/.agents/skills` 与 `<cwd>/.agents/skills`；旧 `~/.codex/skills` 仅通过 `babiq.skills.additional-directories` 显式恢复。
+  - `allowedTools` 仅作为后端 `SkillInfo` 元数据透出，不参与工具授权，不做桌面展示；不接 `SkillPromptAugmentAdvisor`、`SpringAiSkillAdvisor`、`SkillsAgentHook`，继续走 BaBiQ `tool_search`、审批、沙箱和 SQLite 审计。
 - P4 Plan/Todo 可视化已完成：
   - `docs/superpowers/plans/p4-plan-todo-visualization/plan.md`
   - `docs/superpowers/plans/p4-plan-todo-visualization/codex-handoff.md`
@@ -277,10 +283,10 @@ P1-4 已完成范围：
 
 下一阶段边界：
 
-- P2-1、P2-2、P2-3、P2-4、P2-5、P2-6 已完成；用户已暂时验收 P2，P3-1 最小上下文底座、P3-2 当前窗口管理运行时、P3-3 短期记忆/上下文压缩、P3-3a 鲁棒性补强、P3-4 长期记忆异步流水线、P3-5 按需能力装配、P3-5a Lucene 能力搜索替换、P4 Plan/Todo 可视化、P5 ReasoningItem 接通、P6-1 只读子 Agent 委派已全量闭环（代码 + 自动化 + 真实烟测），P6-2 flow 编排已完成自动化验收；P6-0 spike 完成、P6-3 计划就绪。
+- P2-1、P2-2、P2-3、P2-4、P2-5、P2-6 已完成；用户已暂时验收 P2，P3-1 最小上下文底座、P3-2 当前窗口管理运行时、P3-3 短期记忆/上下文压缩、P3-3a 鲁棒性补强、P3-4 长期记忆异步流水线、P3-5 按需能力装配、P3-5a Lucene 能力搜索替换、P3-6 官方 SkillRegistry 薄封装、P4 Plan/Todo 可视化、P5 ReasoningItem 接通、P6-1 只读子 Agent 委派已全量闭环（代码 + 自动化 + 真实烟测），P6-2 flow 编排已完成自动化验收；P6-0 spike 完成、P6-3 计划就绪。
 - P2-6 已完成 MCP Client 最小接入；后续如要扩展远程 MCP、OAuth、插件市场、MCP server 开发或复杂沙箱编排，必须进入新阶段计划，不得混入 P2 收口。
 - P3 当前限定为 Codex 级当前窗口管理、短期记忆/上下文压缩、长期记忆平台；Multi-Agent、真 OS 沙箱、A2A、多模态仍属于后续阶段，不能混入 P3。
-- P3-1 已完成最小底座；P3-2 已完成真实 Agent 前置接入、快照持久化和 UI 指示；P3-3 已完成短期压缩、summary 替换 active window 和 `ContextCompactionItem` 事件；P3-3a 已补齐压缩审计、事务安装、乐观锁和恢复服务；P3-4 已完成长期记忆异步提取、secret redaction、Phase 2 归并和 summary read path 注入；P3-5 已完成按需工具/Skill/MCP 能力装配、`tool_search`、长期记忆检索增强和桌面控制；P3-5a 已把能力搜索底层替换为 Spring AI Community Lucene/BM25 并移除自实现 fallback；P4 已完成计划/Todo 可视化的协议、工具、prompt 和桌面运行面板接入；P5 已接通真实 reasoning_content 到 ReasoningItem 和桌面思考过程折叠块；P6-1 已接通只读 `explorer` 子 Agent 委派、运行记录归属和桌面子 Agent 面板；P6-2 已接通 flow 编排工具、官方 flow agent 薄封装、编排持久化和桌面编排面板。后续专项增强必须先写详细 plan 并由用户确认。
+- P3-1 已完成最小底座；P3-2 已完成真实 Agent 前置接入、快照持久化和 UI 指示；P3-3 已完成短期压缩、summary 替换 active window 和 `ContextCompactionItem` 事件；P3-3a 已补齐压缩审计、事务安装、乐观锁和恢复服务；P3-4 已完成长期记忆异步提取、secret redaction、Phase 2 归并和 summary read path 注入；P3-5 已完成按需工具/Skill/MCP 能力装配、`tool_search`、长期记忆检索增强和桌面控制；P3-5a 已把能力搜索底层替换为 Spring AI Community Lucene/BM25 并移除自实现 fallback；P3-6 已把本地 Skill 层改为薄封装官方 `FileSystemSkillRegistry`，并迁移到 `.agents/skills` 用户/项目目录；P4 已完成计划/Todo 可视化的协议、工具、prompt 和桌面运行面板接入；P5 已接通真实 reasoning_content 到 ReasoningItem 和桌面思考过程折叠块；P6-1 已接通只读 `explorer` 子 Agent 委派、运行记录归属和桌面子 Agent 面板；P6-2 已接通 flow 编排工具、官方 flow agent 薄封装、编排持久化和桌面编排面板。后续专项增强必须先写详细 plan 并由用户确认。
 - P2 范围内 SQLite 使用 MyBatis-Plus 和 Java 常见分层，但 Agent 核心不得直接依赖 Mapper；必须通过 repository/adapter 或 application service 隔离。
 - 后续任何新增业务表或业务字段都必须同步 SQL 中文注释、`bq_schema_comments` 元数据和覆盖测试。
 

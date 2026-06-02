@@ -2,15 +2,11 @@ package com.wzx.babiq.server.skill;
 
 import org.springframework.stereotype.Service;
 
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-
 /**
  * Skill 正文加载器。
  *
- * <p>metadata 可以被能力目录常驻扫描，但正文只在用户显式查看或模型搜索命中后按需读取。
- * 该类统一做字符预算截断，防止一个超长 SKILL.md 撑爆上下文窗口。</p>
+ * <p>metadata 可以被能力目录常驻扫描，正文只在用户显式查看或模型按需装配命中后读取。
+ * 读取动作统一委托给 Spring AI Alibaba 官方 SkillRegistry，BaBiQ 只负责字符预算截断。</p>
  */
 @Service
 public class SkillContentLoader {
@@ -35,7 +31,7 @@ public class SkillContentLoader {
         SkillDescriptor descriptor = registry.findById(skillId)
                 .orElseThrow(() -> new IllegalArgumentException("未知 Skill: " + skillId));
         try {
-            String content = Files.readString(Path.of(descriptor.skillFile()), StandardCharsets.UTF_8);
+            String content = registry.readFullContent(descriptor);
             int limit = properties.maxContentChars();
             boolean truncated = content.length() > limit;
             String clipped = truncated ? content.substring(0, limit) : content;

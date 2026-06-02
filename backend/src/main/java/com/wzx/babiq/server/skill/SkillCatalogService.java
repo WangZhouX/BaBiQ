@@ -47,6 +47,7 @@ public class SkillCatalogService {
                 descriptor.description(),
                 descriptor.sourceDirectory(),
                 descriptor.skillFile(),
-                descriptor.contentHash());
+                descriptor.contentHash(),
+                descriptor.allowedTools());
     }
 }

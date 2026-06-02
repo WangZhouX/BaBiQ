@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wzx.babiq.server.mcp.McpToolCatalog;
 import com.wzx.babiq.server.mcp.McpToolDescriptor;
 import com.wzx.babiq.server.skill.LocalSkillRegistry;
+import com.wzx.babiq.server.skill.SkillDescriptor;
 import com.wzx.babiq.server.tool.ToolRegistry;
 import com.wzx.babiq.server.tool.impl.ReadFileTool;
 import com.wzx.babiq.server.tool.impl.UpdatePlanTool;
@@ -111,6 +112,39 @@ class CapabilityCatalogSyncServiceTest {
         CapabilityDescriptor descriptor = repository.findById("local.update_plan").orElseThrow();
         assertThat(descriptor.exposureMode()).isEqualTo(CapabilityExposureMode.VISIBLE);
         assertThat(descriptor.searchText()).contains("计划", "任务清单", "待办", "步骤", "规划");
+    }
+
+    @Test
+    @DisplayName("同步 Skill 能力时沿用稳定 capability id 且不会把 allowedTools 写进 searchText 授权")
+    @SuppressWarnings("unchecked")
+    void sync_should_keep_skill_capability_identity_stable() {
+        ToolRegistry toolRegistry = new ToolRegistry(List.of());
+        ObjectProvider<McpToolCatalog> mcpProvider = mock(ObjectProvider.class);
+        ObjectProvider<LocalSkillRegistry> skillProvider = mock(ObjectProvider.class);
+        LocalSkillRegistry skillRegistry = mock(LocalSkillRegistry.class);
+        CapturingCapabilityRepository repository = new CapturingCapabilityRepository();
+        when(mcpProvider.getIfAvailable()).thenReturn(null);
+        when(skillProvider.getIfAvailable()).thenReturn(skillRegistry);
+        when(skillRegistry.listSkills()).thenReturn(List.of(new SkillDescriptor(
+                "agent.context",
+                "agent",
+                "context",
+                "上下文治理 Skill",
+                "E:\\skills",
+                "E:\\skills\\agent\\context\\SKILL.md",
+                "hash",
+                List.of("read_file", "list_dir"))));
+        CapabilityCatalogSyncService service = new CapabilityCatalogSyncService(
+                toolRegistry, mcpProvider, skillProvider, repository, new ObjectMapper(), null);
+
+        service.sync();
+
+        CapabilityDescriptor descriptor = repository.findById("skill.agent.context").orElseThrow();
+        assertThat(descriptor.type()).isEqualTo(CapabilityType.SKILL);
+        assertThat(descriptor.namespace()).isEqualTo("agent");
+        assertThat(descriptor.name()).isEqualTo("context");
+        assertThat(descriptor.schemaHash()).isEqualTo("hash");
+        assertThat(descriptor.searchText()).contains("context", "上下文治理 Skill");
     }
 
     /**

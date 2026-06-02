@@ -2,7 +2,7 @@
 
 BaBiQ 是一个本地运行的 Codex-like AI Agent 学习项目。它的目标不是做一个云端商业产品，而是用 Java / Kotlin 生态完整复刻一个现代 Agent 桌面端应该具备的核心机制：对话协议、工具调用、人工审批、沙箱、持久化、上下文窗口管理、短期压缩和长期记忆。
 
-当前项目已经从 P1/P2 的“可用本地 Agent”推进到 P3 的“上下文与记忆平台”。截至当前仓库状态，P3-4 长期记忆异步流水线已经完成，P3-5 按需能力装配和记忆检索增强已经写好计划，尚未开始实现。
+当前项目已经从 P1/P2 的“可用本地 Agent”推进到 P3/P4/P5/P6 的“上下文、记忆、能力装配、计划可视化和多 Agent 实验平台”。截至当前仓库状态，P3-6 官方 SkillRegistry 薄封装已完成，P6-2 flow 编排自动化验收已完成。
 
 > 注意：这是学习项目，不建议直接作为生产级 Agent 平台使用。真实 API Key、数据库、日志、KeyStore 和本地配置都应放在环境变量或本地忽略文件中。
 
@@ -439,27 +439,33 @@ P3-4 已实现长期记忆异步流水线：
 - 长期记忆状态、设置、任务、artifact 和手动归并 JSON-RPC。
 - 桌面端长期记忆状态和控制。
 
-### 已完成：P3-5 计划
+### 已完成：P3-5 / P3-5a 能力装配与中文检索
 
-- 已创建计划文档：`docs/superpowers/plans/p3-5-capability-retrieval-control/plan.md`
-- 已创建交接文档：`docs/superpowers/plans/p3-5-capability-retrieval-control/codex-handoff.md`
-- 尚未开始实现。
+- 能力目录已统一 local tool、MCP tool 和 Skill metadata。
+- `tool_search` 已接入 BaBiQ 自有能力门控，模型按需发现 deferred 能力，实际执行仍走审批、沙箱、Spotlighting 和 SQLite 审计。
+- 长期记忆 read path 已支持有界检索增强。
+- 能力搜索底层已替换为 Spring AI Community `tool-searcher-lucene` / Lucene BM25。
+- `CapabilityCatalogSyncService` 已通过中文别名字典富化 searchText，典型中文 query 可以命中本地工具和 MCP 工具。
+
+### 已完成：P3-6 官方 SkillRegistry 薄封装
+
+- `LocalSkillRegistry` 已改为薄封装 Spring AI Alibaba 官方 `FileSystemSkillRegistry`。
+- 默认 Skill 目录已迁移为 `~/.agents/skills` 和 `<cwd>/.agents/skills`。
+- 旧 `~/.codex/skills` 不再默认扫描；如果需要兼容旧目录，请通过 `babiq.skills.additional-directories` 显式配置。
+- `allowedTools` 仅作为后端 Skill metadata 透出，不参与工具授权，不做桌面展示。
+- 本阶段不接 `SkillPromptAugmentAdvisor`、`SpringAiSkillAdvisor`、`SkillsAgentHook`，继续保持 BaBiQ 的 `tool_search`、审批、沙箱和 SQLite 审计链路。
 
 ---
 
 ## 尚未完成 / 后续路线
 
-### P3-5 待实现
+### 后续可选专项
 
-- 保持 Spring AI `1.1.6`，不把 `1.1.7` 升级作为 P3-5 前置任务。
-- Spring AI Community Dynamic Tool Search `1.0.x` 在当前 `1.1.6` 主线上的可选接入评估。
-- BaBiQ 能力目录持久化。
-- Local tool / MCP tool / Skill metadata 统一能力目录。
-- Codex 风格 deferred tool / `tool_search`。
-- Skill 最小注册表和按需加载。
-- 长期记忆检索增强。
-- Spring AI `VectorStore` 可选接入。
-- 桌面端能力装配和记忆检索控制。
+- 第三方 Skill 受管安装 / Skill 市场。
+- VectorStore 语义能力搜索和语义记忆检索增强。
+- 运行中逐工具审批 + flow 并发中断恢复。
+- P6-3 实时 team 协作。
+- 远程 MCP、OAuth、A2A、更强 OS 级沙箱和多模态能力。
 
 ### P3/P4+ 未完成能力
 

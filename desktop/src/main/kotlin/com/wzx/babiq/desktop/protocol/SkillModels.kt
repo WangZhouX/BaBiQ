@@ -12,6 +12,7 @@ data class SkillInfo(
 	val sourceDirectory: String,
 	val skillFile: String,
 	val contentHash: String,
+	val allowedTools: List<String> = emptyList(),
 )
 
 /** skills/list 响应。 */
