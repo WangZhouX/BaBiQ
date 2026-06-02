@@ -37,11 +37,20 @@ class SkillHandlersTest {
                 ---
                 name: context
                 description: 上下文治理 Skill
+                allowed_tools:
+                  - read_file
+                  - list_dir
                 ---
                 # Context
                 使用分层上下文窗口。
                 """);
-        SkillProperties properties = new SkillProperties(true, List.of(tempDir), 1_000);
+        SkillProperties properties = new SkillProperties(
+                true,
+                tempDir.resolve("empty-user-skills"),
+                tempDir.resolve("empty-project-skills"),
+                List.of(tempDir),
+                List.of(),
+                1_000);
         LocalSkillRegistry registry = new LocalSkillRegistry(properties);
         SkillCatalogService service = new SkillCatalogService(registry, new SkillContentLoader(registry, properties));
 
@@ -49,6 +58,7 @@ class SkillHandlersTest {
         assertThat(listResult).isInstanceOf(SkillListResult.class);
         SkillListResult skills = (SkillListResult) listResult;
         assertThat(skills.skills()).hasSize(1);
+        assertThat(skills.skills().get(0).allowedTools()).containsExactly("read_file", "list_dir");
 
         Object getResult = new SkillsGetHandler(service)
                 .handle(objectMapper.valueToTree(Map.of("skillId", skills.skills().get(0).id())), null);
@@ -56,5 +66,6 @@ class SkillHandlersTest {
         SkillGetResult skill = (SkillGetResult) getResult;
         assertThat(skill.content()).contains("分层上下文窗口");
         assertThat(skill.truncated()).isFalse();
+        assertThat(skill.skill().allowedTools()).containsExactly("read_file", "list_dir");
     }
 }

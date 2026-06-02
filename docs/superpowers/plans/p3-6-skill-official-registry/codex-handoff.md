@@ -163,3 +163,64 @@ cd ..\desktop
 
 - **决策已全部确认**：迁移取向 = **彻底 breaking**（默认仅 `.agents/skills`，`additional-directories` 默认空 + 迁移说明 + 测试）；实现 = **交 Codex**。无待确认项，直接按 plan §4 + 本修订段 TDD 落地。
 - 实现并通过 plan §8 验收后：评估是否做可选 ⚠️ 项（富 metadata 的 Java YAML 自解析），或进入 ⏭️ "第三方 skill 受管安装/市场"未来阶段（需先写该阶段详细 plan）。
+
+## 2026-06-02 实现完成记录
+
+本轮已按 P3-6 计划完成“官方 SkillRegistry 薄封装 + `.agents/skills` 目录迁移”：
+
+- 后端 `LocalSkillRegistry` 已改为聚合 Spring AI Alibaba 官方 `FileSystemSkillRegistry`，不再手写 `Files.walk` 扫描器或 front-matter 解析器。
+- 默认 Skill 根目录已切换为 `~/.agents/skills` 与 `<cwd>/.agents/skills`；旧 `~/.codex/skills` 不再默认扫描，只能通过 `babiq.skills.additional-directories` 显式恢复。
+- 项目级 Skill 目录由当前 BaBiQ 工作目录动态计算，切换 cwd 后会使用新的 `<cwd>/.agents/skills`。
+- `SkillDescriptor` / `SkillInfo` 已透出官方 `allowedTools` 元数据；该字段只用于后端 metadata 和协议兼容，不参与工具授权，不做桌面展示。
+- `SkillContentLoader` 通过官方 registry 读取正文，再在 BaBiQ 层执行 `maxContentChars` 截断；修改 `SKILL.md` 后再次 list/get 可看到最新 hash 和正文。
+- `skill.<id>` capability 映射保持稳定，仍走 `CapabilityCatalogSyncService`、Lucene/BM25 中文 searchText、`tool_search`、审批、沙箱和 SQLite 审计链路。
+- 本阶段没有接入 `SkillPromptAugmentAdvisor`、`SpringAiSkillAdvisor` 或 `SkillsAgentHook`，避免绕过 BaBiQ 的 deferred exposure 门控。
+- 本阶段没有新增 `bq_*` 表或 migration。
+
+已补测试：
+
+- `SkillPropertiesTest`：默认 `.agents/skills`、旧 `.codex/skills` 仅通过 additional directory 恢复。
+- `LocalSkillRegistryTest`：官方 YAML 多行 description、`allowed_tools`、非法/缺失 front-matter 忽略、项目 cwd 目录动态切换。
+- `SkillContentLoaderTest`：官方正文读取、截断、修改文件后 hash/正文立即刷新。
+- `SkillHandlersTest`：`skills/list` / `skills/get` 返回 `allowedTools`。
+- `CapabilityCatalogSyncServiceTest`：`skill.<id>` capability identity 不漂移。
+- `SkillModelsTest`：桌面端可反序列化含 `allowedTools` 的 Skill payload。
+
+本轮专项验证已通过：
+
+```powershell
+cd E:\BaBiQ\backend
+.\mvnw.cmd "-Dtest=SkillPropertiesTest,LocalSkillRegistryTest,SkillContentLoaderTest,SkillHandlersTest,CapabilityCatalogSyncServiceTest" test
+```
+
+实际结果：`BUILD SUCCESS`，`Tests run: 13, Failures: 0, Errors: 0, Skipped: 0`。
+
+```powershell
+cd E:\BaBiQ\backend
+.\mvnw.cmd "-Dtest=LocalSkillRegistryTest,SkillContentLoaderTest,SkillPropertiesTest,SkillHandlersTest,CapabilityCatalogSyncServiceTest,SchemaCommentsCoverageTest" test
+```
+
+实际结果：`BUILD SUCCESS`，`Tests run: 15, Failures: 0, Errors: 0, Skipped: 0`。
+
+```powershell
+cd E:\BaBiQ\desktop
+.\gradlew.bat test --tests "*SkillModelsTest"
+```
+
+实际结果：`BUILD SUCCESSFUL in 12s`。
+
+全量验证已通过：
+
+```powershell
+cd E:\BaBiQ\backend
+.\mvnw.cmd clean verify
+```
+
+实际结果：`BUILD SUCCESS`，failsafe 集成测试 `Tests run: 23, Failures: 0, Errors: 0, Skipped: 0`，`Total time: 48.516 s`。
+
+```powershell
+cd E:\BaBiQ\desktop
+.\gradlew.bat test
+```
+
+实际结果：`BUILD SUCCESSFUL in 2s`。

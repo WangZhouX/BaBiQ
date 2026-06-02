@@ -103,8 +103,9 @@ P3 的原则是“复用官方组件承载能力，BaBiQ 自己掌控策略和�
 | P3-5a | 已完成 | Lucene 能力搜索替换：移除 fallback，接入 Spring AI Community LuceneToolSearcher；中文别名富化已落地 | `docs/superpowers/plans/p3-5a-lucene-capability-search/plan.md` | P3-5 |
 | P3-UI | 已完成 | Figma 原型刷新：补齐上下文、记忆、能力装配和中文能力搜索的用户可见表达 | `docs/superpowers/plans/p3-ui-prototype-refresh/plan.md` | P3-5a |
 | P3-UI-Desktop | 已完成 | Compose Desktop UI 跟进：按 P3 Figma 原型落地上下文、记忆、能力中心和中文能力搜索界面 | `docs/superpowers/plans/p3-ui-desktop-implementation/plan.md` | P3-UI |
+| P3-6 | 已完成 | 官方 SkillRegistry 薄封装：FileSystemSkillRegistry、`.agents/skills` 用户/项目目录、allowedTools 后端元数据 | `docs/superpowers/plans/p3-6-skill-official-registry/plan.md` | P3-5a |
 
-说明：`P3-1` 已按用户要求落地最小可运行底座，包括 `ContextAssembler`、`ContextSnapshot` 和能力目录摘要。`P3-2` 已把该底座接入真实 `AgentLoop`，并完成持久化快照、JSON-RPC 查询和桌面上下文指示。`P3-3` 已实现短期压缩预算策略、summary 持久化、active window 替换、`ContextCompactionItem` 事件、`context/compact` 手动入口和桌面上下文压缩状态展示。`P3-3A` 已补齐压缩审计字段、事务安装边界、`window_ordinal` 乐观校验、启动恢复和关键失败路径测试。`P3-4` 已完成长期记忆异步流水线、SQLite 审计、Markdown mirror、长期记忆 summary 注入和桌面最小控制。`P3-5` 已完成按需能力装配、`tool_search`、Skill metadata 注册、长期记忆有界检索增强和桌面控制。`P3-5a` 已把能力搜索底层从自实现 fallback 替换为 Spring AI Community `LuceneToolSearcher`，新搜索事件策略写入 `LUCENE`，并通过 `CapabilityCatalogSyncService` 中文别名字典富化 searchText。`P3-UI` 已完成原型刷新，把 P3 已完成能力转化为 Figma 中用户可见、可验收的交互表达，并新增 `P3 01` 到 `P3 11` 专项 Frame；本专项不改变后端或桌面端运行时。`P3-UI-Desktop` 已完成 Compose Desktop 跟进，落地 P3 状态弹层、运行详情审计分区、记忆设置、能力中心、中文能力搜索和上下文压缩事件卡片；`00 交互总览-P3` 仅作为原型索引页，不进入产品 UI。
+说明：`P3-1` 已按用户要求落地最小可运行底座，包括 `ContextAssembler`、`ContextSnapshot` 和能力目录摘要。`P3-2` 已把该底座接入真实 `AgentLoop`，并完成持久化快照、JSON-RPC 查询和桌面上下文指示。`P3-3` 已实现短期压缩预算策略、summary 持久化、active window 替换、`ContextCompactionItem` 事件、`context/compact` 手动入口和桌面上下文压缩状态展示。`P3-3A` 已补齐压缩审计字段、事务安装边界、`window_ordinal` 乐观校验、启动恢复和关键失败路径测试。`P3-4` 已完成长期记忆异步流水线、SQLite 审计、Markdown mirror、长期记忆 summary 注入和桌面最小控制。`P3-5` 已完成按需能力装配、`tool_search`、Skill metadata 注册、长期记忆有界检索增强和桌面控制。`P3-5a` 已把能力搜索底层从自实现 fallback 替换为 Spring AI Community `LuceneToolSearcher`，新搜索事件策略写入 `LUCENE`，并通过 `CapabilityCatalogSyncService` 中文别名字典富化 searchText。`P3-UI` 已完成原型刷新，把 P3 已完成能力转化为 Figma 中用户可见、可验收的交互表达，并新增 `P3 01` 到 `P3 11` 专项 Frame；本专项不改变后端或桌面端运行时。`P3-UI-Desktop` 已完成 Compose Desktop 跟进，落地 P3 状态弹层、运行详情审计分区、记忆设置、能力中心、中文能力搜索和上下文压缩事件卡片；`00 交互总览-P3` 仅作为原型索引页，不进入产品 UI。`P3-6` 已把技能目录扫描改为薄封装 Spring AI Alibaba 官方 `FileSystemSkillRegistry`，默认目录迁移到 `~/.agents/skills` 与 `<cwd>/.agents/skills`，旧 `.codex/skills` 仅通过 `babiq.skills.additional-directories` 显式恢复；本阶段不接 Skill advisor/hook，不改变 BaBiQ 的 `tool_search`、审批、沙箱和 SQLite 审计门控。
 
 ---
 
@@ -291,6 +292,6 @@ P3 任一子阶段完成前，至少需要满足：
 ## 9. 下一步
 
 1. 进行 P3 总体验收复盘，核对上下文窗口、短期压缩、长期记忆、按需能力装配、Lucene 能力搜索、桌面控制和 P3 Figma / Compose Desktop 跟进是否满足当前阶段目标。
-2. P3 验收通过后，由用户决定进入 P4，还是继续追加 P3-6 等新的专项增强计划。
-3. 用户确认后，再编写下一阶段详细计划；候选方向包括 P3-6 VectorStore 语义能力搜索、P4 多 Agent / 更强沙箱 / A2A / 远程 MCP / 更完整记忆管理 UI。
+2. P3/P4/P6 验收通过后，由用户决定进入 Skill 市场、VectorStore 语义能力搜索、运行中编排审批、P6-3 实时 team 协作或新的专项增强计划。
+3. 用户确认后，再编写下一阶段详细计划；候选方向包括第三方 Skill 受管安装、远程 MCP / OAuth、更强沙箱、A2A、多模态和更完整记忆管理 UI。
 4. 继续保持 BaBiQ SQLite 事实源、ContextSnapshot 审计和“完整记忆/完整 Skill 正文不常驻注入”的边界。
