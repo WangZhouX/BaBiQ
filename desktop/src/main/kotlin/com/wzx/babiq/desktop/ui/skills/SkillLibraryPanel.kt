@@ -34,13 +34,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.platform.Clipboard
+import androidx.compose.ui.platform.ClipEntry
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -49,7 +52,9 @@ import com.wzx.babiq.desktop.protocol.CapabilityInfo
 import com.wzx.babiq.desktop.protocol.SkillInfo
 import com.wzx.babiq.desktop.state.AppState
 import com.wzx.babiq.desktop.ui.theme.BaBiQColors
+import java.awt.datatransfer.StringSelection
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 /**
  * Figma 技能页的顶部标签。
@@ -214,7 +219,8 @@ fun SkillLibraryPanel(
 	var selectedSkillId by remember(state.skillState.selectedSkillId) { mutableStateOf(state.skillState.selectedSkillId) }
 	var showManager by remember { mutableStateOf(false) }
 	val model = buildSkillLibraryModel(state, query, selectedSkillId)
-	val clipboard = LocalClipboardManager.current
+	val clipboard = LocalClipboard.current
+	val clipboardScope = rememberCoroutineScope()
 
 	Row(
 		modifier = Modifier
@@ -258,7 +264,9 @@ fun SkillLibraryPanel(
 				onPrimaryAction = { onOpenSkill(detail.skillId) },
 				onSecondaryAction = {
 					if (detail.contentPreview != null) {
-						clipboard.setText(AnnotatedString(detail.skillFile))
+						clipboardScope.launch {
+							clipboard.copyPlainText(detail.skillFile)
+						}
 					}
 				},
 				onToggleEnabled = {
@@ -574,3 +582,8 @@ private fun iconColor(title: String): Color =
 		3 -> Color(0xFF7C6ADE)
 		else -> Color(0xFF2F6F4E)
 	}
+
+@OptIn(ExperimentalComposeUiApi::class)
+private suspend fun Clipboard.copyPlainText(text: String) {
+	setClipEntry(ClipEntry(StringSelection(text)))
+}

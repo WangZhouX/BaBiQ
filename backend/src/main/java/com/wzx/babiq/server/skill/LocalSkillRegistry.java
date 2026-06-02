@@ -106,6 +106,7 @@ public class LocalSkillRegistry {
         List<Path> roots = new ArrayList<>();
         roots.add(properties.userSkillsDirectory());
         roots.addAll(properties.additionalDirectories());
+        roots.addAll(properties.directories());
         roots.add(currentProjectDirectory());
         return roots.stream()
                 .filter(root -> root != null)

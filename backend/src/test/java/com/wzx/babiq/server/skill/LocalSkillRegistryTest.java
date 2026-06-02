@@ -99,6 +99,29 @@ class LocalSkillRegistryTest {
         assertThat(registry.listSkills()).extracting(SkillDescriptor::name).containsExactly("beta");
     }
 
+    @Test
+    @DisplayName("旧 directories 配置字段显式配置后也参与 registry 扫描")
+    void legacy_directories_field_should_be_scanned_by_registry() throws Exception {
+        Path legacyRoot = tempDir.resolve("legacy-codex-skills");
+        writeSkill(legacyRoot.resolve("legacy-tool"), """
+                ---
+                name: legacy-tool
+                description: 旧目录技能
+                ---
+                # Legacy
+                """);
+        SkillProperties properties = new SkillProperties(
+                true,
+                tempDir.resolve("empty-user-skills"),
+                tempDir.resolve("empty-project-skills"),
+                List.of(),
+                List.of(legacyRoot),
+                1_000);
+        LocalSkillRegistry registry = new LocalSkillRegistry(properties);
+
+        assertThat(registry.listSkills()).extracting(SkillDescriptor::name).containsExactly("legacy-tool");
+    }
+
     private static void writeSkill(Path skillDirectory, String content) throws Exception {
         writeRaw(skillDirectory.resolve("SKILL.md"), content);
     }
