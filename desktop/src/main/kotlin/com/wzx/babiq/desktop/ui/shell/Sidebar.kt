@@ -121,6 +121,7 @@ data class SidebarNavigationItem(
 fun sidebarNavigationItems(): List<SidebarNavigationItem> =
 	listOf(
 		SidebarNavigationItem("搜索", Screen.Search, enabled = true),
+		SidebarNavigationItem("插件", Screen.Plugins, enabled = true),
 		SidebarNavigationItem("本地 MCP", Screen.Mcp, enabled = true),
 		SidebarNavigationItem("自动化", screen = null, enabled = false),
 	)

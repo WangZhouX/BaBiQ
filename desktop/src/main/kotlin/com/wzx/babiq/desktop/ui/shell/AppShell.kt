@@ -16,6 +16,7 @@ import com.wzx.babiq.desktop.ui.runtime.RuntimeDetailsPanel
 import com.wzx.babiq.desktop.ui.search.SearchPanel
 import com.wzx.babiq.desktop.ui.settings.McpSettingsPanel
 import com.wzx.babiq.desktop.ui.settings.SettingsPanel
+import com.wzx.babiq.desktop.ui.skills.SkillLibraryPanel
 import com.wzx.babiq.desktop.ui.theme.BaBiQColors
 
 /**
@@ -46,6 +47,7 @@ fun AppShell(
 	onSearchMemory: (String) -> Unit,
 	onSaveCapabilitySettings: (String, Boolean?, String?) -> Unit,
 	onSearchCapabilities: (String) -> Unit,
+	onOpenSkill: (String) -> Unit,
 	onRefreshMcpServer: (String) -> Unit,
 	onToggleRuntime: () -> Unit,
 	onDismissSubAgent: () -> Unit,
@@ -84,6 +86,12 @@ fun AppShell(
 					onSearchMemory = onSearchMemory,
 					onSaveCapabilitySettings = onSaveCapabilitySettings,
 					onSearchCapabilities = onSearchCapabilities,
+				)
+
+				Screen.Plugins -> SkillLibraryPanel(
+					state = state,
+					onOpenSkill = onOpenSkill,
+					onSaveCapabilitySettings = onSaveCapabilitySettings,
 				)
 
 				Screen.Settings -> SettingsPanel(

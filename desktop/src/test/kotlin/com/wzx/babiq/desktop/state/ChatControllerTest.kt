@@ -208,6 +208,14 @@ class ChatControllerTest {
 	}
 
 	@Test
+	fun `P3-6 Figma 技能页需要独立插件产品路由`() {
+		val screens = Screen.entries.map { it.name }
+
+		assertTrue("Plugins" in screens)
+		assertFalse("InteractionOverview" in screens)
+	}
+
+	@Test
 	fun `打开搜索工作台时加载长期记忆 能力目录和 Skill 元数据`() = runTest {
 		val gateway = FakeGateway()
 		val controller = ChatController(gateway, backgroundScope, initialState = AppState(connectionState = ConnectionState.Connected))
@@ -222,6 +230,33 @@ class ChatControllerTest {
 		assertEquals(Screen.Search, controller.state.value.screen)
 		assertEquals(5, controller.state.value.memoryState.status?.cleanCandidateCount)
 		assertEquals(1, controller.state.value.capabilityState.status?.totalCount)
+	}
+
+	@Test
+	fun `打开插件技能页时加载 Skill 元数据和能力目录`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(gateway, backgroundScope, initialState = AppState(connectionState = ConnectionState.Connected))
+
+		controller.showScreen(Screen.Plugins)
+		advanceUntilIdle()
+
+		assertEquals(listOf("getCapabilityStatus", "listSkills"), gateway.calls)
+		assertEquals(Screen.Plugins, controller.state.value.screen)
+		assertEquals(1, controller.state.value.capabilityState.status?.totalCount)
+	}
+
+	@Test
+	fun `读取 Skill 正文时调用后端 getSkill 并写入详情状态`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(gateway, backgroundScope, initialState = AppState(connectionState = ConnectionState.Connected))
+
+		controller.openSkill("skill.system.demo")
+		advanceUntilIdle()
+
+		assertEquals(listOf("getSkill:skill.system.demo"), gateway.calls)
+		assertEquals("skill.system.demo", controller.state.value.skillState.selectedSkillId)
+		assertEquals("demo", controller.state.value.skillState.selectedSkill?.name)
+		assertEquals("# demo", controller.state.value.skillState.selectedContent)
 	}
 
 	@Test

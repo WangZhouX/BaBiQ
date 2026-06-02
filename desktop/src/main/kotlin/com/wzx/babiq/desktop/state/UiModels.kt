@@ -45,6 +45,7 @@ enum class TurnState {
 enum class Screen {
 	Chat,
 	Search,
+	Plugins,
 	Settings,
 	Mcp,
 }
@@ -418,13 +419,21 @@ data class CapabilityUiState(
  *
  * @property loading true 表示正在读取 skills/list。
  * @property skills 当前可见 Skill metadata，不包含完整正文。
+ * @property selectedSkillId 当前技能页选中的 Skill id；为空表示还没有打开详情。
+ * @property selectedSkill 当前按需读取正文后由后端返回的完整 metadata；未读取正文时 UI 会从 skills 列表兜底。
  * @property selectedContent 最近一次按需读取的 Skill 正文片段。
+ * @property selectedContentTruncated true 表示后端返回的正文已按预算截断。
+ * @property contentLoading true 表示正在读取 skills/get。
  * @property error 最近一次 Skill 读取失败原因。
  */
 data class SkillUiState(
 	val loading: Boolean = false,
 	val skills: List<SkillInfo> = emptyList(),
+	val selectedSkillId: String? = null,
+	val selectedSkill: SkillInfo? = null,
 	val selectedContent: String? = null,
+	val selectedContentTruncated: Boolean = false,
+	val contentLoading: Boolean = false,
 	val error: String? = null,
 )
 

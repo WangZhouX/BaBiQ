@@ -67,6 +67,7 @@ fun BaBiQDesktopApp() {
 				controller.saveCapabilitySettings(capabilityId, enabled, exposureMode)
 			},
 			onSearchCapabilities = { query -> controller.searchCapabilities(query) },
+			onOpenSkill = { skillId -> controller.openSkill(skillId) },
 			onRefreshMcpServer = { serverId -> controller.refreshMcpServer(serverId) },
 			onToggleRuntime = { controller.toggleRuntimeDetails() },
 			onDismissSubAgent = { controller.dismissSubAgentCard() },

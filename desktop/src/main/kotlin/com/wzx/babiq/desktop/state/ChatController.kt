@@ -536,11 +536,71 @@ class ChatController(
 				loadMcpServers()
 			}
 		}
+		if (screen == Screen.Plugins) {
+			scope.launch(start = CoroutineStart.UNDISPATCHED) {
+				loadCapabilityStatus()
+				loadSkills()
+			}
+		}
 		if (screen == Screen.Settings || screen == Screen.Search) {
 			scope.launch(start = CoroutineStart.UNDISPATCHED) {
 				loadMemoryStatus(loadAudit = true)
 				loadCapabilityStatus()
 				loadSkills()
+			}
+		}
+	}
+
+	/**
+	 * 按需读取 Skill 正文。
+	 *
+	 * skills/list 只加载 metadata；只有用户在技能页明确点击“查看正文”或“刷新正文”时，
+	 * 才调用后端 skills/get 读取 SKILL.md，避免把大量正文提前塞进桌面状态。
+	 */
+	fun openSkill(skillId: String) {
+		scope.launch(start = CoroutineStart.UNDISPATCHED) {
+			val trimmedId = skillId.trim()
+			if (trimmedId.isEmpty()) {
+				return@launch
+			}
+			_state.update {
+				val metadata = it.skillState.skills.firstOrNull { skill -> skill.id == trimmedId }
+				it.copy(
+					skillState = it.skillState.copy(
+						selectedSkillId = trimmedId,
+						selectedSkill = metadata ?: it.skillState.selectedSkill,
+						contentLoading = true,
+						error = null,
+					),
+				)
+			}
+			try {
+				val result = gateway.getSkill(trimmedId)
+				_state.update {
+					val mergedSkills = mergeSkillMetadata(it.skillState.skills, result.skill)
+					it.copy(
+						skillState = it.skillState.copy(
+							loading = false,
+							skills = mergedSkills,
+							selectedSkillId = result.skill.id,
+							selectedSkill = result.skill,
+							selectedContent = result.content,
+							selectedContentTruncated = result.truncated,
+							contentLoading = false,
+							error = null,
+						),
+					)
+				}
+			} catch (exception: Exception) {
+				_state.update {
+					it.copy(
+						skillState = it.skillState.copy(
+							contentLoading = false,
+							error = exception.message ?: "读取 Skill 正文失败",
+						),
+						lastError = exception.message,
+					)
+				}
 			}
 		}
 	}
@@ -1499,6 +1559,14 @@ class ChatController(
 	): List<com.wzx.babiq.desktop.protocol.McpServerInfo> {
 		val replaced = servers.map { if (it.serverId == replacement.serverId) replacement else it }
 		return if (replaced.any { it.serverId == replacement.serverId }) replaced else replaced + replacement
+	}
+
+	private fun mergeSkillMetadata(
+		skills: List<com.wzx.babiq.desktop.protocol.SkillInfo>,
+		replacement: com.wzx.babiq.desktop.protocol.SkillInfo,
+	): List<com.wzx.babiq.desktop.protocol.SkillInfo> {
+		val replaced = skills.map { if (it.id == replacement.id) replacement else it }
+		return if (replaced.any { it.id == replacement.id }) replaced else replaced + replacement
 	}
 
 	private fun ServerEvent.shouldRefreshThreadHistory(): Boolean =
