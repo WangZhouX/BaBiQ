@@ -153,6 +153,43 @@ class ThreadItemJsonTest {
 	}
 
 	@Test
+	fun `can parse work unit item`() {
+		val json = """
+			{
+			  "jsonrpc": "2.0",
+			  "method": "item/added",
+			  "params": {
+			    "threadId": "thread-1",
+			    "turnId": "turn-1",
+			    "item": {
+			      "id": "it_workunit_1",
+			      "type": "workUnit",
+			      "workUnitId": "wu_1",
+			      "kind": "orchestration",
+			      "name": "login-flow",
+			      "status": "idle",
+			      "currentGoalId": "wug_1",
+			      "currentGoal": "split login page",
+			      "goalCount": 2,
+			      "removed": false
+			    }
+			  }
+			}
+		""".trimIndent()
+
+		val event = protocolJson.decodeFromString(ServerEvent.serializer(), json)
+		val added = assertIs<ServerEvent.ItemAdded>(event)
+		val item = assertIs<ThreadItem.WorkUnit>(added.item)
+
+		assertEquals("wu_1", item.workUnitId)
+		assertEquals("orchestration", item.kind)
+		assertEquals("login-flow", item.name)
+		assertEquals("split login page", item.currentGoal)
+		assertEquals(2, item.goalCount)
+		assertEquals(false, item.removed)
+	}
+
+	@Test
 	fun `可以解析 orchestration item 的拓扑和节点状态`() {
 		val json = """
 			{

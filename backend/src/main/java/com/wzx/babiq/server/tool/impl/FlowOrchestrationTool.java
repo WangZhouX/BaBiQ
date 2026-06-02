@@ -20,8 +20,11 @@ import com.wzx.babiq.server.interceptor.BaBiQSandboxInterceptor;
 import com.wzx.babiq.server.observability.TurnObservationContext;
 import com.wzx.babiq.server.sandbox.SandboxMode;
 import com.wzx.babiq.server.tool.Tool;
+import com.wzx.babiq.server.workunit.WorkUnitContextKeys;
+import com.wzx.babiq.server.workunit.WorkUnitService;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -51,6 +54,8 @@ public class FlowOrchestrationTool implements Tool {
     private final OrchestrationRepository repository;
     /** 运行前审批范围服务。 */
     private final FlowApprovalService approvalService;
+    /** WorkUnit goal 状态回写服务；为空时表示非 WorkUnit 启动路径。 */
+    private final WorkUnitService workUnitService;
 
     /**
      * 创建流程编排工具。
@@ -58,9 +63,18 @@ public class FlowOrchestrationTool implements Tool {
     public FlowOrchestrationTool(FlowOrchestrationService orchestrationService,
                                  OrchestrationRepository repository,
                                  FlowApprovalService approvalService) {
+        this(orchestrationService, repository, approvalService, null);
+    }
+
+    @Autowired
+    public FlowOrchestrationTool(FlowOrchestrationService orchestrationService,
+                                 OrchestrationRepository repository,
+                                 FlowApprovalService approvalService,
+                                 WorkUnitService workUnitService) {
         this.orchestrationService = orchestrationService;
         this.repository = repository;
         this.approvalService = approvalService;
+        this.workUnitService = workUnitService;
     }
 
     @Override
@@ -99,6 +113,8 @@ public class FlowOrchestrationTool implements Tool {
             approvalService.validateWriteScopes(spec, Path.of(cwd));
         }
         repository.save(record(spec, observation, cwd), nodeRecords(spec, "pending", 0, 0, null));
+        String workUnitGoalId = WorkUnitContextKeys.goalId(toolContext);
+        markWorkUnitGoalRunning(workUnitGoalId, spec.orchestrationId());
         emit(emitter, item(spec, "running", "流程已审批并开始执行", spec.nodes()));
         try {
             Agent agent = orchestrationService.buildOfficialFlowAgent(spec, toolContext, null);
@@ -110,12 +126,14 @@ public class FlowOrchestrationTool implements Tool {
             repository.save(record(spec, observation, cwd, "completed", output, null),
                     nodeRecords(spec, "completed", 0, 0, "节点已完成"));
             emit(emitter, item(spec, "completed", output, spec.nodes()));
+            markWorkUnitGoalCompleted(workUnitGoalId, output);
             return output;
         } catch (Exception exception) {
             String message = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
             repository.save(record(spec, observation, cwd, "failed", null, message),
                     nodeRecords(spec, "failed", 0, 0, message));
             emit(emitter, item(spec, "failed", message, spec.nodes()));
+            markWorkUnitGoalFailed(workUnitGoalId, message);
             return "Flow failed: " + message;
         }
     }
@@ -270,6 +288,24 @@ public class FlowOrchestrationTool implements Tool {
             }
         } catch (IOException ignored) {
             // UI 事件失败不能反向中断已经完成的流程；持久化记录仍然保留审计事实。
+        }
+    }
+
+    private void markWorkUnitGoalRunning(String goalId, String orchestrationId) {
+        if (workUnitService != null && goalId != null) {
+            workUnitService.markGoalRunning(goalId, "orchestration", orchestrationId);
+        }
+    }
+
+    private void markWorkUnitGoalCompleted(String goalId, String output) {
+        if (workUnitService != null && goalId != null) {
+            workUnitService.markGoalCompleted(goalId, output);
+        }
+    }
+
+    private void markWorkUnitGoalFailed(String goalId, String message) {
+        if (workUnitService != null && goalId != null) {
+            workUnitService.markGoalFailed(goalId, message);
         }
     }
 

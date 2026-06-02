@@ -11,6 +11,7 @@ import com.wzx.babiq.desktop.protocol.CapabilitySettingsSetResult
 import com.wzx.babiq.desktop.protocol.CapabilityStatusResult
 import com.wzx.babiq.desktop.protocol.ContextSnapshotInfo
 import com.wzx.babiq.desktop.protocol.ContextStatusResult
+import com.wzx.babiq.desktop.protocol.ExecutionIntent
 import com.wzx.babiq.desktop.protocol.JsonRpcRequest
 import com.wzx.babiq.desktop.protocol.JsonRpcResponse
 import com.wzx.babiq.desktop.protocol.McpServerRefreshParams
@@ -50,6 +51,10 @@ import com.wzx.babiq.desktop.protocol.protocolJson
 import com.wzx.babiq.desktop.protocol.ThreadArchiveResult
 import com.wzx.babiq.desktop.protocol.ThreadListResult
 import com.wzx.babiq.desktop.protocol.ThreadLoadResult
+import com.wzx.babiq.desktop.protocol.WorkUnitListParams
+import com.wzx.babiq.desktop.protocol.WorkUnitListResult
+import com.wzx.babiq.desktop.protocol.WorkUnitRemoveParams
+import com.wzx.babiq.desktop.protocol.WorkUnitRemoveResult
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CompletableDeferred
@@ -86,7 +91,12 @@ interface AgentGateway {
 	suspend fun createThread(cwd: String): String
 
 	/** 启动一轮对话；providerId 为空时由后端使用当前激活模型。 */
-	suspend fun startTurn(threadId: String, prompt: String, providerId: String? = null): String
+	suspend fun startTurn(
+		threadId: String,
+		prompt: String,
+		providerId: String? = null,
+		executionIntent: ExecutionIntent? = null,
+	): String
 
 	/** 回传工具审批结果，editedArgs 只在“修改后批准”时携带，scope 只在 always 时使用。 */
 	suspend fun respondApproval(
@@ -208,6 +218,12 @@ interface AgentGateway {
 	/** 手动检索长期记忆，用于设置页确认 read path 的候选来源。 */
 	suspend fun searchMemory(query: String, threadId: String? = null): MemorySearchResult
 
+	/** 读取当前会话中仍可见的编排/团队工作容器。 */
+	suspend fun listWorkUnits(threadId: String): WorkUnitListResult
+
+	/** 手动移除一个已完成或空闲的工作容器；运行中的容器由后端拒绝移除。 */
+	suspend fun removeWorkUnit(workUnitId: String): WorkUnitRemoveResult
+
 	/** 向当前团队协作中的某个队友直发补充消息。 */
 	suspend fun sendTeamMessage(teamId: String, toAgent: String, content: String): TeamMessageSendResult
 }
@@ -272,12 +288,20 @@ class AgentClient(
 	 *
 	 * 注意 providerId 是可选的：为空时后端使用当前 active provider；不为空时本轮显式指定。
 	 */
-	override suspend fun startTurn(threadId: String, prompt: String, providerId: String?): String {
+	override suspend fun startTurn(
+		threadId: String,
+		prompt: String,
+		providerId: String?,
+		executionIntent: ExecutionIntent?,
+	): String {
 		val params = buildJsonObject {
 			put("threadId", threadId)
 			put("input", buildJsonObject { put("text", prompt) })
 			if (!providerId.isNullOrBlank()) {
 				put("providerId", providerId)
+			}
+			if (executionIntent != null) {
+				put("executionIntent", protocolJson.encodeToJsonElement(ExecutionIntent.serializer(), executionIntent))
 			}
 		}
 		val response = request("turn/start", params)
@@ -688,6 +712,34 @@ class AgentClient(
 			},
 		)
 		return protocolJson.decodeFromJsonElement(MemorySearchResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `workunit/list`，恢复当前 thread 的编排/团队容器列表。
+	 */
+	override suspend fun listWorkUnits(threadId: String): WorkUnitListResult {
+		val response = request(
+			method = "workunit/list",
+			params = protocolJson.encodeToJsonElement(
+				WorkUnitListParams.serializer(),
+				WorkUnitListParams(threadId),
+			),
+		)
+		return protocolJson.decodeFromJsonElement(WorkUnitListResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `workunit/remove`，让已完成或待配置的容器从当前 UI 列表消失。
+	 */
+	override suspend fun removeWorkUnit(workUnitId: String): WorkUnitRemoveResult {
+		val response = request(
+			method = "workunit/remove",
+			params = protocolJson.encodeToJsonElement(
+				WorkUnitRemoveParams.serializer(),
+				WorkUnitRemoveParams(workUnitId),
+			),
+		)
+		return protocolJson.decodeFromJsonElement(WorkUnitRemoveResult.serializer(), response.requireResult())
 	}
 
 	/**

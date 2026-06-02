@@ -341,6 +341,36 @@ data class TeamUiState(
 		if (memberNames.contains(agentName)) copy(selectedAgent = agentName) else this
 }
 
+/**
+ * 右侧运行面板里的工作容器列表。
+ *
+ * `/编排` 和 `/团队` 只会创建或复用容器并追加目标，不会自动启动执行。
+ * 因此这里保留多个可见容器，交给用户在详情页继续配置、启动或移除。
+ */
+data class WorkUnitUiState(
+	val items: List<ThreadItem.WorkUnit> = emptyList(),
+	val loading: Boolean = false,
+	val error: String? = null,
+) {
+	val visible: Boolean
+		get() = items.isNotEmpty()
+
+	fun withItem(item: ThreadItem.WorkUnit): WorkUnitUiState {
+		if (item.removed || item.status.equals("removed", ignoreCase = true)) {
+			return copy(items = items.filterNot { it.workUnitId == item.workUnitId })
+		}
+		val withoutOld = items.filterNot { it.workUnitId == item.workUnitId }
+		return copy(items = withoutOld + item, error = null)
+	}
+
+	fun replaceAll(nextItems: List<ThreadItem.WorkUnit>): WorkUnitUiState =
+		copy(
+			items = nextItems.filterNot { it.removed || it.status.equals("removed", ignoreCase = true) },
+			loading = false,
+			error = null,
+		)
+}
+
 data class RunRecordState(
 	val loading: Boolean = false,
 	val error: String? = null,

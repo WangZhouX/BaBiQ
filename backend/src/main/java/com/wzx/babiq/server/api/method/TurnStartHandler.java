@@ -12,12 +12,15 @@ import com.wzx.babiq.server.conversation.ConversationEventRecorder;
 import com.wzx.babiq.server.conversation.ItemEmitter;
 import com.wzx.babiq.server.conversation.Thread;
 import com.wzx.babiq.server.conversation.Turn;
+import com.wzx.babiq.server.conversation.items.WorkUnitItem;
 import com.wzx.babiq.server.agent.AgentRunPolicy;
 import com.wzx.babiq.server.agent.AgentLoopProperties;
 import com.wzx.babiq.server.model.ModelProviderConfig;
 import com.wzx.babiq.server.model.ModelProviderRegistry;
 import com.wzx.babiq.server.settings.AppSettings;
 import com.wzx.babiq.server.settings.AppSettingsService;
+import com.wzx.babiq.server.workunit.WorkUnitCreateRequest;
+import com.wzx.babiq.server.workunit.WorkUnitService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -52,6 +55,7 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
     private final ConversationEventRecorder eventRecorder;
     /** 应用设置服务，用来读取下一轮 turn 生效的沙箱和审批策略。 */
     private final AppSettingsService appSettingsService;
+    private final WorkUnitService workUnitService;
 
     /**
      * 创建 turn/start handler。
@@ -64,7 +68,7 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
             ConversationService conversationService,
             ObjectMapper objectMapper,
             TurnExecutor turnExecutor) {
-        this(conversationService, objectMapper, turnExecutor, null, null, null, null);
+        this(conversationService, objectMapper, turnExecutor, null, null, null, null, null);
     }
 
     /**
@@ -78,7 +82,6 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
      * @param eventRecorder 运行事件记录器
      * @param appSettingsService 应用设置服务
      */
-    @Autowired
     public TurnStartHandler(
             ConversationService conversationService,
             ObjectMapper objectMapper,
@@ -87,6 +90,20 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
             AgentLoopProperties agentLoopProperties,
             ConversationEventRecorder eventRecorder,
             AppSettingsService appSettingsService) {
+        this(conversationService, objectMapper, turnExecutor, providerRegistry, agentLoopProperties,
+                eventRecorder, appSettingsService, null);
+    }
+
+    @Autowired
+    public TurnStartHandler(
+            ConversationService conversationService,
+            ObjectMapper objectMapper,
+            TurnExecutor turnExecutor,
+            ModelProviderRegistry providerRegistry,
+            AgentLoopProperties agentLoopProperties,
+            ConversationEventRecorder eventRecorder,
+            AppSettingsService appSettingsService,
+            WorkUnitService workUnitService) {
         this.conversationService = conversationService;
         this.objectMapper = objectMapper;
         this.turnExecutor = turnExecutor;
@@ -94,6 +111,7 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
         this.agentLoopProperties = agentLoopProperties;
         this.eventRecorder = eventRecorder;
         this.appSettingsService = appSettingsService;
+        this.workUnitService = workUnitService;
     }
 
     /**
@@ -153,6 +171,28 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
         } catch (Exception exception) {
             log.warn("发送 turn/started 失败 turnId={}", turn.id(), exception);
         }
+        WorkUnitCreateRequest workUnitRequest = parseWorkUnitCreateRequest(params);
+        if (workUnitRequest != null) {
+            if (workUnitService == null) {
+                throw new JsonRpcException(JsonRpcErrorCode.INTERNAL_ERROR, "工作容器服务未初始化");
+            }
+            WorkUnitItem item = workUnitService.createOrAppend(workUnitRequest, thread, turn, thread.cwd(), runPolicy);
+            try {
+                emitter.emitItemAdded(item);
+                turn.complete();
+                emitter.emitTurnCompleted("completed");
+            } catch (Exception exception) {
+                log.warn("发送 workUnit 创建事件失败 turnId={}, kind={}, name={}",
+                        turn.id(), workUnitRequest.kind(), workUnitRequest.name(), exception);
+                throw new JsonRpcException(JsonRpcErrorCode.INTERNAL_ERROR, "工作容器创建事件发送失败");
+            }
+            log.info("turn/start 已创建工作容器并跳过 AgentLoop: threadId={}, turnId={}, kind={}, name={}",
+                    threadId,
+                    turn.id(),
+                    workUnitRequest.kind(),
+                    workUnitRequest.name());
+            return Map.of("turnId", turn.id());
+        }
         turnExecutor.submit(turn, userText, providerId, thread.cwd(), emitter, runPolicy);
         log.info("turn/start 已提交 AgentLoop: threadId={}, turnId={}, providerId={}",
                 threadId,
@@ -188,6 +228,34 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
             return null;
         }
         return params.get(fieldName).asText();
+    }
+
+    private WorkUnitCreateRequest parseWorkUnitCreateRequest(JsonNode params) {
+        JsonNode intent = params == null ? null : params.path("executionIntent");
+        if (intent == null || intent.isMissingNode() || intent.isNull()) {
+            return null;
+        }
+        String type = requiredIntentText(intent, "type");
+        if (!"create_work_unit".equals(type)) {
+            return null;
+        }
+        String kind = requiredIntentText(intent, "kind");
+        String name = requiredIntentText(intent, "name");
+        String goal = requiredIntentText(intent, "goal");
+        String goalId = optionalText(intent, "goalId");
+        if (!"orchestration".equals(kind) && !"team".equals(kind)) {
+            throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS,
+                    "executionIntent.kind 仅支持 orchestration 或 team");
+        }
+        return new WorkUnitCreateRequest(kind, name, goal, goalId);
+    }
+
+    private String requiredIntentText(JsonNode intent, String fieldName) {
+        if (intent == null || !intent.hasNonNull(fieldName) || intent.get(fieldName).asText().isBlank()) {
+            throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS,
+                    "缺少必填字段: executionIntent." + fieldName);
+        }
+        return intent.get(fieldName).asText().trim();
     }
 
     private String requiredInputText(JsonNode params) {

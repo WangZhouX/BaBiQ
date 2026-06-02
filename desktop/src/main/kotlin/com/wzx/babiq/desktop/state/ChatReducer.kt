@@ -19,6 +19,7 @@ object ChatReducer {
 	fun messagesFromItems(items: List<ThreadItem>): List<ChatMessage> =
 		items.filterNot {
 			it is ThreadItem.Plan ||
+				it is ThreadItem.WorkUnit ||
 				it is ThreadItem.Orchestration ||
 				it is ThreadItem.Team ||
 				it is ThreadItem.TeamMessage
@@ -66,6 +67,10 @@ object ChatReducer {
 			.filter { it.teamId == latestTeam.teamId }
 		return TeamUiState().withTeam(latestTeam).copy(messages = messages)
 	}
+
+	fun workUnitStateFromItems(items: List<ThreadItem>): WorkUnitUiState =
+		items.filterIsInstance<ThreadItem.WorkUnit>()
+			.fold(WorkUnitUiState()) { state, item -> state.withItem(item) }
 
 	/**
 	 * 从历史 item 中找出最新 turnSummary。
@@ -203,6 +208,20 @@ object ChatReducer {
 				),
 			)
 
+			is ThreadItem.WorkUnit -> copy(
+				workUnitState = workUnitState.withItem(item),
+				runtimeEvents = runtimeEvents + RuntimeEvent(
+					id = item.id,
+					title = "WorkUnit:${item.name}",
+					detail = listOfNotNull(
+						item.kind,
+						"状态 ${item.status}",
+						item.currentGoal?.let { "目标 $it" },
+						"目标数 ${item.goalCount}",
+					).joinToString("\n"),
+				),
+			)
+
 			is ThreadItem.Orchestration -> copy(
 				orchestrationState = OrchestrationUiState(current = item),
 				runtimeEvents = runtimeEvents + RuntimeEvent(
@@ -295,6 +314,16 @@ object ChatReducer {
 					toolCallCount?.let { "只读工具 $it 次" },
 					tokenEstimate?.let { "token 估算 $it" },
 				).joinToString("\n").ifBlank { "正在委派子 Agent" },
+			)
+			is ThreadItem.WorkUnit -> ChatMessage.Tool(
+				id = id,
+				title = "工作容器 · $name",
+				status = status,
+				detail = listOfNotNull(
+					currentGoal,
+					"类型 $kind",
+					"目标数 $goalCount",
+				).joinToString("\n").ifBlank { "等待配置和启动" },
 			)
 			is ThreadItem.Orchestration -> ChatMessage.Tool(
 				id = id,

@@ -16,8 +16,11 @@ import com.wzx.babiq.server.interceptor.BaBiQSandboxInterceptor;
 import com.wzx.babiq.server.observability.TurnObservationContext;
 import com.wzx.babiq.server.sandbox.SandboxMode;
 import com.wzx.babiq.server.tool.Tool;
+import com.wzx.babiq.server.workunit.WorkUnitContextKeys;
+import com.wzx.babiq.server.workunit.WorkUnitService;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -45,6 +48,8 @@ public class TeamCoordinationTool implements Tool {
     private final TeamRepository repository;
     /** 运行前审批范围服务。 */
     private final TeamApprovalService approvalService;
+    /** WorkUnit goal 状态回写服务；为空时表示非 WorkUnit 启动路径。 */
+    private final WorkUnitService workUnitService;
 
     /**
      * 创建团队协作工具。
@@ -52,9 +57,18 @@ public class TeamCoordinationTool implements Tool {
     public TeamCoordinationTool(TeamCoordinationService coordinationService,
                                 TeamRepository repository,
                                 TeamApprovalService approvalService) {
+        this(coordinationService, repository, approvalService, null);
+    }
+
+    @Autowired
+    public TeamCoordinationTool(TeamCoordinationService coordinationService,
+                                TeamRepository repository,
+                                TeamApprovalService approvalService,
+                                WorkUnitService workUnitService) {
         this.coordinationService = coordinationService;
         this.repository = repository;
         this.approvalService = approvalService;
+        this.workUnitService = workUnitService;
     }
 
     @Override
@@ -94,12 +108,19 @@ public class TeamCoordinationTool implements Tool {
         }
         repository.save(record(spec, observation, cwd, "running", "团队协作已审批并开始执行", null, 0, null),
                 memberRecords(spec, "pending", 0, 0, null));
+        String workUnitGoalId = WorkUnitContextKeys.goalId(toolContext);
+        markWorkUnitGoalRunning(workUnitGoalId, spec.teamId());
         emit(emitter, item(spec, "running", "团队协作已审批并开始执行", 0, null));
         TeamExecutionResult result = coordinationService.run(spec, toolContext);
         String status = "failed".equals(result.status()) ? "failed" : "completed";
         repository.save(record(spec, observation, cwd, status, result.summary(), null, result.round(), result.currentAgent()),
                 memberRecords(spec, status, 0, 0, result.summary()));
         emit(emitter, item(spec, status, result.summary(), result.round(), result.currentAgent()));
+        if ("failed".equals(status)) {
+            markWorkUnitGoalFailed(workUnitGoalId, result.summary());
+        } else {
+            markWorkUnitGoalCompleted(workUnitGoalId, result.summary());
+        }
         return result.summary();
     }
 
@@ -247,6 +268,24 @@ public class TeamCoordinationTool implements Tool {
             }
         } catch (IOException ignored) {
             // UI 事件失败不能反向中断团队协作；SQLite 记录仍保留审计事实。
+        }
+    }
+
+    private void markWorkUnitGoalRunning(String goalId, String teamId) {
+        if (workUnitService != null && goalId != null) {
+            workUnitService.markGoalRunning(goalId, "team", teamId);
+        }
+    }
+
+    private void markWorkUnitGoalCompleted(String goalId, String summary) {
+        if (workUnitService != null && goalId != null) {
+            workUnitService.markGoalCompleted(goalId, summary);
+        }
+    }
+
+    private void markWorkUnitGoalFailed(String goalId, String message) {
+        if (workUnitService != null && goalId != null) {
+            workUnitService.markGoalFailed(goalId, message);
         }
     }
 

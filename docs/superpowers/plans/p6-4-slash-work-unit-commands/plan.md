@@ -2,23 +2,33 @@
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 在对话输入框提供 `/子代理`、`/编排`、`/团队` 显式入口，并把编排与团队升级为可复用的命名工作容器，支持同一容器持续完成多个目标、并发存在、完成后移除并从 UI 消失。
+**Goal:** 在对话输入框提供 `/子代理`、`/编排`、`/团队` 显式入口，并把 `/编排`、`/团队` 变成“创建或复用命名工作容器”的前置动作。容器创建后保持 `待配置 / 待启动`，后续节点/成员配置、模型选择和开始执行复用已有编排详情 / 团队详情页面；同一容器可持续承接多个目标、并发存在、完成后移除并从 UI 消失。
 
-**Architecture:** 桌面端只负责解析 slash 命令并把结构化 `executionIntent` 随 `turn/start` 发送；后端保留用户原始任务文本不污染聊天历史。**容器生命周期走服务端确定性逻辑**：slash intent 是确定性结构化输入（mode+name+goal 已由用户选定），`submit()` 路径直接 create-or-reuse `WorkUnit` 容器并 append 目标，拿到 `goalId` 后**在 build toolContext 时注入**（与现有 cwd/sandbox 注入同款）；主 Agent **只负责执行**——读取本轮上下文里注入的高优先级运行意图，调用现有 `explorer` / `orchestrate_flow` / `coordinate_team`，flow/team 工具从 `ToolContext` 读 `goalId` 回写目标状态。`work_unit_manage` 工具**只用于自然语言管理**（running 时补充 vs 排队、追加新目标、移除容器），不是 slash 路径建容器的必经跳。编排和团队不再只是一次工具输出，而是 `WorkUnit` 容器；每个容器有名称、类型、目标队列和运行状态，目标完成后容器可继续追加新目标。
+**Architecture:** 桌面端解析 slash 命令并把结构化 `executionIntent` 随 `turn/start` 发送；后端保留用户原始任务文本不污染聊天历史。**容器创建走服务端确定性逻辑**：slash intent 是确定性结构化输入（mode+name+goal 已由用户选定），`submit()` 路径 create-or-reuse `WorkUnit` 容器并 append 初始目标，随后把容器置为 `WAITING_CONFIG` 或 `WAITING_START`，向桌面端返回/刷新右侧工作容器状态。主 Agent 可以通过自然语言管理工具辅助修改目标、节点职责或成员职责，但**模型 / Provider / 高权限策略必须由用户在详情页手动配置**。开始执行必须来自用户显式动作：点击已有编排/团队详情页的“开始执行”，或在对话中明确要求主 Agent 启动；只有启动阶段才把 `goalId` 注入 `ToolContext` 并调用现有 `orchestrate_flow` / `coordinate_team` 回写目标状态。`work_unit_manage` 工具用于自然语言管理（追加目标、修改目标/职责、移除容器、按用户要求启动），不是 slash 路径建容器的必经跳。
 
 **Tech Stack:** Kotlin Compose Desktop、Ktor WebSocket JSON-RPC、Java 21、Spring Boot、SQLite + MyBatis-Plus + Flyway、Spring AI Alibaba ReactAgent / FlowAgent / StateGraph、BaBiQ 现有审批 / 沙箱 / 运行记录 / 协议 item 链路。
 
 ---
 
+## 实施状态（2026-06-02）
+
+- 已落地桌面 slash 解析、`executionIntent` 协议、服务端确定性 WorkUnit 创建/复用、目标队列、SQLite 事实源、`work_unit_manage`、`workunit/list`、`workunit/remove`、显式启动 goalId 关联和右侧工作容器 UI。
+- `/编排`、`/团队` 只创建/复用命名容器并追加目标，不自动调用 `orchestrate_flow` / `coordinate_team`；用户正文只保留目标文本，不写入 slash 控制语法。
+- 详情页模型/Provider/高权限策略仍由用户手动配置；显式启动时才把 `goalId` 关联到本轮工具上下文并回写目标状态。
+- 定向测试已通过；全量验证和最终提交见 `codex-handoff.md` 与本次完成报告。
+
 ## 0. 用户确认后的心智模型
 
 - `/子代理 <任务>`：一次性只读委派，不命名，不维护目标队列；结束后只保留本次委派摘要，可手动移除右侧卡片。
-- `/编排 <名称>：<目标>`：创建或复用一个命名编排容器，把 `<目标>` 作为新的目标追加进去并执行。
-- `/团队 <名称>：<目标>`：创建或复用一个命名团队容器，把 `<目标>` 作为新的目标追加进去并执行。
+- `/编排 <名称>：<目标>`：创建或复用一个命名编排容器，把 `<目标>` 作为新的目标追加进去；容器创建后保持待配置 / 待启动，不自动执行。
+- `/团队 <名称>：<目标>`：创建或复用一个命名团队容器，把 `<目标>` 作为新的目标追加进去；容器创建后保持待配置 / 待启动，不自动执行。
 - 编排 / 团队是可复用容器，目标是容器里的任务批次。一个容器可以完成目标 1、目标 2、目标 3，不需要用户频繁新建。
 - 同一个 thread 内，运行中的编排和团队名称必须唯一；已完成 / 空闲容器可以继续追加目标；被移除的容器从页面消失，但后端仍保留审计事实。
 - 多个编排和多个团队可以并发存在，只要运行中的名称不冲突。
-- 用户可以通过和主 Agent 对话修改目标、追加目标或移除已完成容器，例如“让前端验收组继续检查技能页”“移除登录页优化流程”。
+- 用户可以通过和主 Agent 对话修改目标、追加目标、修改节点/成员职责或移除已完成容器，例如“让前端验收组继续检查技能页”“把 analyzer 的职责改成只核对原型差异”“移除登录页优化流程”。
+- 模型、Provider、高权限策略必须由用户在已有详情页手动配置；主 Agent 不自动替用户改模型配置。
+- 开始执行必须由用户显式触发：可以点击已有详情页里的“开始执行”，也可以在对话中明确告诉主 Agent 启动某个编排 / 团队。
+- P6-4 原型只新增两个入口页：`P6-4 01 会话-斜杠创建编排容器`、`P6-4 02 会话-斜杠创建团队容器`。编排配置复用 `P6 06/07/08`，团队配置和执行复用 `P6 03/04/05`。
 
 ## 1. 范围
 
@@ -27,17 +37,21 @@
 - 桌面输入框 slash command 解析和命令面板。
 - `turn/start` 增加结构化 `executionIntent`，不把 `/团队` 等控制语法写入用户消息正文。
 - 后端新增 `WorkUnit` 领域模型，统一承载 `TEAM` 与 `FLOW` 容器。
-- 编排 / 团队容器支持名称、目标队列、当前目标、运行状态、移除状态。
-- 主 Agent 通过系统上下文识别显式 intent，并调用现有 `orchestrate_flow` / `coordinate_team`。
+- 编排 / 团队容器支持名称、目标队列、当前目标、配置状态、启动状态、运行状态、移除状态。
+- slash 创建容器后进入待配置 / 待启动状态，不自动调用 `orchestrate_flow` / `coordinate_team`。
+- 已有编排详情 / 团队详情页面负责后续配置、模型选择和开始执行；P6-4 不重复实现详情配置 UI。
+- 用户明确启动后，主 Agent 通过系统上下文识别启动 intent，并调用现有 `orchestrate_flow` / `coordinate_team`。
 - 现有 `bq_orchestrations`、`bq_teams` 与新增 work unit 表建立关联，不重写 P6-2 / P6-3 执行引擎。
-- 右侧运行详情支持多个团队 / 编排容器列表、目标队列、移除已完成容器。
-- 支持自然语言管理：主 Agent 可调用管理工具追加目标、更新目标、移除容器。
+- 右侧运行详情支持多个团队 / 编排容器列表、目标队列、待配置/待启动状态、跳转已有详情页、移除已完成容器。
+- 支持自然语言管理：主 Agent 可调用管理工具追加目标、更新目标/职责、按用户明确要求启动、移除容器。
 
 **本阶段不做：**
 
 - 不实现自由连边图编辑器。
 - 不实现运行中逐工具审批和并发中断；继续沿用 P6-2 / P6-3 当前 approve-once 语义。
 - 不让 UI 直接调用 `orchestrate_flow` / `coordinate_team` 绕过主 Agent。
+- 不重复实现新的编排详情 / 团队详情配置页；复用已有 P6 详情帧和桌面端详情区。
+- 不允许主 Agent 自动修改模型、Provider 或高权限策略。
 - 不做跨 thread 的全局团队复用。
 - 不升级 Spring AI / Spring AI Alibaba。
 - 不把被移除的容器从 SQLite 审计事实中物理删除。
@@ -79,10 +93,17 @@ workUnitId: wu_...
 threadId: thr_...
 type: TEAM | FLOW
 name: 前端验收组
-status: idle | queued | running | completed | failed | removed
+status: WAITING_CONFIG | WAITING_START | RUNNING | COMPLETED | FAILED | REMOVED
 currentGoalId: goal_...
 removed: false
 ```
+
+状态语义补充：
+
+- `WAITING_CONFIG`：slash 创建 / 复用后，仍需要用户检查节点/成员职责或模型配置。
+- `WAITING_START`：职责已保存，等待用户点击“开始执行”或明确告知主 Agent 启动。
+- `RUNNING`：用户显式启动后，才进入真实编排 / 团队执行链路。
+- `COMPLETED` / `FAILED` / `REMOVED`：完成、失败或从页面移除；移除不删除审计事实。
 
 `WorkUnitGoal` 是容器里的目标批次。
 
@@ -97,11 +118,12 @@ runRefId: team_... 或 orch_...
 
 用户继续使用同名容器时（**slash 路径由服务端 `WorkUnitService` 确定性处理，不依赖模型先调工具**）：
 
-- 容器不存在：服务端创建容器，append 目标，得 `goalId`。
-- 容器存在且不是 running：服务端复用容器，append 目标，得 `goalId`。
-- 容器 running：服务端默认把目标 append 为 `pending`（排队）。**仅当用户用自然语言要求**“补充当前目标 / 排到下一个”时，主 Agent 才调用 `work_unit_manage` 调整——这是需要语言判断、无法纯结构化决定的少数场景。
+- 容器不存在：服务端创建容器，append 目标，得 `goalId`，容器进入 `WAITING_CONFIG` 或 `WAITING_START`，不自动执行。
+- 容器存在且不是 running：服务端复用容器，append 目标，得 `goalId`，容器保持待配置 / 待启动，不自动执行。
+- 容器 running：服务端默认把目标 append 为 `pending`（排队），不会抢占当前执行。**仅当用户用自然语言要求**“补充当前目标 / 排到下一个”时，主 Agent 才调用 `work_unit_manage` 调整——这是需要语言判断、无法纯结构化决定的少数场景。
+- 用户点击详情页“开始执行”或明确说“启动某某编排/团队”时，才把目标切到 running，并由主 Agent 调用 `orchestrate_flow` / `coordinate_team`。
 
-> **确定性边界**：create / reuse / append-goal 全部在 `submit()` 路径服务端完成（slash intent 已含 mode+name+goal，无需模型判断），`goalId` 随即注入本轮 `ToolContext`；模型只负责调用 `coordinate_team` / `orchestrate_flow` 执行。`work_unit_manage` 工具保留给自然语言管理（补充 vs 排队、追加、移除）。这样去掉“模型必须先调 work_unit_manage 再串 goalId”的脆弱链。
+> **确定性边界**：create / reuse / append-goal 全部在 `submit()` 路径服务端完成（slash intent 已含 mode+name+goal，无需模型判断），但这一步只创建“待配置 / 待启动”容器，不触发执行。`goalId` 只在用户显式启动时注入本轮 `ToolContext`；模型只负责在启动阶段调用 `coordinate_team` / `orchestrate_flow` 执行。`work_unit_manage` 工具保留给自然语言管理（修改目标/职责、补充 vs 排队、追加、移除、按用户要求启动）。这样去掉“模型必须先调 work_unit_manage 再串 goalId”的脆弱链，也避免 slash 命令绕过用户配置。
 
 ### 2.3 名称唯一
 
@@ -516,7 +538,7 @@ Expected: FAIL。
 - `TurnExecutor.submit(turn, userText, providerId, cwd, emitter, runPolicy, executionIntent)`
 - `AgentLoop.invoke(turn, userText, providerId, cwd, emitter, runPolicy, executionIntent)`
 
-**TEAM / FLOW intent 在此路径服务端确定性建容器**：调用 `WorkUnitService.createOrReuseAndAppendGoal(threadId, type, name, goalText)` 拿到 `goalId`，把 `goalId` 一并向下传给 `AgentLoop`，供其在 build toolContext 时注入（见 Task 6 / Task 10）。**不要**让模型先调 `work_unit_manage` 才有 goalId。
+**TEAM / FLOW intent 在此路径服务端确定性建容器**：调用 `WorkUnitService.createOrReuseAndAppendGoal(threadId, type, name, goalText)` 拿到 `goalId`，但本阶段只把容器置为 `WAITING_CONFIG` / `WAITING_START`，刷新右侧工作容器状态，不把 `goalId` 立即传给 `AgentLoop` 执行。**不要**让模型先调 `work_unit_manage` 才有容器，也不要让 slash 命令自动启动 flow/team。
 
 不要把 `rawCommand` 写入 `bq_items` 的 user message。
 
@@ -552,8 +574,8 @@ git commit -m "feat(p6-4): turn start 接收显式执行意图"
 
 断言（**注入进现有 `current_turn` 权威层**，不新造弱层——`ContextAssembler` 的 `current_turn` 已被系统提示赋予最高优先级；若另起新层须确保同等权威）：
 
-- `TEAM` intent 注入 `current_turn` 指令：容器与目标**已在服务端创建**（goalId 已在 ToolContext），要求主 Agent **直接调用 `coordinate_team` 执行本轮目标**。
-- `FLOW` intent 注入 `current_turn` 指令：容器与目标已在服务端创建，要求主 Agent **直接调用 `orchestrate_flow` 执行本轮目标**。
+- `TEAM` intent 注入 `current_turn` 指令：容器与目标**已在服务端创建**，当前状态为待配置 / 待启动，要求主 Agent **不要自动调用 `coordinate_team`**，而是提示用户进入已有团队详情页配置成员职责、模型并手动启动。
+- `FLOW` intent 注入 `current_turn` 指令：容器与目标已在服务端创建，当前状态为待配置 / 待启动，要求主 Agent **不要自动调用 `orchestrate_flow`**，而是提示用户进入已有编排详情页配置节点职责、模型并手动启动。
 - `SUB_AGENT` intent 注入只读 explorer 委派指令。
 - 注入内容不出现在 recent_history，不污染下一轮历史。
 
@@ -576,9 +598,9 @@ Expected: FAIL。
 用户通过 slash command 显式选择 TEAM 模式。
 目标容器名称：前端验收组。
 本轮目标：检查技能页。
-该团队容器与本轮目标已由系统创建/复用并入队（goalId 已在工具上下文中）。
-你应直接调用 coordinate_team 执行本轮目标，无需再创建容器。
-只有当用户用自然语言要求“补充当前目标 / 排到下一个 / 移除某容器”时，才调用 work_unit_manage 调整。
+该团队容器与本轮目标已由系统创建/复用，当前处于待配置 / 待启动状态。
+你不应自动调用 coordinate_team；请提示用户进入团队详情页配置成员职责、模型与权限，然后由用户手动开始执行。
+只有当用户用自然语言要求“修改目标 / 修改成员职责 / 补充当前目标 / 排到下一个 / 启动某容器 / 移除某容器”时，才调用 work_unit_manage 调整。
 ```
 
 - [ ] **Step 4: 运行测试确认通过**
@@ -759,7 +781,7 @@ git commit -m "feat(p6-4): 支持工作容器复用和目标队列"
 - 能移除 completed 容器。
 - running 容器移除失败。
 - capability searchText 包含 `团队 编排 工作容器 目标 追加 移除` 中文别名。
-- system prompt 告诉主 Agent：**slash intent 的容器/目标已由服务端建好（goalId 在 ToolContext），直接执行**；只有自然语言管理（补充/排队/追加/移除）才调 `work_unit_manage`。
+- system prompt 告诉主 Agent：**slash intent 的容器/目标已由服务端建好，但处于待配置 / 待启动状态，不能自动执行**；只有自然语言管理（修改目标/职责、补充/排队/追加、按用户明确要求启动、移除）才调 `work_unit_manage`。
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -786,6 +808,9 @@ Expected: FAIL。
 操作：
 
 - `CREATE_OR_REUSE_APPEND_GOAL`
+- `UPDATE_GOAL_TEXT`
+- `UPDATE_ROLE_TEXT`
+- `REQUEST_START`
 - `MARK_GOAL_RUNNING`
 - `MARK_GOAL_COMPLETED`
 - `REMOVE`
@@ -794,6 +819,7 @@ Expected: FAIL。
 
 - 不直接执行团队或编排。
 - 不绕过审批。
+- 不修改模型、Provider 或高权限策略；这些配置必须由用户在详情页手动完成。
 
 - [ ] **Step 4: 运行测试确认通过**
 
@@ -828,7 +854,7 @@ git commit -m "feat(p6-4): 增加工作容器管理工具"
 
 - [ ] **Step 1: 写失败测试**
 
-当 ToolContext 中存在 `workUnitGoalId`：
+当用户从已有编排 / 团队详情页点击“开始执行”，或在对话中明确要求主 Agent 启动某个容器时，启动路径把 `workUnitGoalId` 注入 `ToolContext`：
 
 - `orchestrate_flow` 创建 `orch_...` 后标记 goal running。
 - 流程完成后标记 goal completed。
@@ -848,11 +874,12 @@ Expected: FAIL。
 
 - [ ] **Step 3: 实现关联**
 
-**可靠路径（采用）= goalId 经 ToolContext 注入，不靠模型串参**：
+**可靠路径（采用）= 启动阶段 goalId 经 ToolContext 注入，不靠模型串参**：
 
-- slash 路径：`submit()` 服务端已建 goal（Task 5），`AgentLoop` build agent 时把 `goalId` 写入 `ToolContext`（key 如 `CONTEXT_WORK_UNIT_GOAL_ID`），**与现有 `CONTEXT_CWD` 注入同一处、同一套路**（已由 Context7 确认 `ToolContext` 服务端数据不发给模型）。
+- slash 创建路径：`submit()` 服务端只建容器和 goal（Task 5），不启动，不注入 `goalId` 执行。
+- 显式启动路径：用户点击详情页“开始执行”或自然语言要求启动后，`AgentLoop` build agent 时把 `goalId` 写入 `ToolContext`（key 如 `CONTEXT_WORK_UNIT_GOAL_ID`），**与现有 `CONTEXT_CWD` 注入同一处、同一套路**（已由 Context7 确认 `ToolContext` 服务端数据不发给模型）。
 - `FlowOrchestrationTool` / `TeamCoordinationTool` 读取 `toolContext.getContext().get(CONTEXT_WORK_UNIT_GOAL_ID)`：存在则创建 `orch_`/`team_` 后 `markGoalRunning(goalId, runRefType, runRefId)`，完成后 `markGoalCompleted(goalId, summary)`。
-- 自然语言管理路径：模型调 `work_unit_manage` 拿到 `goalId` 后，由该工具把 goalId 写回当前 turn 的可变上下文（或返回结构化结果让后续同 turn 工具读取），同样不靠模型把 goalId 当文本串进参数。
+- 自然语言管理路径：模型调 `work_unit_manage` 可修改目标/职责、移除容器或按用户明确要求启动；启动时由服务端把 goalId 写入当前 turn 的可变上下文（或返回结构化结果让后续同 turn 工具读取），同样不靠模型把 goalId 当文本串进参数。
 
 > 不采用“让模型把 goalId 当 task 文本传给后续工具”的脆弱退路；如确需显式参数，可新增**可选** `workUnitGoalId` ToolParam 作为兜底，但默认走 ToolContext。
 
@@ -1000,7 +1027,8 @@ git commit -m "feat(p6-4): 桌面端接入工作容器协议"
 覆盖：
 
 - 显示多个团队和编排容器。
-- 每个容器显示名称、类型、当前目标、目标计数、状态。
+- 每个容器显示名称、类型、当前目标、目标计数、待配置 / 待启动 / 运行中等状态。
+- 待配置 / 待启动容器展示“进入详情”入口，跳转到已有编排详情或团队详情配置区。
 - completed / idle 容器展示“移除”按钮。
 - running 容器不展示移除按钮或按钮 disabled。
 
@@ -1023,6 +1051,8 @@ Expected: FAIL。
 - `编排` 和 `团队` 使用两个小 tab 或分组标题。
 - 容器卡片保持 8dp 以下圆角，避免嵌套卡片。
 - 目标队列默认展示最近 3 个，更多用 “展开”。
+- 配置和启动入口复用已有页面：编排跳到 P6 06/07/08 对应的详情 / 节点设置 / 编辑节点；团队跳到 P6 03/04/05 对应的团队协作 / 团队设置 / 执行分屏。
+- P6-4 不新增独立配置页，只新增“slash 创建容器成功”入口页。
 - 移除后立即从列表消失。
 
 - [ ] **Step 4: 运行测试确认通过**
@@ -1061,9 +1091,10 @@ git commit -m "feat(p6-4): 运行详情展示命名团队和编排"
 - `/团队 前端验收组：检查聊天页` 解析为 TEAM intent。
 - 创建 `前端验收组` work unit。
 - 追加 goal。
-- 主 Agent 调用 `work_unit_manage` 后调用 `coordinate_team`。
+- 容器进入 `WAITING_CONFIG` / `WAITING_START`，slash 本身不调用 `coordinate_team`。
+- `workunit/list` 返回该容器，状态和目标正确。
+- 用户显式启动后，主 Agent 才调用 `coordinate_team`。
 - goal 关联 `teamId` 并完成。
-- `workunit/list` 返回该容器。
 - `workunit/remove` 后列表不再返回。
 
 桌面场景：
@@ -1210,14 +1241,20 @@ Expected: BUILD SUCCESS。
 /子代理 检查当前目录结构
 /编排 登录页优化：检查登录页 UI 和 Figma 是否一致
 /团队 前端验收组：分别检查聊天页、技能页和设置页
+启动 登录页优化
+启动 前端验收组
 /团队 前端验收组：继续检查运行详情面板
 ```
 
 验收点：
 
 - `/子代理` 不创建 work unit。
-- `/团队 前端验收组` 第二次复用同名团队并追加目标。
-- 多个团队 / 编排可同时展示。
+- `/编排` / `/团队` 创建或复用容器后停留在待配置 / 待启动，不自动调用 flow/team。
+- 进入已有编排详情 / 团队详情页可以配置职责、模型和启动。
+- 模型、Provider、高权限策略只能由用户手动配置。
+- 用户显式启动后才触发 `orchestrate_flow` / `coordinate_team` 和审批弹窗。
+- `/团队 前端验收组` 第二次复用同名团队并追加目标，但不会自动抢占当前运行。
+- 多个团队 / 编排可同时展示，P6-4 原型只作为创建入口页。
 - 已完成容器移除后从页面消失。
 - 用户消息正文不包含 slash 控制语法。
 
@@ -1246,14 +1283,15 @@ git commit -m "fix(p6-4): 修正 slash 工作容器验收问题"
 
 ## 5. 风险和回退
 
-- **模型不按 intent 调工具（已大幅降低）**：容器 create/reuse/append-goal 改为**服务端确定性**完成（slash intent 已是结构化输入），模型只需执行 `coordinate_team`/`orchestrate_flow`；goalId 经 ToolContext 注入，不靠模型串参。残余风险仅“模型不执行”，由 `current_turn` 权威指令约束 + `work_unit_manage` 设为可见能力兜底。
+- **slash 后误自动执行**：容器 create/reuse/append-goal 改为**服务端确定性**完成，但只进入待配置 / 待启动；测试必须钉住 slash 本身不调用 `coordinate_team`/`orchestrate_flow`。真正执行只在用户显式启动后发生，goalId 经 ToolContext 注入，不靠模型串参。
 - **名称唯一的并发（TOCTOU）**：create-or-reuse 必须包在**事务**里（复用 BaBiQ 压缩链路已有的 `TransactionTemplate` 同款），避免同名容器并发重复创建；SQLite 单写场景风险低，但仍按事务边界实现。
-- **审批闸门必须保留**：slash 触发的 flow/team 仍走 P6-2/P6-3 的 approve-once 审批弹窗——复用同工具应自动保留，但**补一个测试钉死**（slash 触发也弹审批、批准后才执行）。
+- **审批闸门必须保留**：用户显式启动 flow/team 后仍走 P6-2/P6-3 的 approve-once 审批弹窗——复用同工具应自动保留，但**补一个测试钉死**（启动时弹审批、批准后才执行）。
 - **`current_turn` 层权威**：intent 指令注入**现有 `current_turn` 权威层**（系统提示已写其优先级最高）；若另起 `current_turn_instruction` 新层，必须确保拿到同等权威，否则注入指令可能不被当作本轮最高优先。
 - **名称歧义**：运行中的名称（同 thread 内）唯一；完成/移除后同名允许重新创建。
 - **目标排队太复杂**：第一版只支持追加 pending goal，运行中不自动并发启动 queued goal；下一轮由主 Agent 或用户继续触发。
 - **移除误解为删除历史**：UI 文案使用“从页面移除”，不写“删除历史”。
 - **协议污染历史**：测试必须钉住 `bq_items.userMessage.text` 不含 slash 控制语法。
+- **模型配置被 Agent 自动改写**：模型、Provider、高权限策略属于用户手动配置区；自然语言管理工具只能改目标和职责文本，不改模型配置。
 
 ## 6. 完成报告要求
 
@@ -1264,4 +1302,3 @@ git commit -m "fix(p6-4): 修正 slash 工作容器验收问题"
 - 中文 conventional commit 列表。
 - 说明是否执行真实模型烟测。
 - 说明没有主动 push。
-

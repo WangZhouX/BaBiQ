@@ -196,6 +196,26 @@ sealed interface ThreadItem {
 
 	@Serializable
 	/**
+	 * 斜杠命令创建的工作容器协议 item。
+	 *
+	 * 工作容器只表示“一个可复用的编排/团队任务槽”，不代表已经开始执行。
+	 * 它必须放在右侧运行详情里，避免把 `/编排`、`/团队` 这类控制语法混入主聊天历史。
+	 */
+	data class WorkUnit(
+		override val id: String,
+		override val type: String = "workUnit",
+		val workUnitId: String,
+		val kind: String,
+		val name: String,
+		val status: String,
+		val currentGoalId: String? = null,
+		val currentGoal: String? = null,
+		val goalCount: Int = 0,
+		val removed: Boolean = false,
+	) : ThreadItem
+
+	@Serializable
+	/**
 	 * 多 Agent 流程编排协议 item。
 	 *
 	 * P6-2 后端用它把 Sequential/Parallel/Routing 流程的整体状态和节点状态推给桌面端。
@@ -418,6 +438,7 @@ object ThreadItemSerializer : KSerializer<ThreadItem> {
 			"turnSummary" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.TurnSummary.serializer(), raw)
 			"contextCompaction" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.ContextCompaction.serializer(), raw)
 			"agentDelegation" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.AgentDelegation.serializer(), raw)
+			"workUnit" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.WorkUnit.serializer(), raw)
 			"orchestration" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.Orchestration.serializer(), raw)
 			"team" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.Team.serializer(), raw)
 			"teamMessage" -> jsonDecoder.json.decodeFromJsonElement(ThreadItem.TeamMessage.serializer(), raw)

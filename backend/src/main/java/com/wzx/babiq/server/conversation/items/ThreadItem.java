@@ -33,6 +33,7 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
         @JsonSubTypes.Type(value = OrchestrationItem.class, name = "orchestration"),
         @JsonSubTypes.Type(value = TeamItem.class, name = "team"),
         @JsonSubTypes.Type(value = TeamMessageItem.class, name = "teamMessage"),
+        @JsonSubTypes.Type(value = WorkUnitItem.class, name = "workUnit"),
         @JsonSubTypes.Type(value = TurnSummaryItem.class, name = "turnSummary")
 })
 public sealed interface ThreadItem permits
@@ -52,6 +53,7 @@ public sealed interface ThreadItem permits
         OrchestrationItem,
         TeamItem,
         TeamMessageItem,
+        WorkUnitItem,
         TurnSummaryItem {
 
     /**

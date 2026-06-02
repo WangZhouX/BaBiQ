@@ -10,6 +10,7 @@ import com.wzx.babiq.desktop.protocol.CapabilitySettingsSetResult
 import com.wzx.babiq.desktop.protocol.CapabilityStatusResult
 import com.wzx.babiq.desktop.protocol.ContextSnapshotInfo
 import com.wzx.babiq.desktop.protocol.ContextStatusResult
+import com.wzx.babiq.desktop.protocol.ExecutionIntent
 import com.wzx.babiq.desktop.protocol.McpServerInfo
 import com.wzx.babiq.desktop.protocol.McpServerRefreshResult
 import com.wzx.babiq.desktop.protocol.McpServersListResult
@@ -52,6 +53,8 @@ import com.wzx.babiq.desktop.protocol.ThreadListResult
 import com.wzx.babiq.desktop.protocol.ThreadLoadResult
 import com.wzx.babiq.desktop.protocol.ThreadMetaInfo
 import com.wzx.babiq.desktop.protocol.ThreadSummaryInfo
+import com.wzx.babiq.desktop.protocol.WorkUnitListResult
+import com.wzx.babiq.desktop.protocol.WorkUnitRemoveResult
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -91,6 +94,39 @@ class ChatControllerTest {
 		assertEquals("thread-1", controller.state.value.currentThreadId)
 		assertEquals("turn-1", controller.state.value.currentTurnId)
 		assertTrue(controller.state.value.messages.any { it is ChatMessage.User && it.text == "分析项目" })
+	}
+
+	@Test
+	fun `sendMessage slash orchestration command passes create work unit intent`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(gateway, backgroundScope)
+		controller.connect()
+
+		controller.sendMessage("/编排 登录页重构：拆分登录页改造流程")
+
+		val intent = gateway.executionIntents.single()
+		val workUnit = intent as ExecutionIntent.CreateWorkUnit
+		assertEquals("orchestration", workUnit.kind)
+		assertEquals("登录页重构", workUnit.name)
+		assertEquals("拆分登录页改造流程", workUnit.goal)
+		assertTrue(controller.state.value.messages.any { it is ChatMessage.User && it.text == "拆分登录页改造流程" })
+		assertFalse(controller.state.value.messages.any { it is ChatMessage.User && it.text.startsWith("/编排") })
+		assertTrue(gateway.calls.contains("startTurn:thread-1:拆分登录页改造流程:null"))
+	}
+
+	@Test
+	fun `sendMessage slash team command passes create work unit intent`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(gateway, backgroundScope)
+		controller.connect()
+
+		controller.sendMessage("/团队 登录优化小组：让研究员和实现者协作修复登录页")
+
+		val intent = gateway.executionIntents.single()
+		val workUnit = intent as ExecutionIntent.CreateWorkUnit
+		assertEquals("team", workUnit.kind)
+		assertEquals("登录优化小组", workUnit.name)
+		assertEquals("让研究员和实现者协作修复登录页", workUnit.goal)
 	}
 
 	@Test
@@ -730,6 +766,31 @@ class ChatControllerTest {
 		active = false,
 	)
 
+	@Test
+	fun `removeWorkUnit calls backend and hides runtime item`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(gateway, backgroundScope)
+		controller.connect()
+		val item = ThreadItem.WorkUnit(
+			id = "it_workunit_1",
+			workUnitId = "wu_1",
+			kind = "orchestration",
+			name = "login-flow",
+			status = "idle",
+			currentGoal = "split login page",
+			goalCount = 1,
+			removed = false,
+		)
+		gateway.events.emit(ServerEvent.ItemAdded("thread-1", "turn-1", item))
+		advanceUntilIdle()
+
+		controller.removeWorkUnit("wu_1")
+		advanceUntilIdle()
+
+		assertTrue(gateway.calls.contains("removeWorkUnit:wu_1"))
+		assertEquals(emptyList(), controller.state.value.workUnitState.items.map { it.workUnitId })
+	}
+
 	private inner class FakeGateway(
 		private val connectFails: Boolean = false,
 		private var connectFailuresBeforeSuccess: Int = 0,
@@ -765,6 +826,7 @@ class ChatControllerTest {
 	) : AgentGateway {
 		override val events = MutableSharedFlow<ServerEvent>()
 		val calls = mutableListOf<String>()
+		val executionIntents = mutableListOf<ExecutionIntent?>()
 
 		override suspend fun connect() {
 			calls += "connect"
@@ -780,8 +842,14 @@ class ChatControllerTest {
 			return "thread-1"
 		}
 
-		override suspend fun startTurn(threadId: String, prompt: String, providerId: String?): String {
+		override suspend fun startTurn(
+			threadId: String,
+			prompt: String,
+			providerId: String?,
+			executionIntent: ExecutionIntent?,
+		): String {
 			calls += "startTurn:$threadId:$prompt:$providerId"
+			executionIntents += executionIntent
 			return "turn-1"
 		}
 
@@ -1045,6 +1113,22 @@ class ChatControllerTest {
 		override suspend fun searchMemory(query: String, threadId: String?): MemorySearchResult {
 			calls += "searchMemory:$query:$threadId"
 			return memorySearchResult
+		}
+
+		override suspend fun listWorkUnits(threadId: String): WorkUnitListResult {
+			calls += "listWorkUnits:$threadId"
+			return WorkUnitListResult(emptyList())
+		}
+
+		override suspend fun removeWorkUnit(workUnitId: String): WorkUnitRemoveResult {
+			calls += "removeWorkUnit:$workUnitId"
+			return WorkUnitRemoveResult(
+				workUnitId = workUnitId,
+				kind = "orchestration",
+				name = "login-flow",
+				status = "removed",
+				removed = true,
+			)
 		}
 
 		override suspend fun sendTeamMessage(teamId: String, toAgent: String, content: String): TeamMessageSendResult {

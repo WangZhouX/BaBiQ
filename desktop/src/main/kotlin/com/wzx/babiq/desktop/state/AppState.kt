@@ -57,6 +57,7 @@ data class AppState(
 	val subAgentState: SubAgentUiState = SubAgentUiState(),
 	val orchestrationState: OrchestrationUiState = OrchestrationUiState(),
 	val teamState: TeamUiState = TeamUiState(),
+	val workUnitState: WorkUnitUiState = WorkUnitUiState(),
 	val currentThreadId: String? = null,
 	val currentThreadTitle: String? = null,
 	val currentTurnId: String? = null,

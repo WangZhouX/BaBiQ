@@ -34,6 +34,8 @@ public final class TurnObservationContext {
     private final ConcurrentHashMap<String, LongAdder> toolCallsByName = new ConcurrentHashMap<>();
     /** 当前 turn 内最新 plan item id；update_plan 首次新增、后续更新同一条 item 时读取它。 */
     private final AtomicReference<String> planItemId = new AtomicReference<>();
+    /** 当前 turn 内显式启动的 WorkUnit 目标 id，供后续 flow/team 工具归属运行记录。 */
+    private final AtomicReference<String> workUnitGoalId = new AtomicReference<>();
 
     private TurnObservationContext(String threadId,
                                    String turnId,
@@ -127,6 +129,26 @@ public final class TurnObservationContext {
     public String rememberPlanItemId(String itemId) {
         planItemId.compareAndSet(null, itemId);
         return planItemId.get();
+    }
+
+    /**
+     * 记录当前 turn 已由用户显式启动的工作容器目标。
+     *
+     * @param goalId 待绑定到真实 flow/team 运行的目标 id
+     * @return 本轮实际使用的目标 id
+     */
+    public String rememberWorkUnitGoalId(String goalId) {
+        workUnitGoalId.compareAndSet(null, goalId);
+        return workUnitGoalId.get();
+    }
+
+    /**
+     * 返回当前 turn 已绑定的工作容器目标 id。
+     *
+     * @return 目标 id；未绑定时为 null
+     */
+    public String workUnitGoalId() {
+        return workUnitGoalId.get();
     }
 
     public long durationMs() {

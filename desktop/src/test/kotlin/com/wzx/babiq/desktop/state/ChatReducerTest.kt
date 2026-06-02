@@ -469,6 +469,78 @@ class ChatReducerTest {
 		assertEquals(listOf("msg_new"), state.messages.map { it.messageId })
 	}
 
+	@Test
+	fun `work unit item updates runtime state without adding chat message`() {
+		val item = ThreadItem.WorkUnit(
+			id = "it_workunit_1",
+			workUnitId = "wu_1",
+			kind = "orchestration",
+			name = "login-flow",
+			status = "idle",
+			currentGoalId = "wug_1",
+			currentGoal = "split login page",
+			goalCount = 1,
+			removed = false,
+		)
+
+		val next = ChatReducer.reduce(
+			AppState.empty().copy(messages = listOf(ChatMessage.User("u1", "create work unit"))),
+			AgentEvent.Server(ServerEvent.ItemAdded("thread-1", "turn-1", item)),
+		)
+
+		assertEquals(1, next.messages.size)
+		assertEquals(listOf("wu_1"), next.workUnitState.items.map { it.workUnitId })
+		assertEquals(1, next.runtimeEvents.size)
+		assertEquals("WorkUnit:login-flow", next.runtimeEvents.single().title)
+	}
+
+	@Test
+	fun `removed work unit item disappears from runtime state`() {
+		val existing = ThreadItem.WorkUnit(
+			id = "it_workunit_1",
+			workUnitId = "wu_1",
+			kind = "team",
+			name = "review-team",
+			status = "idle",
+			currentGoal = "review docs",
+			goalCount = 1,
+			removed = false,
+		)
+		val removed = existing.copy(status = "removed", removed = true)
+
+		val next = ChatReducer.reduce(
+			AppState.empty().copy(workUnitState = WorkUnitUiState(items = listOf(existing))),
+			AgentEvent.Server(ServerEvent.ItemUpdated("thread-1", "turn-1", removed)),
+		)
+
+		assertEquals(emptyList(), next.workUnitState.items)
+	}
+
+	@Test
+	fun `work unit state from history keeps visible units and ignores removed units`() {
+		val visible = ThreadItem.WorkUnit(
+			id = "it_workunit_visible",
+			workUnitId = "wu_visible",
+			kind = "orchestration",
+			name = "login-flow",
+			status = "idle",
+			currentGoal = "split login page",
+			goalCount = 2,
+			removed = false,
+		)
+		val removed = visible.copy(
+			id = "it_workunit_removed",
+			workUnitId = "wu_removed",
+			name = "old-flow",
+			status = "removed",
+			removed = true,
+		)
+
+		val state = ChatReducer.workUnitStateFromItems(listOf(removed, visible))
+
+		assertEquals(listOf("wu_visible"), state.items.map { it.workUnitId })
+	}
+
 	private fun sampleApproval() = ApprovalRequestPayload(
 		threadId = "thread-1",
 		turnId = "turn-1",

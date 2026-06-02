@@ -6,6 +6,7 @@ import com.wzx.babiq.desktop.protocol.CapabilitySettingsSetParams
 import com.wzx.babiq.desktop.protocol.CapabilityStatusResult
 import com.wzx.babiq.desktop.protocol.ContextSnapshotInfo
 import com.wzx.babiq.desktop.protocol.ContextStatusResult
+import com.wzx.babiq.desktop.protocol.ExecutionIntent
 import com.wzx.babiq.desktop.protocol.MemoryArtifactsListResult
 import com.wzx.babiq.desktop.protocol.MemoryConsolidateResult
 import com.wzx.babiq.desktop.protocol.MemoryJobsListResult
@@ -30,6 +31,8 @@ import com.wzx.babiq.desktop.protocol.ServerEvent
 import com.wzx.babiq.desktop.protocol.SettingsUpdateParams
 import com.wzx.babiq.desktop.protocol.SkillListResult
 import com.wzx.babiq.desktop.protocol.ThreadItem
+import com.wzx.babiq.desktop.protocol.WorkUnitListResult
+import com.wzx.babiq.desktop.protocol.WorkUnitRemoveResult
 import com.wzx.babiq.desktop.protocol.protocolJson
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -78,6 +81,30 @@ class AgentClientTest {
 		assertEquals("thread-1", request.paramsText("threadId"))
 		assertEquals("分析项目结构", request.paramsObject("input").paramsText("text"))
 		assertEquals("qwen", request.paramsText("providerId"))
+	}
+
+	@Test
+	fun `startTurn can send explicit work unit execution intent`() = runTest {
+		val transport = FakeAgentTransport()
+		val client = AgentClient(transport, backgroundScope)
+		client.connect()
+
+		client.startTurn(
+			threadId = "thread-1",
+			prompt = "/编排 登录页重构：拆分登录页改造流程",
+			providerId = null,
+			executionIntent = ExecutionIntent.CreateWorkUnit(
+				kind = "orchestration",
+				name = "登录页重构",
+				goal = "拆分登录页改造流程",
+			),
+		)
+
+		val intent = transport.sent.single().paramsObject("executionIntent")
+		assertEquals("create_work_unit", intent.paramsText("type"))
+		assertEquals("orchestration", intent.paramsText("kind"))
+		assertEquals("登录页重构", intent.paramsText("name"))
+		assertEquals("拆分登录页改造流程", intent.paramsText("goal"))
 	}
 
 	@Test
@@ -396,6 +423,23 @@ class AgentClientTest {
 		assertEquals("请重点看 README", request.paramsText("content"))
 		assertEquals("msg_1", result.item.messageId)
 		assertEquals("direct_user", result.item.messageType)
+	}
+
+	@Test
+	fun `work unit interfaces can list and remove containers`() = runTest {
+		val transport = FakeAgentTransport()
+		val client = AgentClient(transport, backgroundScope)
+		client.connect()
+
+		val list: WorkUnitListResult = client.listWorkUnits("thr_1")
+		val removed: WorkUnitRemoveResult = client.removeWorkUnit("wu_1")
+
+		assertEquals("workunit/list", transport.sent[0].method)
+		assertEquals("thr_1", transport.sent[0].paramsText("threadId"))
+		assertEquals("wu_1", list.workUnits.single().workUnitId)
+		assertEquals("workunit/remove", transport.sent[1].method)
+		assertEquals("wu_1", transport.sent[1].paramsText("workUnitId"))
+		assertTrue(removed.removed)
 	}
 
 	@Test
@@ -751,6 +795,40 @@ class AgentClientTest {
 						},
 					)
 					put("tokenEstimate", 12)
+				}
+				"workunit/list" -> buildJsonObject {
+					put(
+						"workUnits",
+						buildJsonArray {
+							add(buildJsonObject {
+								put("workUnitId", "wu_1")
+								put("threadId", request.paramsText("threadId"))
+								put("kind", "orchestration")
+								put("name", "登录页重构")
+								put("status", "idle")
+								put("currentGoalId", "goal_1")
+								put("removed", false)
+								put(
+									"goals",
+									buildJsonArray {
+										add(buildJsonObject {
+											put("goalId", "goal_1")
+											put("workUnitId", "wu_1")
+											put("goalText", "拆分登录页改造流程")
+											put("status", "pending")
+										})
+									},
+								)
+							})
+						},
+					)
+				}
+				"workunit/remove" -> buildJsonObject {
+					put("workUnitId", request.paramsText("workUnitId"))
+					put("kind", "orchestration")
+					put("name", "登录页重构")
+					put("status", "removed")
+					put("removed", true)
 				}
 				"team/message/send" -> buildJsonObject {
 					put(

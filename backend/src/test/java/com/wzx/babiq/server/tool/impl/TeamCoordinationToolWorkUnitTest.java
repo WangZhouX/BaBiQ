@@ -1,0 +1,73 @@
+package com.wzx.babiq.server.tool.impl;
+
+import com.wzx.babiq.server.agent.team.BabiqTeamSpec;
+import com.wzx.babiq.server.agent.team.TeamApprovalService;
+import com.wzx.babiq.server.agent.team.TeamCoordinationService;
+import com.wzx.babiq.server.agent.team.TeamExecutionResult;
+import com.wzx.babiq.server.agent.team.TeamRepository;
+import com.wzx.babiq.server.interceptor.BaBiQSandboxInterceptor;
+import com.wzx.babiq.server.sandbox.SandboxMode;
+import com.wzx.babiq.server.workunit.WorkUnitContextKeys;
+import com.wzx.babiq.server.workunit.WorkUnitService;
+import org.junit.jupiter.api.Test;
+import org.springframework.ai.chat.model.ToolContext;
+
+import java.util.List;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.startsWith;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+class TeamCoordinationToolWorkUnitTest {
+
+    @Test
+    void coordinate_team_should_link_current_work_unit_goal() {
+        TeamCoordinationService coordinationService = mock(TeamCoordinationService.class);
+        TeamRepository repository = mock(TeamRepository.class);
+        WorkUnitService workUnitService = mock(WorkUnitService.class);
+        when(coordinationService.run(any(BabiqTeamSpec.class), any(ToolContext.class)))
+                .thenReturn(new TeamExecutionResult("completed", "团队已完成", 1, "explorer"));
+        TeamCoordinationTool tool = new TeamCoordinationTool(
+                coordinationService,
+                repository,
+                new TeamApprovalService(),
+                workUnitService);
+
+        String output = tool.coordinateTeam("梳理登录页", List.of(), 2, toolContext("goal_team_1"));
+
+        assertThat(output).isEqualTo("团队已完成");
+        verify(workUnitService).markGoalRunning(eq("goal_team_1"), eq("team"), startsWith("team_"));
+        verify(workUnitService).markGoalCompleted("goal_team_1", "团队已完成");
+    }
+
+    @Test
+    void coordinate_team_should_mark_work_unit_goal_failed_when_team_fails() {
+        TeamCoordinationService coordinationService = mock(TeamCoordinationService.class);
+        TeamRepository repository = mock(TeamRepository.class);
+        WorkUnitService workUnitService = mock(WorkUnitService.class);
+        when(coordinationService.run(any(BabiqTeamSpec.class), any(ToolContext.class)))
+                .thenReturn(new TeamExecutionResult("failed", "成员执行失败", 1, "writer"));
+        TeamCoordinationTool tool = new TeamCoordinationTool(
+                coordinationService,
+                repository,
+                new TeamApprovalService(),
+                workUnitService);
+
+        String output = tool.coordinateTeam("梳理登录页", List.of(), 2, toolContext("goal_team_2"));
+
+        assertThat(output).isEqualTo("成员执行失败");
+        verify(workUnitService).markGoalRunning(eq("goal_team_2"), eq("team"), startsWith("team_"));
+        verify(workUnitService).markGoalFailed("goal_team_2", "成员执行失败");
+    }
+
+    private ToolContext toolContext(String goalId) {
+        return new ToolContext(Map.of(
+                WorkUnitContextKeys.GOAL_ID, goalId,
+                BaBiQSandboxInterceptor.CONTEXT_SANDBOX_MODE, SandboxMode.READ_ONLY.name()));
+    }
+}

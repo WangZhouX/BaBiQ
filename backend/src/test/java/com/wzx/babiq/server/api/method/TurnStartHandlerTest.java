@@ -6,9 +6,12 @@ import com.wzx.babiq.server.agent.TurnExecutor;
 import com.wzx.babiq.server.approval.ApprovalPolicy;
 import com.wzx.babiq.server.conversation.ConversationService;
 import com.wzx.babiq.server.conversation.Thread;
+import com.wzx.babiq.server.conversation.items.WorkUnitItem;
 import com.wzx.babiq.server.sandbox.SandboxMode;
 import com.wzx.babiq.server.settings.AppSettings;
 import com.wzx.babiq.server.settings.AppSettingsService;
+import com.wzx.babiq.server.workunit.WorkUnitCreateRequest;
+import com.wzx.babiq.server.workunit.WorkUnitService;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
@@ -22,6 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -84,6 +88,62 @@ class TurnStartHandlerTest {
 
         verify(executor).submit(any(), eq("create file"), eq(null), eq("H:/aaa"), any(),
                 eq(AgentRunPolicy.of(SandboxMode.READ_ONLY, ApprovalPolicy.NEVER)));
+    }
+
+    @Test
+    void handle_should_create_work_unit_and_complete_turn_without_agent_loop() throws Exception {
+        ConversationService conversationService = new ConversationService();
+        Thread thread = conversationService.createThread("H:/aaa");
+        TurnExecutor executor = mock(TurnExecutor.class);
+        WorkUnitService workUnitService = mock(WorkUnitService.class);
+        when(workUnitService.createOrAppend(any(), eq(thread), any(), eq("H:/aaa"), any()))
+                .thenReturn(new WorkUnitItem(
+                        "it_workunit_1",
+                        "workUnit",
+                        "wu_1",
+                        "orchestration",
+                        "登录页重构",
+                        "waiting_config",
+                        "goal_1",
+                        "拆分登录页改造流程",
+                        1,
+                        null));
+        List<String> payloads = new ArrayList<>();
+        WebSocketSession session = recordingSession(payloads);
+        TurnStartHandler handler = new TurnStartHandler(
+                conversationService,
+                objectMapper,
+                executor,
+                null,
+                null,
+                null,
+                null,
+                workUnitService);
+
+        handler.handle(
+                objectMapper.valueToTree(Map.of(
+                        "threadId", thread.id(),
+                        "input", Map.of("type", "text", "text", "/编排 登录页重构：拆分登录页改造流程"),
+                        "executionIntent", Map.of(
+                                "type", "create_work_unit",
+                                "kind", "orchestration",
+                                "name", "登录页重构",
+                                "goal", "拆分登录页改造流程"))),
+                session);
+
+        verify(workUnitService).createOrAppend(
+                org.mockito.ArgumentMatchers.argThat((WorkUnitCreateRequest request) ->
+                        "orchestration".equals(request.kind())
+                                && "登录页重构".equals(request.name())
+                                && "拆分登录页改造流程".equals(request.goal())),
+                eq(thread),
+                any(),
+                eq("H:/aaa"),
+                any());
+        verify(executor, never()).submit(any(), any(), any(), any(), any(), any());
+        assertThat(payloads).anyMatch(payload -> payload.contains("\"method\":\"item/added\"")
+                && payload.contains("\"type\":\"workUnit\""));
+        assertThat(payloads).anyMatch(payload -> payload.contains("\"method\":\"turn/completed\""));
     }
 
     private WebSocketSession recordingSession(List<String> payloads) {

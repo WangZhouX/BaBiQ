@@ -3,6 +3,7 @@ package com.wzx.babiq.desktop.state
 import com.wzx.babiq.desktop.client.AgentGateway
 import com.wzx.babiq.desktop.protocol.AppSettingsResult
 import com.wzx.babiq.desktop.protocol.CapabilitySettingsSetParams
+import com.wzx.babiq.desktop.protocol.ExecutionIntent
 import com.wzx.babiq.desktop.protocol.MemorySettingsSetParams
 import com.wzx.babiq.desktop.protocol.ProviderInfo
 import com.wzx.babiq.desktop.protocol.ProviderSaveParams
@@ -106,7 +107,10 @@ class ChatController(
 			return
 		}
 
-		val localMessage = ChatMessage.User(id = "local-user-${current.messages.size + 1}", text = prompt)
+		val slashCommand = SlashCommandParser.parse(prompt)
+		val executionIntent = slashCommand.toExecutionIntent()
+		val submittedText = slashCommand.toSubmittedText(prompt)
+		val localMessage = ChatMessage.User(id = "local-user-${current.messages.size + 1}", text = submittedText)
 		_state.update {
 			it.copy(
 				turnState = TurnState.Sending,
@@ -125,10 +129,11 @@ class ChatController(
 			val threadId = current.currentThreadId ?: gateway.createThread(current.workspace.cwd)
 			val turnId = gateway.startTurn(
 				threadId = threadId,
-				prompt = prompt,
+				prompt = submittedText,
 				providerId = current.providerState.active.providerId.takeIf { selectedProvider ->
 					current.providerState.providers.any { it.id == selectedProvider }
 				},
+				executionIntent = executionIntent,
 			)
 			_state.update {
 				it.copy(
@@ -160,6 +165,25 @@ class ChatController(
 			}
 		}
 	}
+
+	private fun SlashCommand?.toExecutionIntent(): ExecutionIntent? =
+		when (this) {
+			is SlashCommand.WorkUnit -> ExecutionIntent.CreateWorkUnit(
+				kind = when (kind) {
+					WorkUnitKind.Orchestration -> "orchestration"
+					WorkUnitKind.Team -> "team"
+				},
+				name = name,
+				goal = goal,
+			)
+			null -> null
+		}
+
+	private fun SlashCommand?.toSubmittedText(fallback: String): String =
+		when (this) {
+			is SlashCommand.WorkUnit -> goal
+			null -> fallback
+		}
 
 	suspend fun respondApproval(decision: String, editedArgs: String? = null, scope: String? = null) {
 		val approval = state.value.pendingApproval
@@ -358,6 +382,7 @@ class ChatController(
 				subAgentState = SubAgentUiState(),
 				orchestrationState = OrchestrationUiState(),
 				teamState = TeamUiState(),
+				workUnitState = WorkUnitUiState(),
 				threadHistory = it.threadHistory.copy(selectedThreadId = null),
 				bannerMessage = null,
 				lastError = null,
@@ -377,6 +402,7 @@ class ChatController(
 			val subAgentState = ChatReducer.subAgentStateFromItems(loaded.items)
 			val orchestrationState = ChatReducer.orchestrationStateFromItems(loaded.items)
 			val teamState = ChatReducer.teamStateFromItems(loaded.items)
+			val workUnitState = ChatReducer.workUnitStateFromItems(loaded.items)
 			_state.update {
 				it.copy(
 					workspace = it.workspace.copy(
@@ -397,6 +423,7 @@ class ChatController(
 					subAgentState = subAgentState,
 					orchestrationState = orchestrationState,
 					teamState = teamState,
+					workUnitState = workUnitState,
 					pendingApproval = null,
 					runRecordState = if (it.runtimeExpanded) {
 						it.runRecordState.copy(loading = true, error = null)
@@ -449,6 +476,7 @@ class ChatController(
 					subAgentState = if (wasCurrentThread) SubAgentUiState() else it.subAgentState,
 					orchestrationState = if (wasCurrentThread) OrchestrationUiState() else it.orchestrationState,
 					teamState = if (wasCurrentThread) TeamUiState() else it.teamState,
+					workUnitState = if (wasCurrentThread) WorkUnitUiState() else it.workUnitState,
 					threadHistory = it.threadHistory.copy(
 						items = it.threadHistory.items.filterNot { item -> item.threadId == threadId },
 						selectedThreadId = it.threadHistory.selectedThreadId?.takeUnless { selected -> selected == threadId },
@@ -516,6 +544,7 @@ class ChatController(
 				subAgentState = SubAgentUiState(),
 				orchestrationState = OrchestrationUiState(),
 				teamState = TeamUiState(),
+				workUnitState = WorkUnitUiState(),
 				lastError = null,
 				bannerMessage = "已切换工作目录: $selected",
 			)
@@ -850,7 +879,8 @@ class ChatController(
 			(current.planState.visible && !current.planState.collapsed) ||
 			current.subAgentState.visible ||
 			current.orchestrationState.visible ||
-			current.teamState.visible
+			current.teamState.visible ||
+			current.workUnitState.visible
 		val shouldExpand = !panelVisible
 		_state.update {
 			it.copy(
@@ -877,6 +907,39 @@ class ChatController(
 	 */
 	fun dismissSubAgentCard() {
 		_state.update { it.copy(subAgentState = it.subAgentState.dismissCurrent()) }
+	}
+
+	/**
+	 * 手动移除一个编排/团队工作容器。
+	 *
+	 * 移除只影响当前列表可见性；后端仍保留 SQLite 审计记录，运行中的容器会由后端拒绝。
+	 */
+	fun removeWorkUnit(workUnitId: String) {
+		if (workUnitId.isBlank()) {
+			return
+		}
+		scope.launch(start = CoroutineStart.UNDISPATCHED) {
+			_state.update {
+				it.copy(workUnitState = it.workUnitState.copy(loading = true, error = null))
+			}
+			try {
+				val removed = gateway.removeWorkUnit(workUnitId).toThreadItem()
+				_state.update {
+					it.copy(
+						workUnitState = it.workUnitState.withItem(removed).copy(loading = false, error = null),
+						lastError = null,
+					)
+				}
+			} catch (exception: Exception) {
+				val message = exception.message ?: "移除工作容器失败"
+				_state.update {
+					it.copy(
+						workUnitState = it.workUnitState.copy(loading = false, error = message),
+						lastError = message,
+					)
+				}
+			}
+		}
 	}
 
 	/**

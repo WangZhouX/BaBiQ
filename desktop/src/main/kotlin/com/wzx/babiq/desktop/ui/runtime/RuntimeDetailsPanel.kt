@@ -44,6 +44,7 @@ fun RuntimeDetailsPanel(
 	modifier: Modifier = Modifier,
 	onClose: () -> Unit,
 	onDismissSubAgent: () -> Unit = {},
+	onRemoveWorkUnit: (String) -> Unit = {},
 	onSendTeamMessage: (String, String) -> Unit = { _, _ -> },
 	onSelectRunTurn: (String) -> Unit,
 	onSelectObservabilityRange: (String) -> Unit,
@@ -61,6 +62,7 @@ fun RuntimeDetailsPanel(
 			TextButton(onClick = onClose) { Text("收起") }
 		}
 		PlanSection(state.planState)
+		WorkUnitSection(state.workUnitState, onRemove = onRemoveWorkUnit)
 		OrchestrationSection(state.orchestrationState)
 		TeamSection(state.teamState, onSendTeamMessage = onSendTeamMessage)
 		SubAgentSection(state.subAgentState, onDismiss = onDismissSubAgent)
