@@ -86,6 +86,18 @@ class SQLiteMigrationIT {
         }
     }
 
+    @Test
+    @DisplayName("P6-4 状态说明通过后续迁移刷新，避免修改已发布 V16")
+    void work_unit_status_comment_should_be_refreshed_by_followup_migration() throws Exception {
+        try (Connection connection = dataSource.getConnection();
+             Statement statement = connection.createStatement()) {
+            assertThat(flywayVersions(statement)).contains("16", "17");
+            assertThat(commentFor(statement, "bq_work_units", "status"))
+                    .contains("waiting_config")
+                    .contains("待启动");
+        }
+    }
+
     private static Set<String> tableNames(Statement statement) throws Exception {
         try (ResultSet rs = statement.executeQuery(
                 "SELECT name FROM sqlite_master WHERE type='table'")) {
@@ -115,6 +127,13 @@ class SQLiteMigrationIT {
                 values.add(rs.getString("name"));
             }
             return values;
+        }
+    }
+
+    private static Set<String> flywayVersions(Statement statement) throws Exception {
+        try (ResultSet rs = statement.executeQuery(
+                "SELECT version FROM flyway_schema_history WHERE success = 1")) {
+            return resultSetValues(rs).stream().collect(Collectors.toSet());
         }
     }
 
