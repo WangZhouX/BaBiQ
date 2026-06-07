@@ -173,4 +173,72 @@ class WorkUnitServiceTest {
         assertThat(goal.errorMessage()).isEqualTo("boom");
         assertThat(goal.completedAt()).isNotNull();
     }
+
+    @Test
+    void update_goal_should_change_pending_goal_text_without_starting_execution() {
+        Thread thread = Thread.newThread("thr_wu_update", "H:/aaa");
+        WorkUnitItem item = service.createOrAppend(
+                new WorkUnitCreateRequest("orchestration", "html-test", "old goal", null),
+                thread,
+                new Turn("turn_wu_update", thread.id()),
+                thread.cwd(),
+                AgentRunPolicy.of(SandboxMode.WORKSPACE_WRITE, ApprovalPolicy.ON_REQUEST));
+
+        WorkUnitGoal updated = service.updateGoal(item.activeGoalId(), "new configured goal");
+
+        assertThat(updated.goalText()).isEqualTo("new configured goal");
+        assertThat(updated.status()).isEqualTo("pending");
+        assertThat(updated.startedAt()).isNull();
+        assertThat(service.listGoals(item.workUnitId())).extracting(WorkUnitGoal::goalText)
+                .containsExactly("new configured goal");
+        assertThat(service.listVisible(thread.id()).getFirst().status()).isEqualTo("waiting_config");
+    }
+
+    @Test
+    void update_goal_should_reject_running_goal() {
+        Thread thread = Thread.newThread("thr_wu_update_running", "H:/aaa");
+        WorkUnitItem item = service.createOrAppend(
+                new WorkUnitCreateRequest("team", "review-team", "goal before running", null),
+                thread,
+                new Turn("turn_wu_update_running", thread.id()),
+                thread.cwd(),
+                AgentRunPolicy.of(SandboxMode.WORKSPACE_WRITE, ApprovalPolicy.ON_REQUEST));
+        service.markGoalRunning(item.activeGoalId(), "team", "team_running_update");
+
+        assertThatThrownBy(() -> service.updateGoal(item.activeGoalId(), "new goal"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("running");
+    }
+
+    @Test
+    void select_pending_goal_for_turn_should_choose_current_pending_goal() {
+        Thread thread = Thread.newThread("thr_wu_select", "H:/aaa");
+        WorkUnitItem item = service.createOrAppend(
+                new WorkUnitCreateRequest("orchestration", "html-test", "first goal", null),
+                thread,
+                new Turn("turn_wu_select", thread.id()),
+                thread.cwd(),
+                AgentRunPolicy.of(SandboxMode.WORKSPACE_WRITE, ApprovalPolicy.ON_REQUEST));
+
+        WorkUnitGoal selected = service.selectPendingGoalForTurn(thread.id(), item.workUnitId());
+
+        assertThat(selected.goalId()).isEqualTo(item.activeGoalId());
+        assertThat(selected.goalText()).isEqualTo("first goal");
+        assertThat(selected.status()).isEqualTo("pending");
+    }
+
+    @Test
+    void select_pending_goal_for_turn_should_reject_wrong_thread() {
+        Thread thread = Thread.newThread("thr_wu_select_owner", "H:/aaa");
+        WorkUnitItem item = service.createOrAppend(
+                new WorkUnitCreateRequest("team", "review-team", "review login", null),
+                thread,
+                new Turn("turn_wu_select_owner", thread.id()),
+                thread.cwd(),
+                AgentRunPolicy.of(SandboxMode.WORKSPACE_WRITE, ApprovalPolicy.ON_REQUEST));
+
+        assertThatThrownBy(() -> service.selectPendingGoalForTurn("other-thread", item.workUnitId()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("other-thread");
+    }
 }

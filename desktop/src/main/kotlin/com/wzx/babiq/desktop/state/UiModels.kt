@@ -20,6 +20,7 @@ import com.wzx.babiq.desktop.protocol.RunTurnSummaryInfo
 import com.wzx.babiq.desktop.protocol.SkillInfo
 import com.wzx.babiq.desktop.protocol.ThreadItem
 import com.wzx.babiq.desktop.protocol.ThreadSummaryInfo
+import com.wzx.babiq.desktop.protocol.WorkUnitInfo
 import kotlinx.serialization.json.JsonElement
 
 /** WebSocket 连接状态，直接驱动顶部连接徽标和发送/审批可用性。 */
@@ -257,14 +258,25 @@ data class SubAgentUiState(
  */
 data class OrchestrationUiState(
 	val current: ThreadItem.Orchestration? = null,
+	val configuringWorkUnit: WorkUnitInfo? = null,
 ) {
 	/** 是否有可展示的流程编排轨迹。 */
 	val visible: Boolean
-		get() = current != null
+		get() = current != null || configuringWorkUnit != null
 
 	/** 终态用于 UI 样式区分；终态仍保留在右侧面板，方便用户复盘节点结果。 */
 	val terminal: Boolean
 		get() = current?.status?.lowercase() in setOf("completed", "failed", "canceled")
+
+	fun withConfiguration(info: WorkUnitInfo): OrchestrationUiState =
+		OrchestrationUiState(current = null, configuringWorkUnit = info)
+
+	fun refreshConfiguration(info: WorkUnitInfo?): OrchestrationUiState =
+		if (configuringWorkUnit != null && info != null && info.kind.equals("orchestration", ignoreCase = true)) {
+			copy(configuringWorkUnit = info)
+		} else {
+			this
+		}
 }
 
 /**
@@ -283,6 +295,7 @@ data class OrchestrationUiState(
  */
 data class TeamUiState(
 	val current: ThreadItem.Team? = null,
+	val configuringWorkUnit: WorkUnitInfo? = null,
 	val messages: List<ThreadItem.TeamMessage> = emptyList(),
 	val selectedAgent: String? = null,
 	val directDraft: String = "",
@@ -291,7 +304,7 @@ data class TeamUiState(
 ) {
 	/** 是否有可展示的团队协作轨迹。 */
 	val visible: Boolean
-		get() = current != null
+		get() = current != null || configuringWorkUnit != null
 
 	/** 团队是否已进入终态；终态仍保留给用户复盘，不自动隐藏。 */
 	val terminal: Boolean
@@ -316,11 +329,22 @@ data class TeamUiState(
 			?: item.members.firstOrNull()?.name
 		return copy(
 			current = item,
+			configuringWorkUnit = null,
 			messages = nextMessages,
 			selectedAgent = nextSelected,
 			directError = null,
 		)
 	}
+
+	fun withConfiguration(info: WorkUnitInfo): TeamUiState =
+		TeamUiState(configuringWorkUnit = info)
+
+	fun refreshConfiguration(info: WorkUnitInfo?): TeamUiState =
+		if (configuringWorkUnit != null && info != null && info.kind.equals("team", ignoreCase = true)) {
+			copy(configuringWorkUnit = info)
+		} else {
+			this
+		}
 
 	/**
 	 * 合并新的团队消息。
@@ -349,26 +373,44 @@ data class TeamUiState(
  */
 data class WorkUnitUiState(
 	val items: List<ThreadItem.WorkUnit> = emptyList(),
+	val details: List<WorkUnitInfo> = emptyList(),
+	val selectedWorkUnitId: String? = null,
 	val loading: Boolean = false,
 	val error: String? = null,
 ) {
 	val visible: Boolean
 		get() = items.isNotEmpty()
 
+	val selectedDetail: WorkUnitInfo?
+		get() = selectedWorkUnitId?.let { id -> details.firstOrNull { it.workUnitId == id } }
+
 	fun withItem(item: ThreadItem.WorkUnit): WorkUnitUiState {
 		if (item.removed || item.status.equals("removed", ignoreCase = true)) {
-			return copy(items = items.filterNot { it.workUnitId == item.workUnitId })
+			return copy(
+				items = items.filterNot { it.workUnitId == item.workUnitId },
+				details = details.filterNot { it.workUnitId == item.workUnitId },
+				selectedWorkUnitId = selectedWorkUnitId.takeUnless { it == item.workUnitId },
+			)
 		}
 		val withoutOld = items.filterNot { it.workUnitId == item.workUnitId }
 		return copy(items = withoutOld + item, error = null)
 	}
 
-	fun replaceAll(nextItems: List<ThreadItem.WorkUnit>): WorkUnitUiState =
-		copy(
-			items = nextItems.filterNot { it.removed || it.status.equals("removed", ignoreCase = true) },
+	fun replaceAll(nextUnits: List<WorkUnitInfo>): WorkUnitUiState {
+		val visibleUnits = nextUnits.filterNot { it.removed || it.status.equals("removed", ignoreCase = true) }
+		val nextItems = visibleUnits.map { it.toThreadItem() }
+		val nextSelected = selectedWorkUnitId?.takeIf { id -> visibleUnits.any { it.workUnitId == id } }
+		return copy(
+			items = nextItems,
+			details = visibleUnits,
+			selectedWorkUnitId = nextSelected,
 			loading = false,
 			error = null,
 		)
+	}
+
+	fun select(workUnitId: String): WorkUnitUiState =
+		if (items.any { it.workUnitId == workUnitId }) copy(selectedWorkUnitId = workUnitId) else this
 }
 
 data class RunRecordState(

@@ -42,12 +42,13 @@ public class AgentLoop {
         this.contextWindowRuntime = contextWindowRuntime;
     }
     /** 执行普通用户输入，使用默认运行权限快照。 */
-    public void invoke(Turn turn, String userText, String providerId, String cwd, ItemEmitter emitter) {
-        invoke(turn, userText, providerId, cwd, emitter, strategy.defaultRunPolicy());
-    }
+    public void invoke(Turn turn, String userText, String providerId, String cwd, ItemEmitter emitter) { invoke(turn, userText, providerId, cwd, emitter, strategy.defaultRunPolicy()); }
     /** 执行普通用户输入：原文进入聊天历史，临时上下文窗口文本进入模型调用。 */
-    public void invoke(Turn turn, String userText, String providerId, String cwd, ItemEmitter emitter, AgentRunPolicy runPolicy) {
+    public void invoke(Turn turn, String userText, String providerId, String cwd, ItemEmitter emitter, AgentRunPolicy runPolicy) { invoke(turn, userText, providerId, cwd, emitter, runPolicy, null); }
+    /** 执行普通用户输入，并可选把本轮工具运行绑定到工作容器目标。 */
+    public void invoke(Turn turn, String userText, String providerId, String cwd, ItemEmitter emitter, AgentRunPolicy runPolicy, String workUnitGoalId) {
         TurnObservationContext context = observationRegistry.start(turn.threadId(), turn.id(), providerId, strategy.resolveModelName(providerId));
+        if (workUnitGoalId != null && !workUnitGoalId.isBlank()) context.rememberWorkUnitGoalId(workUnitGoalId);
         long startedNanos = System.nanoTime();
         ContextWindowRuntimeResult contextInput = null;
         CapabilityExposurePlan exposurePlan = null;
@@ -59,8 +60,7 @@ public class AgentLoop {
             contextInput = prepareContextInput(turn, userText, providerId, cwd, runPolicy, emitter, exposurePlan);
             ReactAgent agent = buildAgent(providerId, cwd, emitter, context, runPolicy, exposurePlan);
             AgentLoopDiagnostics.modelCallStarted(turn, context);
-            AgentStreamConsumer.StreamResult result = AgentStreamConsumer.consume(
-                    agent.stream(contextInput.modelInputText(), strategy.buildConfig(turn.threadId(), cwd, emitter, context, runPolicy)), emitter);
+            AgentStreamConsumer.StreamResult result = AgentStreamConsumer.consume(agent.stream(contextInput.modelInputText(), strategy.buildConfig(turn.threadId(), cwd, emitter, context, runPolicy)), emitter);
             recordContextUsage(contextInput, context);
             AgentLoopDiagnostics.modelCallReturned(turn, result.output(), startedNanos);
             outputHandler.handleOutput(turn, emitter, result, context, cwd, agent, runPolicy);
@@ -72,13 +72,9 @@ public class AgentLoop {
         }
     }
     /** 人工审批完成后，继续执行 SAA HITL 暂停点；恢复路径不重新装配上下文。 */
-    public void invokeResume(Turn turn, InterruptionMetadata feedback, String cwd, ItemEmitter emitter) {
-        invokeResume(turn, feedback, cwd, emitter, strategy.defaultRunPolicy());
-    }
+    public void invokeResume(Turn turn, InterruptionMetadata feedback, String cwd, ItemEmitter emitter) { invokeResume(turn, feedback, cwd, emitter, strategy.defaultRunPolicy()); }
     /** 人工审批完成后，按原 turn 的权限快照恢复执行。 */
-    public void invokeResume(Turn turn, InterruptionMetadata feedback, String cwd, ItemEmitter emitter, AgentRunPolicy runPolicy) {
-        outputHandler.invokeResume(turn, feedback, cwd, emitter, runPolicy);
-    }
+    public void invokeResume(Turn turn, InterruptionMetadata feedback, String cwd, ItemEmitter emitter, AgentRunPolicy runPolicy) { outputHandler.invokeResume(turn, feedback, cwd, emitter, runPolicy); }
     private ReactAgent buildAgent(String providerId, String cwd, ItemEmitter emitter, TurnObservationContext context, AgentRunPolicy runPolicy, CapabilityExposurePlan exposurePlan) {
         return exposurePlan == null ? strategy.buildAgent(providerId, cwd, emitter, context, runPolicy) : strategy.buildAgent(providerId, cwd, emitter, context, runPolicy, exposurePlan);
     }

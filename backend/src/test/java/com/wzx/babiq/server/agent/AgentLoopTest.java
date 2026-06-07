@@ -15,6 +15,7 @@ import com.wzx.babiq.server.observability.TurnObservationContext;
 import com.wzx.babiq.server.observability.TurnObservationRegistry;
 import com.wzx.babiq.server.observability.TurnSummaryEmitter;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.http.HttpHeaders;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
@@ -69,6 +70,35 @@ class AgentLoopTest {
         assertThat(turn.status()).isEqualTo(TurnStatus.COMPLETED);
         assertThat(emitted).extracting(ThreadItem::type).containsExactly("userMessage", "agentMessage");
         verify(summaryEmitter).emit(any(TurnObservationContext.class), eq(emitter), eq("completed"));
+    }
+
+    @Test
+    void invoke_should_bind_work_unit_goal_id_to_observation_context() throws Exception {
+        ReActStrategy strategy = mock(ReActStrategy.class);
+        ReactAgent agent = mock(ReactAgent.class);
+        NodeOutput output = mock(NodeOutput.class);
+        TurnSummaryEmitter summaryEmitter = mock(TurnSummaryEmitter.class);
+        AgentLoop loop = new AgentLoop(strategy, new PendingApprovals(), summaryEmitter, new TurnObservationRegistry());
+        Turn turn = new Turn("turn_goal", "thr_goal");
+        turn.start();
+        ItemEmitter emitter = mock(ItemEmitter.class);
+
+        when(strategy.resolveModelName("provider-a")).thenReturn("mock-react");
+        when(strategy.buildAgent(eq("provider-a"), eq("."), eq(emitter), any(TurnObservationContext.class),
+                nullable(AgentRunPolicy.class)))
+                .thenReturn(agent);
+        when(strategy.buildConfig(eq("thr_goal"), eq("."), eq(emitter), any(TurnObservationContext.class),
+                nullable(AgentRunPolicy.class)))
+                .thenReturn(RunnableConfig.builder().threadId("thr_goal").build());
+        when(agent.stream(any(String.class), any())).thenReturn(Flux.just(output));
+        when(strategy.extractAssistantMessage(output)).thenReturn(new AssistantMessage("done"));
+
+        loop.invoke(turn, "hello", "provider-a", ".", emitter, null, "goal_1");
+
+        ArgumentCaptor<TurnObservationContext> captor = ArgumentCaptor.forClass(TurnObservationContext.class);
+        verify(strategy).buildConfig(eq("thr_goal"), eq("."), eq(emitter), captor.capture(),
+                nullable(AgentRunPolicy.class));
+        assertThat(captor.getValue().workUnitGoalId()).isEqualTo("goal_1");
     }
 
     @Test

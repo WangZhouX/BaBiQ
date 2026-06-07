@@ -53,6 +53,8 @@ import com.wzx.babiq.desktop.protocol.ThreadListResult
 import com.wzx.babiq.desktop.protocol.ThreadLoadResult
 import com.wzx.babiq.desktop.protocol.WorkUnitListParams
 import com.wzx.babiq.desktop.protocol.WorkUnitListResult
+import com.wzx.babiq.desktop.protocol.WorkUnitGoalUpdateParams
+import com.wzx.babiq.desktop.protocol.WorkUnitGoalUpdateResult
 import com.wzx.babiq.desktop.protocol.WorkUnitRemoveParams
 import com.wzx.babiq.desktop.protocol.WorkUnitRemoveResult
 import java.util.concurrent.ConcurrentHashMap
@@ -223,6 +225,14 @@ interface AgentGateway {
 
 	/** 手动移除一个已完成或空闲的工作容器；运行中的容器由后端拒绝移除。 */
 	suspend fun removeWorkUnit(workUnitId: String): WorkUnitRemoveResult
+
+	/** 直接保存工作容器中的待执行目标，供右侧详情面板配置使用。 */
+	suspend fun updateWorkUnitGoal(
+		threadId: String,
+		workUnitId: String,
+		goalId: String,
+		goalText: String,
+	): WorkUnitGoalUpdateResult
 
 	/** 向当前团队协作中的某个队友直发补充消息。 */
 	suspend fun sendTeamMessage(teamId: String, toAgent: String, content: String): TeamMessageSendResult
@@ -740,6 +750,25 @@ class AgentClient(
 			),
 		)
 		return protocolJson.decodeFromJsonElement(WorkUnitRemoveResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `workunit/goal/update`，让右侧工作容器详情可以直接保存待执行目标。
+	 */
+	override suspend fun updateWorkUnitGoal(
+		threadId: String,
+		workUnitId: String,
+		goalId: String,
+		goalText: String,
+	): WorkUnitGoalUpdateResult {
+		val response = request(
+			method = "workunit/goal/update",
+			params = protocolJson.encodeToJsonElement(
+				WorkUnitGoalUpdateParams.serializer(),
+				WorkUnitGoalUpdateParams(threadId, workUnitId, goalId, goalText),
+			),
+		)
+		return protocolJson.decodeFromJsonElement(WorkUnitGoalUpdateResult.serializer(), response.requireResult())
 	}
 
 	/**

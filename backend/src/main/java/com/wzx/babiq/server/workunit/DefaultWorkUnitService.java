@@ -158,6 +158,76 @@ public class DefaultWorkUnitService implements WorkUnitService {
 
     @Override
     @Transactional
+    public WorkUnitGoal updateGoal(String goalId, String goalText) {
+        if (goalId == null || goalId.isBlank()) {
+            throw new IllegalArgumentException("工作目标 id 不能为空");
+        }
+        if (goalText == null || goalText.isBlank()) {
+            throw new IllegalArgumentException("工作目标文本不能为空");
+        }
+        WorkUnitGoal goal = repository.findGoalById(goalId)
+                .orElseThrow(() -> new IllegalArgumentException("工作目标不存在: " + goalId));
+        if (!GOAL_PENDING.equals(goal.status())) {
+            throw new IllegalStateException("只有 pending 目标可以修改，当前状态: " + goal.status());
+        }
+        WorkUnit workUnit = repository.findById(goal.workUnitId())
+                .orElseThrow(() -> new IllegalArgumentException("工作容器不存在: " + goal.workUnitId()));
+        Instant now = Instant.now();
+        WorkUnitGoal updated = repository.saveGoal(new WorkUnitGoal(
+                goal.goalId(),
+                goal.workUnitId(),
+                goal.threadId(),
+                goalText.trim(),
+                goal.status(),
+                goal.runRefType(),
+                goal.runRefId(),
+                goal.summary(),
+                goal.errorMessage(),
+                goal.createdAt(),
+                goal.startedAt(),
+                goal.completedAt()));
+        repository.save(new WorkUnit(
+                workUnit.workUnitId(),
+                workUnit.threadId(),
+                workUnit.kind(),
+                workUnit.name(),
+                workUnit.normalizedName(),
+                workUnit.status(),
+                workUnit.currentGoalId(),
+                workUnit.cwd(),
+                workUnit.sandboxMode(),
+                workUnit.removed(),
+                workUnit.removedAt(),
+                workUnit.createdAt(),
+                now));
+        return updated;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public WorkUnitGoal selectPendingGoalForTurn(String threadId, String workUnitId) {
+        if (threadId == null || threadId.isBlank()) {
+            throw new IllegalArgumentException("threadId 不能为空");
+        }
+        if (workUnitId == null || workUnitId.isBlank()) {
+            throw new IllegalArgumentException("工作容器 id 不能为空");
+        }
+        WorkUnit workUnit = repository.findById(workUnitId)
+                .orElseThrow(() -> new IllegalArgumentException("工作容器不存在: " + workUnitId));
+        if (!threadId.equals(workUnit.threadId())) {
+            throw new IllegalArgumentException("工作容器不属于当前对话: " + threadId);
+        }
+        if (workUnit.removed() || STATUS_REMOVED.equals(workUnit.status())) {
+            throw new IllegalStateException("已移除的工作容器不能启动");
+        }
+        if (STATUS_RUNNING.equals(workUnit.status())) {
+            throw new IllegalStateException("运行中的工作容器不能重复启动");
+        }
+        return selectPendingGoal(workUnit);
+    }
+
+    @Override
+    @Transactional
     public void markGoalCompleted(String goalId, String summary) {
         WorkUnitGoal goal = repository.findGoalById(goalId)
                 .orElseThrow(() -> new IllegalArgumentException("工作目标不存在: " + goalId));
@@ -297,6 +367,24 @@ public class DefaultWorkUnitService implements WorkUnitService {
 
     private static String normalizeName(String name) {
         return name == null ? "" : name.trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
+    }
+
+    private WorkUnitGoal selectPendingGoal(WorkUnit workUnit) {
+        List<WorkUnitGoal> goals = repository.listGoals(workUnit.workUnitId());
+        if (workUnit.currentGoalId() != null && !workUnit.currentGoalId().isBlank()) {
+            for (WorkUnitGoal goal : goals) {
+                if (workUnit.currentGoalId().equals(goal.goalId()) && GOAL_PENDING.equals(goal.status())) {
+                    return goal;
+                }
+            }
+        }
+        for (int index = goals.size() - 1; index >= 0; index--) {
+            WorkUnitGoal goal = goals.get(index);
+            if (GOAL_PENDING.equals(goal.status())) {
+                return goal;
+            }
+        }
+        throw new IllegalStateException("工作容器没有可启动的 pending 目标: " + workUnit.workUnitId());
     }
 
     private static String newWorkUnitId() {

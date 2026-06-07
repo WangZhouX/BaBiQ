@@ -21,4 +21,10 @@ sealed interface ExecutionIntent {
 		val goal: String,
 		val goalId: String? = null,
 	) : ExecutionIntent
+
+	@Serializable
+	@SerialName("start_work_unit")
+	data class StartWorkUnit(
+		val workUnitId: String,
+	) : ExecutionIntent
 }

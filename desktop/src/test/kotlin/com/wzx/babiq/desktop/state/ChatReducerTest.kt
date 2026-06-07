@@ -290,6 +290,28 @@ class ChatReducerTest {
 	}
 
 	@Test
+	fun `subagent state from history ignores terminal delegation items`() {
+		val completed = ThreadItem.AgentDelegation(
+			id = "it-agent-completed",
+			delegationId = "delegation-completed",
+			parentAgent = "babiq_agent",
+			childAgent = "explorer",
+			status = "completed",
+			mode = "READ_ONLY_TOOL",
+		)
+		val failed = completed.copy(
+			id = "it-agent-failed",
+			delegationId = "delegation-failed",
+			status = "failed",
+		)
+
+		val state = ChatReducer.subAgentStateFromItems(listOf(completed, failed))
+
+		assertEquals(null, state.current)
+		assertFalse(state.visible)
+	}
+
+	@Test
 	fun `dismissed subagent remains hidden for same delegation and resets for new delegation`() {
 		val firstItem = ThreadItem.AgentDelegation(
 			id = "it-agent-1",

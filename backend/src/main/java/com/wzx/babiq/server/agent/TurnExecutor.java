@@ -68,10 +68,26 @@ public class TurnExecutor {
      */
     public void submit(Turn turn, String userText, String providerId, String cwd,
                        ItemEmitter emitter, AgentRunPolicy runPolicy) {
+        submit(turn, userText, providerId, cwd, emitter, runPolicy, null);
+    }
+
+    /**
+     * 异步提交普通 turn，并可选绑定工作容器目标。
+     *
+     * @param turn 当前 turn
+     * @param userText 用户文本
+     * @param providerId provider id，可为 null
+     * @param cwd 本轮工作目录
+     * @param emitter 当前 WebSocket 发射器
+     * @param runPolicy 本轮 Agent 运行时权限；为空时 AgentLoop 回退到 yml 默认值
+     * @param workUnitGoalId 本轮要回写的工作容器目标 id，可为 null
+     */
+    public void submit(Turn turn, String userText, String providerId, String cwd,
+                       ItemEmitter emitter, AgentRunPolicy runPolicy, String workUnitGoalId) {
         log.info("TurnExecutor 提交普通 turn: threadId={}, turnId={}, providerId={}, cwd={}",
                 turn.threadId(), turn.id(), providerId == null ? "<active-provider>" : providerId, cwd);
         Future<?> future = executor.submit(() -> run(turn.id(),
-                () -> agentLoop.invoke(turn, userText, providerId, cwd, emitter, runPolicy)));
+                () -> agentLoop.invoke(turn, userText, providerId, cwd, emitter, runPolicy, workUnitGoalId)));
         // submit 之后再放入 running，interrupt 才能通过 turnId 找到后台任务。
         running.put(turn.id(), future);
         if (future.isDone()) {

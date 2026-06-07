@@ -71,7 +71,13 @@ fun BaBiQDesktopApp() {
 			onRefreshMcpServer = { serverId -> controller.refreshMcpServer(serverId) },
 			onToggleRuntime = { controller.toggleRuntimeDetails() },
 			onDismissSubAgent = { controller.dismissSubAgentCard() },
+			onSelectWorkUnit = { workUnitId -> controller.selectWorkUnit(workUnitId) },
+			onConfigureWorkUnit = { workUnitId -> controller.configureWorkUnit(workUnitId) },
+			onStartWorkUnit = { workUnitId -> controller.startWorkUnit(workUnitId) },
 			onRemoveWorkUnit = { workUnitId -> controller.removeWorkUnit(workUnitId) },
+			onUpdateWorkUnitGoal = { workUnitId, goalId, goalText ->
+				controller.updateWorkUnitGoal(workUnitId, goalId, goalText)
+			},
 			onSendTeamMessage = { toAgent, content -> controller.sendTeamMessage(toAgent, content) },
 			onSelectRunTurn = { turnId -> controller.selectRunTurn(turnId) },
 			onSelectObservabilityRange = { range -> controller.selectObservabilityRange(range) },

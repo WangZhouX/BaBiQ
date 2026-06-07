@@ -31,22 +31,6 @@ import com.wzx.babiq.desktop.ui.theme.BaBiQColors
 
 private const val TeamMessagePreviewMaxChars = 80
 
-/**
- * 团队协作区的纯展示模型。
- *
- * Team/TeamMessage 是运行详情专属协议，Composable 不直接处理协议细节，而是先压成该模型：
- * 成员状态、消息预览和直发目标都在这里完成翻译，UI 层只负责绘制。
- *
- * @property visible 是否存在需要展示的团队协作。
- * @property title 面板标题。
- * @property subtitle 团队状态、轮次、当前 Agent 和审批冻结状态。
- * @property selectedAgent 当前直发目标成员。
- * @property memberNames 可选成员名列表。
- * @property members 成员展示行。
- * @property messages 团队消息短预览列表。
- * @property directError 最近一次直发失败原因。
- * @property sendingDirect true 表示直发请求正在进行。
- */
 data class TeamSectionModel(
 	val visible: Boolean,
 	val title: String,
@@ -57,16 +41,9 @@ data class TeamSectionModel(
 	val messages: List<TeamMessageRow> = emptyList(),
 	val directError: String? = null,
 	val sendingDirect: Boolean = false,
+	val config: WorkUnitDetailModel? = null,
 )
 
-/**
- * 团队成员展示行。
- *
- * @property title 成员显示名。
- * @property meta 状态、权限模式、工具次数和 token 的短摘要。
- * @property task 成员任务描述。
- * @property summary 成员短摘要。
- */
 data class TeamMemberRow(
 	val title: String,
 	val meta: String,
@@ -74,45 +51,49 @@ data class TeamMemberRow(
 	val summary: String? = null,
 )
 
-/**
- * 团队消息展示行。
- *
- * @property meta 发送方、接收方、消息类型和轮次。
- * @property preview 消息正文短预览。
- */
 data class TeamMessageRow(
 	val meta: String,
 	val preview: String,
 )
 
-/**
- * 将团队状态转换为右侧运行面板模型。
- */
-fun buildTeamSectionModel(state: TeamUiState): TeamSectionModel {
-	val team = state.current ?: return TeamSectionModel(false, "", "")
-	val selectedAgent = state.selectedAgent ?: team.currentAgent ?: team.members.firstOrNull()?.name
+fun buildTeamSectionModel(
+	state: TeamUiState,
+	modelLabel: String = "未选择模型",
+): TeamSectionModel {
+	val team = state.current
+	if (team != null) {
+		val selectedAgent = state.selectedAgent ?: team.currentAgent ?: team.members.firstOrNull()?.name
+		return TeamSectionModel(
+			visible = true,
+			title = "团队协作 · ${team.title}",
+			subtitle = buildSubtitle(team),
+			selectedAgent = selectedAgent,
+			memberNames = team.members.map { it.name },
+			members = team.members.map { it.toRow() },
+			messages = state.messages.takeLast(6).map { it.toRow() },
+			directError = state.directError,
+			sendingDirect = state.sendingDirect,
+			config = null,
+		)
+	}
+	val config = state.configuringWorkUnit ?: return TeamSectionModel(false, "", "")
 	return TeamSectionModel(
 		visible = true,
-		title = "团队协作 · ${team.title}",
-		subtitle = buildSubtitle(team),
-		selectedAgent = selectedAgent,
-		memberNames = team.members.map { it.name },
-		members = team.members.map { it.toRow() },
-		messages = state.messages.takeLast(6).map { it.toRow() },
-		directError = state.directError,
-		sendingDirect = state.sendingDirect,
+		title = "团队详情 · ${config.name}",
+		subtitle = "${statusLabel(config.status)} / ${config.goals.size} 个目标 / 等待手动启动",
+		config = workUnitDetailModel(config, modelLabel),
 	)
 }
 
-/**
- * 渲染右侧运行面板里的团队协作状态和用户直发入口。
- */
 @Composable
 fun TeamSection(
 	state: TeamUiState,
+	modelLabel: String = "未选择模型",
+	onStartWorkUnit: (String) -> Unit = {},
+	onUpdateWorkUnitGoal: (String, String, String) -> Unit = { _, _, _ -> },
 	onSendTeamMessage: (String, String) -> Unit = { _, _ -> },
 ) {
-	val model = buildTeamSectionModel(state)
+	val model = buildTeamSectionModel(state, modelLabel)
 	if (!model.visible) {
 		return
 	}
@@ -138,6 +119,9 @@ fun TeamSection(
 		) {
 			Text(model.title, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
 			Text(model.subtitle, style = MaterialTheme.typography.labelMedium, color = BaBiQColors.Muted)
+			model.config?.let { config ->
+				WorkUnitConfigCard(config, onStart = onStartWorkUnit, onUpdateGoal = onUpdateWorkUnitGoal)
+			}
 			model.members.forEach { TeamMemberRowView(it) }
 			if (model.messages.isNotEmpty()) {
 				Text("团队消息", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
@@ -181,9 +165,6 @@ fun TeamSection(
 	}
 }
 
-/**
- * 团队成员单行渲染。
- */
 @Composable
 private fun TeamMemberRowView(row: TeamMemberRow) {
 	Column(
@@ -200,9 +181,6 @@ private fun TeamMemberRowView(row: TeamMemberRow) {
 	}
 }
 
-/**
- * 团队消息单行渲染，始终只展示短预览。
- */
 @Composable
 private fun TeamMessageRowView(row: TeamMessageRow) {
 	Column(
@@ -259,7 +237,7 @@ private fun compactPreview(content: String): String {
 
 private fun statusLabel(status: String): String =
 	when (status.lowercase()) {
-		"pending" -> "等待中"
+		"idle", "pending", "waiting_config" -> "待配置"
 		"running" -> "运行中"
 		"completed" -> "已完成"
 		"failed" -> "失败"

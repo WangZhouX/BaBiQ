@@ -31,6 +31,7 @@ import com.wzx.babiq.desktop.protocol.ServerEvent
 import com.wzx.babiq.desktop.protocol.SettingsUpdateParams
 import com.wzx.babiq.desktop.protocol.SkillListResult
 import com.wzx.babiq.desktop.protocol.ThreadItem
+import com.wzx.babiq.desktop.protocol.WorkUnitGoalUpdateResult
 import com.wzx.babiq.desktop.protocol.WorkUnitListResult
 import com.wzx.babiq.desktop.protocol.WorkUnitRemoveResult
 import com.wzx.babiq.desktop.protocol.protocolJson
@@ -105,6 +106,24 @@ class AgentClientTest {
 		assertEquals("orchestration", intent.paramsText("kind"))
 		assertEquals("登录页重构", intent.paramsText("name"))
 		assertEquals("拆分登录页改造流程", intent.paramsText("goal"))
+	}
+
+	@Test
+	fun `startTurn can send explicit work unit start intent`() = runTest {
+		val transport = FakeAgentTransport()
+		val client = AgentClient(transport, backgroundScope)
+		client.connect()
+
+		client.startTurn(
+			threadId = "thread-1",
+			prompt = "启动工作容器 html-test",
+			providerId = null,
+			executionIntent = ExecutionIntent.StartWorkUnit(workUnitId = "wu_1"),
+		)
+
+		val intent = transport.sent.single().paramsObject("executionIntent")
+		assertEquals("start_work_unit", intent.paramsText("type"))
+		assertEquals("wu_1", intent.paramsText("workUnitId"))
 	}
 
 	@Test
@@ -440,6 +459,29 @@ class AgentClientTest {
 		assertEquals("workunit/remove", transport.sent[1].method)
 		assertEquals("wu_1", transport.sent[1].paramsText("workUnitId"))
 		assertTrue(removed.removed)
+	}
+
+	@Test
+	fun `work unit goal update sends direct json rpc request`() = runTest {
+		val transport = FakeAgentTransport()
+		val client = AgentClient(transport, backgroundScope)
+		client.connect()
+
+		val result: WorkUnitGoalUpdateResult = client.updateWorkUnitGoal(
+			threadId = "thr_1",
+			workUnitId = "wu_1",
+			goalId = "goal_1",
+			goalText = "重新检查登录页样式",
+		)
+
+		val request = transport.sent.single()
+		assertEquals("workunit/goal/update", request.method)
+		assertEquals("thr_1", request.paramsText("threadId"))
+		assertEquals("wu_1", request.paramsText("workUnitId"))
+		assertEquals("goal_1", request.paramsText("goalId"))
+		assertEquals("重新检查登录页样式", request.paramsText("goalText"))
+		assertEquals("重新检查登录页样式", result.updatedGoal.goalText)
+		assertEquals("wu_1", result.workUnit.workUnitId)
 	}
 
 	@Test
@@ -829,6 +871,40 @@ class AgentClientTest {
 					put("name", "登录页重构")
 					put("status", "removed")
 					put("removed", true)
+				}
+				"workunit/goal/update" -> buildJsonObject {
+					put(
+						"updatedGoal",
+						buildJsonObject {
+							put("goalId", request.paramsText("goalId"))
+							put("workUnitId", request.paramsText("workUnitId"))
+							put("goalText", request.paramsText("goalText"))
+							put("status", "pending")
+						},
+					)
+					put(
+						"workUnit",
+						buildJsonObject {
+							put("workUnitId", request.paramsText("workUnitId"))
+							put("threadId", request.paramsText("threadId"))
+							put("kind", "orchestration")
+							put("name", "登录页重构")
+							put("status", "waiting_config")
+							put("currentGoalId", request.paramsText("goalId"))
+							put("removed", false)
+							put(
+								"goals",
+								buildJsonArray {
+									add(buildJsonObject {
+										put("goalId", request.paramsText("goalId"))
+										put("workUnitId", request.paramsText("workUnitId"))
+										put("goalText", request.paramsText("goalText"))
+										put("status", "pending")
+									})
+								},
+							)
+						},
+					)
 				}
 				"team/message/send" -> buildJsonObject {
 					put(

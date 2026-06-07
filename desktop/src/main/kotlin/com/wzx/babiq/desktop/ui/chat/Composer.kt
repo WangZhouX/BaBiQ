@@ -54,6 +54,8 @@ fun Composer(
 			modifier = Modifier.fillMaxWidth().padding(12.dp),
 			verticalArrangement = Arrangement.spacedBy(10.dp),
 		) {
+			val slashSuggestions = slashCommandSuggestionsFor(text)
+
 			OutlinedTextField(
 				value = text,
 				onValueChange = { text = it },
@@ -71,8 +73,12 @@ fun Composer(
 						} else {
 							false
 						}
-					},
+				},
 				minLines = 3,
+			)
+			SlashCommandMenu(
+				suggestions = slashSuggestions,
+				onSelect = { suggestion -> text = suggestion.template },
 			)
 			Row(
 				modifier = Modifier.fillMaxWidth(),

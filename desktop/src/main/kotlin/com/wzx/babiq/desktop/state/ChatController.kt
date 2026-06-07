@@ -9,6 +9,9 @@ import com.wzx.babiq.desktop.protocol.ProviderInfo
 import com.wzx.babiq.desktop.protocol.ProviderSaveParams
 import com.wzx.babiq.desktop.protocol.ServerEvent
 import com.wzx.babiq.desktop.protocol.SettingsUpdateParams
+import com.wzx.babiq.desktop.protocol.ThreadItem
+import com.wzx.babiq.desktop.protocol.WorkUnitGoalInfo
+import com.wzx.babiq.desktop.protocol.WorkUnitInfo
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -80,7 +83,7 @@ class ChatController(
 		}
 	}
 
-	suspend fun sendMessage(text: String) {
+	suspend fun sendMessage(text: String, executionIntentOverride: ExecutionIntent? = null) {
 		val prompt = text.trim()
 		if (prompt.isBlank()) {
 			return
@@ -107,8 +110,8 @@ class ChatController(
 			return
 		}
 
-		val slashCommand = SlashCommandParser.parse(prompt)
-		val executionIntent = slashCommand.toExecutionIntent()
+		val slashCommand = if (executionIntentOverride == null) SlashCommandParser.parse(prompt) else null
+		val executionIntent = executionIntentOverride ?: slashCommand.toExecutionIntent()
 		val submittedText = slashCommand.toSubmittedText(prompt)
 		val localMessage = ChatMessage.User(id = "local-user-${current.messages.size + 1}", text = submittedText)
 		_state.update {
@@ -441,6 +444,7 @@ class ChatController(
 				)
 			}
 			loadContextStatus(loaded.thread.threadId)
+			loadWorkUnits(loaded.thread.threadId)
 			loadMemoryStatus(loadAudit = false)
 			if (state.value.runtimeExpanded) {
 				loadRunRecords(loaded.thread.threadId)
@@ -914,6 +918,150 @@ class ChatController(
 	 *
 	 * 移除只影响当前列表可见性；后端仍保留 SQLite 审计记录，运行中的容器会由后端拒绝。
 	 */
+	fun selectWorkUnit(workUnitId: String) {
+		if (workUnitId.isBlank()) {
+			return
+		}
+		_state.update {
+			it.copy(
+				runtimeExpanded = true,
+				workUnitState = it.workUnitState.select(workUnitId),
+			)
+		}
+		state.value.currentThreadId?.let { threadId ->
+			scope.launch(start = CoroutineStart.UNDISPATCHED) {
+				loadWorkUnits(threadId)
+				_state.update { it.copy(workUnitState = it.workUnitState.select(workUnitId)) }
+			}
+		}
+	}
+
+	/**
+	 * 通过主 Agent 启动命名工作容器的当前目标。
+	 *
+	 * P6-4 的工作容器不是新的执行引擎：点击启动时仍发起一轮普通 turn，
+	 * 但会通过 executionIntent 把 workUnitId 交给后端确定性绑定待执行目标。
+	 * 主 Agent 只负责继续调用对应的编排/团队工具，启动路径仍然经过审批、沙箱和 SQLite 审计。
+	 */
+	fun startWorkUnit(workUnitId: String) {
+		val item = state.value.workUnitState.items.firstOrNull { it.workUnitId == workUnitId } ?: return
+		val prompt = workUnitStartPrompt(item)
+		scope.launch(start = CoroutineStart.UNDISPATCHED) {
+			sendMessage(prompt, ExecutionIntent.StartWorkUnit(workUnitId = item.workUnitId))
+		}
+	}
+
+	/**
+	 * 进入工作容器配置模式。
+	 *
+	 * 配置本身不启动 turn；右侧详情表单会通过 workunit/goal/update 直接保存待执行目标。
+	 */
+	fun configureWorkUnit(workUnitId: String) {
+		if (workUnitId.isBlank()) {
+			return
+		}
+		_state.update { it.withWorkUnitConfiguration(workUnitId) }
+	}
+
+	fun updateWorkUnitGoal(workUnitId: String, goalId: String, goalText: String) {
+		val detail = state.value.workUnitState.details.firstOrNull { it.workUnitId == workUnitId }
+		val threadId = state.value.currentThreadId ?: detail?.threadId ?: return
+		val normalizedGoal = goalText.trim()
+		if (workUnitId.isBlank() || goalId.isBlank() || normalizedGoal.isBlank()) {
+			return
+		}
+		scope.launch(start = CoroutineStart.UNDISPATCHED) {
+			_state.update {
+				it.copy(
+					runtimeExpanded = true,
+					workUnitState = it.workUnitState.select(workUnitId).copy(loading = true, error = null),
+				)
+			}
+			try {
+				val result = gateway.updateWorkUnitGoal(threadId, workUnitId, goalId, normalizedGoal)
+				_state.update {
+					val refreshed = it.workUnitState.details
+						.filterNot { detail -> detail.workUnitId == result.workUnit.workUnitId } + result.workUnit
+					val nextWorkUnitState = it.workUnitState
+						.replaceAll(refreshed)
+						.select(result.workUnit.workUnitId)
+						.copy(loading = false, error = null)
+					it.copy(
+						workUnitState = nextWorkUnitState,
+						orchestrationState = it.orchestrationState.refreshConfiguration(nextWorkUnitState.selectedDetail),
+						teamState = it.teamState.refreshConfiguration(nextWorkUnitState.selectedDetail),
+						lastError = null,
+					)
+				}
+			} catch (exception: Exception) {
+				val message = exception.message ?: "保存工作容器目标失败"
+				_state.update {
+					it.copy(
+						workUnitState = it.workUnitState.copy(loading = false, error = message),
+						lastError = message,
+					)
+				}
+			}
+		}
+	}
+
+	private fun AppState.withWorkUnitConfiguration(workUnitId: String): AppState {
+		val info = workUnitInfoFor(workUnitId) ?: return copy(
+			runtimeExpanded = true,
+			workUnitState = workUnitState.select(workUnitId),
+		)
+		val selectedWorkUnitState = workUnitState.select(workUnitId)
+		return when (info.kind.lowercase(Locale.ROOT)) {
+			"team" -> copy(
+				runtimeExpanded = true,
+				workUnitState = selectedWorkUnitState,
+				orchestrationState = OrchestrationUiState(),
+				teamState = teamState.withConfiguration(info),
+			)
+			else -> copy(
+				runtimeExpanded = true,
+				workUnitState = selectedWorkUnitState,
+				orchestrationState = orchestrationState.withConfiguration(info),
+				teamState = TeamUiState(),
+			)
+		}
+	}
+
+	private fun AppState.workUnitInfoFor(workUnitId: String): WorkUnitInfo? =
+		workUnitState.details.firstOrNull { it.workUnitId == workUnitId }
+			?: workUnitState.items.firstOrNull { it.workUnitId == workUnitId }?.toWorkUnitInfo(
+				threadId = currentThreadId.orEmpty(),
+				cwd = workspace.cwd,
+				sandboxMode = workspace.permissionMode,
+			)
+
+	private fun ThreadItem.WorkUnit.toWorkUnitInfo(
+		threadId: String,
+		cwd: String,
+		sandboxMode: String?,
+	): WorkUnitInfo =
+		WorkUnitInfo(
+			workUnitId = workUnitId,
+			threadId = threadId,
+			kind = kind,
+			name = name,
+			status = status,
+			currentGoalId = currentGoalId,
+			cwd = cwd,
+			sandboxMode = sandboxMode,
+			removed = removed,
+			goals = listOfNotNull(
+				currentGoal?.takeIf { it.isNotBlank() }?.let { goalText ->
+					WorkUnitGoalInfo(
+						goalId = currentGoalId ?: "goal_$workUnitId",
+						workUnitId = workUnitId,
+						goalText = goalText,
+						status = "pending",
+					)
+				},
+			),
+		)
+
 	fun removeWorkUnit(workUnitId: String) {
 		if (workUnitId.isBlank()) {
 			return
@@ -939,6 +1087,31 @@ class ChatController(
 					)
 				}
 			}
+		}
+	}
+
+	private fun workUnitStartPrompt(item: ThreadItem.WorkUnit): String {
+		val targetTool = when (item.kind.lowercase(Locale.ROOT)) {
+			"team" -> "coordinate_team"
+			else -> "orchestrate_flow"
+		}
+		val kindLabel = when (item.kind.lowercase(Locale.ROOT)) {
+			"team" -> "团队"
+			"orchestration" -> "编排"
+			else -> item.kind
+		}
+		return buildString {
+			append("启动工作容器「").append(item.name).append("」的当前待执行目标。")
+			append("\n类型：").append(kindLabel)
+			append("\n容器 id：").append(item.workUnitId)
+			item.currentGoalId?.let { append("\n目标 id：").append(it) }
+			item.currentGoal?.let { append("\n目标：").append(it) }
+			append("\n后端已通过 start_work_unit 执行意图绑定 workUnitId=")
+				.append(item.workUnitId)
+				.append(" 和当前待执行目标。")
+			append("\n请直接调用 ").append(targetTool)
+				.append(" 执行该目标，把运行记录写回这个工作容器。")
+			append("\n不要绕过当前沙箱、审批和模型设置；如需权限请正常发起审批。")
 		}
 	}
 
@@ -1136,6 +1309,40 @@ class ChatController(
 	 */
 	private suspend fun refreshContextStatusIfAvailable() {
 		state.value.currentThreadId?.let { loadContextStatus(it) }
+	}
+
+	/**
+	 * 读取当前会话的完整工作容器列表。
+	 *
+	 * 历史 item 只够恢复右侧轻量卡片；目标队列、cwd 和沙箱配置来自 `workunit/list`，
+	 * 所以进入详情或打开历史会话时必须刷新这一层，避免“看得到容器但不能配置”的半接入状态。
+	 */
+	private suspend fun loadWorkUnits(threadId: String) {
+		_state.update {
+			it.copy(workUnitState = it.workUnitState.copy(loading = true, error = null))
+		}
+		try {
+			val result = gateway.listWorkUnits(threadId)
+			_state.update {
+				if (it.currentThreadId == threadId) {
+					val nextWorkUnitState = it.workUnitState.replaceAll(result.workUnits)
+					it.copy(
+						workUnitState = nextWorkUnitState,
+						orchestrationState = it.orchestrationState.refreshConfiguration(nextWorkUnitState.selectedDetail),
+						teamState = it.teamState.refreshConfiguration(nextWorkUnitState.selectedDetail),
+					)
+				} else {
+					it
+				}
+			}
+		} catch (exception: Exception) {
+			_state.update {
+				it.copy(
+					workUnitState = it.workUnitState.copy(loading = false, error = exception.message ?: "读取工作容器失败"),
+					lastError = exception.message,
+				)
+			}
+		}
 	}
 
 	/**

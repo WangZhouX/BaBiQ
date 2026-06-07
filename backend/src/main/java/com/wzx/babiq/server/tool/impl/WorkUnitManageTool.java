@@ -40,6 +40,7 @@ import java.util.Optional;
 public class WorkUnitManageTool implements Tool {
 
     private static final String ACTION_APPEND_GOAL = "append_goal";
+    private static final String ACTION_UPDATE_GOAL = "update_goal";
     private static final String ACTION_START = "start";
     private static final String ACTION_REMOVE = "remove";
     private static final String STATUS_RUNNING = "running";
@@ -60,16 +61,16 @@ public class WorkUnitManageTool implements Tool {
 
     @org.springframework.ai.tool.annotation.Tool(
             name = "work_unit_manage",
-            description = "管理 BaBiQ 命名工作容器：创建/复用编排或团队、追加目标、关联待启动目标、移除已结束容器",
+            description = "管理 BaBiQ 命名工作容器：创建/复用编排或团队、追加目标、修改待配置目标、关联待启动目标、移除已结束容器",
             resultConverter = DefaultToolCallResultConverter.class)
     public ToolResult manage(
-            @ToolParam(description = "动作：append_goal/create/start/remove，也可使用中文 创建/追加/启动/移除")
+            @ToolParam(description = "动作：append_goal/create/update_goal/start/remove，也可使用中文 创建/追加/修改目标/启动/移除")
             String action,
             @ToolParam(description = "容器类型：orchestration/flow/编排 或 team/团队", required = false)
             String kind,
             @ToolParam(description = "容器名称；同一对话内运行中的同名容器不能重复", required = false)
             String name,
-            @ToolParam(description = "要追加的目标文本；append_goal/create 必填", required = false)
+            @ToolParam(description = "目标文本；append_goal/create/update_goal 必填", required = false)
             String goal,
             @ToolParam(description = "容器 id；remove 或 start 可直接指定", required = false)
             String workUnitId,
@@ -80,6 +81,7 @@ public class WorkUnitManageTool implements Tool {
         }
         return switch (normalizeAction(action)) {
             case ACTION_APPEND_GOAL -> appendGoal(kind, name, goal, runtime);
+            case ACTION_UPDATE_GOAL -> updateGoal(kind, name, goal, workUnitId, runtime);
             case ACTION_START -> bindStartGoal(kind, name, workUnitId, runtime);
             case ACTION_REMOVE -> remove(kind, name, workUnitId, runtime);
             default -> ToolResult.failure("不支持的工作容器动作: " + action);
@@ -124,6 +126,26 @@ public class WorkUnitManageTool implements Tool {
         return ToolResult.ok("已关联工作容器目标 " + goal.goalId()
                 + "。请继续调用 " + suggestedTool
                 + " 执行该目标，执行工具会把运行记录写回该目标。");
+    }
+
+    private ToolResult updateGoal(String kind, String name, String goalText, String workUnitId, RuntimeContext runtime) {
+        WorkUnit workUnit = findWorkUnit(kind, name, workUnitId, runtime.observation.threadId())
+                .orElse(null);
+        if (workUnit == null) {
+            return ToolResult.failure("找不到要修改的工作容器");
+        }
+        if (isBlank(goalText)) {
+            return ToolResult.failure("修改工作容器目标时，goal 不能为空");
+        }
+        WorkUnitGoal goal = selectStartGoal(workUnit).orElse(null);
+        if (goal == null) {
+            return ToolResult.failure("工作容器没有可修改的 pending 目标: " + workUnit.name());
+        }
+        WorkUnitGoal updatedGoal = service.updateGoal(goal.goalId(), goalText.trim());
+        WorkUnitItem item = service.itemFor(workUnit);
+        emitUpdated(runtime.emitter, item);
+        return ToolResult.ok("已修改工作容器目标 " + updatedGoal.goalId()
+                + "，新的目标为: " + updatedGoal.goalText());
     }
 
     private ToolResult remove(String kind, String name, String workUnitId, RuntimeContext runtime) {
@@ -216,6 +238,7 @@ public class WorkUnitManageTool implements Tool {
         }
         return switch (action.trim().toLowerCase(Locale.ROOT)) {
             case "append", "append_goal", "create", "创建", "追加", "追加目标" -> ACTION_APPEND_GOAL;
+            case "update", "update_goal", "modify", "修改", "更新", "修改目标", "更新目标" -> ACTION_UPDATE_GOAL;
             case "start", "启动", "开始" -> ACTION_START;
             case "remove", "delete", "移除", "删除" -> ACTION_REMOVE;
             default -> action.trim().toLowerCase(Locale.ROOT);

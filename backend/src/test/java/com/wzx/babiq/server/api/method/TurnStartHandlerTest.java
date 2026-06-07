@@ -11,6 +11,7 @@ import com.wzx.babiq.server.sandbox.SandboxMode;
 import com.wzx.babiq.server.settings.AppSettings;
 import com.wzx.babiq.server.settings.AppSettingsService;
 import com.wzx.babiq.server.workunit.WorkUnitCreateRequest;
+import com.wzx.babiq.server.workunit.WorkUnitGoal;
 import com.wzx.babiq.server.workunit.WorkUnitService;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.socket.TextMessage;
@@ -58,7 +59,8 @@ class TurnStartHandlerTest {
         assertThat(responseMap.get("turnId")).asString().startsWith("turn_");
         assertThat(payloads).hasSize(1);
         assertThat(payloads.get(0)).contains("\"method\":\"turn/started\"");
-        verify(executor).submit(any(), eq("ping"), eq("dashscope-default"), eq("F:/wwwxxxx/BaBiQ"), any(), any());
+        verify(executor).submit(any(), eq("ping"), eq("dashscope-default"), eq("F:/wwwxxxx/BaBiQ"),
+                any(), any(), eq((String) null));
     }
 
     @Test
@@ -87,7 +89,7 @@ class TurnStartHandlerTest {
                 session);
 
         verify(executor).submit(any(), eq("create file"), eq(null), eq("H:/aaa"), any(),
-                eq(AgentRunPolicy.of(SandboxMode.READ_ONLY, ApprovalPolicy.NEVER)));
+                eq(AgentRunPolicy.of(SandboxMode.READ_ONLY, ApprovalPolicy.NEVER)), eq((String) null));
     }
 
     @Test
@@ -140,10 +142,55 @@ class TurnStartHandlerTest {
                 any(),
                 eq("H:/aaa"),
                 any());
-        verify(executor, never()).submit(any(), any(), any(), any(), any(), any());
+        verify(executor, never()).submit(any(), any(), any(), any(), any(), any(), any());
         assertThat(payloads).anyMatch(payload -> payload.contains("\"method\":\"item/added\"")
                 && payload.contains("\"type\":\"workUnit\""));
         assertThat(payloads).anyMatch(payload -> payload.contains("\"method\":\"turn/completed\""));
+    }
+
+    @Test
+    void handle_should_bind_start_work_unit_intent_before_submitting_agent_loop() throws Exception {
+        ConversationService conversationService = new ConversationService();
+        Thread thread = conversationService.createThread("H:/aaa");
+        TurnExecutor executor = mock(TurnExecutor.class);
+        WorkUnitService workUnitService = mock(WorkUnitService.class);
+        when(workUnitService.selectPendingGoalForTurn(thread.id(), "wu_1"))
+                .thenReturn(new WorkUnitGoal(
+                        "goal_1",
+                        "wu_1",
+                        thread.id(),
+                        "run html flow",
+                        "pending",
+                        null,
+                        null,
+                        null,
+                        null,
+                        java.time.Instant.parse("2026-06-03T00:00:00Z"),
+                        null,
+                        null));
+        List<String> payloads = new ArrayList<>();
+        WebSocketSession session = recordingSession(payloads);
+        TurnStartHandler handler = new TurnStartHandler(
+                conversationService,
+                objectMapper,
+                executor,
+                null,
+                null,
+                null,
+                null,
+                workUnitService);
+
+        handler.handle(
+                objectMapper.valueToTree(Map.of(
+                        "threadId", thread.id(),
+                        "input", Map.of("type", "text", "text", "start html-test"),
+                        "executionIntent", Map.of(
+                                "type", "start_work_unit",
+                                "workUnitId", "wu_1"))),
+                session);
+
+        verify(workUnitService).selectPendingGoalForTurn(thread.id(), "wu_1");
+        verify(executor).submit(any(), eq("start html-test"), eq(null), eq("H:/aaa"), any(), any(), eq("goal_1"));
     }
 
     private WebSocketSession recordingSession(List<String> payloads) {

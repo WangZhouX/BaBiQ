@@ -61,6 +61,23 @@ public interface WorkUnitService {
     void markGoalRunning(String goalId, String runRefType, String runRefId);
 
     /**
+     * 修改一个尚未启动的目标文本。
+     *
+     * <p>这是工作容器详情页和自然语言管理工具共享的配置入口。只有 pending 目标允许修改；
+     * 已经 running/completed/failed 的目标保留审计事实，不做原地改写。</p>
+     */
+    WorkUnitGoal updateGoal(String goalId, String goalText);
+
+    /**
+     * 为某个对话中的工作容器选择当前可启动的 pending 目标。
+     *
+     * <p>桌面详情页点击“开始执行”时，turn/start 会先调用该方法确定 goalId，
+     * 再把 goalId 绑定到本轮 AgentLoop 的观测上下文中。这样后续 flow/team 工具调用
+     * 可以确定性回写同一个工作容器，而不是依赖模型自己再猜一次目标。</p>
+     */
+    WorkUnitGoal selectPendingGoalForTurn(String threadId, String workUnitId);
+
+    /**
      * 标记目标完成，并把容器恢复到可复用的完成状态。
      */
     void markGoalCompleted(String goalId, String summary);

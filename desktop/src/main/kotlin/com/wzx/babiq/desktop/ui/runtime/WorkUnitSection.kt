@@ -7,22 +7,32 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.wzx.babiq.desktop.protocol.ThreadItem
+import com.wzx.babiq.desktop.protocol.WorkUnitGoalInfo
+import com.wzx.babiq.desktop.protocol.WorkUnitInfo
 import com.wzx.babiq.desktop.state.WorkUnitUiState
 import com.wzx.babiq.desktop.ui.theme.BaBiQColors
 
 data class WorkUnitSectionModel(
 	val visible: Boolean,
 	val rows: List<WorkUnitRowModel>,
+	val selectedDetail: WorkUnitDetailModel? = null,
 )
 
 data class WorkUnitRowModel(
@@ -33,19 +43,47 @@ data class WorkUnitRowModel(
 	val activeGoal: String,
 	val goalCountText: String,
 	val removable: Boolean,
+	val detailActionLabel: String,
+	val startActionLabel: String?,
+)
+
+data class WorkUnitDetailModel(
+	val workUnitId: String,
+	val title: String,
+	val cwd: String,
+	val sandboxLabel: String,
+	val statusLabel: String,
+	val modelLabel: String,
+	val startActionLabel: String?,
+	val editableGoalId: String?,
+	val editableGoalText: String?,
+	val goals: List<WorkUnitGoalRowModel>,
+)
+
+data class WorkUnitGoalRowModel(
+	val goalId: String,
+	val label: String,
 )
 
 fun buildWorkUnitSectionModel(state: WorkUnitUiState): WorkUnitSectionModel {
 	val rows = state.items
 		.filterNot { it.removed || it.status.equals("removed", ignoreCase = true) }
 		.map(::toRowModel)
-	return WorkUnitSectionModel(visible = rows.isNotEmpty(), rows = rows)
+	return WorkUnitSectionModel(
+		visible = rows.isNotEmpty(),
+		rows = rows,
+		selectedDetail = null,
+	)
 }
 
 @Composable
 fun WorkUnitSection(
 	state: WorkUnitUiState,
+	onSelect: (String) -> Unit = {},
+	onConfigure: (String) -> Unit = {},
+	onStart: (String) -> Unit = {},
 	onRemove: (String) -> Unit = {},
+	onUpdateGoal: (String, String, String) -> Unit = { _, _, _ -> },
 ) {
 	val model = buildWorkUnitSectionModel(state)
 	if (!model.visible) {
@@ -62,7 +100,7 @@ fun WorkUnitSection(
 			Text(error, style = MaterialTheme.typography.labelSmall, color = BaBiQColors.Danger)
 		}
 		model.rows.forEach { row ->
-			WorkUnitRow(row = row, onRemove = onRemove)
+			WorkUnitRow(row = row, onSelect = onSelect, onConfigure = onConfigure, onStart = onStart, onRemove = onRemove)
 		}
 	}
 }
@@ -70,6 +108,9 @@ fun WorkUnitSection(
 @Composable
 private fun WorkUnitRow(
 	row: WorkUnitRowModel,
+	onSelect: (String) -> Unit,
+	onConfigure: (String) -> Unit,
+	onStart: (String) -> Unit,
 	onRemove: (String) -> Unit,
 ) {
 	Card(
@@ -83,14 +124,81 @@ private fun WorkUnitRow(
 					Text("${row.kindLabel} · ${row.name}", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
 					Text("${row.statusLabel} · ${row.goalCountText}", style = MaterialTheme.typography.labelSmall, color = BaBiQColors.Muted)
 				}
-				if (row.removable) {
-					TextButton(onClick = { onRemove(row.workUnitId) }) { Text("移除") }
+				Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+					TextButton(onClick = { onConfigure(row.workUnitId) }) { Text(row.detailActionLabel) }
+					row.startActionLabel?.let { label ->
+						TextButton(onClick = { onStart(row.workUnitId) }) { Text(label) }
+					}
+					if (row.removable) {
+						TextButton(onClick = { onRemove(row.workUnitId) }) { Text("移除") }
+					}
 				}
 			}
-			Text(row.activeGoal, style = MaterialTheme.typography.bodySmall)
+			Text(row.activeGoal, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
 		}
 	}
 }
+
+@Composable
+fun WorkUnitConfigCard(
+	detail: WorkUnitDetailModel,
+	onStart: (String) -> Unit,
+	onUpdateGoal: (String, String, String) -> Unit,
+) {
+	var draftGoal by remember(detail.editableGoalId, detail.editableGoalText) {
+		mutableStateOf(detail.editableGoalText ?: "")
+	}
+	Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+		Text(detail.title, style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
+		Text("状态: ${detail.statusLabel}", style = MaterialTheme.typography.labelSmall, color = BaBiQColors.Muted)
+		Text("目录: ${detail.cwd}", style = MaterialTheme.typography.labelSmall)
+		Text("权限: ${detail.sandboxLabel}", style = MaterialTheme.typography.labelSmall)
+		Text("模型: ${detail.modelLabel}", style = MaterialTheme.typography.labelSmall)
+		detail.editableGoalId?.let { goalId ->
+			OutlinedTextField(
+				value = draftGoal,
+				onValueChange = { draftGoal = it },
+				label = { Text("当前待执行目标") },
+				modifier = Modifier.fillMaxWidth(),
+				minLines = 3,
+				maxLines = 6,
+			)
+			Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+				Button(
+					onClick = { onUpdateGoal(detail.workUnitId, goalId, draftGoal) },
+					enabled = draftGoal.isNotBlank() && draftGoal != (detail.editableGoalText ?: ""),
+				) {
+					Text("保存目标")
+				}
+				detail.startActionLabel?.let { label ->
+					Button(onClick = { onStart(detail.workUnitId) }) { Text(label) }
+				}
+			}
+		}
+		Text("目标队列", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
+		if (detail.goals.isEmpty()) {
+			Text("暂无目标", style = MaterialTheme.typography.bodySmall, color = BaBiQColors.Muted)
+		} else {
+			detail.goals.forEach { goal ->
+				Text(goal.label, style = MaterialTheme.typography.bodySmall)
+			}
+		}
+	}
+}
+
+fun workUnitDetailModel(info: WorkUnitInfo, modelLabel: String): WorkUnitDetailModel =
+	WorkUnitDetailModel(
+		workUnitId = info.workUnitId,
+		title = "${kindLabel(info.kind)} · ${info.name}",
+		cwd = info.cwd?.takeIf { it.isNotBlank() } ?: "未记录",
+		sandboxLabel = sandboxLabel(info.sandboxMode),
+		statusLabel = statusLabel(info.status),
+		modelLabel = modelLabel.ifBlank { "未选择模型" },
+		startActionLabel = startActionLabel(info),
+		editableGoalId = editableGoal(info)?.goalId,
+		editableGoalText = editableGoal(info)?.goalText,
+		goals = info.goals.map(::toGoalRowModel),
+	)
 
 private fun toRowModel(item: ThreadItem.WorkUnit): WorkUnitRowModel =
 	WorkUnitRowModel(
@@ -101,7 +209,54 @@ private fun toRowModel(item: ThreadItem.WorkUnit): WorkUnitRowModel =
 		activeGoal = item.currentGoal?.takeIf { it.isNotBlank() } ?: "暂无待执行目标",
 		goalCountText = "${item.goalCount} 个目标",
 		removable = !item.status.equals("running", ignoreCase = true),
+		detailActionLabel = detailActionLabel(item),
+		startActionLabel = startActionLabel(item),
 	)
+
+private fun editableGoal(info: WorkUnitInfo): WorkUnitGoalInfo? =
+	info.goals.firstOrNull { goal ->
+		goal.goalId == info.currentGoalId && goal.status.equals("pending", ignoreCase = true)
+	} ?: info.goals.lastOrNull { goal -> goal.status.equals("pending", ignoreCase = true) }
+
+private fun toGoalRowModel(goal: WorkUnitGoalInfo): WorkUnitGoalRowModel =
+	WorkUnitGoalRowModel(
+		goalId = goal.goalId,
+		label = "${goalStatusLabel(goal.status)} · ${goal.goalText}",
+	)
+
+private fun startActionLabel(info: WorkUnitInfo): String? =
+	if (
+		info.status.equals("running", ignoreCase = true) ||
+		info.status.equals("removed", ignoreCase = true) ||
+		info.goals.none { it.status.equals("pending", ignoreCase = true) }
+	) {
+		null
+	} else {
+		"开始执行"
+	}
+
+private fun detailActionLabel(item: ThreadItem.WorkUnit): String {
+	val verb = if (item.status.equals("running", ignoreCase = true) ||
+		item.status.equals("completed", ignoreCase = true) ||
+		item.status.equals("failed", ignoreCase = true)
+	) {
+		"查看"
+	} else {
+		"配置"
+	}
+	return verb + kindLabel(item.kind)
+}
+
+private fun startActionLabel(item: ThreadItem.WorkUnit): String? =
+	if (
+		item.currentGoal.isNullOrBlank() ||
+		item.status.equals("running", ignoreCase = true) ||
+		item.status.equals("removed", ignoreCase = true)
+	) {
+		null
+	} else {
+		"开始执行"
+	}
 
 private fun kindLabel(kind: String): String =
 	when (kind.lowercase()) {
@@ -118,4 +273,22 @@ private fun statusLabel(status: String): String =
 		"failed" -> "失败"
 		"removed" -> "已移除"
 		else -> status
+	}
+
+private fun goalStatusLabel(status: String): String =
+	when (status.lowercase()) {
+		"pending" -> "待执行"
+		"running" -> "运行中"
+		"completed" -> "已完成"
+		"failed" -> "失败"
+		else -> status
+	}
+
+private fun sandboxLabel(mode: String?): String =
+	when (mode?.uppercase()) {
+		"READ_ONLY" -> "只读"
+		"WORKSPACE_WRITE" -> "工作区可写"
+		"FULL_ACCESS", "DANGER_FULL_ACCESS" -> "完全访问权限"
+		null, "" -> "未记录"
+		else -> mode
 	}

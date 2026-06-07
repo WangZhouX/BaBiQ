@@ -20,6 +20,7 @@ import com.wzx.babiq.server.model.ModelProviderRegistry;
 import com.wzx.babiq.server.settings.AppSettings;
 import com.wzx.babiq.server.settings.AppSettingsService;
 import com.wzx.babiq.server.workunit.WorkUnitCreateRequest;
+import com.wzx.babiq.server.workunit.WorkUnitGoal;
 import com.wzx.babiq.server.workunit.WorkUnitService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.Logger;
@@ -193,7 +194,8 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
                     workUnitRequest.name());
             return Map.of("turnId", turn.id());
         }
-        turnExecutor.submit(turn, userText, providerId, thread.cwd(), emitter, runPolicy);
+        String workUnitGoalId = parseWorkUnitStartGoalId(params, threadId);
+        turnExecutor.submit(turn, userText, providerId, thread.cwd(), emitter, runPolicy, workUnitGoalId);
         log.info("turn/start 已提交 AgentLoop: threadId={}, turnId={}, providerId={}",
                 threadId,
                 turn.id(),
@@ -248,6 +250,27 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
                     "executionIntent.kind 仅支持 orchestration 或 team");
         }
         return new WorkUnitCreateRequest(kind, name, goal, goalId);
+    }
+
+    private String parseWorkUnitStartGoalId(JsonNode params, String threadId) {
+        JsonNode intent = params == null ? null : params.path("executionIntent");
+        if (intent == null || intent.isMissingNode() || intent.isNull()) {
+            return null;
+        }
+        String type = requiredIntentText(intent, "type");
+        if (!"start_work_unit".equals(type)) {
+            return null;
+        }
+        if (workUnitService == null) {
+            throw new JsonRpcException(JsonRpcErrorCode.INTERNAL_ERROR, "工作容器服务未初始化");
+        }
+        String workUnitId = requiredIntentText(intent, "workUnitId");
+        try {
+            WorkUnitGoal goal = workUnitService.selectPendingGoalForTurn(threadId, workUnitId);
+            return goal.goalId();
+        } catch (IllegalArgumentException | IllegalStateException exception) {
+            throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, exception.getMessage());
+        }
     }
 
     private String requiredIntentText(JsonNode intent, String fieldName) {

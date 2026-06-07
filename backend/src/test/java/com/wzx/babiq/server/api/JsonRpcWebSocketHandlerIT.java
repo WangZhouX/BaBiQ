@@ -84,7 +84,7 @@ class JsonRpcWebSocketHandlerIT {
                 .contains("\"turnId\":\"turn_")
                 .contains("\"method\":\"turn/started\"")
                 .doesNotContain("hello from babiq");
-        verify(turnExecutor).submit(any(), eq("ping"), eq(null), eq("."), any(), any());
+        verify(turnExecutor).submit(any(), eq("ping"), eq(null), eq("."), any(), any(), eq(null));
     }
 
     @Test

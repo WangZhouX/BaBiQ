@@ -54,10 +54,14 @@ import com.wzx.babiq.desktop.protocol.ThreadLoadResult
 import com.wzx.babiq.desktop.protocol.ThreadMetaInfo
 import com.wzx.babiq.desktop.protocol.ThreadSummaryInfo
 import com.wzx.babiq.desktop.protocol.WorkUnitListResult
+import com.wzx.babiq.desktop.protocol.WorkUnitGoalUpdateResult
 import com.wzx.babiq.desktop.protocol.WorkUnitRemoveResult
+import com.wzx.babiq.desktop.protocol.WorkUnitGoalInfo
+import com.wzx.babiq.desktop.protocol.WorkUnitInfo
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -324,7 +328,10 @@ class ChatControllerTest {
 
 		controller.openThread("thr_history")
 
-		assertEquals(listOf("loadThread:thr_history", "getContextStatus:thr_history", "getMemoryStatus"), gateway.calls)
+		assertEquals(
+			listOf("loadThread:thr_history", "getContextStatus:thr_history", "listWorkUnits:thr_history", "getMemoryStatus"),
+			gateway.calls,
+		)
 		assertEquals("thr_history", controller.state.value.currentThreadId)
 		assertEquals("历史会话", controller.state.value.currentThreadTitle)
 		assertEquals("thr_history", controller.state.value.threadHistory.selectedThreadId)
@@ -791,6 +798,208 @@ class ChatControllerTest {
 		assertEquals(emptyList(), controller.state.value.workUnitState.items.map { it.workUnitId })
 	}
 
+	@Test
+	fun `openThread refreshes full work unit details from backend`() = runTest {
+		val workUnit = WorkUnitInfo(
+			workUnitId = "wu_1",
+			threadId = "thread-1",
+			kind = "team",
+			name = "评审团队",
+			status = "waiting_config",
+			currentGoalId = "goal_1",
+			cwd = "H:\\aaa",
+			sandboxMode = "WORKSPACE_WRITE",
+			goals = listOf(
+				WorkUnitGoalInfo(
+					goalId = "goal_1",
+					workUnitId = "wu_1",
+					goalText = "检查登录页",
+					status = "pending",
+				),
+			),
+		)
+		val gateway = FakeGateway(workUnits = WorkUnitListResult(listOf(workUnit)))
+		val controller = ChatController(gateway, backgroundScope)
+		controller.connect()
+
+		controller.openThread("thread-1")
+		advanceUntilIdle()
+
+		assertTrue(gateway.calls.contains("listWorkUnits:thread-1"))
+		assertEquals("H:\\aaa", controller.state.value.workUnitState.details.single().cwd)
+		assertEquals("检查登录页", controller.state.value.workUnitState.details.single().goals.single().goalText)
+	}
+
+	@Test
+	fun `startWorkUnit sends explicit main agent instruction for pending orchestration goal`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(gateway, backgroundScope)
+		controller.connect()
+		val workUnit = WorkUnitInfo(
+			workUnitId = "wu_1",
+			threadId = "thread-1",
+			kind = "orchestration",
+			name = "html测试",
+			status = "waiting_config",
+			currentGoalId = "goal_1",
+			cwd = "H:\\aaa",
+			sandboxMode = "FULL_ACCESS",
+			goals = listOf(
+				WorkUnitGoalInfo(
+					goalId = "goal_1",
+					workUnitId = "wu_1",
+					goalText = "修改 html 内容",
+					status = "pending",
+				),
+			),
+		)
+		gateway.events.emit(ServerEvent.ItemAdded("thread-1", "turn-1", workUnit.toThreadItem()))
+		advanceUntilIdle()
+
+		controller.startWorkUnit("wu_1")
+		advanceUntilIdle()
+
+		val startCall = gateway.calls.last { it.startsWith("startTurn:") }
+		assertTrue(startCall.contains("启动工作容器"))
+		assertTrue(startCall.contains("html测试"))
+		assertTrue(startCall.contains("orchestrate_flow"))
+		assertTrue(startCall.contains("修改 html 内容"))
+		val intent = gateway.executionIntents.last()
+		assertIs<ExecutionIntent.StartWorkUnit>(intent)
+		assertEquals("wu_1", intent.workUnitId)
+	}
+
+	@Test
+	fun `startWorkUnit sends coordinate team instruction for pending team goal`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(gateway, backgroundScope)
+		controller.connect()
+		val item = ThreadItem.WorkUnit(
+			id = "it_workunit_1",
+			workUnitId = "wu_team",
+			kind = "team",
+			name = "评审团队",
+			status = "waiting_config",
+			currentGoalId = "goal_team_1",
+			currentGoal = "评审登录页实现",
+			goalCount = 1,
+			removed = false,
+		)
+		gateway.events.emit(ServerEvent.ItemAdded("thread-1", "turn-1", item))
+		advanceUntilIdle()
+
+		controller.startWorkUnit("wu_team")
+		advanceUntilIdle()
+
+		val startCall = gateway.calls.last { it.startsWith("startTurn:") }
+		assertTrue(startCall.contains("coordinate_team"))
+		assertTrue(startCall.contains("评审团队"))
+		assertTrue(startCall.contains("评审登录页实现"))
+		val intent = gateway.executionIntents.last()
+		assertIs<ExecutionIntent.StartWorkUnit>(intent)
+		assertEquals("wu_team", intent.workUnitId)
+	}
+
+	@Test
+	fun `configureWorkUnit opens orchestration detail panel without editing composer or starting turn`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(gateway, backgroundScope)
+		controller.connect()
+		val item = ThreadItem.WorkUnit(
+			id = "it_workunit_1",
+			workUnitId = "wu_1",
+			kind = "orchestration",
+			name = "html-test",
+			status = "waiting_config",
+			currentGoalId = "goal_1",
+			currentGoal = "old goal",
+			goalCount = 1,
+			removed = false,
+		)
+		gateway.events.emit(ServerEvent.ItemAdded("thread-1", "turn-1", item))
+		advanceUntilIdle()
+		gateway.calls.clear()
+
+		controller.configureWorkUnit("wu_1")
+		advanceUntilIdle()
+
+		assertEquals("", controller.state.value.draft)
+		assertFalse(gateway.calls.any { it.startsWith("startTurn:") })
+		assertEquals("wu_1", controller.state.value.workUnitState.selectedWorkUnitId)
+		assertTrue(controller.state.value.orchestrationState.visible)
+		assertFalse(controller.state.value.teamState.visible)
+		assertTrue(controller.state.value.runtimeExpanded)
+	}
+
+	@Test
+	fun `configureWorkUnit opens team detail panel without editing composer or starting turn`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(gateway, backgroundScope)
+		controller.connect()
+		val item = ThreadItem.WorkUnit(
+			id = "it_workunit_team",
+			workUnitId = "wu_team",
+			kind = "team",
+			name = "review-team",
+			status = "waiting_config",
+			currentGoalId = "goal_team_1",
+			currentGoal = "review login page",
+			goalCount = 1,
+			removed = false,
+		)
+		gateway.events.emit(ServerEvent.ItemAdded("thread-1", "turn-1", item))
+		advanceUntilIdle()
+		gateway.calls.clear()
+
+		controller.configureWorkUnit("wu_team")
+		advanceUntilIdle()
+
+		assertEquals("", controller.state.value.draft)
+		assertFalse(gateway.calls.any { it.startsWith("startTurn:") })
+		assertEquals("wu_team", controller.state.value.workUnitState.selectedWorkUnitId)
+		assertFalse(controller.state.value.orchestrationState.visible)
+		assertTrue(controller.state.value.teamState.visible)
+		assertTrue(controller.state.value.runtimeExpanded)
+	}
+
+	@Test
+	fun `updateWorkUnitGoal saves pending goal through backend and refreshes detail`() = runTest {
+		val workUnit = WorkUnitInfo(
+			workUnitId = "wu_1",
+			threadId = "thread-1",
+			kind = "orchestration",
+			name = "html-test",
+			status = "waiting_config",
+			currentGoalId = "goal_1",
+			cwd = "H:\\aaa",
+			sandboxMode = "FULL_ACCESS",
+			goals = listOf(
+				WorkUnitGoalInfo(
+					goalId = "goal_1",
+					workUnitId = "wu_1",
+					goalText = "old goal",
+					status = "pending",
+				),
+			),
+		)
+		val gateway = FakeGateway(workUnits = WorkUnitListResult(listOf(workUnit)))
+		val controller = ChatController(gateway, backgroundScope)
+		controller.connect()
+		controller.openThread("thread-1")
+		advanceUntilIdle()
+
+		controller.selectWorkUnit("wu_1")
+		advanceUntilIdle()
+		controller.updateWorkUnitGoal("wu_1", "goal_1", "new configured goal")
+		advanceUntilIdle()
+
+		assertTrue(gateway.calls.contains("updateWorkUnitGoal:thread-1:wu_1:goal_1:new configured goal"))
+		assertEquals("new configured goal", controller.state.value.workUnitState.selectedDetail?.goals?.single()?.goalText)
+		assertEquals("wu_1", controller.state.value.workUnitState.selectedWorkUnitId)
+		assertTrue(controller.state.value.runtimeExpanded)
+		assertFalse(gateway.calls.any { it.startsWith("startTurn:") })
+	}
+
 	private inner class FakeGateway(
 		private val connectFails: Boolean = false,
 		private var connectFailuresBeforeSuccess: Int = 0,
@@ -823,6 +1032,7 @@ class ChatControllerTest {
 			tools = listOf(sampleMcpTool()),
 		),
 		private val memorySearchResult: MemorySearchResult = MemorySearchResult("LEXICAL"),
+		private val workUnits: WorkUnitListResult = WorkUnitListResult(emptyList()),
 	) : AgentGateway {
 		override val events = MutableSharedFlow<ServerEvent>()
 		val calls = mutableListOf<String>()
@@ -1117,7 +1327,7 @@ class ChatControllerTest {
 
 		override suspend fun listWorkUnits(threadId: String): WorkUnitListResult {
 			calls += "listWorkUnits:$threadId"
-			return WorkUnitListResult(emptyList())
+			return workUnits
 		}
 
 		override suspend fun removeWorkUnit(workUnitId: String): WorkUnitRemoveResult {
@@ -1128,6 +1338,35 @@ class ChatControllerTest {
 				name = "login-flow",
 				status = "removed",
 				removed = true,
+			)
+		}
+
+		override suspend fun updateWorkUnitGoal(
+			threadId: String,
+			workUnitId: String,
+			goalId: String,
+			goalText: String,
+		): WorkUnitGoalUpdateResult {
+			calls += "updateWorkUnitGoal:$threadId:$workUnitId:$goalId:$goalText"
+			val updatedGoal = WorkUnitGoalInfo(
+				goalId = goalId,
+				workUnitId = workUnitId,
+				goalText = goalText,
+				status = "pending",
+			)
+			return WorkUnitGoalUpdateResult(
+				updatedGoal = updatedGoal,
+				workUnit = WorkUnitInfo(
+					workUnitId = workUnitId,
+					threadId = threadId,
+					kind = "orchestration",
+					name = "html-test",
+					status = "waiting_config",
+					currentGoalId = goalId,
+					cwd = "H:\\aaa",
+					sandboxMode = "FULL_ACCESS",
+					goals = listOf(updatedGoal),
+				),
 			)
 		}
 

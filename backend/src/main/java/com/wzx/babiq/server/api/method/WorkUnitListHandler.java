@@ -59,7 +59,7 @@ public class WorkUnitListHandler implements JsonRpcMethodHandler {
         );
     }
 
-    private static WorkUnitGoalInfo toGoalInfo(WorkUnitGoal goal) {
+    static WorkUnitGoalInfo toGoalInfo(WorkUnitGoal goal) {
         return new WorkUnitGoalInfo(
                 goal.goalId(),
                 goal.workUnitId(),

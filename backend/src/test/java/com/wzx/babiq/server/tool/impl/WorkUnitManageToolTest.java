@@ -97,6 +97,44 @@ class WorkUnitManageToolTest {
     }
 
     @Test
+    void update_goal_should_modify_pending_goal_and_emit_refreshed_item() throws Exception {
+        WorkUnitService service = mock(WorkUnitService.class);
+        ItemEmitter emitter = mock(ItemEmitter.class);
+        WorkUnit workUnit = workUnit("wu_1", "orchestration", "html-test", "waiting_config", "goal_1");
+        WorkUnitGoal pendingGoal = goal("goal_1", "wu_1", "old goal", "pending");
+        WorkUnitGoal updatedGoal = goal("goal_1", "wu_1", "new configured goal", "pending");
+        WorkUnitItem refreshedItem = new WorkUnitItem(
+                "it_workunit_1",
+                "workUnit",
+                "wu_1",
+                "orchestration",
+                "html-test",
+                "waiting_config",
+                "goal_1",
+                "new configured goal",
+                1,
+                null);
+        when(service.listVisible("thr_manage")).thenReturn(List.of(workUnit));
+        when(service.listGoals("wu_1")).thenReturn(List.of(pendingGoal));
+        when(service.updateGoal("goal_1", "new configured goal")).thenReturn(updatedGoal);
+        when(service.itemFor(workUnit)).thenReturn(refreshedItem);
+
+        WorkUnitManageTool tool = new WorkUnitManageTool(service);
+        ToolResult result = tool.manage(
+                "update_goal",
+                "orchestration",
+                "html-test",
+                "new configured goal",
+                null,
+                toolContext(emitter));
+
+        assertThat(result.ok()).isTrue();
+        assertThat(result.output()).contains("goal_1", "new configured goal");
+        verify(service).updateGoal("goal_1", "new configured goal");
+        verify(emitter).emitItemUpdated(refreshedItem);
+    }
+
+    @Test
     void remove_should_soft_remove_work_unit_and_emit_removed_item() throws Exception {
         WorkUnitService service = mock(WorkUnitService.class);
         ItemEmitter emitter = mock(ItemEmitter.class);

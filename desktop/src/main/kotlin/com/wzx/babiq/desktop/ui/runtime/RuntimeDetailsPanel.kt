@@ -2,6 +2,7 @@ package com.wzx.babiq.desktop.ui.runtime
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,9 +15,15 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -38,69 +45,203 @@ import com.wzx.babiq.desktop.ui.theme.BaBiQColors
  *
  * 它展示和聊天主区同一份状态：当前 turn 状态、最近运行摘要、实时事件，以及 P2-4 持久化后的历史运行记录。
  */
+enum class RuntimePanelTab {
+	Run,
+	Orchestration,
+	Team,
+	SubAgent,
+}
+
+data class RuntimePanelTabItem(
+	val tab: RuntimePanelTab,
+	val label: String,
+	val visible: Boolean,
+	val selected: Boolean,
+)
+
+enum class RuntimePanelContent {
+	Plan,
+	WorkUnits,
+	Environment,
+	Context,
+	RunRecords,
+	Observability,
+	Summary,
+	Status,
+	Events,
+	EmptyState,
+	Orchestration,
+	Team,
+	SubAgent,
+}
+
+fun runtimePanelTabs(state: AppState, selectedTab: RuntimePanelTab): List<RuntimePanelTabItem> {
+	val resolved = resolveRuntimePanelTab(state, selectedTab)
+	return listOfNotNull(
+		RuntimePanelTabItem(RuntimePanelTab.Run, "运行", visible = true, selected = resolved == RuntimePanelTab.Run),
+		RuntimePanelTabItem(
+			RuntimePanelTab.Orchestration,
+			"编排",
+			visible = state.orchestrationState.visible,
+			selected = resolved == RuntimePanelTab.Orchestration,
+		).takeIf { it.visible },
+		RuntimePanelTabItem(
+			RuntimePanelTab.Team,
+			"团队",
+			visible = state.teamState.visible,
+			selected = resolved == RuntimePanelTab.Team,
+		).takeIf { it.visible },
+		RuntimePanelTabItem(
+			RuntimePanelTab.SubAgent,
+			"子代理",
+			visible = state.subAgentState.visible,
+			selected = resolved == RuntimePanelTab.SubAgent,
+		).takeIf { it.visible },
+	)
+}
+
+fun resolveRuntimePanelTab(state: AppState, requested: RuntimePanelTab): RuntimePanelTab =
+	when (requested) {
+		RuntimePanelTab.Orchestration -> requested.takeIf { state.orchestrationState.visible } ?: RuntimePanelTab.Run
+		RuntimePanelTab.Team -> requested.takeIf { state.teamState.visible } ?: RuntimePanelTab.Run
+		RuntimePanelTab.SubAgent -> requested.takeIf { state.subAgentState.visible } ?: RuntimePanelTab.Run
+		RuntimePanelTab.Run -> RuntimePanelTab.Run
+	}
+
+fun preferredRuntimePanelTab(state: AppState, current: RuntimePanelTab): RuntimePanelTab =
+	when {
+		state.orchestrationState.configuringWorkUnit != null -> RuntimePanelTab.Orchestration
+		state.teamState.configuringWorkUnit != null -> RuntimePanelTab.Team
+		else -> resolveRuntimePanelTab(state, current)
+	}
+
+fun runtimePanelContent(tab: RuntimePanelTab): Set<RuntimePanelContent> =
+	when (tab) {
+		RuntimePanelTab.Run -> setOf(
+			RuntimePanelContent.Plan,
+			RuntimePanelContent.WorkUnits,
+			RuntimePanelContent.Environment,
+			RuntimePanelContent.Context,
+			RuntimePanelContent.RunRecords,
+			RuntimePanelContent.Observability,
+			RuntimePanelContent.Summary,
+			RuntimePanelContent.Status,
+			RuntimePanelContent.Events,
+			RuntimePanelContent.EmptyState,
+		)
+		RuntimePanelTab.Orchestration -> setOf(RuntimePanelContent.Orchestration)
+		RuntimePanelTab.Team -> setOf(RuntimePanelContent.Team)
+		RuntimePanelTab.SubAgent -> setOf(RuntimePanelContent.SubAgent)
+	}
+
 @Composable
 fun RuntimeDetailsPanel(
 	state: AppState,
 	modifier: Modifier = Modifier,
 	onClose: () -> Unit,
 	onDismissSubAgent: () -> Unit = {},
+	onSelectWorkUnit: (String) -> Unit = {},
+	onConfigureWorkUnit: (String) -> Unit = {},
+	onStartWorkUnit: (String) -> Unit = {},
 	onRemoveWorkUnit: (String) -> Unit = {},
+	onUpdateWorkUnitGoal: (String, String, String) -> Unit = { _, _, _ -> },
 	onSendTeamMessage: (String, String) -> Unit = { _, _ -> },
 	onSelectRunTurn: (String) -> Unit,
 	onSelectObservabilityRange: (String) -> Unit,
 ) {
+	var selectedTab by remember { mutableStateOf(RuntimePanelTab.Run) }
+	val preferredTab = preferredRuntimePanelTab(state, selectedTab)
+	LaunchedEffect(preferredTab) {
+		selectedTab = preferredTab
+	}
+	val effectiveTab = resolveRuntimePanelTab(state, selectedTab)
+	val tabs = runtimePanelTabs(state, effectiveTab)
 	Column(
 		modifier = modifier
 			.fillMaxHeight()
 			.background(BaBiQColors.Panel)
-			.padding(16.dp)
-			.verticalScroll(rememberScrollState()),
-		verticalArrangement = Arrangement.spacedBy(12.dp),
+			.padding(12.dp),
 	) {
-		Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-			Text("运行详情", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold))
-			TextButton(onClick = onClose) { Text("收起") }
-		}
-		PlanSection(state.planState)
-		WorkUnitSection(state.workUnitState, onRemove = onRemoveWorkUnit)
-		OrchestrationSection(state.orchestrationState)
-		TeamSection(state.teamState, onSendTeamMessage = onSendTeamMessage)
-		SubAgentSection(state.subAgentState, onDismiss = onDismissSubAgent)
-		DetailCard(
-			title = "执行环境",
-			detail = buildString {
-				append("目录: ").append(state.workspace.projectName).append(" / ").append(state.workspace.cwd)
-				append("\n权限: ").append(state.workspace.permissionLabel ?: state.workspace.permissionMode ?: "未加载")
-				append("\n模型: ").append(state.providerState.active.label)
-			},
-		)
-		DetailCard(
-			title = "上下文来源",
-			detail = buildString {
-				append("窗口: ").append(state.contextWindowState.status?.let { "${(it.usageRatio * 100).toInt()}%" } ?: "未生成")
-				append("\n短期压缩: ").append(state.contextWindowState.status?.activeSummaryId ?: "未启用")
-				append("\n长期记忆: ").append(if (state.memoryState.status?.readEnabled == true) "注入开启" else "注入关闭")
-				append("\n能力装配: ").append(state.capabilityState.status?.summaryText() ?: "未加载")
-			},
-		)
-		RunRecordSection(
-			state = state.runRecordState,
-			memoryState = state.memoryState,
-			capabilityState = state.capabilityState,
-			onSelectRunTurn = onSelectRunTurn,
-		)
-		ObservabilitySection(
-			state = state.runRecordState.observability,
-			onSelectRange = onSelectObservabilityRange,
-		)
-		// 运行摘要在这里作为详情复用；聊天流里的 TurnSummaryBar 仍然是主展示位置。
-		state.latestSummary?.let { TurnSummaryBar(it) }
-		DetailCard("当前状态", "${state.turnState} / ${state.connectionState}")
-		state.runtimeEvents.forEach { event ->
-			DetailCard(event.title, event.detail + event.raw?.let { "\n$it" }.orEmpty())
-		}
-		if (state.runtimeEvents.isEmpty() && state.latestSummary == null) {
-			Text("暂无运行详情。完成一轮任务后，这里会显示工具轨迹和 token 明细。", color = BaBiQColors.Muted)
+		Column(
+			modifier = Modifier
+				.fillMaxHeight()
+				.fillMaxWidth()
+				.background(BaBiQColors.Background, RoundedCornerShape(12.dp))
+				.border(1.dp, BaBiQColors.Border, RoundedCornerShape(12.dp))
+				.padding(14.dp)
+				.verticalScroll(rememberScrollState()),
+			verticalArrangement = Arrangement.spacedBy(12.dp),
+		) {
+			RuntimePanelHeader(
+				selectedTab = effectiveTab,
+				tabs = tabs,
+				onSelectTab = { selectedTab = it },
+				onClose = onClose,
+			)
+			when (effectiveTab) {
+				RuntimePanelTab.Run -> {
+			PlanSection(state.planState)
+			WorkUnitSection(
+				state.workUnitState,
+				onSelect = onSelectWorkUnit,
+				onConfigure = onConfigureWorkUnit,
+				onStart = onStartWorkUnit,
+				onRemove = onRemoveWorkUnit,
+				onUpdateGoal = onUpdateWorkUnitGoal,
+			)
+			DetailCard(
+				title = "执行环境",
+				detail = buildString {
+					append("目录: ").append(state.workspace.projectName).append(" / ").append(state.workspace.cwd)
+					append("\n权限: ").append(state.workspace.permissionLabel ?: state.workspace.permissionMode ?: "未加载")
+					append("\n模型: ").append(state.providerState.active.label)
+				},
+			)
+			DetailCard(
+				title = "上下文来源",
+				detail = buildString {
+					append("窗口: ").append(state.contextWindowState.status?.let { "${(it.usageRatio * 100).toInt()}%" } ?: "未生成")
+					append("\n短期压缩: ").append(state.contextWindowState.status?.activeSummaryId ?: "未启用")
+					append("\n长期记忆: ").append(if (state.memoryState.status?.readEnabled == true) "注入开启" else "注入关闭")
+					append("\n能力装配: ").append(state.capabilityState.status?.summaryText() ?: "未加载")
+				},
+			)
+			RunRecordSection(
+				state = state.runRecordState,
+				memoryState = state.memoryState,
+				capabilityState = state.capabilityState,
+				onSelectRunTurn = onSelectRunTurn,
+			)
+			ObservabilitySection(
+				state = state.runRecordState.observability,
+				onSelectRange = onSelectObservabilityRange,
+			)
+			// 运行摘要在这里作为详情复用；聊天流里的 TurnSummaryBar 仍然是主展示位置。
+			state.latestSummary?.let { TurnSummaryBar(it) }
+			DetailCard("当前状态", "${state.turnState} / ${state.connectionState}")
+			state.runtimeEvents.forEach { event ->
+				DetailCard(event.title, event.detail + event.raw?.let { "\n$it" }.orEmpty())
+			}
+			if (state.runtimeEvents.isEmpty() && state.latestSummary == null) {
+				Text("暂无运行详情。完成一轮任务后，这里会显示工具轨迹和 token 明细。", color = BaBiQColors.Muted)
+			}
+				}
+				RuntimePanelTab.Orchestration -> OrchestrationSection(
+					state = state.orchestrationState,
+					modelLabel = state.providerState.active.label,
+					providerState = state.providerState,
+					onStartWorkUnit = onStartWorkUnit,
+					onUpdateWorkUnitGoal = onUpdateWorkUnitGoal,
+				)
+				RuntimePanelTab.Team -> TeamSection(
+					state = state.teamState,
+					modelLabel = state.providerState.active.label,
+					onStartWorkUnit = onStartWorkUnit,
+					onUpdateWorkUnitGoal = onUpdateWorkUnitGoal,
+					onSendTeamMessage = onSendTeamMessage,
+				)
+				RuntimePanelTab.SubAgent -> SubAgentSection(state.subAgentState, onDismiss = onDismissSubAgent)
+			}
 		}
 	}
 }
@@ -111,6 +252,45 @@ fun RuntimeDetailsPanel(
  * 这里展示的是“当前工作目录”的聚合统计，不是某一条 turn 的详情。
  * range 按钮只刷新 observability/snapshot，不会切换聊天会话或重新发送任务。
  */
+@Composable
+private fun RuntimePanelHeader(
+	selectedTab: RuntimePanelTab,
+	tabs: List<RuntimePanelTabItem>,
+	onSelectTab: (RuntimePanelTab) -> Unit,
+	onClose: () -> Unit,
+) {
+	Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+		Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+			Text(
+				runtimePanelTitle(selectedTab),
+				style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+			)
+			TextButton(onClick = onClose) { Text("收起") }
+		}
+		Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+			tabs.forEach { item ->
+				if (item.selected) {
+					OutlinedButton(onClick = { onSelectTab(item.tab) }, enabled = false) {
+						Text(item.label)
+					}
+				} else {
+					TextButton(onClick = { onSelectTab(item.tab) }) {
+						Text(item.label)
+					}
+				}
+			}
+		}
+	}
+}
+
+private fun runtimePanelTitle(tab: RuntimePanelTab): String =
+	when (tab) {
+		RuntimePanelTab.Run -> "运行详情"
+		RuntimePanelTab.Orchestration -> "编排详情"
+		RuntimePanelTab.Team -> "团队详情"
+		RuntimePanelTab.SubAgent -> "子代理详情"
+	}
+
 @Composable
 private fun ObservabilitySection(
 	state: ObservabilityState,

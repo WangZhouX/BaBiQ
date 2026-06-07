@@ -13,6 +13,14 @@ data class WorkUnitRemoveParams(
 )
 
 @Serializable
+data class WorkUnitGoalUpdateParams(
+	val threadId: String,
+	val workUnitId: String,
+	val goalId: String,
+	val goalText: String,
+)
+
+@Serializable
 data class WorkUnitGoalInfo(
 	val goalId: String,
 	val workUnitId: String,
@@ -79,5 +87,11 @@ data class WorkUnitRemoveResult(
 			name = name,
 			status = status,
 			removed = removed,
-		)
+	)
 }
+
+@Serializable
+data class WorkUnitGoalUpdateResult(
+	val updatedGoal: WorkUnitGoalInfo,
+	val workUnit: WorkUnitInfo,
+)

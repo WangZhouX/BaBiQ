@@ -45,7 +45,10 @@ object ChatReducer {
 	 * 委派 item 会进入聊天流，但右侧面板也需要一份结构化状态，方便和计划区一起展示当前执行层级。
 	 */
 	fun subAgentStateFromItems(items: List<ThreadItem>): SubAgentUiState =
-		SubAgentUiState(current = items.filterIsInstance<ThreadItem.AgentDelegation>().lastOrNull())
+		SubAgentUiState(
+			current = items.filterIsInstance<ThreadItem.AgentDelegation>()
+				.lastOrNull { !it.isTerminalDelegation() },
+		)
 
 	/**
 	 * 从历史 item 中恢复最近一次流程编排状态。
@@ -366,6 +369,9 @@ object ChatReducer {
 			)
 			is ThreadItem.Unknown -> ChatMessage.Tool(id, type, "unknown", raw.toString())
 		}
+
+	private fun ThreadItem.AgentDelegation.isTerminalDelegation(): Boolean =
+		status.lowercase() in setOf("completed", "failed", "canceled")
 
 	/**
 	 * 最新计划全部完成后主动隐藏，避免右侧面板长期停在已经结束的 TODO 上。

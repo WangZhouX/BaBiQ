@@ -3,6 +3,7 @@ package com.wzx.babiq.server.api.method;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wzx.babiq.server.api.dto.WorkUnitInfo;
 import com.wzx.babiq.server.api.dto.WorkUnitListResult;
+import com.wzx.babiq.server.api.dto.WorkUnitGoalUpdateResult;
 import com.wzx.babiq.server.api.dto.WorkUnitRemoveResult;
 import com.wzx.babiq.server.workunit.WorkUnit;
 import com.wzx.babiq.server.workunit.WorkUnitGoal;
@@ -15,7 +16,10 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -63,6 +67,52 @@ class WorkUnitHandlersTest {
 
         assertThat(result).isEqualTo(new WorkUnitRemoveResult("wu_2", "team", "前端验收组", "removed", true));
         verify(service).remove("wu_2");
+    }
+
+    @Test
+    @DisplayName("workunit/goal/update 直接保存待执行目标并返回刷新后的容器")
+    void update_goal_should_delegate_to_service_and_return_refreshed_work_unit() {
+        WorkUnitService service = mock(WorkUnitService.class);
+        WorkUnit workUnit = sampleWorkUnit("wu_1", "orchestration", "html测试", "waiting_config", "goal_1", false);
+        WorkUnitGoal updatedGoal = sampleGoal("goal_1", "wu_1", "重新检查登录页样式", "pending");
+        when(service.updateGoal("goal_1", "重新检查登录页样式")).thenReturn(updatedGoal);
+        when(service.listVisible("thr_1")).thenReturn(List.of(workUnit));
+        when(service.listGoals("wu_1")).thenReturn(List.of(updatedGoal));
+
+        Object result = new WorkUnitGoalUpdateHandler(service)
+                .handle(objectMapper.valueToTree(Map.of(
+                        "threadId", "thr_1",
+                        "workUnitId", "wu_1",
+                        "goalId", "goal_1",
+                        "goalText", "重新检查登录页样式"
+                )), null);
+
+        assertThat(result).isInstanceOf(WorkUnitGoalUpdateResult.class);
+        WorkUnitGoalUpdateResult update = (WorkUnitGoalUpdateResult) result;
+        assertThat(update.updatedGoal().goalText()).isEqualTo("重新检查登录页样式");
+        assertThat(update.workUnit().workUnitId()).isEqualTo("wu_1");
+        assertThat(update.workUnit().goals().getFirst().goalText()).isEqualTo("重新检查登录页样式");
+        verify(service).updateGoal("goal_1", "重新检查登录页样式");
+    }
+
+    @Test
+    @DisplayName("workunit/goal/update 在目标不属于当前容器时不执行保存")
+    void update_goal_should_validate_goal_ownership_before_saving() {
+        WorkUnitService service = mock(WorkUnitService.class);
+        WorkUnit workUnit = sampleWorkUnit("wu_1", "orchestration", "html测试", "waiting_config", "goal_1", false);
+        when(service.listVisible("thr_1")).thenReturn(List.of(workUnit));
+        when(service.listGoals("wu_1")).thenReturn(List.of(sampleGoal("goal_2", "wu_1", "另一个目标", "pending")));
+
+        assertThatThrownBy(() -> new WorkUnitGoalUpdateHandler(service)
+                .handle(objectMapper.valueToTree(Map.of(
+                        "threadId", "thr_1",
+                        "workUnitId", "wu_1",
+                        "goalId", "goal_999",
+                        "goalText", "不应该保存"
+                )), null))
+                .hasMessageContaining("目标不属于当前工作容器");
+
+        verify(service, never()).updateGoal(anyString(), anyString());
     }
 
     private static WorkUnit sampleWorkUnit(String workUnitId,
