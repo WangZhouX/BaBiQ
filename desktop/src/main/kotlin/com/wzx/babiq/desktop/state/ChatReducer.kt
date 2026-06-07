@@ -190,13 +190,18 @@ object ChatReducer {
 				),
 			)
 
-			is ThreadItem.Plan -> copy(
-				planState = PlanUiState(current = item, collapsed = false).hideIfCompleted(),
-			)
+			is ThreadItem.Plan -> {
+				val nextPlanState = PlanUiState(current = item, collapsed = false).hideIfCompleted()
+				copy(
+					planState = nextPlanState,
+					runtimeExpanded = runtimeExpanded || nextPlanState.visible,
+				)
+			}
 
 			is ThreadItem.AgentDelegation -> copy(
 				messages = messages.upsert(item.toChatMessage()),
 				subAgentState = subAgentState.withCurrent(item),
+				runtimeExpanded = true,
 				runtimeEvents = runtimeEvents + RuntimeEvent(
 					id = item.id,
 					title = "SubAgent:${item.childAgent}",
@@ -213,6 +218,7 @@ object ChatReducer {
 
 			is ThreadItem.WorkUnit -> copy(
 				workUnitState = workUnitState.withItem(item),
+				runtimeExpanded = runtimeExpanded || (!item.removed && !item.status.equals("removed", ignoreCase = true)),
 				runtimeEvents = runtimeEvents + RuntimeEvent(
 					id = item.id,
 					title = "WorkUnit:${item.name}",
@@ -227,6 +233,7 @@ object ChatReducer {
 
 			is ThreadItem.Orchestration -> copy(
 				orchestrationState = OrchestrationUiState(current = item),
+				runtimeExpanded = true,
 				runtimeEvents = runtimeEvents + RuntimeEvent(
 					id = item.id,
 					title = "Flow:${item.topology}",
@@ -242,6 +249,7 @@ object ChatReducer {
 
 			is ThreadItem.Team -> copy(
 				teamState = teamState.withTeam(item),
+				runtimeExpanded = true,
 				runtimeEvents = runtimeEvents + RuntimeEvent(
 					id = item.id,
 					title = "Team:${item.title}",
@@ -257,6 +265,7 @@ object ChatReducer {
 
 			is ThreadItem.TeamMessage -> copy(
 				teamState = teamState.withMessage(item),
+				runtimeExpanded = true,
 				runtimeEvents = runtimeEvents + RuntimeEvent(
 					id = item.id,
 					title = "TeamMessage:${item.messageType}",

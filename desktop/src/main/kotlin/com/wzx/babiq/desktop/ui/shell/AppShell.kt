@@ -42,6 +42,9 @@ internal val RuntimePanelResizeRailWidth = 4.dp
 internal fun resizeRuntimePanelWidth(current: Dp, dragDeltaDp: Dp): Dp =
 	(current - dragDeltaDp).coerceIn(MinRuntimePanelWidth, MaxRuntimePanelWidth)
 
+internal fun shouldShowRuntimePanel(state: AppState): Boolean =
+	state.runtimeExpanded
+
 /**
  * 应用外壳布局。
  *
@@ -149,14 +152,8 @@ fun AppShell(
 				)
 			}
 		}
-		// RuntimeDetailsPanel 是辅助面板；计划、子 Agent 或流程编排存在时自动常驻，避免执行层级丢在聊天正文里。
-		if (state.runtimeExpanded ||
-			(state.planState.visible && !state.planState.collapsed) ||
-			state.subAgentState.visible ||
-			state.orchestrationState.visible ||
-			state.teamState.visible ||
-			state.workUnitState.visible
-		) {
+		// RuntimeDetailsPanel 的渲染只受 runtimeExpanded 控制；旧运行数据不能覆盖用户的收起动作。
+		if (shouldShowRuntimePanel(state)) {
 			RuntimePanelResizeHandle(
 				onDragDelta = { delta -> runtimePanelWidth = resizeRuntimePanelWidth(runtimePanelWidth, delta) },
 			)

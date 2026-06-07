@@ -1000,6 +1000,43 @@ class ChatControllerTest {
 		assertFalse(gateway.calls.any { it.startsWith("startTurn:") })
 	}
 
+	@Test
+	fun `运行详情收起后即使存在工作容器也能再次展开`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(
+			gateway,
+			backgroundScope,
+			initialState = AppState(
+				connectionState = ConnectionState.Connected,
+				currentThreadId = "thr_history",
+				runtimeExpanded = false,
+				workUnitState = WorkUnitUiState(
+					items = listOf(
+						ThreadItem.WorkUnit(
+							id = "it_workunit_1",
+							workUnitId = "wu_1",
+							kind = "orchestration",
+							name = "html-test",
+							status = "waiting_config",
+							currentGoal = "修改 html 内容",
+							goalCount = 1,
+							removed = false,
+						),
+					),
+				),
+			),
+		)
+
+		controller.toggleRuntimeDetails()
+		advanceUntilIdle()
+
+		assertTrue(controller.state.value.runtimeExpanded)
+		assertEquals(
+			listOf("getRecoveryStatus", "listRunTurns:thr_history", "getRunTurn:turn-1", "getObservabilitySnapshot:7d:E:\\BaBiQ"),
+			gateway.calls,
+		)
+	}
+
 	private inner class FakeGateway(
 		private val connectFails: Boolean = false,
 		private var connectFailuresBeforeSuccess: Int = 0,

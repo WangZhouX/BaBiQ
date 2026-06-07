@@ -879,13 +879,7 @@ class ChatController(
 
 	fun toggleRuntimeDetails() {
 		val current = state.value
-		val panelVisible = current.runtimeExpanded ||
-			(current.planState.visible && !current.planState.collapsed) ||
-			current.subAgentState.visible ||
-			current.orchestrationState.visible ||
-			current.teamState.visible ||
-			current.workUnitState.visible
-		val shouldExpand = !panelVisible
+		val shouldExpand = !current.runtimeExpanded
 		_state.update {
 			it.copy(
 				runtimeExpanded = shouldExpand,
@@ -1497,12 +1491,7 @@ class ChatController(
 	 */
 	private suspend fun refreshRunRecordsIfVisible() {
 		val current = state.value
-		if (current.runtimeExpanded ||
-			(current.planState.visible && !current.planState.collapsed) ||
-			current.subAgentState.visible ||
-			current.orchestrationState.visible ||
-			current.teamState.visible
-		) {
+		if (current.runtimeExpanded) {
 			current.currentThreadId?.let { loadRunRecords(it) }
 			loadObservabilitySnapshot(current.runRecordState.observability.range)
 		}
