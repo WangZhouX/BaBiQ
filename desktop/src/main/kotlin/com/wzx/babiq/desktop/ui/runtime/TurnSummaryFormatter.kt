@@ -34,3 +34,11 @@ fun ThreadItem.TurnSummary.toSummaryMetrics(): List<SummaryMetric> {
 		SummaryMetric("$toolCalls 工具", "工具调用"),
 	)
 }
+
+/**
+ * 主聊天流使用的一行式反馈文案，降低 turn 结束后的视觉重量。
+ */
+fun ThreadItem.TurnSummary.toCompactSummaryText(): String {
+	val integerFormat = NumberFormat.getIntegerInstance(Locale.US)
+	return "本轮 · 总用量 ${integerFormat.format(totalTokens)} tokens · ${formatDuration(durationMs)} · $toolCalls 工具"
+}

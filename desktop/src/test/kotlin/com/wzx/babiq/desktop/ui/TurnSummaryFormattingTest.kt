@@ -2,6 +2,7 @@ package com.wzx.babiq.desktop.ui
 
 import com.wzx.babiq.desktop.protocol.ThreadItem
 import com.wzx.babiq.desktop.ui.runtime.formatDuration
+import com.wzx.babiq.desktop.ui.runtime.toCompactSummaryText
 import com.wzx.babiq.desktop.ui.runtime.toSummaryMetrics
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -34,5 +35,19 @@ class TurnSummaryFormattingTest {
 		assertEquals("tokens", metrics[0].helper)
 		assertEquals("8.2 秒", metrics[1].label)
 		assertEquals("5 工具", metrics[2].label)
+	}
+
+	@Test
+	fun `summary feedback can render as a compact single line`() {
+		val summary = ThreadItem.TurnSummary(
+			id = "summary-compact",
+			status = "completed",
+			model = "deepseek-v4-pro",
+			totalTokens = 6405,
+			toolCalls = 2,
+			durationMs = 8300,
+		)
+
+		assertEquals("本轮 · 总用量 6,405 tokens · 8.3 秒 · 2 工具", summary.toCompactSummaryText())
 	}
 }
