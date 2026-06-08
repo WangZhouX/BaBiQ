@@ -88,6 +88,14 @@ class TeamSectionTest {
 			goals = listOf(
 				WorkUnitGoalInfo("goal_1", "wu_team", "review login page", "pending"),
 			),
+			configJson = """
+				{
+				  "members": [
+				    {"id": "leader", "name": "leader", "task": "拆解验收任务", "model": "inherit"},
+				    {"id": "frontend", "name": "frontend", "task": "检查 Compose UI", "model": "provider:qwen:qwen-plus"}
+				  ]
+				}
+			""".trimIndent(),
 		)
 
 		val model = buildTeamSectionModel(TeamUiState(configuringWorkUnit = workUnit), modelLabel = "deepseek-v4-pro")
@@ -101,6 +109,9 @@ class TeamSectionTest {
 		assertEquals("deepseek-v4-pro", model.config?.modelLabel)
 		assertEquals("goal_1", model.config?.editableGoalId)
 		assertEquals("review login page", model.config?.editableGoalText)
+		assertEquals(listOf("leader", "frontend"), model.configMembers.map { it.memberId })
+		assertEquals("检查 Compose UI", model.configMembers.first { it.memberId == "frontend" }.task)
+		assertEquals("provider:qwen:qwen-plus", model.configMembers.first { it.memberId == "frontend" }.modelValue)
 	}
 
 	@Test

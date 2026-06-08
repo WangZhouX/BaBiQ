@@ -1,6 +1,8 @@
 package com.wzx.babiq.desktop.protocol
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.decodeFromString
 
 @Serializable
 data class WorkUnitListParams(
@@ -18,6 +20,29 @@ data class WorkUnitGoalUpdateParams(
 	val workUnitId: String,
 	val goalId: String,
 	val goalText: String,
+)
+
+@Serializable
+data class WorkUnitConfigUpdateParams(
+	val threadId: String,
+	val workUnitId: String,
+	val configJson: String,
+)
+
+@Serializable
+data class WorkUnitConfiguration(
+	val nodes: List<WorkUnitConfigEntry> = emptyList(),
+	val members: List<WorkUnitConfigEntry> = emptyList(),
+)
+
+@Serializable
+data class WorkUnitConfigEntry(
+	val id: String,
+	val name: String? = null,
+	val role: String? = null,
+	val task: String? = null,
+	val model: String? = null,
+	val mode: String? = null,
 )
 
 @Serializable
@@ -47,8 +72,12 @@ data class WorkUnitInfo(
 	val sandboxMode: String? = null,
 	val removed: Boolean = false,
 	val updatedAt: String? = null,
+	val configJson: String? = null,
 	val goals: List<WorkUnitGoalInfo> = emptyList(),
 ) {
+	val configuration: WorkUnitConfiguration?
+		get() = decodeWorkUnitConfiguration(configJson)
+
 	fun toThreadItem(): ThreadItem.WorkUnit {
 		val currentGoal = goals.lastOrNull { goal -> goal.goalId == currentGoalId }
 			?: goals.lastOrNull()
@@ -95,3 +124,19 @@ data class WorkUnitGoalUpdateResult(
 	val updatedGoal: WorkUnitGoalInfo,
 	val workUnit: WorkUnitInfo,
 )
+
+@Serializable
+data class WorkUnitConfigUpdateResult(
+	val workUnit: WorkUnitInfo,
+)
+
+private fun decodeWorkUnitConfiguration(configJson: String?): WorkUnitConfiguration? {
+	val json = configJson?.takeIf { it.isNotBlank() } ?: return null
+	return try {
+		protocolJson.decodeFromString<WorkUnitConfiguration>(json)
+	} catch (_: SerializationException) {
+		null
+	} catch (_: IllegalArgumentException) {
+		null
+	}
+}

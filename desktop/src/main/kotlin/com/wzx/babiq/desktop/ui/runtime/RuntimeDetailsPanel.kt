@@ -145,6 +145,7 @@ fun RuntimeDetailsPanel(
 	onStartWorkUnit: (String) -> Unit = {},
 	onRemoveWorkUnit: (String) -> Unit = {},
 	onUpdateWorkUnitGoal: (String, String, String) -> Unit = { _, _, _ -> },
+	onUpdateWorkUnitConfig: (String, String) -> Unit = { _, _ -> },
 	onSendTeamMessage: (String, String) -> Unit = { _, _ -> },
 	onSelectRunTurn: (String) -> Unit,
 	onSelectObservabilityRange: (String) -> Unit,
@@ -232,12 +233,15 @@ fun RuntimeDetailsPanel(
 					providerState = state.providerState,
 					onStartWorkUnit = onStartWorkUnit,
 					onUpdateWorkUnitGoal = onUpdateWorkUnitGoal,
+					onUpdateWorkUnitConfig = onUpdateWorkUnitConfig,
 				)
 				RuntimePanelTab.Team -> TeamSection(
 					state = state.teamState,
 					modelLabel = state.providerState.active.label,
+					providerState = state.providerState,
 					onStartWorkUnit = onStartWorkUnit,
 					onUpdateWorkUnitGoal = onUpdateWorkUnitGoal,
+					onUpdateWorkUnitConfig = onUpdateWorkUnitConfig,
 					onSendTeamMessage = onSendTeamMessage,
 				)
 				RuntimePanelTab.SubAgent -> SubAgentSection(state.subAgentState, onDismiss = onDismissSubAgent)

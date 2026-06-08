@@ -75,6 +75,14 @@ class OrchestrationSectionTest {
 				WorkUnitGoalInfo("goal_1", "wu_flow", "inspect page", "completed", summary = "done"),
 				WorkUnitGoalInfo("goal_2", "wu_flow", "edit html content", "pending"),
 			),
+			configJson = """
+				{
+				  "nodes": [
+				    {"id": "start", "task": "edit html content", "model": "goal:current"},
+				    {"id": "analyzer", "task": "分析现有登录页结构", "model": "provider:qwen:qwen-plus"}
+				  ]
+				}
+			""".trimIndent(),
 		)
 
 		val model = buildOrchestrationSectionModel(
@@ -101,6 +109,8 @@ class OrchestrationSectionTest {
 		assertEquals("start", settings.nodeId)
 		assertEquals("edit html content", settings.task)
 		assertEquals("goal:current", settings.modelValue)
+		assertEquals("provider:qwen:qwen-plus", model.configNodes.first { it.nodeId == "analyzer" }.modelValue)
+		assertEquals("分析现有登录页结构", model.configNodes.first { it.nodeId == "analyzer" }.task)
 		assertEquals("end:main-agent-confirmed", model.configNodes.last().modelValue)
 	}
 

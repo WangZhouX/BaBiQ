@@ -6,6 +6,7 @@ import com.wzx.babiq.server.api.dto.WorkUnitGoalInfo;
 import com.wzx.babiq.server.api.dto.WorkUnitInfo;
 import com.wzx.babiq.server.api.dto.WorkUnitListResult;
 import com.wzx.babiq.server.workunit.WorkUnit;
+import com.wzx.babiq.server.workunit.WorkUnitConfig;
 import com.wzx.babiq.server.workunit.WorkUnitGoal;
 import com.wzx.babiq.server.workunit.WorkUnitService;
 import org.springframework.stereotype.Component;
@@ -13,6 +14,7 @@ import org.springframework.web.socket.WebSocketSession;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * workunit/list JSON-RPC handler。
@@ -38,12 +40,23 @@ public class WorkUnitListHandler implements JsonRpcMethodHandler {
     public Object handle(JsonNode params, WebSocketSession session) {
         String threadId = ContextStatusHandler.requiredText(params, "threadId");
         List<WorkUnitInfo> workUnits = service.listVisible(threadId).stream()
-                .map(workUnit -> toInfo(workUnit, service.listGoals(workUnit.workUnitId())))
+                .map(workUnit -> toInfo(workUnit,
+                        service.listGoals(workUnit.workUnitId()),
+                        configJsonFor(service, workUnit.workUnitId())))
                 .toList();
         return new WorkUnitListResult(workUnits);
     }
 
+    static String configJsonFor(WorkUnitService service, String workUnitId) {
+        Optional<WorkUnitConfig> config = service.findConfig(workUnitId);
+        return config == null ? null : config.map(WorkUnitConfig::configJson).orElse(null);
+    }
+
     static WorkUnitInfo toInfo(WorkUnit workUnit, List<WorkUnitGoal> goals) {
+        return toInfo(workUnit, goals, null);
+    }
+
+    static WorkUnitInfo toInfo(WorkUnit workUnit, List<WorkUnitGoal> goals, String configJson) {
         return new WorkUnitInfo(
                 workUnit.workUnitId(),
                 workUnit.threadId(),
@@ -55,6 +68,7 @@ public class WorkUnitListHandler implements JsonRpcMethodHandler {
                 workUnit.sandboxMode(),
                 workUnit.removed(),
                 asText(workUnit.updatedAt()),
+                configJson,
                 goals.stream().map(WorkUnitListHandler::toGoalInfo).toList()
         );
     }

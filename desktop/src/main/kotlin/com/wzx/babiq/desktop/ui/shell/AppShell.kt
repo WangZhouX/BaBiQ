@@ -33,7 +33,7 @@ import com.wzx.babiq.desktop.ui.skills.SkillLibraryPanel
 import com.wzx.babiq.desktop.ui.theme.BaBiQColors
 import java.awt.Cursor
 
-internal val DefaultRuntimePanelWidth = 360.dp
+internal val DefaultRuntimePanelWidth = 392.dp
 internal val MinRuntimePanelWidth = 320.dp
 internal val MaxRuntimePanelWidth = 760.dp
 internal val RuntimePanelResizeHandleWidth = 18.dp
@@ -82,6 +82,7 @@ fun AppShell(
 	onStartWorkUnit: (String) -> Unit,
 	onRemoveWorkUnit: (String) -> Unit,
 	onUpdateWorkUnitGoal: (String, String, String) -> Unit,
+	onUpdateWorkUnitConfig: (String, String) -> Unit,
 	onSendTeamMessage: (String, String) -> Unit,
 	onSelectRunTurn: (String) -> Unit,
 	onSelectObservabilityRange: (String) -> Unit,
@@ -167,6 +168,7 @@ fun AppShell(
 				onStartWorkUnit = onStartWorkUnit,
 				onRemoveWorkUnit = onRemoveWorkUnit,
 				onUpdateWorkUnitGoal = onUpdateWorkUnitGoal,
+				onUpdateWorkUnitConfig = onUpdateWorkUnitConfig,
 				onSendTeamMessage = onSendTeamMessage,
 				onSelectRunTurn = onSelectRunTurn,
 				onSelectObservabilityRange = onSelectObservabilityRange,

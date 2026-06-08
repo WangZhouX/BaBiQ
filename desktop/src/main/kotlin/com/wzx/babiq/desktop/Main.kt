@@ -8,6 +8,8 @@ import androidx.compose.ui.window.WindowState
 import androidx.compose.ui.window.application
 import com.wzx.babiq.desktop.app.BaBiQDesktopApp
 
+internal val DefaultWindowSize = DpSize(1920.dp, 860.dp)
+
 /**
  * 桌面端进程入口。
  *
@@ -18,7 +20,7 @@ fun main() = application {
 	Window(
 		title = "BaBiQ",
 		icon = painterResource(WINDOW_ICON_RESOURCE),
-		state = WindowState(size = DpSize(1180.dp, 780.dp)),
+		state = WindowState(size = DefaultWindowSize),
 		onCloseRequest = ::exitApplication,
 	) {
 		// 把业务 UI 作为窗口内容挂进去，后续所有状态和网络连接都从这个组合根节点往下传。

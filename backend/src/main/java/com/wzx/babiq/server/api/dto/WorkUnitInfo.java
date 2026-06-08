@@ -15,6 +15,7 @@ import java.util.List;
  * @param sandboxMode 创建时沙箱权限
  * @param removed 是否已从 UI 移除
  * @param updatedAt 更新时间
+ * @param configJson 右侧 Inspector 的配置 JSON
  * @param goals 目标队列
  */
 public record WorkUnitInfo(
@@ -28,6 +29,7 @@ public record WorkUnitInfo(
         String sandboxMode,
         boolean removed,
         String updatedAt,
+        String configJson,
         List<WorkUnitGoalInfo> goals
 ) {
 }

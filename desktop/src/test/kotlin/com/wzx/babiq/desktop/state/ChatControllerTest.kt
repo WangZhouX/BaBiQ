@@ -54,6 +54,7 @@ import com.wzx.babiq.desktop.protocol.ThreadLoadResult
 import com.wzx.babiq.desktop.protocol.ThreadMetaInfo
 import com.wzx.babiq.desktop.protocol.ThreadSummaryInfo
 import com.wzx.babiq.desktop.protocol.WorkUnitListResult
+import com.wzx.babiq.desktop.protocol.WorkUnitConfigUpdateResult
 import com.wzx.babiq.desktop.protocol.WorkUnitGoalUpdateResult
 import com.wzx.babiq.desktop.protocol.WorkUnitRemoveResult
 import com.wzx.babiq.desktop.protocol.WorkUnitGoalInfo
@@ -1403,6 +1404,35 @@ class ChatControllerTest {
 					cwd = "H:\\aaa",
 					sandboxMode = "FULL_ACCESS",
 					goals = listOf(updatedGoal),
+				),
+			)
+		}
+
+		override suspend fun updateWorkUnitConfig(
+			threadId: String,
+			workUnitId: String,
+			configJson: String,
+		): WorkUnitConfigUpdateResult {
+			calls += "updateWorkUnitConfig:$threadId:$workUnitId:$configJson"
+			return WorkUnitConfigUpdateResult(
+				workUnit = WorkUnitInfo(
+					workUnitId = workUnitId,
+					threadId = threadId,
+					kind = "orchestration",
+					name = "html-test",
+					status = "waiting_config",
+					currentGoalId = "goal_1",
+					cwd = "H:\\aaa",
+					sandboxMode = "FULL_ACCESS",
+					configJson = configJson,
+					goals = listOf(
+						WorkUnitGoalInfo(
+							goalId = "goal_1",
+							workUnitId = workUnitId,
+							goalText = "old goal",
+							status = "pending",
+						),
+					),
 				),
 			)
 		}

@@ -3,9 +3,11 @@ package com.wzx.babiq.server.api.method;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wzx.babiq.server.api.dto.WorkUnitInfo;
 import com.wzx.babiq.server.api.dto.WorkUnitListResult;
+import com.wzx.babiq.server.api.dto.WorkUnitConfigUpdateResult;
 import com.wzx.babiq.server.api.dto.WorkUnitGoalUpdateResult;
 import com.wzx.babiq.server.api.dto.WorkUnitRemoveResult;
 import com.wzx.babiq.server.workunit.WorkUnit;
+import com.wzx.babiq.server.workunit.WorkUnitConfig;
 import com.wzx.babiq.server.workunit.WorkUnitGoal;
 import com.wzx.babiq.server.workunit.WorkUnitService;
 import org.junit.jupiter.api.DisplayName;
@@ -38,8 +40,10 @@ class WorkUnitHandlersTest {
         WorkUnitService service = mock(WorkUnitService.class);
         WorkUnit workUnit = sampleWorkUnit("wu_1", "orchestration", "登录页重构", "waiting_config", "goal_1", false);
         WorkUnitGoal goal = sampleGoal("goal_1", "wu_1", "拆分登录页改造流程", "pending");
+        WorkUnitConfig config = sampleConfig("wu_1", "{\"nodes\":[{\"id\":\"analyzer\",\"model\":\"qwen-plus\"}]}");
         when(service.listVisible("thr_1")).thenReturn(List.of(workUnit));
         when(service.listGoals("wu_1")).thenReturn(List.of(goal));
+        when(service.findConfig("wu_1")).thenReturn(java.util.Optional.of(config));
 
         Object result = new WorkUnitListHandler(service)
                 .handle(objectMapper.valueToTree(Map.of("threadId", "thr_1")), null);
@@ -53,6 +57,7 @@ class WorkUnitHandlersTest {
         assertThat(info.name()).isEqualTo("登录页重构");
         assertThat(info.goals()).hasSize(1);
         assertThat(info.goals().getFirst().goalText()).isEqualTo("拆分登录页改造流程");
+        assertThat(info.configJson()).contains("qwen-plus");
     }
 
     @Test
@@ -96,6 +101,31 @@ class WorkUnitHandlersTest {
     }
 
     @Test
+    @DisplayName("workunit/config/update 保存配置快照并返回刷新后的容器")
+    void update_config_should_persist_configuration_snapshot() {
+        WorkUnitService service = mock(WorkUnitService.class);
+        WorkUnit workUnit = sampleWorkUnit("wu_1", "orchestration", "html测试", "waiting_config", "goal_1", false);
+        WorkUnitGoal goal = sampleGoal("goal_1", "wu_1", "检查 html", "pending");
+        String configJson = "{\"nodes\":[{\"id\":\"analyzer\",\"model\":\"provider:qwen:qwen-plus\"}]}";
+        when(service.listVisible("thr_1")).thenReturn(List.of(workUnit));
+        when(service.listGoals("wu_1")).thenReturn(List.of(goal));
+        when(service.updateConfig("wu_1", configJson)).thenReturn(sampleConfig("wu_1", configJson));
+        when(service.findConfig("wu_1")).thenReturn(java.util.Optional.of(sampleConfig("wu_1", configJson)));
+
+        Object result = new WorkUnitConfigUpdateHandler(service)
+                .handle(objectMapper.valueToTree(Map.of(
+                        "threadId", "thr_1",
+                        "workUnitId", "wu_1",
+                        "configJson", configJson
+                )), null);
+
+        assertThat(result).isInstanceOf(WorkUnitConfigUpdateResult.class);
+        WorkUnitConfigUpdateResult update = (WorkUnitConfigUpdateResult) result;
+        assertThat(update.workUnit().configJson()).contains("provider:qwen:qwen-plus");
+        verify(service).updateConfig("wu_1", configJson);
+    }
+
+    @Test
     @DisplayName("workunit/goal/update 在目标不属于当前容器时不执行保存")
     void update_goal_should_validate_goal_ownership_before_saving() {
         WorkUnitService service = mock(WorkUnitService.class);
@@ -134,5 +164,11 @@ class WorkUnitHandlersTest {
                 Instant.parse("2026-06-02T07:00:00Z"),
                 null,
                 null);
+    }
+
+    private static WorkUnitConfig sampleConfig(String workUnitId, String configJson) {
+        return new WorkUnitConfig(workUnitId, configJson,
+                Instant.parse("2026-06-02T07:00:00Z"),
+                Instant.parse("2026-06-02T08:00:00Z"));
     }
 }

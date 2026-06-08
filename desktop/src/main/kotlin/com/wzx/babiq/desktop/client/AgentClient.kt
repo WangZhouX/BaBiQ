@@ -51,6 +51,8 @@ import com.wzx.babiq.desktop.protocol.protocolJson
 import com.wzx.babiq.desktop.protocol.ThreadArchiveResult
 import com.wzx.babiq.desktop.protocol.ThreadListResult
 import com.wzx.babiq.desktop.protocol.ThreadLoadResult
+import com.wzx.babiq.desktop.protocol.WorkUnitConfigUpdateParams
+import com.wzx.babiq.desktop.protocol.WorkUnitConfigUpdateResult
 import com.wzx.babiq.desktop.protocol.WorkUnitListParams
 import com.wzx.babiq.desktop.protocol.WorkUnitListResult
 import com.wzx.babiq.desktop.protocol.WorkUnitGoalUpdateParams
@@ -233,6 +235,13 @@ interface AgentGateway {
 		goalId: String,
 		goalText: String,
 	): WorkUnitGoalUpdateResult
+
+	/** 保存编排节点或团队成员配置快照；不会启动执行。 */
+	suspend fun updateWorkUnitConfig(
+		threadId: String,
+		workUnitId: String,
+		configJson: String,
+	): WorkUnitConfigUpdateResult
 
 	/** 向当前团队协作中的某个队友直发补充消息。 */
 	suspend fun sendTeamMessage(teamId: String, toAgent: String, content: String): TeamMessageSendResult
@@ -769,6 +778,24 @@ class AgentClient(
 			),
 		)
 		return protocolJson.decodeFromJsonElement(WorkUnitGoalUpdateResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `workunit/config/update`，保存 Inspector 中的编排节点/团队成员配置快照。
+	 */
+	override suspend fun updateWorkUnitConfig(
+		threadId: String,
+		workUnitId: String,
+		configJson: String,
+	): WorkUnitConfigUpdateResult {
+		val response = request(
+			method = "workunit/config/update",
+			params = protocolJson.encodeToJsonElement(
+				WorkUnitConfigUpdateParams.serializer(),
+				WorkUnitConfigUpdateParams(threadId, workUnitId, configJson),
+			),
+		)
+		return protocolJson.decodeFromJsonElement(WorkUnitConfigUpdateResult.serializer(), response.requireResult())
 	}
 
 	/**

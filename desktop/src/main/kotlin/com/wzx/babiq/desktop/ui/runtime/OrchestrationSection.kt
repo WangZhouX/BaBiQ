@@ -35,10 +35,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.wzx.babiq.desktop.protocol.ThreadItem
+import com.wzx.babiq.desktop.protocol.WorkUnitConfigEntry
+import com.wzx.babiq.desktop.protocol.WorkUnitConfiguration
 import com.wzx.babiq.desktop.protocol.WorkUnitInfo
+import com.wzx.babiq.desktop.protocol.protocolJson
 import com.wzx.babiq.desktop.state.OrchestrationUiState
 import com.wzx.babiq.desktop.state.ProviderState
 import com.wzx.babiq.desktop.ui.theme.BaBiQColors
+import kotlinx.serialization.encodeToString
 
 private const val FlowSummaryMaxChars = 120
 
@@ -130,6 +134,7 @@ fun OrchestrationSection(
 	providerState: ProviderState = ProviderState(),
 	onStartWorkUnit: (String) -> Unit = {},
 	onUpdateWorkUnitGoal: (String, String, String) -> Unit = { _, _, _ -> },
+	onUpdateWorkUnitConfig: (String, String) -> Unit = { _, _ -> },
 ) {
 	val model = buildOrchestrationSectionModel(state, modelLabel)
 	if (!model.visible) {
@@ -156,6 +161,7 @@ fun OrchestrationSection(
 					providerState = providerState,
 					onStart = onStartWorkUnit,
 					onUpdateGoal = onUpdateWorkUnitGoal,
+					onUpdateConfig = onUpdateWorkUnitConfig,
 				)
 			}
 			model.nodes.forEach { row -> OrchestrationNodeRowView(row) }
@@ -174,6 +180,7 @@ private fun OrchestrationConfigPanel(
 	providerState: ProviderState,
 	onStart: (String) -> Unit,
 	onUpdateGoal: (String, String, String) -> Unit,
+	onUpdateConfig: (String, String) -> Unit,
 ) {
 	var selectedNodeId by remember(detail.workUnitId, nodes) {
 		mutableStateOf(defaultSettings?.nodeId ?: nodes.firstOrNull()?.nodeId)
@@ -183,10 +190,14 @@ private fun OrchestrationConfigPanel(
 	var draftTask by remember(detail.workUnitId, settings?.nodeId, settings?.task) {
 		mutableStateOf(settings?.task.orEmpty())
 	}
-	var selectedModelValues by remember(detail.workUnitId) {
+	var selectedModelValues by remember(detail.workUnitId, nodes) {
 		mutableStateOf(nodes.associate { it.nodeId to it.modelValue })
 	}
 	val modelOptions = nodeModelOptions(providerState, detail.modelLabel)
+	val selectedModelValue = settings?.let { selectedModelValues[it.nodeId] ?: it.modelValue }
+	val hasNodeChanges = settings != null &&
+		draftTask.isNotBlank() &&
+		(draftTask != settings.task || selectedModelValue != settings.modelValue)
 	Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
 		OrchestrationTopologyFrame(
 			title = editModeTitle ?: "编排 · 编辑模式",
@@ -228,15 +239,27 @@ private fun OrchestrationConfigPanel(
 					},
 				)
 				Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-					detail.editableGoalId?.let { goalId ->
-						Button(
-							onClick = { onUpdateGoal(detail.workUnitId, goalId, draftTask) },
-							enabled = nodeSettings.nodeId == "start" &&
-								draftTask.isNotBlank() &&
-								draftTask != nodeSettings.task,
-						) {
-							Text("保存节点")
-						}
+					Button(
+						onClick = {
+							if (nodeSettings.nodeId == "start" && draftTask != nodeSettings.task) {
+								detail.editableGoalId?.let { goalId ->
+									onUpdateGoal(detail.workUnitId, goalId, draftTask)
+								}
+							}
+							onUpdateConfig(
+								detail.workUnitId,
+								buildOrchestrationConfigJson(
+									detail = detail,
+									nodes = nodes,
+									updatedNodeId = nodeSettings.nodeId,
+									updatedTask = draftTask,
+									selectedModelValues = selectedModelValues,
+								),
+							)
+						},
+						enabled = hasNodeChanges,
+					) {
+						Text("保存节点")
 					}
 					detail.startActionLabel?.let { label ->
 						Button(onClick = { onStart(detail.workUnitId) }) { Text(label) }
@@ -256,7 +279,7 @@ private fun OrchestrationConfigPanel(
 }
 
 @Composable
-private fun NodeModelSelector(
+fun NodeModelSelector(
 	selectedLabel: String,
 	options: List<OrchestrationNodeModelOption>,
 	enabled: Boolean,
@@ -532,6 +555,7 @@ private fun configDraftNodes(detail: WorkUnitDetailModel): List<OrchestrationCon
 	val currentGoal = detail.editableGoalText
 		?: detail.goals.lastOrNull()?.label?.substringAfter("·")?.trim()
 		?: detail.title
+	val overrides = detail.configuration?.nodes.orEmpty().associateBy { it.id }
 	return listOf(
 		configNode(
 			nodeId = "start",
@@ -590,7 +614,20 @@ private fun configDraftNodes(detail: WorkUnitDetailModel): List<OrchestrationCon
 			modelValue = "end:main-agent-confirmed",
 			removable = false,
 		),
-	)
+	).map { row ->
+		val override = overrides[row.nodeId] ?: return@map row
+		row.copy(
+			title = override.name?.takeIf { it.isNotBlank() } ?: row.title,
+			role = override.role?.takeIf { it.isNotBlank() } ?: row.role,
+			task = override.task?.takeIf { it.isNotBlank() } ?: row.task,
+			modelValue = override.model?.takeIf { it.isNotBlank() } ?: row.modelValue,
+			modelLabel = displayModelLabel(
+				override.model?.takeIf { it.isNotBlank() } ?: row.modelValue,
+				inheritedModel,
+			),
+			modeLabel = override.mode?.takeIf { it.isNotBlank() } ?: row.modeLabel,
+		)
+	}
 }
 
 private fun configNode(
@@ -600,7 +637,7 @@ private fun configNode(
 	task: String,
 	modeLabel: String,
 	modelLabel: String,
-	modelValue: String = "inherit:$modelLabel",
+	modelValue: String = "inherit",
 	selected: Boolean = false,
 	removable: Boolean,
 ): OrchestrationConfigNodeRow =
@@ -620,6 +657,7 @@ private fun displayModelLabel(modelValue: String, modelLabel: String): String =
 	when {
 		modelValue.startsWith("goal:") -> "当前目标"
 		modelValue.startsWith("end:") -> "主 Agent 确认输出"
+		modelValue.startsWith("provider:") -> modelValue.removePrefix("provider:").replace(":", " / ")
 		else -> "继承主 Agent · $modelLabel"
 	}
 
@@ -674,7 +712,7 @@ fun nodeModelOptions(
 }
 
 private fun nodeModelSelectionEnabled(nodeSettings: OrchestrationNodeSettingsModel): Boolean =
-	nodeSettings.modelValue.startsWith("inherit:")
+	nodeSettings.nodeId !in setOf("start", "end")
 
 private fun selectedNodeModelLabel(
 	nodeSettings: OrchestrationNodeSettingsModel,
@@ -683,6 +721,31 @@ private fun selectedNodeModelLabel(
 ): String {
 	val selectedValue = selectedModelValues[nodeSettings.nodeId] ?: nodeSettings.modelValue
 	return options.firstOrNull { it.modelValue == selectedValue }?.label ?: nodeSettings.modelLabel
+}
+
+private fun buildOrchestrationConfigJson(
+	detail: WorkUnitDetailModel,
+	nodes: List<OrchestrationConfigNodeRow>,
+	updatedNodeId: String,
+	updatedTask: String,
+	selectedModelValues: Map<String, String>,
+): String {
+	val entries = nodes.map { row ->
+		WorkUnitConfigEntry(
+			id = row.nodeId,
+			name = row.title,
+			role = row.role,
+			task = if (row.nodeId == updatedNodeId) updatedTask.trim() else row.task,
+			model = selectedModelValues[row.nodeId] ?: row.modelValue,
+			mode = row.modeLabel,
+		)
+	}
+	return protocolJson.encodeToString(
+		WorkUnitConfiguration(
+			nodes = entries,
+			members = detail.configuration?.members.orEmpty(),
+		),
+	)
 }
 
 private fun nodeRow(node: ThreadItem.OrchestrationNode): OrchestrationNodeRow =

@@ -10,6 +10,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -201,6 +202,56 @@ public class DefaultWorkUnitService implements WorkUnitService {
                 workUnit.createdAt(),
                 now));
         return updated;
+    }
+
+    @Override
+    @Transactional
+    public WorkUnitConfig updateConfig(String workUnitId, String configJson) {
+        if (workUnitId == null || workUnitId.isBlank()) {
+            throw new IllegalArgumentException("工作容器 id 不能为空");
+        }
+        if (configJson == null || configJson.isBlank()) {
+            throw new IllegalArgumentException("工作容器配置不能为空");
+        }
+        WorkUnit workUnit = repository.findById(workUnitId)
+                .orElseThrow(() -> new IllegalArgumentException("工作容器不存在: " + workUnitId));
+        if (workUnit.removed() || STATUS_REMOVED.equals(workUnit.status())) {
+            throw new IllegalStateException("已移除的工作容器不能修改配置");
+        }
+        if (STATUS_RUNNING.equals(workUnit.status())) {
+            throw new IllegalStateException("运行中的工作容器不能修改配置");
+        }
+        Instant now = Instant.now();
+        WorkUnitConfig existing = repository.findConfig(workUnitId).orElse(null);
+        WorkUnitConfig saved = repository.saveConfig(new WorkUnitConfig(
+                workUnitId,
+                configJson.trim(),
+                existing == null ? now : existing.createdAt(),
+                now));
+        repository.save(new WorkUnit(
+                workUnit.workUnitId(),
+                workUnit.threadId(),
+                workUnit.kind(),
+                workUnit.name(),
+                workUnit.normalizedName(),
+                workUnit.status(),
+                workUnit.currentGoalId(),
+                workUnit.cwd(),
+                workUnit.sandboxMode(),
+                workUnit.removed(),
+                workUnit.removedAt(),
+                workUnit.createdAt(),
+                now));
+        return saved;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<WorkUnitConfig> findConfig(String workUnitId) {
+        if (workUnitId == null || workUnitId.isBlank()) {
+            return Optional.empty();
+        }
+        return repository.findConfig(workUnitId);
     }
 
     @Override

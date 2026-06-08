@@ -6,6 +6,7 @@ import com.wzx.babiq.server.conversation.Turn;
 import com.wzx.babiq.server.conversation.items.WorkUnitItem;
 
 import java.util.List;
+import java.util.Optional;
 
 /**
  * 工作容器应用服务。
@@ -67,6 +68,10 @@ public interface WorkUnitService {
      * 已经 running/completed/failed 的目标保留审计事实，不做原地改写。</p>
      */
     WorkUnitGoal updateGoal(String goalId, String goalText);
+
+    WorkUnitConfig updateConfig(String workUnitId, String configJson);
+
+    Optional<WorkUnitConfig> findConfig(String workUnitId);
 
     /**
      * 为某个对话中的工作容器选择当前可启动的 pending 目标。

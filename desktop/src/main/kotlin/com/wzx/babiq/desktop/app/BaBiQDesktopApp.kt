@@ -78,6 +78,9 @@ fun BaBiQDesktopApp() {
 			onUpdateWorkUnitGoal = { workUnitId, goalId, goalText ->
 				controller.updateWorkUnitGoal(workUnitId, goalId, goalText)
 			},
+			onUpdateWorkUnitConfig = { workUnitId, configJson ->
+				controller.updateWorkUnitConfig(workUnitId, configJson)
+			},
 			onSendTeamMessage = { toAgent, content -> controller.sendTeamMessage(toAgent, content) },
 			onSelectRunTurn = { turnId -> controller.selectRunTurn(turnId) },
 			onSelectObservabilityRange = { range -> controller.selectObservabilityRange(range) },

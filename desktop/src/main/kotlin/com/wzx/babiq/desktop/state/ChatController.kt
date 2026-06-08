@@ -999,6 +999,48 @@ class ChatController(
 		}
 	}
 
+	fun updateWorkUnitConfig(workUnitId: String, configJson: String) {
+		val detail = state.value.workUnitState.details.firstOrNull { it.workUnitId == workUnitId }
+		val threadId = state.value.currentThreadId ?: detail?.threadId ?: return
+		val normalizedConfig = configJson.trim()
+		if (workUnitId.isBlank() || normalizedConfig.isBlank()) {
+			return
+		}
+		scope.launch(start = CoroutineStart.UNDISPATCHED) {
+			_state.update {
+				it.copy(
+					runtimeExpanded = true,
+					workUnitState = it.workUnitState.select(workUnitId).copy(loading = true, error = null),
+				)
+			}
+			try {
+				val result = gateway.updateWorkUnitConfig(threadId, workUnitId, normalizedConfig)
+				_state.update {
+					val refreshed = it.workUnitState.details
+						.filterNot { detail -> detail.workUnitId == result.workUnit.workUnitId } + result.workUnit
+					val nextWorkUnitState = it.workUnitState
+						.replaceAll(refreshed)
+						.select(result.workUnit.workUnitId)
+						.copy(loading = false, error = null)
+					it.copy(
+						workUnitState = nextWorkUnitState,
+						orchestrationState = it.orchestrationState.refreshConfiguration(nextWorkUnitState.selectedDetail),
+						teamState = it.teamState.refreshConfiguration(nextWorkUnitState.selectedDetail),
+						lastError = null,
+					)
+				}
+			} catch (exception: Exception) {
+				val message = exception.message ?: "保存工作容器配置失败"
+				_state.update {
+					it.copy(
+						workUnitState = it.workUnitState.copy(loading = false, error = message),
+						lastError = message,
+					)
+				}
+			}
+		}
+	}
+
 	private fun AppState.withWorkUnitConfiguration(workUnitId: String): AppState {
 		val info = workUnitInfoFor(workUnitId) ?: return copy(
 			runtimeExpanded = true,
@@ -1085,6 +1127,10 @@ class ChatController(
 	}
 
 	private fun workUnitStartPrompt(item: ThreadItem.WorkUnit): String {
+		val configJson = state.value.workUnitState.details
+			.firstOrNull { it.workUnitId == item.workUnitId }
+			?.configJson
+			?.takeIf { it.isNotBlank() }
 		val targetTool = when (item.kind.lowercase(Locale.ROOT)) {
 			"team" -> "coordinate_team"
 			else -> "orchestrate_flow"
@@ -1100,6 +1146,7 @@ class ChatController(
 			append("\n容器 id：").append(item.workUnitId)
 			item.currentGoalId?.let { append("\n目标 id：").append(it) }
 			item.currentGoal?.let { append("\n目标：").append(it) }
+			configJson?.let { append("\n配置快照：").append(it) }
 			append("\n后端已通过 start_work_unit 执行意图绑定 workUnitId=")
 				.append(item.workUnitId)
 				.append(" 和当前待执行目标。")

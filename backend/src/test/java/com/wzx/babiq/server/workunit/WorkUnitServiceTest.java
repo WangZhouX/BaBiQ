@@ -195,6 +195,31 @@ class WorkUnitServiceTest {
     }
 
     @Test
+    void work_unit_config_should_roundtrip_independently_from_goals() {
+        Thread thread = Thread.newThread("thr_wu_config", "H:/aaa");
+        WorkUnitItem item = service.createOrAppend(
+                new WorkUnitCreateRequest("orchestration", "html-test", "goal before config", null),
+                thread,
+                new Turn("turn_wu_config", thread.id()),
+                thread.cwd(),
+                AgentRunPolicy.of(SandboxMode.WORKSPACE_WRITE, ApprovalPolicy.ON_REQUEST));
+        String configJson = """
+                {"nodes":[{"id":"analyzer","model":"provider:qwen:qwen-plus","task":"分析依赖"}]}
+                """.trim();
+
+        WorkUnitConfig saved = service.updateConfig(item.workUnitId(), configJson);
+
+        assertThat(saved.workUnitId()).isEqualTo(item.workUnitId());
+        assertThat(saved.configJson()).contains("qwen-plus");
+        assertThat(service.findConfig(item.workUnitId()))
+                .get()
+                .extracting(WorkUnitConfig::configJson)
+                .isEqualTo(configJson);
+        assertThat(service.listGoals(item.workUnitId())).extracting(WorkUnitGoal::goalText)
+                .containsExactly("goal before config");
+    }
+
+    @Test
     void update_goal_should_reject_running_goal() {
         Thread thread = Thread.newThread("thr_wu_update_running", "H:/aaa");
         WorkUnitItem item = service.createOrAppend(

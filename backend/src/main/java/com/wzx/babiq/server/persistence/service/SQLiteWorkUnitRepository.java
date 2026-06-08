@@ -2,10 +2,13 @@ package com.wzx.babiq.server.persistence.service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.wzx.babiq.server.persistence.entity.WorkUnitEntity;
+import com.wzx.babiq.server.persistence.entity.WorkUnitConfigEntity;
 import com.wzx.babiq.server.persistence.entity.WorkUnitGoalEntity;
+import com.wzx.babiq.server.persistence.mapper.WorkUnitConfigMapper;
 import com.wzx.babiq.server.persistence.mapper.WorkUnitGoalMapper;
 import com.wzx.babiq.server.persistence.mapper.WorkUnitMapper;
 import com.wzx.babiq.server.workunit.WorkUnit;
+import com.wzx.babiq.server.workunit.WorkUnitConfig;
 import com.wzx.babiq.server.workunit.WorkUnitGoal;
 import com.wzx.babiq.server.workunit.WorkUnitRepository;
 import org.springframework.stereotype.Repository;
@@ -25,10 +28,14 @@ import java.util.Optional;
 public class SQLiteWorkUnitRepository implements WorkUnitRepository {
 
     private final WorkUnitMapper workUnitMapper;
+    private final WorkUnitConfigMapper configMapper;
     private final WorkUnitGoalMapper goalMapper;
 
-    public SQLiteWorkUnitRepository(WorkUnitMapper workUnitMapper, WorkUnitGoalMapper goalMapper) {
+    public SQLiteWorkUnitRepository(WorkUnitMapper workUnitMapper,
+                                    WorkUnitConfigMapper configMapper,
+                                    WorkUnitGoalMapper goalMapper) {
         this.workUnitMapper = workUnitMapper;
+        this.configMapper = configMapper;
         this.goalMapper = goalMapper;
     }
 
@@ -91,6 +98,22 @@ public class SQLiteWorkUnitRepository implements WorkUnitRepository {
     }
 
     @Override
+    @Transactional
+    public WorkUnitConfig saveConfig(WorkUnitConfig config) {
+        WorkUnitConfigEntity existing = configMapper.selectOne(Wrappers.<WorkUnitConfigEntity>lambdaQuery()
+                .eq(WorkUnitConfigEntity::getWorkUnitId, config.workUnitId()));
+        WorkUnitConfigEntity entity = toEntity(config);
+        if (existing == null) {
+            configMapper.insert(entity);
+        } else {
+            entity.setId(existing.getId());
+            entity.setCreatedAt(existing.getCreatedAt());
+            configMapper.updateById(entity);
+        }
+        return findConfig(config.workUnitId()).orElse(config);
+    }
+
+    @Override
     public List<WorkUnit> listVisible(String threadId) {
         return workUnitMapper.selectList(Wrappers.<WorkUnitEntity>lambdaQuery()
                         .eq(WorkUnitEntity::getThreadId, threadId)
@@ -109,6 +132,13 @@ public class SQLiteWorkUnitRepository implements WorkUnitRepository {
                 .stream()
                 .map(this::toRecord)
                 .toList();
+    }
+
+    @Override
+    public Optional<WorkUnitConfig> findConfig(String workUnitId) {
+        return Optional.ofNullable(configMapper.selectOne(Wrappers.<WorkUnitConfigEntity>lambdaQuery()
+                        .eq(WorkUnitConfigEntity::getWorkUnitId, workUnitId)))
+                .map(this::toRecord);
     }
 
     private WorkUnitEntity toEntity(WorkUnit record) {
@@ -146,6 +176,15 @@ public class SQLiteWorkUnitRepository implements WorkUnitRepository {
         return entity;
     }
 
+    private WorkUnitConfigEntity toEntity(WorkUnitConfig record) {
+        WorkUnitConfigEntity entity = new WorkUnitConfigEntity();
+        entity.setWorkUnitId(record.workUnitId());
+        entity.setConfigJson(record.configJson());
+        entity.setCreatedAt(PersistenceTime.write(record.createdAt()));
+        entity.setUpdatedAt(PersistenceTime.write(record.updatedAt()));
+        return entity;
+    }
+
     private WorkUnit toRecord(WorkUnitEntity entity) {
         return new WorkUnit(
                 entity.getWorkUnitId(),
@@ -177,5 +216,13 @@ public class SQLiteWorkUnitRepository implements WorkUnitRepository {
                 PersistenceTime.read(entity.getCreatedAt()),
                 PersistenceTime.read(entity.getStartedAt()),
                 PersistenceTime.read(entity.getCompletedAt()));
+    }
+
+    private WorkUnitConfig toRecord(WorkUnitConfigEntity entity) {
+        return new WorkUnitConfig(
+                entity.getWorkUnitId(),
+                entity.getConfigJson(),
+                PersistenceTime.read(entity.getCreatedAt()),
+                PersistenceTime.read(entity.getUpdatedAt()));
     }
 }

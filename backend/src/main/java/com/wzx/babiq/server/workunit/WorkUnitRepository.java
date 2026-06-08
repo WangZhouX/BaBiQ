@@ -20,7 +20,11 @@ public interface WorkUnitRepository {
 
     WorkUnitGoal saveGoal(WorkUnitGoal goal);
 
+    WorkUnitConfig saveConfig(WorkUnitConfig config);
+
     List<WorkUnit> listVisible(String threadId);
 
     List<WorkUnitGoal> listGoals(String workUnitId);
+
+    Optional<WorkUnitConfig> findConfig(String workUnitId);
 }
