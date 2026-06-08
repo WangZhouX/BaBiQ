@@ -3,8 +3,11 @@ package com.wzx.babiq.desktop.ui.runtime
 import com.wzx.babiq.desktop.protocol.WorkUnitGoalInfo
 import com.wzx.babiq.desktop.protocol.WorkUnitInfo
 import com.wzx.babiq.desktop.protocol.RunToolCallInfo
+import com.wzx.babiq.desktop.protocol.RunTurnDetailResult
+import com.wzx.babiq.desktop.protocol.RunTurnSummaryInfo
 import com.wzx.babiq.desktop.state.AppState
 import com.wzx.babiq.desktop.state.OrchestrationUiState
+import com.wzx.babiq.desktop.state.RunRecordState
 import com.wzx.babiq.desktop.state.SubAgentUiState
 import com.wzx.babiq.desktop.state.TeamUiState
 import kotlin.test.Test
@@ -74,6 +77,31 @@ class RuntimeDetailsPanelTest {
 		assertFalse(line.contains("</untrusted-data>"))
 	}
 
+	@Test
+	fun `selected run row shows loading placeholder while detail is pending`() {
+		val state = RunRecordState(
+			loading = true,
+			selectedTurnId = "turn-2",
+			selectedDetail = RunTurnDetailResult(turn = runTurn("turn-1")),
+		)
+
+		assertTrue(state.isDetailLoadingForTurn("turn-2"))
+		assertEquals(null, state.detailForTurn("turn-2"))
+	}
+
+	@Test
+	fun `selected run row only renders detail that belongs to the selected turn`() {
+		val detail = RunTurnDetailResult(turn = runTurn("turn-2"))
+		val state = RunRecordState(
+			selectedTurnId = "turn-2",
+			selectedDetail = detail,
+		)
+
+		assertFalse(state.isDetailLoadingForTurn("turn-2"))
+		assertEquals(detail, state.detailForTurn("turn-2"))
+		assertEquals(null, state.detailForTurn("turn-1"))
+	}
+
 	private fun workUnit(kind: String): WorkUnitInfo =
 		WorkUnitInfo(
 			workUnitId = "wu_1",
@@ -85,5 +113,15 @@ class RuntimeDetailsPanelTest {
 			cwd = "H:\\aaa",
 			sandboxMode = "FULL_ACCESS",
 			goals = listOf(WorkUnitGoalInfo("goal_1", "wu_1", "edit html", "pending")),
+		)
+
+	private fun runTurn(turnId: String): RunTurnSummaryInfo =
+		RunTurnSummaryInfo(
+			turnId = turnId,
+			threadId = "thr_1",
+			status = "COMPLETED",
+			inputText = "查看运行记录",
+			cwd = "H:\\aaa",
+			startedAt = "2026-06-08T10:00:00",
 		)
 }

@@ -406,13 +406,17 @@ private fun RunRecordSection(
 				onSelectRunTurn = onSelectRunTurn,
 			)
 			if (turn.turnId == state.selectedTurnId) {
-				state.selectedDetail?.let { detail ->
+				val detail = state.detailForTurn(turn.turnId)
+				if (detail != null) {
 					selectedRendered = true
 					RunTurnDetail(
 						detail = detail,
 						memoryState = memoryState,
 						capabilityState = capabilityState,
 					)
+				} else if (state.isDetailLoadingForTurn(turn.turnId)) {
+					selectedRendered = true
+					DetailCard("本轮详情", "正在读取本轮详情...")
 				}
 			}
 		}
@@ -420,16 +424,26 @@ private fun RunRecordSection(
 			Text("仅显示最近 ${visibleTurns.size} 轮，完整记录仍保留在本地数据库。", style = MaterialTheme.typography.labelSmall, color = BaBiQColors.Muted)
 		}
 		if (!selectedRendered) {
-			state.selectedDetail?.let { detail ->
+			val selectedTurnId = state.selectedTurnId
+			val detail = selectedTurnId?.let { state.detailForTurn(it) }
+			if (detail != null) {
 				RunTurnDetail(
 					detail = detail,
 					memoryState = memoryState,
 					capabilityState = capabilityState,
 				)
+			} else if (selectedTurnId != null && state.isDetailLoadingForTurn(selectedTurnId)) {
+				DetailCard("本轮详情", "正在读取本轮详情...")
 			}
 		}
 	}
 }
+
+internal fun RunRecordState.detailForTurn(turnId: String): RunTurnDetailResult? =
+	selectedDetail?.takeIf { selectedTurnId == turnId && it.turn.turnId == turnId }
+
+internal fun RunRecordState.isDetailLoadingForTurn(turnId: String): Boolean =
+	selectedTurnId == turnId && (loading || selectedDetail?.turn?.turnId != turnId)
 
 /**
  * 历史 turn 列表项。

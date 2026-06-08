@@ -1509,26 +1509,41 @@ class ChatController(
 	 */
 	private suspend fun loadRunTurnDetail(turnId: String) {
 		_state.update {
-			it.copy(runRecordState = it.runRecordState.copy(loading = true, error = null, selectedTurnId = turnId))
+			it.copy(
+				runRecordState = it.runRecordState.copy(
+					loading = true,
+					error = null,
+					selectedTurnId = turnId,
+					selectedDetail = null,
+				),
+			)
 		}
 		try {
 			val detail = gateway.getRunTurn(turnId)
 			_state.update {
-				it.copy(
-					runRecordState = it.runRecordState.copy(
-						loading = false,
-						error = null,
-						selectedTurnId = turnId,
-						selectedDetail = detail,
-					),
-				)
+				if (it.runRecordState.selectedTurnId != turnId) {
+					it
+				} else {
+					it.copy(
+						runRecordState = it.runRecordState.copy(
+							loading = false,
+							error = null,
+							selectedTurnId = turnId,
+							selectedDetail = detail,
+						),
+					)
+				}
 			}
 		} catch (exception: Exception) {
 			_state.update {
-				it.copy(
-					runRecordState = it.runRecordState.copy(loading = false, error = exception.message),
-					lastError = exception.message,
-				)
+				if (it.runRecordState.selectedTurnId != turnId) {
+					it
+				} else {
+					it.copy(
+						runRecordState = it.runRecordState.copy(loading = false, error = exception.message),
+						lastError = exception.message,
+					)
+				}
 			}
 		}
 	}

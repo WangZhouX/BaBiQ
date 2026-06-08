@@ -65,6 +65,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -693,6 +694,57 @@ class ChatControllerTest {
 	}
 
 	@Test
+	fun `切换最近运行时先清空旧详情避免查看按钮闪烁`() = runTest {
+		val gateway = FakeGateway(runTurnDelayMillis = 1_000)
+		val controller = ChatController(
+			gateway,
+			backgroundScope,
+			initialState = AppState(
+				connectionState = ConnectionState.Connected,
+				runRecordState = RunRecordState(
+					selectedTurnId = "turn-1",
+					selectedDetail = RunTurnDetailResult(turn = sampleRunTurn("turn-1")),
+				),
+			),
+		)
+
+		controller.selectRunTurn("turn-2")
+
+		assertEquals("turn-2", controller.state.value.runRecordState.selectedTurnId)
+		assertEquals(null, controller.state.value.runRecordState.selectedDetail)
+		assertTrue(controller.state.value.runRecordState.loading)
+
+		advanceTimeBy(1_001)
+		advanceUntilIdle()
+
+		assertEquals("turn-2", controller.state.value.runRecordState.selectedDetail?.turn?.turnId)
+		assertFalse(controller.state.value.runRecordState.loading)
+	}
+
+	@Test
+	fun `忽略过期的最近运行详情响应避免旧请求覆盖新选择`() = runTest {
+		val gateway = FakeGateway(runTurnDelayMillisByTurn = mapOf("turn-2" to 1_000L))
+		val controller = ChatController(
+			gateway,
+			backgroundScope,
+			initialState = AppState(connectionState = ConnectionState.Connected),
+		)
+
+		controller.selectRunTurn("turn-2")
+		controller.selectRunTurn("turn-3")
+		advanceUntilIdle()
+
+		assertEquals("turn-3", controller.state.value.runRecordState.selectedTurnId)
+		assertEquals("turn-3", controller.state.value.runRecordState.selectedDetail?.turn?.turnId)
+
+		advanceTimeBy(1_001)
+		advanceUntilIdle()
+
+		assertEquals("turn-3", controller.state.value.runRecordState.selectedTurnId)
+		assertEquals("turn-3", controller.state.value.runRecordState.selectedDetail?.turn?.turnId)
+	}
+
+	@Test
 	fun `connect 失败会进入 reconnecting 并显示错误`() = runTest {
 		val gateway = FakeGateway(connectFails = true)
 		val controller = ChatController(gateway, backgroundScope)
@@ -1071,6 +1123,8 @@ class ChatControllerTest {
 		),
 		private val memorySearchResult: MemorySearchResult = MemorySearchResult("LEXICAL"),
 		private val workUnits: WorkUnitListResult = WorkUnitListResult(emptyList()),
+		private val runTurnDelayMillis: Long = 0,
+		private val runTurnDelayMillisByTurn: Map<String, Long> = emptyMap(),
 	) : AgentGateway {
 		override val events = MutableSharedFlow<ServerEvent>()
 		val calls = mutableListOf<String>()
@@ -1204,6 +1258,10 @@ class ChatControllerTest {
 
 		override suspend fun getRunTurn(turnId: String): RunTurnDetailResult {
 			calls += "getRunTurn:$turnId"
+			val delayMillis = runTurnDelayMillisByTurn[turnId] ?: runTurnDelayMillis
+			if (delayMillis > 0) {
+				delay(delayMillis)
+			}
 			return RunTurnDetailResult(
 				turn = sampleRunTurn(turnId),
 				toolCalls = listOf(
