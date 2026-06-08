@@ -8,7 +8,7 @@ import androidx.compose.ui.window.WindowState
 import androidx.compose.ui.window.application
 import com.wzx.babiq.desktop.app.BaBiQDesktopApp
 
-internal val DefaultWindowSize = DpSize(1920.dp, 860.dp)
+internal val DefaultWindowSize = DpSize(1400.dp, 860.dp)
 
 /**
  * 桌面端进程入口。
