@@ -3,6 +3,7 @@ package com.wzx.babiq.desktop.ui.shell
 import com.wzx.babiq.desktop.state.Screen
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class SidebarNavigationTest {
@@ -24,5 +25,10 @@ class SidebarNavigationTest {
 
 		assertTrue(plugins.enabled)
 		assertEquals(Screen.Plugins, plugins.screen)
+	}
+
+	@Test
+	fun `sidebar no longer renders duplicated brand title`() {
+		assertFalse(showSidebarBrandTitle())
 	}
 }

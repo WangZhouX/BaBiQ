@@ -49,7 +49,9 @@ fun Sidebar(
 			.padding(18.dp),
 		verticalArrangement = Arrangement.spacedBy(14.dp),
 	) {
-		Text("BaBiQ", style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold))
+		if (showSidebarBrandTitle()) {
+			Text("BaBiQ", style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold))
+		}
 		SidebarAction("+ 新对话", enabled = true) {
 			onSelectScreen(Screen.Chat)
 			onNewChat()
@@ -97,6 +99,8 @@ fun Sidebar(
 		SidebarAction("设置", enabled = true) { onSelectScreen(Screen.Settings) }
 	}
 }
+
+fun showSidebarBrandTitle(): Boolean = false
 
 /**
  * Sidebar 顶部的固定导航项。
