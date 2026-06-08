@@ -14,7 +14,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.wzx.babiq.desktop.protocol.ContextSnapshotInfo
@@ -33,6 +32,7 @@ import com.wzx.babiq.desktop.ui.theme.BaBiQColors
  */
 data class ContextSnapshotSectionModel(
 	val snapshotId: String,
+	val summaryLine: String,
 	val usageLabel: String,
 	val estimatedTokenLabel: String,
 	val actualPromptTokenLabel: String,
@@ -45,8 +45,8 @@ data class ContextSnapshotSectionModel(
  */
 data class ContextSnapshotRowModel(
 	val sourceId: String,
-	val sourceType: String,
-	val priority: String,
+	val sourceLabel: String,
+	val priorityLabel: String,
 	val reasonLabel: String,
 	val tokenLabel: String,
 )
@@ -60,6 +60,7 @@ fun buildContextSnapshotSectionModel(snapshot: ContextSnapshotInfo): ContextSnap
 	val rows = snapshot.items.map(::toRowModel)
 	return ContextSnapshotSectionModel(
 		snapshotId = snapshot.snapshotId,
+		summaryLine = "纳入 ${snapshot.includedItemCount} 段 · 排除 ${snapshot.excludedItemCount} 段 · ${percent(snapshot.usageRatio)} · ${snapshot.estimatedTokens} token",
 		usageLabel = percent(snapshot.usageRatio),
 		estimatedTokenLabel = "${snapshot.estimatedTokens} token",
 		actualPromptTokenLabel = snapshot.actualPromptTokens?.let { "$it token" } ?: "未返回",
@@ -74,8 +75,8 @@ fun buildContextSnapshotSectionModel(snapshot: ContextSnapshotInfo): ContextSnap
 @Composable
 fun ContextSnapshotSection(snapshot: ContextSnapshotInfo) {
 	val model = buildContextSnapshotSectionModel(snapshot)
-	AuditSectionCard("上下文快照") {
-		Text("snapshot: ${model.snapshotId}", style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace))
+	AuditSectionCard("模型上下文") {
+		Text(model.summaryLine, style = MaterialTheme.typography.bodySmall, color = BaBiQColors.Muted)
 		Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
 			SnapshotMetric("使用率", model.usageLabel, Modifier.weight(1f))
 			SnapshotMetric("估算", model.estimatedTokenLabel, Modifier.weight(1f))
@@ -95,7 +96,7 @@ private fun SnapshotRows(title: String, rows: List<ContextSnapshotRowModel>) {
 		}
 		rows.take(8).forEach { row ->
 			Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-				Text("${row.sourceType} · ${row.priority} · ${row.tokenLabel}", style = MaterialTheme.typography.bodySmall)
+				Text("${row.sourceLabel} · ${row.priorityLabel} · ${row.tokenLabel}", style = MaterialTheme.typography.bodySmall)
 				Text("${row.sourceId} · ${row.reasonLabel}", style = MaterialTheme.typography.labelSmall, color = BaBiQColors.Muted)
 			}
 			HorizontalDivider(color = BaBiQColors.Border)
@@ -121,11 +122,23 @@ private fun SnapshotMetric(label: String, value: String, modifier: Modifier = Mo
 private fun toRowModel(item: ContextSnapshotItemInfo): ContextSnapshotRowModel =
 	ContextSnapshotRowModel(
 		sourceId = item.sourceId,
-		sourceType = item.sourceType,
-		priority = item.priority,
+		sourceLabel = sourceTypeLabel(item.sourceType),
+		priorityLabel = "优先级 ${item.priority}",
 		reasonLabel = reasonLabel(item.reason),
 		tokenLabel = "${item.tokenEstimate} token",
 	)
+
+private fun sourceTypeLabel(sourceType: String): String =
+	when (sourceType.lowercase()) {
+		"current_turn" -> "本轮输入"
+		"recent_history", "history", "history_item", "thread_item" -> "对话历史"
+		"short_term_summary" -> "短期摘要"
+		"long_term_memory", "memory_reference" -> "长期记忆"
+		"capability_catalog", "capability" -> "能力目录"
+		"tool_result" -> "工具结果"
+		"runtime_summary" -> "运行摘要"
+		else -> sourceType
+	}
 
 private fun reasonLabel(reason: String): String =
 	when (reason.uppercase()) {

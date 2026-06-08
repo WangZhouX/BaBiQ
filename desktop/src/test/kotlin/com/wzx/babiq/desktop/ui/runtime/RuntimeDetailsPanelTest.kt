@@ -2,6 +2,7 @@ package com.wzx.babiq.desktop.ui.runtime
 
 import com.wzx.babiq.desktop.protocol.WorkUnitGoalInfo
 import com.wzx.babiq.desktop.protocol.WorkUnitInfo
+import com.wzx.babiq.desktop.protocol.RunToolCallInfo
 import com.wzx.babiq.desktop.state.AppState
 import com.wzx.babiq.desktop.state.OrchestrationUiState
 import com.wzx.babiq.desktop.state.SubAgentUiState
@@ -52,6 +53,25 @@ class RuntimeDetailsPanelTest {
 
 		assertEquals(listOf(RuntimePanelTab.Run, RuntimePanelTab.Team), runtimePanelTabs(teamState, RuntimePanelTab.Run).map { it.tab })
 		assertEquals(listOf(RuntimePanelTab.Run), runtimePanelTabs(subAgentState, RuntimePanelTab.Run).map { it.tab })
+	}
+
+	@Test
+	fun `tool call summary hides spotlight tags and uses chinese labels`() {
+		val call = RunToolCallInfo(
+			toolCallId = "call-1",
+			toolName = "orchestrate_flow",
+			argsJson = "{}",
+			status = "completed",
+			resultPreview = """<untrusted-data source="tool:orchestrate_flow">"Flow failed: Resume request without a valid checkpoint!"</untrusted-data>""",
+			agentName = "babiq_agent",
+			startedAt = "2026-06-08T10:00:00",
+		)
+
+		val line = call.readableToolCallLine()
+
+		assertEquals("[babiq_agent] 编排执行 · 已完成 · Flow failed: Resume request without a valid checkpoint!", line)
+		assertFalse(line.contains("<untrusted-data"))
+		assertFalse(line.contains("</untrusted-data>"))
 	}
 
 	private fun workUnit(kind: String): WorkUnitInfo =

@@ -32,6 +32,7 @@ import com.wzx.babiq.desktop.protocol.CapabilityStatusResult
 import com.wzx.babiq.desktop.protocol.RunApprovalInfo
 import com.wzx.babiq.desktop.protocol.RunToolCallInfo
 import com.wzx.babiq.desktop.protocol.RunTurnDetailResult
+import com.wzx.babiq.desktop.protocol.protocolJson
 import com.wzx.babiq.desktop.state.AppState
 import com.wzx.babiq.desktop.state.CapabilityUiState
 import com.wzx.babiq.desktop.state.MemoryUiState
@@ -39,6 +40,10 @@ import com.wzx.babiq.desktop.state.ObservabilityState
 import com.wzx.babiq.desktop.state.RunRecordState
 import com.wzx.babiq.desktop.state.RunTurnListItem
 import com.wzx.babiq.desktop.ui.theme.BaBiQColors
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 
 /**
  * 右侧运行详情面板。
@@ -390,21 +395,39 @@ private fun RunRecordSection(
 	}
 	state.error?.let { DetailCard("运行记录错误", it) }
 	if (state.turns.isNotEmpty()) {
-		Text("历史 turn", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
-		state.turns.forEach { turn ->
+		Text("最近运行", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
+		Text("当前会话的最近运行记录，不是历史对话。点击后在下方展开详情。", style = MaterialTheme.typography.labelSmall, color = BaBiQColors.Muted)
+		val visibleTurns = state.turns.take(4)
+		var selectedRendered = false
+		visibleTurns.forEach { turn ->
 			RunTurnRow(
 				turn = turn,
 				selected = turn.turnId == state.selectedTurnId,
 				onSelectRunTurn = onSelectRunTurn,
 			)
+			if (turn.turnId == state.selectedTurnId) {
+				state.selectedDetail?.let { detail ->
+					selectedRendered = true
+					RunTurnDetail(
+						detail = detail,
+						memoryState = memoryState,
+						capabilityState = capabilityState,
+					)
+				}
+			}
 		}
-	}
-	state.selectedDetail?.let { detail ->
-		RunTurnDetail(
-			detail = detail,
-			memoryState = memoryState,
-			capabilityState = capabilityState,
-		)
+		if (state.turns.size > visibleTurns.size) {
+			Text("仅显示最近 ${visibleTurns.size} 轮，完整记录仍保留在本地数据库。", style = MaterialTheme.typography.labelSmall, color = BaBiQColors.Muted)
+		}
+		if (!selectedRendered) {
+			state.selectedDetail?.let { detail ->
+				RunTurnDetail(
+					detail = detail,
+					memoryState = memoryState,
+					capabilityState = capabilityState,
+				)
+			}
+		}
 	}
 }
 
@@ -442,46 +465,122 @@ private fun RunTurnRow(
 @Composable
 private fun RunTurnDetail(
 	detail: RunTurnDetailResult,
-	memoryState: MemoryUiState,
-	capabilityState: CapabilityUiState,
+	@Suppress("UNUSED_PARAMETER") memoryState: MemoryUiState,
+	@Suppress("UNUSED_PARAMETER") capabilityState: CapabilityUiState,
 ) {
 	DetailCard(
-		title = "选中 turn",
+		title = "本轮详情",
 		detail = buildString {
-			append("id: ").append(detail.turn.turnId)
-			append("\n状态: ").append(detail.turn.status)
-			append("\n输入: ").append(detail.turn.inputText)
+			append("状态: ").append(runStatusLabel(detail.turn.status))
+			append("\n输入: ").append(detail.turn.inputText.ifBlank { "空输入" })
 			detail.turn.recoveryReason?.let { append("\n恢复原因: ").append(it) }
 		},
 	)
 	detail.summary?.let { TurnSummaryBar(it) }
 	detail.contextSnapshot?.let { snapshot -> ContextSnapshotSection(snapshot) }
-	MemoryReferenceSection(memoryState)
-	CapabilitySearchAuditSection(capabilityState)
 	if (detail.toolCalls.isNotEmpty()) {
-		DetailCard("工具调用", detail.toolCalls.joinToString("\n") { it.toolLine() })
+		ToolCallSummarySection(detail.toolCalls)
 	}
 	if (detail.approvals.isNotEmpty()) {
 		DetailCard("审批记录", detail.approvals.joinToString("\n") { it.approvalLine() })
-	}
-	if (detail.items.isNotEmpty()) {
-		DetailCard("协议 item", "共 ${detail.items.size} 条")
 	}
 }
 
 /**
  * 将工具调用详情压成一行，避免右侧面板被长 JSON 输出撑开。
  */
-private fun RunToolCallInfo.toolLine(): String {
+@Composable
+private fun ToolCallSummarySection(toolCalls: List<RunToolCallInfo>) {
+	AuditSectionCard("工具调用摘要") {
+		Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+			toolCalls.take(8).forEach { call ->
+				Text(call.readableToolCallLine(), style = MaterialTheme.typography.bodySmall)
+			}
+			if (toolCalls.size > 8) {
+				Text("还有 ${toolCalls.size - 8} 次工具调用未展开。", style = MaterialTheme.typography.labelSmall, color = BaBiQColors.Muted)
+			}
+		}
+	}
+}
+
+internal fun RunToolCallInfo.readableToolCallLine(): String {
 	val agentPrefix = agentName
 		?.takeIf { it.isNotBlank() }
 		?.let { agent -> "[$agent] " }
 		.orEmpty()
-	val delegationSuffix = delegationId
-		?.takeIf { it.isNotBlank() }
-		?.let { delegation -> " / delegation $delegation" }
-		.orEmpty()
-	return "$agentPrefix$toolName / $status / ${errorMessage ?: resultPreview ?: "无预览"}$delegationSuffix"
+	val preview = cleanToolPreview(errorMessage ?: resultPreview ?: "无结果预览")
+	return "$agentPrefix${toolDisplayName(toolName)} · ${toolStatusLabel(status)} · ${preview.truncateMiddle(140)}"
+}
+
+private val untrustedDataBlock = Regex("""(?s)<untrusted-data\b[^>]*>(.*?)</untrusted-data>""")
+
+private fun cleanToolPreview(preview: String): String {
+	val unwrapped = untrustedDataBlock.replace(preview) { it.groupValues[1] }.trim()
+	if (unwrapped.isBlank()) {
+		return "无结果预览"
+	}
+	return renderJsonPreview(unwrapped) ?: unwrapped
+}
+
+private fun renderJsonPreview(text: String): String? {
+	val element = runCatching { protocolJson.parseToJsonElement(text) }.getOrNull() ?: return null
+	return when (element) {
+		is JsonObject -> element.stringValue("error") ?: element.stringValue("output") ?: element.toString()
+		is JsonArray -> element.joinToString("，") { renderJsonPreview(it.toString()) ?: it.toString().trim('"') }
+		is JsonPrimitive -> element.contentOrNull?.takeIf { it.isNotBlank() } ?: text
+	}
+}
+
+private fun JsonObject.stringValue(name: String): String? =
+	this[name]?.let { value ->
+		when (value) {
+			is JsonPrimitive -> value.contentOrNull
+			else -> value.toString()
+		}
+	}?.trim()?.takeIf { it.isNotBlank() }
+
+private fun toolDisplayName(toolName: String): String =
+	when (toolName.lowercase()) {
+		"orchestrate_flow" -> "编排执行"
+		"coordinate_team" -> "团队协作"
+		"work_unit_manage" -> "工作器管理"
+		"read_file" -> "读取文件"
+		"list_dir" -> "列出目录"
+		"write_file" -> "写入文件"
+		"edit_file" -> "编辑文件"
+		"exec_shell" -> "执行命令"
+		"grep" -> "搜索内容"
+		else -> toolName
+	}
+
+private fun toolStatusLabel(status: String): String =
+	when (status.lowercase()) {
+		"completed", "success", "succeeded" -> "已完成"
+		"failed", "error" -> "失败"
+		"running", "in_progress" -> "运行中"
+		"pending" -> "等待中"
+		"denied" -> "已拒绝"
+		else -> status
+	}
+
+private fun runStatusLabel(status: String): String =
+	when (status.uppercase()) {
+		"COMPLETED" -> "已完成"
+		"FAILED" -> "失败"
+		"CANCELED" -> "已取消"
+		"INTERRUPTED" -> "已中断"
+		"EXPIRED" -> "已过期"
+		"RUNNING" -> "运行中"
+		"WAITING_APPROVAL" -> "等待审批"
+		"SENDING" -> "发送中"
+		else -> status
+	}
+
+private fun String.truncateMiddle(maxLength: Int): String {
+	if (length <= maxLength) return this
+	val head = (maxLength - 1) / 2
+	val tail = maxLength - 1 - head
+	return take(head) + "…" + takeLast(tail)
 }
 
 /**
