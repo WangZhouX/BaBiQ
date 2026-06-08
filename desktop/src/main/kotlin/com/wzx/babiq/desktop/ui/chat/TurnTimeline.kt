@@ -23,8 +23,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.wzx.babiq.desktop.protocol.protocolJson
 import com.wzx.babiq.desktop.state.ChatMessage
 import com.wzx.babiq.desktop.ui.theme.BaBiQColors
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import java.util.Locale
 
 sealed interface TimelineItem {
@@ -124,7 +131,7 @@ fun deriveTurnTimeline(messages: List<ChatMessage>): List<TimelineItem> {
 				processRows += ProcessRow(
 					id = message.id,
 					summary = summarizeTool(message.title),
-					detail = message.detail,
+					detail = cleanToolDetail(message.detail),
 					status = message.status,
 					kind = ProcessRowKind.Tool,
 					active = message.status.isActiveStatus(),
@@ -270,6 +277,48 @@ private fun summarizeFileChange(message: ChatMessage.FileChange): String {
 	}
 	return "$actionLabel ${message.path}".trim()
 }
+
+private val untrustedDataBlock = Regex("""(?s)<untrusted-data\b[^>]*>(.*?)</untrusted-data>""")
+
+private fun cleanToolDetail(detail: String): String {
+	val unwrapped = untrustedDataBlock.replace(detail) { it.groupValues[1] }.trim()
+	if (unwrapped.isBlank()) {
+		return ""
+	}
+	return renderJsonToolDetail(unwrapped) ?: unwrapped
+}
+
+private fun renderJsonToolDetail(text: String): String? {
+	val element = runCatching { protocolJson.parseToJsonElement(text) }.getOrNull() ?: return null
+	return when (element) {
+		is JsonObject -> renderJsonObjectToolDetail(element)
+		is JsonArray -> element.joinToString("\n") { renderJsonValue(it) }.ifBlank { "[]" }
+		is JsonPrimitive -> element.contentOrNull?.takeIf { it.isNotBlank() } ?: text
+	}
+}
+
+private fun renderJsonObjectToolDetail(json: JsonObject): String? {
+	json.nonBlankString("error")?.let { return "错误：$it" }
+	json.nonBlankString("output")?.let { return it }
+	return when (json["ok"]?.jsonPrimitive?.booleanOrNull) {
+		true -> "执行成功"
+		false -> "执行失败"
+		null -> null
+	}
+}
+
+private fun renderJsonValue(element: kotlinx.serialization.json.JsonElement): String =
+	when (element) {
+		is JsonObject -> renderJsonObjectToolDetail(element)
+			?: element.entries.joinToString("\n") { "${it.key}: ${renderJsonValue(it.value)}" }
+		is JsonArray -> element.joinToString("\n") { renderJsonValue(it) }
+		is JsonPrimitive -> element.contentOrNull ?: element.toString()
+	}
+
+private fun JsonObject.nonBlankString(name: String): String? =
+	this[name]?.jsonPrimitive?.contentOrNull
+		?.trim()
+		?.takeIf { it.isNotBlank() }
 
 private fun extractArgument(text: String, name: String): String? {
 	val marker = "$name="

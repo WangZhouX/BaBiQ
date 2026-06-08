@@ -42,9 +42,41 @@ class TurnTimelineTest {
 		assertFalse(process.expandedByDefault)
 		assertEquals(listOf("推理", "列出目录 H:\\aaa", "读取文件 H:\\aaa\\index.html"), process.rows.map { it.summary })
 		assertEquals("先列目录，再读取唯一文件。", process.rows[0].detail)
-		assertEquals("""<untrusted-data source="tool:list_dir">["index.html"]</untrusted-data>""", process.rows[1].detail)
+		assertEquals("index.html", process.rows[1].detail)
 		assertIs<TimelineItem.Message>(timeline[2])
 		assertIs<TimelineItem.Message>(timeline[3])
+	}
+
+	@Test
+	fun `tool process detail unwraps spotlight tags and prefers output or error text`() {
+		val messages = listOf(
+			ChatMessage.User("u1", "启动编排"),
+			ChatMessage.Tool(
+				id = "tool-ok",
+				title = "work_unit_manage",
+				status = "completed",
+				detail = """<untrusted-data source="tool:work_unit_manage">{"ok":true,"output":"已准备工作容器，尚未启动真实执行。","truncated":false}</untrusted-data>""",
+			),
+			ChatMessage.Tool(
+				id = "tool-error",
+				title = "orchestrate_flow",
+				status = "completed",
+				detail = """<untrusted-data source="tool:orchestrate_flow">"Flow failed: Resume request without a valid checkpoint!"</untrusted-data>""",
+			),
+			ChatMessage.Tool(
+				id = "tool-fail",
+				title = "work_unit_manage",
+				status = "failed",
+				detail = """<untrusted-data source="tool:work_unit_manage">{"ok":false,"output":"","error":"工作容器没有可启动的待处理目标。","truncated":false}</untrusted-data>""",
+			),
+		)
+
+		val process = deriveTurnTimeline(messages).filterIsInstance<TimelineItem.Process>().single()
+
+		assertEquals("已准备工作容器，尚未启动真实执行。", process.rows[0].detail)
+		assertEquals("Flow failed: Resume request without a valid checkpoint!", process.rows[1].detail)
+		assertEquals("错误：工作容器没有可启动的待处理目标。", process.rows[2].detail)
+		assertFalse(process.rows.any { it.detail.contains("<untrusted-data") || it.detail.contains("</untrusted-data>") })
 	}
 
 	@Test
