@@ -403,6 +403,7 @@ private fun RunRecordSection(
 			RunTurnRow(
 				turn = turn,
 				selected = turn.turnId == state.selectedTurnId,
+				action = state.actionForTurn(turn.turnId),
 				onSelectRunTurn = onSelectRunTurn,
 			)
 			if (turn.turnId == state.selectedTurnId) {
@@ -445,6 +446,19 @@ internal fun RunRecordState.detailForTurn(turnId: String): RunTurnDetailResult? 
 internal fun RunRecordState.isDetailLoadingForTurn(turnId: String): Boolean =
 	selectedTurnId == turnId && (loading || selectedDetail?.turn?.turnId != turnId)
 
+internal enum class RunTurnAction {
+	View,
+	ReadLoading,
+}
+
+internal fun RunRecordState.actionForTurn(turnId: String): RunTurnAction? =
+	when {
+		selectedTurnId != turnId -> RunTurnAction.View
+		isDetailLoadingForTurn(turnId) -> RunTurnAction.ReadLoading
+		detailForTurn(turnId) != null -> null
+		else -> RunTurnAction.View
+	}
+
 /**
  * 历史 turn 列表项。
  */
@@ -452,6 +466,7 @@ internal fun RunRecordState.isDetailLoadingForTurn(turnId: String): Boolean =
 private fun RunTurnRow(
 	turn: RunTurnListItem,
 	selected: Boolean,
+	action: RunTurnAction?,
 	onSelectRunTurn: (String) -> Unit,
 ) {
 	Card(
@@ -462,7 +477,11 @@ private fun RunTurnRow(
 		Column(modifier = Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
 			Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
 				Text(turn.statusLabel, style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
-				TextButton(onClick = { onSelectRunTurn(turn.turnId) }) { Text("查看") }
+				when (action) {
+					RunTurnAction.View -> TextButton(onClick = { onSelectRunTurn(turn.turnId) }) { Text("查看") }
+					RunTurnAction.ReadLoading -> Text("读取中", style = MaterialTheme.typography.labelSmall, color = BaBiQColors.Muted)
+					null -> Unit
+				}
 			}
 			Text(turn.inputPreview, style = MaterialTheme.typography.bodySmall)
 			Text("${turn.modelLabel} / ${turn.timeLabel}", style = MaterialTheme.typography.labelSmall, color = BaBiQColors.Muted)

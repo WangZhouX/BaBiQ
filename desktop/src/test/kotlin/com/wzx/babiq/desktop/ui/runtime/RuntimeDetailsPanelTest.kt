@@ -102,6 +102,24 @@ class RuntimeDetailsPanelTest {
 		assertEquals(null, state.detailForTurn("turn-1"))
 	}
 
+	@Test
+	fun `selected run row does not keep redundant view action after detail is expanded`() {
+		val detail = RunTurnDetailResult(turn = runTurn("turn-2"))
+		val expanded = RunRecordState(
+			selectedTurnId = "turn-2",
+			selectedDetail = detail,
+		)
+		val loading = RunRecordState(
+			loading = true,
+			selectedTurnId = "turn-2",
+			selectedDetail = null,
+		)
+
+		assertEquals(null, expanded.actionForTurn("turn-2"))
+		assertEquals(RunTurnAction.ReadLoading, loading.actionForTurn("turn-2"))
+		assertEquals(RunTurnAction.View, expanded.actionForTurn("turn-1"))
+	}
+
 	private fun workUnit(kind: String): WorkUnitInfo =
 		WorkUnitInfo(
 			workUnitId = "wu_1",
