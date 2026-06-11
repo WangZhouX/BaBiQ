@@ -33,6 +33,7 @@ data class ProviderInfo(
 	val label: String,
 	val displayName: String = label,
 	val type: String? = null,
+	val authMode: String = "api_key",
 	val baseUrl: String? = null,
 	val model: String? = null,
 	val contextWindow: Int = 0,

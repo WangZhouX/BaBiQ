@@ -23,6 +23,7 @@ final class ProviderPayloadMapper {
         payload.put("label", view.displayName());
         payload.put("displayName", view.displayName());
         payload.put("type", view.type());
+        payload.put("authMode", view.authMode());
         payload.put("baseUrl", view.baseUrl() == null ? "" : view.baseUrl());
         payload.put("model", view.model());
         payload.put("contextWindow", view.contextWindow());

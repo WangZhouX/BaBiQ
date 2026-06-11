@@ -5,6 +5,7 @@ import com.wzx.babiq.server.model.ChatClientFactory;
 import com.wzx.babiq.server.model.ModelMetadata;
 import com.wzx.babiq.server.model.ModelProviderConfig;
 import com.wzx.babiq.server.model.ModelProviderRegistry;
+import com.wzx.babiq.server.model.ProviderAuthMode;
 import com.wzx.babiq.server.model.ProviderType;
 import com.wzx.babiq.server.persistence.service.ProviderPersistenceService;
 import jakarta.annotation.PostConstruct;
@@ -63,13 +64,17 @@ public class ProviderSettingsService {
         Instant now = Instant.now();
         for (ModelProviderConfig config : registry.list()) {
             if (providerPersistenceService.findProvider(config.id()).isEmpty()) {
-                String secretRef = config.apiKey() == null || config.apiKey().isBlank()
-                        ? null
-                        : secretStore.save("provider." + config.id(), config.apiKey());
+                ProviderAuthMode authMode = config.effectiveAuthMode();
+                String secretRef = authMode == ProviderAuthMode.API_KEY
+                        && config.apiKey() != null
+                        && !config.apiKey().isBlank()
+                        ? secretStore.save("provider." + config.id(), config.apiKey())
+                        : null;
                 providerPersistenceService.saveProvider(ProviderConfigRecord.of(
                         config.id(),
                         config.displayName(),
                         config.type().name(),
+                        authMode.wireValue(),
                         persistenceBaseUrl(config.baseUrl()),
                         config.model(),
                         secretRef,
@@ -93,12 +98,16 @@ public class ProviderSettingsService {
     public ProviderView create(ProviderDraft draft) {
         validateRequired(draft, true);
         Instant now = Instant.now();
-        String secretRef = secretStore.save("provider." + draft.providerId(), draft.apiKey());
+        ProviderAuthMode authMode = ProviderAuthMode.fromWireValue(draft.authMode());
+        String secretRef = authMode == ProviderAuthMode.API_KEY
+                ? secretStore.save("provider." + draft.providerId(), draft.apiKey())
+                : null;
         ProviderConfigRecord record = ProviderConfigRecord.of(
                 draft.providerId(),
                 draft.displayName(),
                 ProviderType.valueOf(draft.type()).name(),
-                draft.baseUrl(),
+                authMode.wireValue(),
+                persistenceBaseUrl(draft.baseUrl()),
                 draft.model(),
                 secretRef,
                 effectiveContextWindow(draft.model(), draft.contextWindow()),
@@ -121,14 +130,19 @@ public class ProviderSettingsService {
         validateRequired(draft, false);
         ProviderConfigRecord existing = providerPersistenceService.findProvider(draft.providerId())
                 .orElseThrow(() -> new IllegalArgumentException("Provider 不存在: " + draft.providerId()));
-        String secretRef = draft.apiKey() == null || draft.apiKey().isBlank()
-                ? existing.secretRef()
-                : secretStore.save("provider." + draft.providerId(), draft.apiKey());
+        ProviderAuthMode authMode = ProviderAuthMode.fromWireValue(draft.authMode());
+        String secretRef = null;
+        if (authMode == ProviderAuthMode.API_KEY) {
+            secretRef = draft.apiKey() == null || draft.apiKey().isBlank()
+                    ? existing.secretRef()
+                    : secretStore.save("provider." + draft.providerId(), draft.apiKey());
+        }
         ProviderConfigRecord record = new ProviderConfigRecord(
                 draft.providerId(),
                 draft.displayName(),
                 ProviderType.valueOf(draft.type()).name(),
-                draft.baseUrl(),
+                authMode.wireValue(),
+                persistenceBaseUrl(draft.baseUrl()),
                 draft.model(),
                 secretRef,
                 effectiveContextWindow(draft.model(), draft.contextWindow()),
@@ -192,6 +206,7 @@ public class ProviderSettingsService {
                 record.providerId(),
                 record.displayName(),
                 ProviderType.valueOf(record.type()),
+                ProviderAuthMode.fromWireValue(record.authMode()),
                 record.model(),
                 apiKey,
                 runtimeBaseUrl(record.baseUrl()),
@@ -203,6 +218,7 @@ public class ProviderSettingsService {
                 record.providerId(),
                 record.displayName(),
                 record.type(),
+                ProviderAuthMode.fromWireValue(record.authMode()).wireValue(),
                 record.baseUrl(),
                 record.model(),
                 effectiveContextWindow(record.model(), record.contextWindow()),
@@ -219,14 +235,20 @@ public class ProviderSettingsService {
         }
     }
 
-    private static void validateRequired(ProviderDraft draft, boolean requireApiKey) {
+    private static void validateRequired(ProviderDraft draft, boolean creating) {
         requireText(draft.providerId(), "providerId");
         requireText(draft.displayName(), "displayName");
         requireText(draft.type(), "type");
-        requireText(draft.baseUrl(), "baseUrl");
         requireText(draft.model(), "model");
-        ProviderType.valueOf(draft.type());
-        if (requireApiKey) {
+        ProviderType providerType = ProviderType.valueOf(draft.type());
+        ProviderAuthMode authMode = ProviderAuthMode.fromWireValue(draft.authMode());
+        if (providerType == ProviderType.OPENAI_COMPATIBLE) {
+            requireText(draft.baseUrl(), "baseUrl");
+        }
+        if (authMode == ProviderAuthMode.OAUTH_CLI && providerType != ProviderType.ANTHROPIC) {
+            throw new IllegalArgumentException("oauth_cli 认证模式仅支持 Anthropic Provider");
+        }
+        if (creating && authMode == ProviderAuthMode.API_KEY) {
             requireText(draft.apiKey(), "apiKey");
         }
     }
@@ -282,6 +304,7 @@ public class ProviderSettingsService {
      * @param providerId Provider 稳定标识
      * @param displayName 展示名称
      * @param type Provider 类型
+     * @param authMode 认证模式
      * @param baseUrl API Base URL
      * @param model 默认模型
      * @param apiKey 明文 API Key，只允许从桌面端进入服务层，不能写入数据库
@@ -292,12 +315,24 @@ public class ProviderSettingsService {
             String providerId,
             String displayName,
             String type,
+            String authMode,
             String baseUrl,
             String model,
             String apiKey,
             int contextWindow,
             boolean enabled
     ) {
+        public ProviderDraft(String providerId,
+                             String displayName,
+                             String type,
+                             String baseUrl,
+                             String model,
+                             String apiKey,
+                             int contextWindow,
+                             boolean enabled) {
+            this(providerId, displayName, type, ProviderAuthMode.API_KEY.wireValue(), baseUrl, model,
+                    apiKey, contextWindow, enabled);
+        }
     }
 
     /**
@@ -306,6 +341,7 @@ public class ProviderSettingsService {
      * @param id Provider 标识
      * @param displayName 展示名称
      * @param type Provider 类型
+     * @param authMode 认证模式
      * @param baseUrl API Base URL
      * @param model 默认模型
      * @param contextWindow 上下文窗口大小
@@ -318,6 +354,7 @@ public class ProviderSettingsService {
             String id,
             String displayName,
             String type,
+            String authMode,
             String baseUrl,
             String model,
             int contextWindow,
@@ -326,6 +363,19 @@ public class ProviderSettingsService {
             boolean active,
             String apiKey
     ) {
+        public ProviderView(String id,
+                            String displayName,
+                            String type,
+                            String baseUrl,
+                            String model,
+                            int contextWindow,
+                            boolean enabled,
+                            boolean hasApiKey,
+                            boolean active,
+                            String apiKey) {
+            this(id, displayName, type, ProviderAuthMode.API_KEY.wireValue(), baseUrl, model,
+                    contextWindow, enabled, hasApiKey, active, apiKey);
+        }
     }
 
     /**

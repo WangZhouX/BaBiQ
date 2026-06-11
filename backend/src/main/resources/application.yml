@@ -47,12 +47,23 @@ babiq:
       base-url: ${ONEAPI_BASE_URL:https://my-relay.example.com/v1}
       api-key: ${ONEAPI_KEY:}
       model: ${ONEAPI_MODEL:gpt-4o}
+    - id: claude-oauth
+      name: "Claude (OAuth CLI)"
+      type: ANTHROPIC
+      auth-mode: OAUTH_CLI
+      base-url: https://api.anthropic.com
+      model: claude-sonnet-4-6
     - id: ollama-local
       name: "本地 Llama3"
       type: OPENAI_COMPATIBLE
       base-url: http://localhost:11434/v1
       api-key: ollama
       model: llama3:8b
+  anthropic:
+    oauth:
+      cli-path: ${ANTHROPIC_CLI_PATH:ant}
+      command-timeout-seconds: 15
+      token-cache-seconds: 300
   memory:
     short-term:
       max-messages: 20

@@ -13,6 +13,7 @@ import com.wzx.babiq.desktop.protocol.MemoryReferenceInfo
 import com.wzx.babiq.desktop.protocol.MemoryStatusResult
 import com.wzx.babiq.desktop.protocol.ObservabilitySnapshotResult
 import com.wzx.babiq.desktop.protocol.ProviderInfo
+import com.wzx.babiq.desktop.protocol.ProviderOAuthStatusResult
 import com.wzx.babiq.desktop.protocol.ProviderSaveParams
 import com.wzx.babiq.desktop.protocol.RunRecoveryStatusResult
 import com.wzx.babiq.desktop.protocol.RunTurnDetailResult
@@ -675,6 +676,8 @@ data class SettingsState(
 	val saving: Boolean = false,
 	val settings: AppSettingsResult? = null,
 	val providerDraft: ProviderEditorState = ProviderEditorState(),
+	val providerOAuthLoading: Boolean = false,
+	val providerOAuthStatus: ProviderOAuthStatusResult? = null,
 	val error: String? = null,
 	val notice: String? = null,
 )
@@ -715,6 +718,7 @@ data class ProviderEditorState(
 	val providerId: String = "",
 	val displayName: String = "",
 	val type: String = "OPENAI_COMPATIBLE",
+	val authMode: String = "api_key",
 	val baseUrl: String = "",
 	val model: String = "",
 	val apiKey: String = "",
@@ -728,6 +732,7 @@ data class ProviderEditorState(
 			providerId = providerId.trim(),
 			displayName = displayName.trim(),
 			type = type.trim(),
+			authMode = authMode.trim().ifBlank { "api_key" },
 			baseUrl = baseUrl.trim(),
 			model = model.trim(),
 			apiKey = apiKey.trim().ifBlank { null },

@@ -11,6 +11,7 @@ import java.time.Instant;
  * @param providerId Provider 稳定标识
  * @param displayName 展示名称
  * @param type Provider 类型
+ * @param authMode 认证模式；为空时按 api_key 处理，兼容旧数据
  * @param baseUrl API Base URL
  * @param model 默认模型名
  * @param secretRef 密钥引用，禁止放明文密钥
@@ -23,6 +24,7 @@ public record ProviderConfigRecord(
         String providerId,
         String displayName,
         String type,
+        String authMode,
         String baseUrl,
         String model,
         String secretRef,
@@ -47,7 +49,27 @@ public record ProviderConfigRecord(
             int contextWindow,
             boolean enabled,
             Instant now) {
-        return new ProviderConfigRecord(providerId, displayName, type, baseUrl, model,
+        return of(providerId, displayName, type, "api_key", baseUrl, model,
+                secretRef, contextWindow, enabled, now);
+    }
+
+    /**
+     * 创建带认证模式的 Provider 配置记录。
+     *
+     * @return 创建时间和更新时间一致的 Provider 配置
+     */
+    public static ProviderConfigRecord of(
+            String providerId,
+            String displayName,
+            String type,
+            String authMode,
+            String baseUrl,
+            String model,
+            String secretRef,
+            int contextWindow,
+            boolean enabled,
+            Instant now) {
+        return new ProviderConfigRecord(providerId, displayName, type, authMode, baseUrl, model,
                 secretRef, contextWindow, enabled, now, now);
     }
 }

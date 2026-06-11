@@ -47,12 +47,13 @@ public class ProviderCreateHandler implements JsonRpcMethodHandler {
         String providerId = requiredText(params, "providerId");
         String displayName = requiredText(params, "displayName");
         String type = requiredText(params, "type");
-        String baseUrl = requiredText(params, "baseUrl");
+        String authMode = optionalText(params, "authMode");
+        String baseUrl = optionalText(params, "baseUrl");
         String model = requiredText(params, "model");
-        String apiKey = requireApiKey ? requiredText(params, "apiKey") : optionalText(params, "apiKey");
+        String apiKey = optionalText(params, "apiKey");
         int contextWindow = params != null && params.hasNonNull("contextWindow") ? params.get("contextWindow").asInt(0) : 0;
         boolean enabled = params == null || !params.hasNonNull("enabled") || params.get("enabled").asBoolean(true);
-        return new ProviderSettingsService.ProviderDraft(providerId, displayName, type, baseUrl, model,
+        return new ProviderSettingsService.ProviderDraft(providerId, displayName, type, authMode, baseUrl, model,
                 apiKey, contextWindow, enabled);
     }
 

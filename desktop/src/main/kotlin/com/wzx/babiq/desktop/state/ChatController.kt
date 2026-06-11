@@ -316,6 +316,83 @@ class ChatController(
 	}
 
 	/**
+	 * 刷新 Anthropic OAuth CLI 状态。
+	 *
+	 * 该动作只读本机 CLI 状态，不修改 Provider 配置；用户可以在保存 OAuth Provider 前后手动确认登录是否可用。
+	 */
+	suspend fun refreshProviderOAuthStatus() {
+		_state.update {
+			it.copy(
+				settingsState = it.settingsState.copy(
+					providerOAuthLoading = true,
+					error = null,
+					notice = null,
+				),
+			)
+		}
+		try {
+			val status = gateway.getProviderOAuthStatus()
+			_state.update {
+				it.copy(
+					settingsState = it.settingsState.copy(
+						providerOAuthLoading = false,
+						providerOAuthStatus = status,
+						error = null,
+						notice = status.message,
+					),
+				)
+			}
+		} catch (exception: Exception) {
+			_state.update {
+				it.copy(
+					settingsState = it.settingsState.copy(
+						providerOAuthLoading = false,
+						error = exception.message ?: "读取 Claude OAuth 状态失败",
+					),
+					lastError = exception.message,
+				)
+			}
+		}
+	}
+
+	/**
+	 * 启动 Anthropic OAuth CLI 登录流程。
+	 */
+	suspend fun startProviderOAuthLogin() {
+		_state.update {
+			it.copy(
+				settingsState = it.settingsState.copy(
+					providerOAuthLoading = true,
+					error = null,
+					notice = null,
+				),
+			)
+		}
+		try {
+			val result = gateway.startProviderOAuthLogin()
+			_state.update {
+				it.copy(
+					settingsState = it.settingsState.copy(
+						providerOAuthLoading = false,
+						error = if (result.ok) null else result.message,
+						notice = result.message,
+					),
+				)
+			}
+		} catch (exception: Exception) {
+			_state.update {
+				it.copy(
+					settingsState = it.settingsState.copy(
+						providerOAuthLoading = false,
+						error = exception.message ?: "启动 Claude OAuth 登录失败",
+					),
+					lastError = exception.message,
+				)
+			}
+		}
+	}
+
+	/**
 	 * 保存默认沙箱模式，并立即刷新输入框上下文条；真实执行边界仍从下一轮 turn 开始生效。
 	 */
 	suspend fun saveSandboxMode(mode: String) {

@@ -21,6 +21,8 @@ import com.wzx.babiq.desktop.protocol.ObservabilityCostsResult
 import com.wzx.babiq.desktop.protocol.ObservabilitySnapshotResult
 import com.wzx.babiq.desktop.protocol.ObservabilityToolsResult
 import com.wzx.babiq.desktop.protocol.ProviderDeleteResult
+import com.wzx.babiq.desktop.protocol.ProviderOAuthLoginResult
+import com.wzx.babiq.desktop.protocol.ProviderOAuthStatusResult
 import com.wzx.babiq.desktop.protocol.ProviderSaveParams
 import com.wzx.babiq.desktop.protocol.ProviderTestResult
 import com.wzx.babiq.desktop.protocol.RunRecoveryStatusResult
@@ -200,6 +202,7 @@ class AgentClientTest {
 
 		assertEquals("provider/create", transport.sent[0].method)
 		assertEquals("sk-secret", transport.sent[0].paramsText("apiKey"))
+		assertEquals("api_key", transport.sent[0].paramsText("authMode"))
 		assertEquals("custom-openai", created.id)
 		assertEquals(true, created.hasApiKey)
 		assertEquals(null, created.apiKey)
@@ -207,6 +210,25 @@ class AgentClientTest {
 		assertTrue(tested.ok)
 		assertEquals("provider/delete", transport.sent[2].method)
 		assertTrue(deleted.archived || deleted.ok)
+	}
+
+	@Test
+	fun `provider OAuth status and login use dedicated JSON-RPC methods`() = runTest {
+		val transport = FakeAgentTransport()
+		val client = AgentClient(transport, backgroundScope)
+		client.connect()
+
+		val status: ProviderOAuthStatusResult = client.getProviderOAuthStatus()
+		val login: ProviderOAuthLoginResult = client.startProviderOAuthLogin()
+
+		assertEquals("provider/oauth/status", transport.sent[0].method)
+		assertEquals("ANTHROPIC", status.providerType)
+		assertEquals("oauth_cli", status.authMode)
+		assertTrue(status.cliInstalled)
+		assertTrue(status.loggedIn)
+		assertEquals("provider/oauth/login", transport.sent[1].method)
+		assertTrue(login.ok)
+		assertEquals(12345L, login.pid)
 	}
 
 	@Test
@@ -572,6 +594,7 @@ class AgentClientTest {
 									put("label", "Mock (P1-1 placeholder)")
 									put("displayName", "Mock (P1-1 placeholder)")
 									put("type", "OPENAI_COMPATIBLE")
+									put("authMode", "api_key")
 									put("baseUrl", "https://relay.example.com/v1")
 									put("model", "mock-model")
 									put("contextWindow", 64000)
@@ -589,6 +612,18 @@ class AgentClientTest {
 					approvalPolicy = request.params.jsonObject["approvalPolicy"]?.jsonPrimitive?.content ?: "ON_REQUEST",
 				)
 				"provider/create" -> providerMutationResult()
+				"provider/oauth/status" -> buildJsonObject {
+					put("providerType", "ANTHROPIC")
+					put("authMode", "oauth_cli")
+					put("cliInstalled", true)
+					put("loggedIn", true)
+					put("message", "Claude CLI OAuth 可用")
+				}
+				"provider/oauth/login" -> buildJsonObject {
+					put("ok", true)
+					put("pid", 12345L)
+					put("message", "已打开 Claude CLI 登录流程")
+				}
 				"provider/delete" -> buildJsonObject {
 					put("ok", true)
 					put("providerId", "custom-openai")
@@ -940,6 +975,7 @@ class AgentClientTest {
 		providerId = "custom-openai",
 		displayName = "自定义 OpenAI",
 		type = "OPENAI_COMPATIBLE",
+		authMode = "api_key",
 		baseUrl = "https://relay.example.com/v1",
 		model = "deepseek-chat",
 		apiKey = "sk-secret",
@@ -963,6 +999,7 @@ class AgentClientTest {
 		put("label", "自定义 OpenAI")
 		put("displayName", "自定义 OpenAI")
 		put("type", "OPENAI_COMPATIBLE")
+		put("authMode", "api_key")
 		put("baseUrl", "https://relay.example.com/v1")
 		put("model", "deepseek-chat")
 		put("contextWindow", 128000)

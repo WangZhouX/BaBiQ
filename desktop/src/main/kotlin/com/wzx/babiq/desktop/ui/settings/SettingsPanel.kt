@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import com.wzx.babiq.desktop.protocol.McpServerInfo
 import com.wzx.babiq.desktop.protocol.McpToolInfo
 import com.wzx.babiq.desktop.protocol.ProviderInfo
+import com.wzx.babiq.desktop.protocol.ProviderOAuthStatusResult
 import com.wzx.babiq.desktop.protocol.ProviderSaveParams
 import com.wzx.babiq.desktop.state.AppState
 import com.wzx.babiq.desktop.state.ProviderEditorState
@@ -97,6 +98,14 @@ data class ApprovalPolicyOption(
 )
 
 /**
+ * Provider 预设按钮模型。
+ */
+data class ProviderPreset(
+	val label: String,
+	val draft: ProviderEditorState,
+)
+
+/**
  * 构造设置页标题栏模型。
  */
 fun buildSettingsHeaderModel(): SettingsHeaderModel =
@@ -128,10 +137,99 @@ fun providerDraftFrom(provider: ProviderInfo): ProviderEditorState =
 		providerId = provider.id,
 		displayName = provider.displayName,
 		type = provider.type ?: "OPENAI_COMPATIBLE",
+		authMode = provider.authMode,
 		baseUrl = provider.baseUrl.orEmpty(),
 		model = provider.model ?: provider.models.firstOrNull()?.id.orEmpty(),
 		apiKey = "",
 		contextWindowText = provider.contextWindow.takeIf { it > 0 }?.toString() ?: "0",
+	)
+
+/**
+ * 复制 Provider 时回填非敏感字段。
+ */
+fun copyProviderDraftFrom(provider: ProviderInfo): ProviderEditorState =
+	providerDraftFrom(provider).copy(
+		providerId = "${provider.id}-copy",
+		displayName = "${provider.displayName} 副本",
+		apiKey = "",
+	)
+
+/**
+ * P7 Provider 常用预设。
+ */
+fun providerPresets(): List<ProviderPreset> =
+	listOf(
+		ProviderPreset("Claude 官方 API Key", anthropicApiKeyProviderPreset()),
+		ProviderPreset("Claude 官方 OAuth", anthropicOAuthProviderPreset()),
+		ProviderPreset("DeepSeek 官方", deepSeekOfficialProviderPreset()),
+		ProviderPreset("阿里百炼", dashScopeProviderPreset()),
+		ProviderPreset("OpenAI 兼容中转", openAiRelayProviderPreset()),
+	)
+
+/**
+ * Claude API Key Provider 的一键预设。
+ */
+fun anthropicApiKeyProviderPreset(): ProviderEditorState =
+	ProviderEditorState(
+		providerId = "claude-api-key",
+		displayName = "Claude API Key",
+		type = "ANTHROPIC",
+		authMode = "api_key",
+		baseUrl = "https://api.anthropic.com",
+		model = "claude-sonnet-4-6",
+		apiKey = "",
+		contextWindowText = "1000000",
+	)
+
+/**
+ * Claude OAuth CLI Provider 的一键预设。
+ */
+fun anthropicOAuthProviderPreset(): ProviderEditorState =
+	ProviderEditorState(
+		providerId = "claude-oauth",
+		displayName = "Claude OAuth",
+		type = "ANTHROPIC",
+		authMode = "oauth_cli",
+		baseUrl = "https://api.anthropic.com",
+		model = "claude-sonnet-4-6",
+		apiKey = "",
+		contextWindowText = "1000000",
+	)
+
+private fun deepSeekOfficialProviderPreset(): ProviderEditorState =
+	ProviderEditorState(
+		providerId = "deepseek-official",
+		displayName = "DeepSeek 官方",
+		type = "OPENAI_COMPATIBLE",
+		authMode = "api_key",
+		baseUrl = "https://api.deepseek.com",
+		model = "deepseek-v4-pro",
+		apiKey = "",
+		contextWindowText = "1000000",
+	)
+
+private fun dashScopeProviderPreset(): ProviderEditorState =
+	ProviderEditorState(
+		providerId = "dashscope-default",
+		displayName = "通义千问 (DashScope)",
+		type = "DASHSCOPE",
+		authMode = "api_key",
+		baseUrl = "",
+		model = "qwen-plus",
+		apiKey = "",
+		contextWindowText = "0",
+	)
+
+private fun openAiRelayProviderPreset(): ProviderEditorState =
+	ProviderEditorState(
+		providerId = "openai-compatible-relay",
+		displayName = "OpenAI 兼容中转",
+		type = "OPENAI_COMPATIBLE",
+		authMode = "api_key",
+		baseUrl = "https://relay.example.com/v1",
+		model = "gpt-4o",
+		apiKey = "",
+		contextWindowText = "128000",
 	)
 
 /**
@@ -160,6 +258,8 @@ fun SettingsPanel(
 	onUpdateProvider: (ProviderSaveParams) -> Unit,
 	onDeleteProvider: (String) -> Unit,
 	onTestProvider: (String) -> Unit,
+	onRefreshProviderOAuthStatus: () -> Unit,
+	onStartProviderOAuthLogin: () -> Unit,
 	onSaveSandboxMode: (String) -> Unit,
 	onSaveApprovalPolicy: (String) -> Unit,
 	onRefreshMcpServer: (String) -> Unit,
@@ -199,6 +299,8 @@ fun SettingsPanel(
 				onUpdateProvider = onUpdateProvider,
 				onDeleteProvider = onDeleteProvider,
 				onTestProvider = onTestProvider,
+				onRefreshProviderOAuthStatus = onRefreshProviderOAuthStatus,
+				onStartProviderOAuthLogin = onStartProviderOAuthLogin,
 			)
 
 			SettingsTab.Approval -> PolicySettingsCard(
@@ -340,6 +442,8 @@ private fun ProviderSettingsCard(
 	onUpdateProvider: (ProviderSaveParams) -> Unit,
 	onDeleteProvider: (String) -> Unit,
 	onTestProvider: (String) -> Unit,
+	onRefreshProviderOAuthStatus: () -> Unit,
+	onStartProviderOAuthLogin: () -> Unit,
 ) {
 	var editorMode by remember { mutableStateOf(ProviderEditorMode.None) }
 	var draft by remember { mutableStateOf(ProviderEditorState()) }
@@ -362,6 +466,17 @@ private fun ProviderSettingsCard(
 			) {
 				Text("+ 新增 Provider")
 			}
+			providerPresets().forEach { preset ->
+				OutlinedButton(
+					enabled = state.canEditSettings,
+					onClick = {
+						editorMode = ProviderEditorMode.Create
+						draft = preset.draft
+					},
+				) {
+					Text(preset.label)
+				}
+			}
 			Text("当前: ${state.providerState.active.label}", color = BaBiQColors.Muted)
 		}
 		if (editorMode != ProviderEditorMode.None) {
@@ -369,7 +484,11 @@ private fun ProviderSettingsCard(
 				mode = editorMode,
 				draft = draft,
 				enabled = state.canEditSettings && !state.settingsState.saving,
+				oauthLoading = state.settingsState.providerOAuthLoading,
+				oauthStatus = state.settingsState.providerOAuthStatus,
 				onDraftChange = { draft = it },
+				onRefreshProviderOAuthStatus = onRefreshProviderOAuthStatus,
+				onStartProviderOAuthLogin = onStartProviderOAuthLogin,
 				onSubmit = {
 					if (editorMode == ProviderEditorMode.Edit) {
 						onUpdateProvider(draft.toSaveParams())
@@ -395,6 +514,10 @@ private fun ProviderSettingsCard(
 						editorMode = ProviderEditorMode.Edit
 						draft = providerDraftFrom(provider)
 					},
+					onCopyProvider = {
+						editorMode = ProviderEditorMode.Create
+						draft = copyProviderDraftFrom(provider)
+					},
 					onSelectProvider = onSelectProvider,
 					onDeleteProvider = onDeleteProvider,
 					onTestProvider = onTestProvider,
@@ -418,10 +541,15 @@ private fun ProviderForm(
 	mode: ProviderEditorMode,
 	draft: ProviderEditorState,
 	enabled: Boolean,
+	oauthLoading: Boolean,
+	oauthStatus: ProviderOAuthStatusResult?,
 	onDraftChange: (ProviderEditorState) -> Unit,
+	onRefreshProviderOAuthStatus: () -> Unit,
+	onStartProviderOAuthLogin: () -> Unit,
 	onSubmit: () -> Unit,
 	onCancel: () -> Unit,
 ) {
+	val anthropicOAuth = draft.type.equals("ANTHROPIC", ignoreCase = true) && draft.authMode == "oauth_cli"
 	SettingsSubCard(if (mode == ProviderEditorMode.Edit) "编辑 Provider" else "新增 Provider") {
 		OutlinedTextField(
 			value = draft.providerId,
@@ -439,6 +567,30 @@ private fun ProviderForm(
 			modifier = Modifier.fillMaxWidth(),
 			singleLine = true,
 		)
+		FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+			ProviderOptionButton(
+				label = "OpenAI 兼容",
+				selected = draft.type == "OPENAI_COMPATIBLE",
+				enabled = enabled,
+				onClick = { onDraftChange(draft.copy(type = "OPENAI_COMPATIBLE", authMode = "api_key")) },
+			)
+			ProviderOptionButton(
+				label = "DashScope",
+				selected = draft.type == "DASHSCOPE",
+				enabled = enabled,
+				onClick = { onDraftChange(draft.copy(type = "DASHSCOPE", authMode = "api_key")) },
+			)
+			ProviderOptionButton(
+				label = "Anthropic",
+				selected = draft.type == "ANTHROPIC",
+				enabled = enabled,
+				onClick = {
+					onDraftChange(
+						if (draft.type == "ANTHROPIC") draft else anthropicOAuthProviderPreset().copy(providerId = draft.providerId),
+					)
+				},
+			)
+		}
 		OutlinedTextField(
 			value = draft.type,
 			onValueChange = { onDraftChange(draft.copy(type = it)) },
@@ -447,6 +599,32 @@ private fun ProviderForm(
 			modifier = Modifier.fillMaxWidth(),
 			singleLine = true,
 		)
+		Text("认证方式", fontWeight = FontWeight.Medium)
+		FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+			ProviderOptionButton(
+				label = "API Key",
+				selected = draft.authMode == "api_key",
+				enabled = enabled,
+				onClick = { onDraftChange(draft.copy(authMode = "api_key")) },
+			)
+			ProviderOptionButton(
+				label = "Claude CLI OAuth",
+				selected = draft.authMode == "oauth_cli",
+				enabled = enabled && draft.type.equals("ANTHROPIC", ignoreCase = true),
+				onClick = {
+					onDraftChange(
+						draft.copy(
+							type = "ANTHROPIC",
+							authMode = "oauth_cli",
+							baseUrl = draft.baseUrl.ifBlank { "https://api.anthropic.com" },
+							model = draft.model.ifBlank { "claude-sonnet-4-6" },
+							contextWindowText = draft.contextWindowText.takeIf { it != "0" } ?: "1000000",
+							apiKey = "",
+						),
+					)
+				},
+			)
+		}
 		OutlinedTextField(
 			value = draft.baseUrl,
 			onValueChange = { onDraftChange(draft.copy(baseUrl = it)) },
@@ -471,15 +649,31 @@ private fun ProviderForm(
 			modifier = Modifier.fillMaxWidth(),
 			singleLine = true,
 		)
-		OutlinedTextField(
-			value = draft.apiKey,
-			onValueChange = { onDraftChange(draft.copy(apiKey = it)) },
-			enabled = enabled,
-			label = { Text(if (mode == ProviderEditorMode.Edit) "API Key（留空沿用已有密钥）" else "API Key") },
-			visualTransformation = PasswordVisualTransformation(),
-			modifier = Modifier.fillMaxWidth(),
-			singleLine = true,
-		)
+		if (anthropicOAuth) {
+			Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+				Text("Claude CLI OAuth", fontWeight = FontWeight.Medium)
+				val statusText = oauthStatus?.message ?: "尚未检查 Claude CLI OAuth 状态"
+				Text(statusText, color = if (oauthStatus?.loggedIn == true) BaBiQColors.Success else BaBiQColors.Muted)
+				Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+					OutlinedButton(enabled = enabled && !oauthLoading, onClick = onRefreshProviderOAuthStatus) {
+						Text(if (oauthLoading) "检查中..." else "检查登录状态")
+					}
+					OutlinedButton(enabled = enabled && !oauthLoading, onClick = onStartProviderOAuthLogin) {
+						Text("启动登录")
+					}
+				}
+			}
+		} else {
+			OutlinedTextField(
+				value = draft.apiKey,
+				onValueChange = { onDraftChange(draft.copy(apiKey = it)) },
+				enabled = enabled,
+				label = { Text(if (mode == ProviderEditorMode.Edit) "API Key（留空沿用已有密钥）" else "API Key") },
+				visualTransformation = PasswordVisualTransformation(),
+				modifier = Modifier.fillMaxWidth(),
+				singleLine = true,
+			)
+		}
 		Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
 			Button(enabled = enabled, onClick = onSubmit) {
 				Text(if (mode == ProviderEditorMode.Edit) "保存修改" else "保存")
@@ -488,6 +682,20 @@ private fun ProviderForm(
 				Text("取消")
 			}
 		}
+	}
+}
+
+@Composable
+private fun ProviderOptionButton(
+	label: String,
+	selected: Boolean,
+	enabled: Boolean,
+	onClick: () -> Unit,
+) {
+	if (selected) {
+		Button(enabled = enabled, onClick = onClick) { Text(label) }
+	} else {
+		OutlinedButton(enabled = enabled, onClick = onClick) { Text(label) }
 	}
 }
 
@@ -512,6 +720,7 @@ private fun ProviderRow(
 	provider: ProviderInfo,
 	enabled: Boolean,
 	onEditProvider: () -> Unit,
+	onCopyProvider: () -> Unit,
 	onSelectProvider: (String) -> Unit,
 	onDeleteProvider: (String) -> Unit,
 	onTestProvider: (String) -> Unit,
@@ -532,6 +741,7 @@ private fun ProviderRow(
 		}
 		Column(modifier = Modifier.weight(1.6f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
 			Text(provider.type ?: "未配置", color = BaBiQColors.Muted, style = MaterialTheme.typography.labelSmall)
+			Text(provider.authMode, color = BaBiQColors.Muted, style = MaterialTheme.typography.labelSmall)
 			Text(provider.model ?: provider.models.firstOrNull()?.label ?: "未配置模型")
 		}
 		Text(
@@ -546,6 +756,7 @@ private fun ProviderRow(
 		) {
 			OutlinedButton(enabled = enabled, onClick = { onSelectProvider(provider.id) }) { Text("设为当前") }
 			OutlinedButton(enabled = enabled, onClick = onEditProvider) { Text("编辑") }
+			OutlinedButton(enabled = enabled, onClick = onCopyProvider) { Text("复制") }
 			OutlinedButton(enabled = enabled, onClick = { onTestProvider(provider.id) }) { Text("测试") }
 			TextButton(enabled = enabled, onClick = { onDeleteProvider(provider.id) }) { Text("删除") }
 		}

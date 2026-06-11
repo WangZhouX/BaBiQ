@@ -38,8 +38,10 @@ public final class ModelMetadata {
             entry("o1-mini", 128_000),
 
             // Anthropic 系列。
+            entry("claude-opus-4-8", 1_000_000),
             entry("claude-opus-4-7", 200_000),
-            entry("claude-sonnet-4-6", 200_000),
+            entry("claude-sonnet-4-6", 1_000_000),
+            entry("claude-haiku-4-5", 200_000),
 
             // Ollama / 本地模型。
             entry("llama3:8b", 8_192),

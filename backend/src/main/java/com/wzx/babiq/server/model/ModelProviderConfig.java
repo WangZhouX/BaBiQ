@@ -2,6 +2,7 @@ package com.wzx.babiq.server.model;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 
 /**
  * 单个模型 Provider 配置。
@@ -13,6 +14,7 @@ import jakarta.validation.constraints.NotNull;
  * @param id provider 唯一标识
  * @param name UI 展示名,为空时使用 id
  * @param type provider 类型
+ * @param authMode 认证模式，未配置时默认为 API Key
  * @param model 模型名
  * @param apiKey API key,允许为空,调用该 provider 时再报明确错误
  * @param baseUrl OpenAI 兼容 endpoint 的 base-url
@@ -22,11 +24,39 @@ public record ModelProviderConfig(
         @NotBlank String id,
         String name,
         @NotNull ProviderType type,
+        ProviderAuthMode authMode,
         @NotBlank String model,
         String apiKey,
         String baseUrl,
         Integer contextWindow
 ) {
+
+    @ConstructorBinding
+    public ModelProviderConfig {
+        if (authMode == null) {
+            authMode = ProviderAuthMode.API_KEY;
+        }
+    }
+
+    /**
+     * 兼容旧配置和旧测试构造器，未显式传入 authMode 时使用 API Key。
+     */
+    public ModelProviderConfig(String id,
+                               String name,
+                               ProviderType type,
+                               String model,
+                               String apiKey,
+                               String baseUrl,
+                               Integer contextWindow) {
+        this(id, name, type, ProviderAuthMode.API_KEY, model, apiKey, baseUrl, contextWindow);
+    }
+
+    /**
+     * 返回补齐默认值后的认证模式。
+     */
+    public ProviderAuthMode effectiveAuthMode() {
+        return authMode == null ? ProviderAuthMode.API_KEY : authMode;
+    }
 
     /**
      * 返回用于 UI 或 REST 输出的展示名。
@@ -48,6 +78,7 @@ public record ModelProviderConfig(
         return "ModelProviderConfig[id=" + id
                 + ", name=" + name
                 + ", type=" + type
+                + ", authMode=" + effectiveAuthMode().wireValue()
                 + ", model=" + model
                 + ", apiKey=<hidden>"
                 + ", baseUrl=" + baseUrl

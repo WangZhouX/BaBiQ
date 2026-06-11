@@ -18,6 +18,7 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentCaptor.forClass;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -50,7 +51,7 @@ class ProviderSettingsHandlersTest {
     @DisplayName("provider/create 保存后不回显 API Key")
     void provider_create_should_not_echo_api_key() {
         ProviderSettingsService service = mock(ProviderSettingsService.class);
-        when(service.create(any())).thenReturn(providerView("p1", true));
+        when(service.create(any())).thenReturn(providerView("p1", true, "OPENAI_COMPATIBLE", "api_key"));
         ProviderCreateHandler handler = new ProviderCreateHandler(service, objectMapper);
 
         Map<String, Object> response = responseFrom(handler.handle(objectMapper.valueToTree(Map.of(
@@ -69,10 +70,38 @@ class ProviderSettingsHandlersTest {
     }
 
     @Test
+    @DisplayName("provider/create 支持 Anthropic OAuth CLI 无 API Key 和无 Base URL")
+    void provider_create_should_accept_anthropic_oauth_cli_without_api_key_or_base_url() {
+        ProviderSettingsService service = mock(ProviderSettingsService.class);
+        when(service.create(any())).thenReturn(providerView("anthropic-oauth", false, "ANTHROPIC", "oauth_cli"));
+        ProviderCreateHandler handler = new ProviderCreateHandler(service, objectMapper);
+
+        Map<String, Object> response = responseFrom(handler.handle(objectMapper.valueToTree(Map.of(
+                "providerId", "anthropic-oauth",
+                "displayName", "Claude OAuth",
+                "type", "ANTHROPIC",
+                "authMode", "oauth_cli",
+                "model", "claude-sonnet-4-6"
+        )), null));
+
+        var captor = forClass(ProviderSettingsService.ProviderDraft.class);
+        verify(service).create(captor.capture());
+        assertThat(captor.getValue().authMode()).isEqualTo("oauth_cli");
+        assertThat(captor.getValue().apiKey()).isNull();
+        assertThat(captor.getValue().baseUrl()).isNull();
+        assertThat(response)
+                .containsEntry("type", "ANTHROPIC")
+                .containsEntry("authMode", "oauth_cli")
+                .containsEntry("baseUrl", "")
+                .containsEntry("hasApiKey", false);
+        assertThat(response).doesNotContainKey("apiKey");
+    }
+
+    @Test
     @DisplayName("provider/list 只返回 service 暴露的非敏感视图")
     void provider_list_should_return_provider_views() {
         ProviderSettingsService service = mock(ProviderSettingsService.class);
-        when(service.listEnabled()).thenReturn(List.of(providerView("p1", true)));
+        when(service.listEnabled()).thenReturn(List.of(providerView("p1", true, "OPENAI_COMPATIBLE", "api_key")));
         ProviderListHandler handler = new ProviderListHandler(service);
 
         Map<String, Object> response = responseFrom(handler.handle(null, null));
@@ -124,13 +153,17 @@ class ProviderSettingsHandlersTest {
         verify(appSettingsService).update(any());
     }
 
-    private static ProviderSettingsService.ProviderView providerView(String id, boolean hasApiKey) {
+    private static ProviderSettingsService.ProviderView providerView(String id,
+                                                                     boolean hasApiKey,
+                                                                     String type,
+                                                                     String authMode) {
         return new ProviderSettingsService.ProviderView(
                 id,
                 "Provider 1",
-                "OPENAI_COMPATIBLE",
-                "https://relay.example.com/v1",
-                "gpt-4o-mini",
+                type,
+                authMode,
+                type.equals("ANTHROPIC") ? "" : "https://relay.example.com/v1",
+                type.equals("ANTHROPIC") ? "claude-sonnet-4-6" : "gpt-4o-mini",
                 128000,
                 true,
                 hasApiKey,

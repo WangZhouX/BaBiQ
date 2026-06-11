@@ -11,6 +11,8 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.hasItems;
+import static org.hamcrest.Matchers.hasSize;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -37,13 +39,18 @@ class ProviderTestControllerIntegrationTest {
     void list_providers_should_return_all_configured_providers() throws Exception {
         mockMvc.perform(get("/api/test/providers"))
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(5)))
+                .andExpect(jsonPath("$[*].id", hasItems(
+                        "dashscope-default",
+                        "deepseek-official",
+                        "oneapi-relay",
+                        "claude-oauth",
+                        "ollama-local"
+                )))
                 .andExpect(jsonPath("$[0].id").value("dashscope-default"))
                 .andExpect(jsonPath("$[0].active").value(true))
                 .andExpect(jsonPath("$[0].contextWindow").value(1_000_000))
-                .andExpect(jsonPath("$[1].id").value("deepseek-official"))
-                .andExpect(jsonPath("$[1].active").value(false))
-                .andExpect(jsonPath("$[2].id").value("oneapi-relay"))
-                .andExpect(jsonPath("$[3].id").value("ollama-local"));
+                .andExpect(jsonPath("$[1].active").value(false));
     }
 
     @Test

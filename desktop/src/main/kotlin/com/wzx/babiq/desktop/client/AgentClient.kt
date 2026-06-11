@@ -33,6 +33,8 @@ import com.wzx.babiq.desktop.protocol.ProviderDeleteParams
 import com.wzx.babiq.desktop.protocol.ProviderDeleteResult
 import com.wzx.babiq.desktop.protocol.ProviderListResult
 import com.wzx.babiq.desktop.protocol.ProviderMutationResult
+import com.wzx.babiq.desktop.protocol.ProviderOAuthLoginResult
+import com.wzx.babiq.desktop.protocol.ProviderOAuthStatusResult
 import com.wzx.babiq.desktop.protocol.ProviderSaveParams
 import com.wzx.babiq.desktop.protocol.ProviderTestParams
 import com.wzx.babiq.desktop.protocol.ProviderTestResult
@@ -128,6 +130,12 @@ interface AgentGateway {
 
 	/** 轻量测试 Provider 配置是否可被后端模型工厂使用。 */
 	suspend fun testProvider(providerId: String): ProviderTestResult
+
+	/** 读取 Claude CLI OAuth 状态，用于 Anthropic OAuth Provider 设置。 */
+	suspend fun getProviderOAuthStatus(): ProviderOAuthStatusResult
+
+	/** 启动 Claude CLI OAuth 登录流程。 */
+	suspend fun startProviderOAuthLogin(): ProviderOAuthLoginResult
 
 	/** 读取后端当前可用 Provider/Model 列表。 */
 	suspend fun listProviders(): ProviderListResult
@@ -411,6 +419,22 @@ class AgentClient(
 			params = protocolJson.encodeToJsonElement(ProviderTestParams.serializer(), ProviderTestParams(providerId)),
 		)
 		return protocolJson.decodeFromJsonElement(ProviderTestResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `provider/oauth/status`，检查 Claude CLI 是否可用且已登录。
+	 */
+	override suspend fun getProviderOAuthStatus(): ProviderOAuthStatusResult {
+		val response = request("provider/oauth/status", buildJsonObject {})
+		return protocolJson.decodeFromJsonElement(ProviderOAuthStatusResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `provider/oauth/login`，让后端启动 `ant auth login`。
+	 */
+	override suspend fun startProviderOAuthLogin(): ProviderOAuthLoginResult {
+		val response = request("provider/oauth/login", buildJsonObject {})
+		return protocolJson.decodeFromJsonElement(ProviderOAuthLoginResult.serializer(), response.requireResult())
 	}
 
 	/**

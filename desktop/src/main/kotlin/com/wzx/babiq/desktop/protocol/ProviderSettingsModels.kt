@@ -19,6 +19,7 @@ data class ProviderSaveParams(
 	val providerId: String,
 	val displayName: String,
 	val type: String,
+	val authMode: String = "api_key",
 	val baseUrl: String,
 	val model: String,
 	val apiKey: String? = null,
@@ -48,6 +49,7 @@ data class ProviderMutationResult(
 	val label: String,
 	val displayName: String = label,
 	val type: String? = null,
+	val authMode: String = "api_key",
 	val baseUrl: String? = null,
 	val model: String? = null,
 	val contextWindow: Int = 0,
@@ -104,6 +106,28 @@ data class ProviderTestResult(
 @Serializable
 data class ProviderTestParams(
 	val providerId: String,
+)
+
+/**
+ * Claude OAuth CLI 登录状态。
+ */
+@Serializable
+data class ProviderOAuthStatusResult(
+	val providerType: String,
+	val authMode: String,
+	val cliInstalled: Boolean,
+	val loggedIn: Boolean,
+	val message: String,
+)
+
+/**
+ * 启动 Claude CLI OAuth 登录流程的响应。
+ */
+@Serializable
+data class ProviderOAuthLoginResult(
+	val ok: Boolean,
+	val pid: Long? = null,
+	val message: String,
 )
 
 /**

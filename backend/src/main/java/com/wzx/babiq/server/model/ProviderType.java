@@ -13,5 +13,8 @@ public enum ProviderType {
     DASHSCOPE,
 
     /** OpenAI 协议兼容 endpoint,用于 DeepSeek / OneAPI / Ollama 等服务。 */
-    OPENAI_COMPATIBLE
+    OPENAI_COMPATIBLE,
+
+    /** Anthropic Claude 官方 Messages API。 */
+    ANTHROPIC
 }

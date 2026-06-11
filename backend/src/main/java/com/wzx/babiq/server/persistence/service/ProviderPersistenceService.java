@@ -2,6 +2,7 @@ package com.wzx.babiq.server.persistence.service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.wzx.babiq.server.conversation.repository.ProviderConfigRecord;
+import com.wzx.babiq.server.model.ProviderAuthMode;
 import com.wzx.babiq.server.persistence.entity.ProviderConfigEntity;
 import com.wzx.babiq.server.persistence.mapper.ProviderConfigMapper;
 import org.springframework.stereotype.Service;
@@ -101,6 +102,7 @@ public class ProviderPersistenceService {
         entity.setProviderId(record.providerId());
         entity.setDisplayName(record.displayName());
         entity.setType(record.type());
+        entity.setAuthMode(ProviderAuthMode.fromWireValue(record.authMode()).wireValue());
         entity.setBaseUrl(record.baseUrl());
         entity.setModel(record.model());
         entity.setSecretRef(record.secretRef());
@@ -113,6 +115,7 @@ public class ProviderPersistenceService {
 
     private ProviderConfigRecord toRecord(ProviderConfigEntity entity) {
         return new ProviderConfigRecord(entity.getProviderId(), entity.getDisplayName(), entity.getType(),
+                ProviderAuthMode.fromWireValue(entity.getAuthMode()).wireValue(),
                 entity.getBaseUrl(), entity.getModel(), entity.getSecretRef(), entity.getContextWindow(),
                 Boolean.TRUE.equals(entity.getEnabled()), PersistenceTime.read(entity.getCreatedAt()),
                 PersistenceTime.read(entity.getUpdatedAt()));

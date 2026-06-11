@@ -27,6 +27,14 @@ class ModelMetadataTest {
     }
 
     @Test
+    @DisplayName("Claude 4.6/4.8 官方模型返回已核对的上下文窗口")
+    void claude_current_models_should_return_verified_context_windows() {
+        assertThat(ModelMetadata.contextWindowOf("claude-sonnet-4-6")).isEqualTo(1_000_000);
+        assertThat(ModelMetadata.contextWindowOf("claude-opus-4-8")).isEqualTo(1_000_000);
+        assertThat(ModelMetadata.contextWindowOf("claude-haiku-4-5")).isEqualTo(200_000);
+    }
+
+    @Test
     @DisplayName("模型名大小写不敏感")
     void model_name_should_be_case_insensitive() {
         assertThat(ModelMetadata.contextWindowOf("QWEN-PLUS")).isEqualTo(1_000_000);
@@ -62,7 +70,9 @@ class ModelMetadataTest {
                 "qwq-plus",
                 "deepseek-chat",
                 "gpt-4o",
-                "claude-opus-4-7",
+                "claude-opus-4-8",
+                "claude-sonnet-4-6",
+                "claude-haiku-4-5",
                 "llama3:8b"
         };
 

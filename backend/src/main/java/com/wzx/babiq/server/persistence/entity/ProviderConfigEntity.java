@@ -37,6 +37,10 @@ public class ProviderConfigEntity {
     /** Provider 类型，用于选择后端模型客户端适配器。 */
     private String type;
 
+    /** Provider 认证模式，例如 api_key 或 oauth_cli。 */
+    @TableField("auth_mode")
+    private String authMode;
+
     /** API Base URL。 */
     @TableField("base_url")
     private String baseUrl;

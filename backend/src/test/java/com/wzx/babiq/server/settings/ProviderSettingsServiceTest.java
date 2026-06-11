@@ -52,6 +52,7 @@ class ProviderSettingsServiceTest {
                 "custom-openai",
                 "自定义 OpenAI",
                 "OPENAI_COMPATIBLE",
+                "api_key",
                 "https://relay.example.com/v1",
                 "deepseek-chat",
                 "sk-test-provider-secret",
@@ -71,12 +72,37 @@ class ProviderSettingsServiceTest {
     }
 
     @Test
+    @DisplayName("创建 Anthropic OAuth CLI Provider 时不要求也不保存 API Key")
+    void create_anthropic_oauth_cli_provider_should_not_require_or_store_api_key() {
+        ProviderSettingsService.ProviderDraft draft = new ProviderSettingsService.ProviderDraft(
+                "claude-oauth",
+                "Claude OAuth",
+                "ANTHROPIC",
+                "oauth_cli",
+                "",
+                "claude-sonnet-4-6",
+                null,
+                0,
+                true);
+
+        ProviderSettingsService.ProviderView view = providerSettingsService.create(draft);
+
+        ProviderConfigRecord saved = providerPersistenceService.findProvider("claude-oauth").orElseThrow();
+        assertThat(view.authMode()).isEqualTo("oauth_cli");
+        assertThat(view.hasApiKey()).isFalse();
+        assertThat(saved.authMode()).isEqualTo("oauth_cli");
+        assertThat(saved.secretRef()).isNull();
+        assertThat(saved.baseUrl()).isEmpty();
+    }
+
+    @Test
     @DisplayName("删除 Provider 后默认列表不再返回，但历史 turn 不会被物理删除")
     void delete_provider_should_hide_it_from_enabled_provider_list() {
         providerSettingsService.create(new ProviderSettingsService.ProviderDraft(
                 "delete-me",
                 "待删除",
                 "OPENAI_COMPATIBLE",
+                "api_key",
                 "https://relay.example.com/v1",
                 "gpt-4o-mini",
                 "sk-delete-me",

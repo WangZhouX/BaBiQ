@@ -35,6 +35,8 @@ import com.wzx.babiq.desktop.protocol.ObservabilityTotalsInfo
 import com.wzx.babiq.desktop.protocol.ProviderListResult
 import com.wzx.babiq.desktop.protocol.ProviderMutationResult
 import com.wzx.babiq.desktop.protocol.ProviderDeleteResult
+import com.wzx.babiq.desktop.protocol.ProviderOAuthLoginResult
+import com.wzx.babiq.desktop.protocol.ProviderOAuthStatusResult
 import com.wzx.babiq.desktop.protocol.ProviderSaveParams
 import com.wzx.babiq.desktop.protocol.ProviderTestResult
 import com.wzx.babiq.desktop.protocol.RunRecoveryStatusResult
@@ -531,6 +533,31 @@ class ChatControllerTest {
 	}
 
 	@Test
+	fun `刷新 Provider OAuth 状态会写入设置页`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(gateway, backgroundScope, initialState = AppState(connectionState = ConnectionState.Connected))
+
+		controller.refreshProviderOAuthStatus()
+
+		assertEquals(listOf("getProviderOAuthStatus"), gateway.calls)
+		assertEquals("oauth_cli", controller.state.value.settingsState.providerOAuthStatus?.authMode)
+		assertEquals("Claude CLI OAuth 可用", controller.state.value.settingsState.notice)
+		assertFalse(controller.state.value.settingsState.providerOAuthLoading)
+	}
+
+	@Test
+	fun `启动 Provider OAuth 登录会调用后端并提示用户`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(gateway, backgroundScope, initialState = AppState(connectionState = ConnectionState.Connected))
+
+		controller.startProviderOAuthLogin()
+
+		assertEquals(listOf("startProviderOAuthLogin"), gateway.calls)
+		assertEquals("已打开 Claude CLI 登录流程", controller.state.value.settingsState.notice)
+		assertFalse(controller.state.value.settingsState.providerOAuthLoading)
+	}
+
+	@Test
 	fun `保存沙箱和审批策略后更新上下文条与设置状态`() = runTest {
 		val gateway = FakeGateway()
 		val controller = ChatController(gateway, backgroundScope, initialState = AppState(connectionState = ConnectionState.Connected))
@@ -806,6 +833,7 @@ class ChatControllerTest {
 		providerId = "custom-openai",
 		displayName = "自定义 OpenAI",
 		type = "OPENAI_COMPATIBLE",
+		authMode = "api_key",
 		baseUrl = "https://relay.example.com/v1",
 		model = "deepseek-chat",
 		apiKey = "sk-secret",
@@ -818,6 +846,7 @@ class ChatControllerTest {
 		label = "自定义 OpenAI",
 		displayName = "自定义 OpenAI",
 		type = "OPENAI_COMPATIBLE",
+		authMode = "api_key",
 		baseUrl = "https://relay.example.com/v1",
 		model = "deepseek-chat",
 		contextWindow = 128000,
@@ -1199,6 +1228,26 @@ class ChatControllerTest {
 		override suspend fun testProvider(providerId: String): ProviderTestResult {
 			calls += "testProvider:$providerId"
 			return ProviderTestResult(ok = true, providerId = providerId, message = "Provider 配置可用")
+		}
+
+		override suspend fun getProviderOAuthStatus(): ProviderOAuthStatusResult {
+			calls += "getProviderOAuthStatus"
+			return ProviderOAuthStatusResult(
+				providerType = "ANTHROPIC",
+				authMode = "oauth_cli",
+				cliInstalled = true,
+				loggedIn = true,
+				message = "Claude CLI OAuth 可用",
+			)
+		}
+
+		override suspend fun startProviderOAuthLogin(): ProviderOAuthLoginResult {
+			calls += "startProviderOAuthLogin"
+			return ProviderOAuthLoginResult(
+				ok = true,
+				pid = 12345,
+				message = "已打开 Claude CLI 登录流程",
+			)
 		}
 
 		override suspend fun listProviders(): ProviderListResult {
