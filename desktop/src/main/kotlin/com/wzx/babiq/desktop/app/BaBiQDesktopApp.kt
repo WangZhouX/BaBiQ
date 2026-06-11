@@ -22,11 +22,14 @@ import kotlinx.coroutines.launch
  * 之后 UI 的按钮回调只发意图给 Controller，真正的网络调用都放到协程里执行，避免阻塞 UI 线程。
  */
 @Composable
-fun BaBiQDesktopApp() {
+fun BaBiQDesktopApp(config: DesktopConfig = DesktopConfig()) {
 	// Controller 是 UI 的“状态和动作中枢”，remember 保证窗口重组时不会重新建连接。
-	val controller = remember {
+	val controller = remember(config) {
 		ChatController(
-			gateway = AgentClient(KtorAgentTransport()),
+			gateway = AgentClient(
+				transport = KtorAgentTransport(config),
+				config = config,
+			),
 		)
 	}
 	// 把 StateFlow 转成 Compose State；AppState 变化后界面会自动重组。
