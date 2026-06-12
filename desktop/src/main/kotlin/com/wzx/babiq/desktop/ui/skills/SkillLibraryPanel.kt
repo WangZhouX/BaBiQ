@@ -50,6 +50,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.wzx.babiq.desktop.protocol.CapabilityInfo
 import com.wzx.babiq.desktop.protocol.SkillInfo
+import com.wzx.babiq.desktop.platform.DesktopAwtExceptionGuard
 import com.wzx.babiq.desktop.state.AppState
 import com.wzx.babiq.desktop.ui.theme.BaBiQColors
 import java.awt.datatransfer.StringSelection
@@ -585,5 +586,11 @@ private fun iconColor(title: String): Color =
 
 @OptIn(ExperimentalComposeUiApi::class)
 private suspend fun Clipboard.copyPlainText(text: String) {
-	setClipEntry(ClipEntry(StringSelection(text)))
+	try {
+		setClipEntry(ClipEntry(StringSelection(text)))
+	} catch (throwable: Throwable) {
+		if (!DesktopAwtExceptionGuard.shouldSuppress(throwable)) {
+			throw throwable
+		}
+	}
 }

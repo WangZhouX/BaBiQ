@@ -8,6 +8,7 @@ import androidx.compose.ui.window.application
 import com.wzx.babiq.desktop.app.BaBiQDesktopApp
 import com.wzx.babiq.desktop.generated.resources.Res
 import com.wzx.babiq.desktop.generated.resources.babiq_window_icon
+import com.wzx.babiq.desktop.platform.DesktopAwtExceptionGuard
 import com.wzx.babiq.desktop.runtime.DesktopRuntimeLauncher
 import java.io.PrintWriter
 import java.nio.file.Files
@@ -20,6 +21,7 @@ internal val DefaultWindowSize = DpSize(1400.dp, 860.dp)
 
 fun main() {
 	try {
+		DesktopAwtExceptionGuard.install()
 		val runtimeSession = DesktopRuntimeLauncher().start()
 		try {
 			application {
