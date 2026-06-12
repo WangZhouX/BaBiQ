@@ -70,6 +70,7 @@
 | D15 | 节点设置 = **锚定浮层**：跟随选中节点定位（带指向标记、自动避让其他节点与画布边界），字段含任务、模型、**工具模式（只读/工作区写入）**、**重命名**、删除节点 | 原型审查 A3：固定右上浮层与被编节点距离远且遮挡；mode 决定审批写入范围必须可见可改；"参数内嵌节点卡"在缩放画布上输入体验差，锚定浮层是务实折中 |
 | D16 | 无"拖拽模式"开关：拖节点=结构操作（drop zone 高亮）、拖空白=平移画布，固定手势分工；组标签只显示"并行组/路由组"或自定义组名，技术 groupId 进 tooltip；不做"运行回放"侧卡（画布即状态显示器，收起态用现有紧凑列表） | 原型审查 B8/B6/B9：模式开关多一步心智负担且易残留；技术 id 不是 UI 文案；侧卡与画布信息重复 |
 | D17 | **对话式配置编辑**：扩展 `work_unit_manage` 新增 `read_config`（读当前草稿 nodes+structure+校验状态）与 `update_config`（**全量覆盖**提交，JSON 与桌面 `workunit/config/update` 同构），增删改节点 = 模型"读→改→全量写"；不做 add_node/remove_node 增量 action。编辑只动草稿、运行中容器拒绝；启动/移除沿用既有显式语义（agent 不能绕过 approve-once）。成功后 emit `WorkUnitItem` 驱动画布实时刷新；桌面本地有未保存草稿时提示"配置已被 Agent 更新"，提供[加载最新]/[保留草稿]（last-write-wins + V18 快照审计，不做三方合并） | 全量覆盖是 BaBiQ 已验证的模式（P4 `update_plan` 同语义）：无 op 合并冲突、快照天然可审计、schema 复用 orchestrate_flow 的 nodes+structure 形态；刷新通道复用现有 WorkUnitItem 协议零新增 |
+| D18 | **画布核心必须是组件化、可复用、可移植的组件包**，分两层：**核心层** `com.wzx.babiq.desktop.flowcanvas`（通用图模型/布局/渲染/手势/undo，**零 BaBiQ 业务依赖**——禁止 import `desktop.protocol.*`/`desktop.state.*`/`desktop.ui.theme.*`，只允许 Compose 标准库 + kotlin/kotlinx stdlib；数据用泛型图模型，颜色/字号经 `FlowCanvasTheme` 参数注入，节点卡内容经 slot composable 注入）；**适配层**留在 `desktop.ui.runtime`（`FlowStructureDto ↔ 核心图模型` 互转、BaBiQ 节点卡内容、WorkUnit/审批接线、BaBiQColors 主题装配）。可移植性由 **`FlowCanvasPortabilityTest` 源码 import 守卫测试**强制（扫描核心包全部文件，断言无违禁 import），不靠口头约定 | 用户明确要求：本期先在项目内做到组件化/可复用/可移植，未来可独立开源；分层 + 守卫测试让"可移植"成为测试期事实；开源路径（拆独立 Gradle module `:flowcanvas` → Maven 坐标发布）已是机械搬移，留作后续阶段不阻塞 P8 |
 
 ---
 
@@ -109,15 +110,19 @@ desktop/
 │   ├── protocol/FlowStructureModels.kt        # 新建：FlowStructureDto（与后端 JSON 同构）
 │   ├── protocol/WorkUnitModels.kt             # 修改：WorkUnitConfiguration +structure
 │   ├── protocol/ThreadModels.kt               # 修改：orchestration item +structure
-│   ├── ui/flowcanvas/FlowGraphModel.kt        # 新建：画布图模型 + 结构操作（纯函数：增删/重排/入组/出组/undo）
-│   ├── ui/flowcanvas/FlowCanvasLayout.kt      # 新建：自动分层布局（纯函数，输出节点矩形+边路径锚点）
-│   ├── ui/flowcanvas/FlowCanvas.kt            # 新建：渲染 + 缩放/平移/拖拽手势 + 贝塞尔连线
-│   ├── ui/flowcanvas/FlowNodeCard.kt          # 新建：节点卡（内嵌任务编辑/模型 chip/模式 chip/状态徽标）
-│   ├── ui/runtime/OrchestrationSection.kt     # 重构：编辑态接 FlowCanvas，删除 OrchestrationTopologyEditor 卡片堆
+│   ├── flowcanvas/FlowGraphModel.kt           # 新建【核心层·零业务依赖】泛型图模型 + 结构操作（增删/重排/入组/出组/undo）
+│   ├── flowcanvas/FlowCanvasLayout.kt         # 新建【核心层】自动分层布局（纯函数，输出节点矩形+边路径锚点）
+│   ├── flowcanvas/FlowCanvasTheme.kt          # 新建【核心层】颜色/字号/尺寸参数化主题（不引 BaBiQColors）
+│   ├── flowcanvas/FlowCanvas.kt               # 新建【核心层】渲染 + 缩放/平移/拖拽手势 + 贝塞尔连线
+│   ├── flowcanvas/FlowNodeCard.kt             # 新建【核心层】节点卡骨架（状态样式 + slot composable 内容槽）
+│   ├── ui/runtime/FlowStructureAdapter.kt     # 新建【适配层】FlowStructureDto ↔ 核心图模型互转 + BaBiQ 节点卡内容 + BaBiQColors 主题装配
+│   ├── ui/runtime/OrchestrationSection.kt     # 重构【适配层】编辑态接 FlowCanvas，删除 OrchestrationTopologyEditor 卡片堆
 │   └── state/ChatController.kt                # 修改：structure 贯通保存/校验
 └── src/test/kotlin/com/wzx/babiq/desktop/
-    ├── ui/flowcanvas/FlowGraphModelTest.kt    # 新建
-    ├── ui/flowcanvas/FlowCanvasLayoutTest.kt  # 新建
+    ├── flowcanvas/FlowGraphModelTest.kt       # 新建（核心层测试不依赖任何 BaBiQ fixture）
+    ├── flowcanvas/FlowCanvasLayoutTest.kt     # 新建
+    ├── flowcanvas/FlowCanvasPortabilityTest.kt# 新建：源码 import 守卫——扫描核心包全部文件，断言无 desktop.protocol/state/ui.theme import（D18）
+    ├── ui/runtime/FlowStructureAdapterTest.kt # 新建：DTO↔模型互转无损
     └── （OrchestrationSectionTest / WorkUnitModelsTest / ThreadItemJsonTest / ChatControllerTest 增量）
 ```
 
@@ -236,23 +241,23 @@ INSERT OR REPLACE INTO bq_schema_comments(table_name, column_name, comment) VALU
 - [ ] **Step 4: 写失败测试（桌面）**：本地存在未保存画布草稿时收到 `WorkUnitItem` 配置更新 → 显示"配置已被 Agent 更新"提示条 + [加载最新][保留草稿]；无本地草稿时画布静默刷新；选择保留草稿后再保存 = 正常生成新快照。
 - [ ] **Step 5: 跑通过** → **Step 6: Commit** `feat(p8): 工作容器支持对话式节点配置编辑`
 
-### Task 5: 桌面画布图模型与结构操作（纯函数层）
+### Task 5: 画布核心图模型与结构操作（核心层纯函数 + 可移植性守卫）
 
-**Files:** Create `ui/flowcanvas/FlowGraphModel.kt`；Test `FlowGraphModelTest.kt`
+**Files:** Create `flowcanvas/FlowGraphModel.kt`（核心层）、`ui/runtime/FlowStructureAdapter.kt`（适配层互转）；Test `FlowGraphModelTest.kt`、`FlowCanvasPortabilityTest.kt`、`FlowStructureAdapterTest.kt`
 
-- [ ] **Step 1: 失败测试**（全部纯函数，无 Compose 依赖）：`addNode(template, afterEntry)`；`addGroup(parallel/routing)`；`removeEntry`（删组时子节点提升回父序列）；`moveEntry(entry, dropTarget)`——重排/入组/出组三语义；组内不嵌组被拒；undo/redo 双栈（操作后可回退，redo 在新操作后清空）；与 `FlowStructureDto` 互转无损。
+- [ ] **Step 1: 失败测试**（核心层全部纯函数，无 Compose/无 BaBiQ 依赖）：`addNode(template, afterEntry)`；`addGroup(parallel/routing)`；`removeEntry`（删组时子节点提升回父序列）；`moveEntry(entry, dropTarget)`——重排/入组/出组三语义；组内不嵌组被拒；undo/redo 双栈（操作后可回退，redo 在新操作后清空）；**可移植性守卫（D18）**：`FlowCanvasPortabilityTest` 扫描 `flowcanvas` 包全部源码文件，断言 import 不含 `com.wzx.babiq.desktop.protocol`/`...state`/`...ui.theme`，白名单仅 `androidx.compose`/`kotlin`/`kotlinx`/`java`；适配层 `FlowStructureDto ↔ 核心图模型` 互转无损（测试在 `FlowStructureAdapterTest`）。
 - [ ] **Step 2-4: 红→绿**（操作实现为不可变数据 + copy，便于 undo 快照）→ **Step 5: Commit** `feat(p8): 画布图模型与结构操作纯函数层`
 
 ### Task 6: 自动分层布局（纯函数）
 
-**Files:** Create `ui/flowcanvas/FlowCanvasLayout.kt`；Test `FlowCanvasLayoutTest.kt`
+**Files:** Create `flowcanvas/FlowCanvasLayout.kt`（核心层）；Test `FlowCanvasLayoutTest.kt`
 
 - [ ] **Step 1: 失败测试**：串行链纵向等距；并行组横向分列、组框包络子节点、超宽时分支换行（每行最多 3 列）；边锚点 = 上节点底中心→下节点顶中心，组边界处分叉/汇聚到组框锚点；输出 `CanvasLayout(nodeRects, groupRects, edges: List<EdgePath>)` 坐标确定性（同输入同输出）。
 - [ ] **Step 2-4: 红→绿**（节点固定尺寸 180×84dp 起步；布局算法 ~100 行：深度优先测量子树宽度 → 自上而下定位）→ **Step 5: Commit** `feat(p8): 画布自动分层布局算法`
 
 ### Task 7: FlowCanvas 渲染 + 手势
 
-**Files:** Create `ui/flowcanvas/FlowCanvas.kt`、`FlowNodeCard.kt`；Test：节点卡状态映射/手势换算用例（`FlowCanvasTest.kt`，逻辑层），视觉人工验收
+**Files:** Create `flowcanvas/FlowCanvas.kt`、`flowcanvas/FlowNodeCard.kt`（节点内容为 slot composable）、`flowcanvas/FlowCanvasTheme.kt`（核心层；颜色/字号/尺寸全参数化，BaBiQ 色板由适配层装配传入）；Test：节点卡状态映射/手势换算用例（`FlowCanvasTest.kt`，逻辑层），视觉人工验收
 
 - [ ] **Step 1: 失败测试**：缩放换算 `zoomAt(cursor, delta)` 保持光标下世界坐标不动（纯函数抽出）；缩放范围 clamp [0.4, 2.0]；节点状态→样式映射遵循 D14（主体中性底色 + 角色色点；pending 灰/running 强调色+呼吸/completed 绿勾/failed 红，**状态徽标互斥**——running 节点不得同时显示"空"徽标）；手势分工固定（D16）：节点区域拖动产生结构操作意图、空白区域拖动产生平移，无模式开关。
 - [ ] **Step 2-4: 红→绿**，渲染结构（关键骨架）：
@@ -305,7 +310,7 @@ cd backend
 
 ```powershell
 cd desktop
-.\gradlew.bat test --tests "*FlowGraphModelTest" --tests "*FlowCanvasLayoutTest" --tests "*FlowCanvasTest" --tests "*OrchestrationSectionTest" --tests "*WorkUnitModelsTest" --tests "*ThreadItemJsonTest" --tests "*ChatControllerTest"
+.\gradlew.bat test --tests "*FlowGraphModelTest" --tests "*FlowCanvasLayoutTest" --tests "*FlowCanvasTest" --tests "*FlowCanvasPortabilityTest" --tests "*FlowStructureAdapterTest" --tests "*OrchestrationSectionTest" --tests "*WorkUnitModelsTest" --tests "*ThreadItemJsonTest" --tests "*ChatControllerTest"
 .\gradlew.bat test --rerun-tasks
 ```
 

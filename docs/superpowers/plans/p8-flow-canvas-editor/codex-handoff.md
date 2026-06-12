@@ -42,6 +42,7 @@
 - D15 锚定浮层字段必须含：名称（重命名）/任务/**工具模式**/模型/删除。
 - D16 无拖拽模式开关；组标签不渲染技术 groupId；不做运行侧卡。
 - D17 对话编辑只动草稿、运行中拒绝、全量覆盖（`update_plan` 同语义）、emit WorkUnitItem 刷新、桌面草稿冲突提示 [加载最新]/[保留草稿]。
+- D18 **画布核心是可移植组件包**：核心层 `com.wzx.babiq.desktop.flowcanvas` 零 BaBiQ 业务依赖（禁止 import `desktop.protocol/state/ui.theme`，主题经 `FlowCanvasTheme` 参数注入、节点内容经 slot composable 注入），BaBiQ 接线全部在适配层 `ui/runtime/FlowStructureAdapter.kt`；由 `FlowCanvasPortabilityTest` 源码 import 守卫强制，**该测试不得用 @Disabled 绕过**。未来开源 = 拆独立 Gradle module，本期不做但边界必须现在守住。
 - 原型 nit 不跟随：帧 `399:874` 失败示例在末位节点、右上 chip 仍"运行中"是原型笔误——实现按正确语义（失败链路下游中止灰态、chip 状态机含"已失败"）。
 
 ## 实施顺序与提交约定
