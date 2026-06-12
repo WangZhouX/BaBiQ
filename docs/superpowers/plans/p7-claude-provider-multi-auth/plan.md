@@ -8,8 +8,8 @@
 
 **Tech Stack:** Spring AI 1.1.6（`spring-ai-anthropic` / `AnthropicApi` / `AnthropicChatModel`）、Spring AI Alibaba 1.1.2.3（不升级，`ReactAgent` 消费任意 `ChatModel`，无需改动）、SQLite + MyBatis-Plus + Flyway（V19）、JDK `ProcessBuilder`（ant CLI 桥接）、Compose Desktop（设置页扩展）。
 
-**Implementation status (2026-06-11):** 已按本计划完成核心代码修正：后端新增 Anthropic 官方 Provider、`auth_mode` 持久化、API Key/OAuth CLI 双模式、`provider/oauth/status` 与 `provider/oauth/login`；桌面端已接入 `authMode`、Claude OAuth 状态/登录按钮、五类 Provider 预设和复制 Provider。真实 Anthropic API Key / `ant auth login` 人工烟测仍需在具备账号和 CLI 的本机环境执行，见 §4。
-**Automated verification (2026-06-11):** 已完成后端定向测试、后端全量 `cd backend; .\mvnw.cmd clean verify`、桌面定向测试、桌面全量 `cd desktop; .\gradlew.bat test` 和 `cd desktop; .\gradlew.bat test --rerun-tasks`。本次自动化覆盖 Anthropic Provider 工厂、OAuth CLI token/status/login JSON-RPC、`auth_mode` 持久化、V19 schema 注释、Provider 列表兼容、桌面协议模型、设置页预设/复制/OAuth 状态流。
+**Implementation status (2026-06-12):** 已按本计划完成核心代码修正：后端新增 Anthropic 官方 Provider、`auth_mode` 持久化、API Key/OAuth CLI 双模式、`provider/oauth/status` 与 `provider/oauth/login`；桌面端已接入 `authMode`、Claude OAuth 状态/登录按钮、五类 Provider 预设和复制 Provider。2026-06-12 追加修复：OAuth Bearer 不再写入 build 阶段的 `defaultOptions`，改为 RestClient/WebClient 每次真实请求前动态注入；`provider/test` 对 OAuth Provider 显式检查 CLI token；Apache Ant 误命中会给出 `cli-path` 指引。真实 Anthropic API Key / `ant auth login` 人工烟测仍需在具备账号和 CLI 的本机环境执行，见 §4。
+**Automated verification (2026-06-12):** 已完成后端定向测试、后端全量 `cd backend; .\mvnw.cmd clean verify`、桌面定向测试、桌面全量 `cd desktop; .\gradlew.bat test` 和 `cd desktop; .\gradlew.bat test --rerun-tasks`。本次自动化覆盖 Anthropic Provider 工厂、OAuth CLI token/status/login JSON-RPC、`auth_mode` 持久化、V19 schema 注释、Provider 列表兼容、桌面协议模型、设置页预设/复制/OAuth 状态流；追加覆盖 OAuth 头语义（无 `x-api-key`、有动态 Bearer、beta 含 `oauth-2025-04-20`）、API Key fail-fast、TTL 过期重取和 Apache Ant 误判。
 
 ---
 
@@ -143,7 +143,7 @@ desktop/
 **Files:**
 - Modify: `backend/pom.xml`（在 `spring-ai-starter-model-openai` 依赖后）
 
-- [ ] **Step 1: 添加依赖（版本由 BOM 1.1.6 管理，不写显式版本号）**
+- [x] **Step 1: 添加依赖（版本由 BOM 1.1.6 管理，不写显式版本号）**
 
 ```xml
 <dependency>
@@ -152,12 +152,12 @@ desktop/
 </dependency>
 ```
 
-- [ ] **Step 2: 验证依赖解析与版本**
+- [x] **Step 2: 验证依赖解析与版本**
 
 Run: `cd backend; .\mvnw.cmd dependency:tree "-Dincludes=org.springframework.ai:spring-ai-anthropic"`
 Expected: 出现 `spring-ai-anthropic:jar:1.1.6:compile`，无版本冲突。
 
-- [ ] **Step 3: 编译通过即提交**
+- [x] **Step 3: 编译通过即提交**
 
 Run: `cd backend; .\mvnw.cmd -q compile`
 
@@ -176,7 +176,7 @@ git commit -m "build(p7): 引入 spring-ai-anthropic 1.1.6 模块"
 - Modify: `backend/src/main/java/com/wzx/babiq/server/model/ModelProviderConfig.java`
 - Test: `backend/src/test/java/com/wzx/babiq/server/model/ModelProviderRegistryTest.java`（增量用例）
 
-- [ ] **Step 1: 写失败测试（authMode 默认值与兼容构造）**
+- [x] **Step 1: 写失败测试（authMode 默认值与兼容构造）**
 
 ```java
 @Test
@@ -196,11 +196,11 @@ void oauth_cli_auth_mode_should_be_preserved() {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认编译失败（ANTHROPIC / ProviderAuthMode 不存在）**
+- [x] **Step 2: 跑测试确认编译失败（ANTHROPIC / ProviderAuthMode 不存在）**
 
 Run: `cd backend; .\mvnw.cmd -q "-Dtest=ModelProviderRegistryTest" test`
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 `ProviderAuthMode.java`（全量）：
 
@@ -247,11 +247,11 @@ public enum ProviderAuthMode {
 
 同时同步 `toString()` 输出 authMode（不输出密钥），并修复所有现有构造点编译（`BaBiQProperties` yaml 绑定记录、`ProviderSettingsService`、`ProviderTestController`、相关测试——兼容构造器应使绝大多数点零改动）。
 
-- [ ] **Step 4: 跑测试通过 + 全模块编译**
+- [x] **Step 4: 跑测试通过 + 全模块编译**
 
 Run: `cd backend; .\mvnw.cmd -q "-Dtest=ModelProviderRegistryTest,ModelMetadataTest,ChatClientFactoryTest" test`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git commit -m "feat(p7): 新增 ANTHROPIC Provider 类型与认证模式枚举"
@@ -266,13 +266,13 @@ git commit -m "feat(p7): 新增 ANTHROPIC Provider 类型与认证模式枚举"
 - Modify: `ProviderConfigEntity.java`、`ProviderConfigRecord.java`、`ProviderPersistenceService.java`
 - Test: `SchemaCommentsCoverageTest`（自动覆盖）、`RepositoryAdapterIT` 或 `ProviderSettingsServiceTest` 增量用例
 
-- [ ] **Step 1: 写失败测试（record 往返保留 authMode）**
+- [x] **Step 1: 写失败测试（record 往返保留 authMode）**
 
 在 `ProviderSettingsServiceTest` 增加：创建 `auth_mode=oauth_cli` 的 Provider → 重新加载 → authMode 不丢失、secretRef 允许为空。
 
-- [ ] **Step 2: 跑测试失败**
+- [x] **Step 2: 跑测试失败**
 
-- [ ] **Step 3: 写 migration（注意三件套：SQL 注释、bq_schema_comments、实体中文注释）**
+- [x] **Step 3: 写 migration（注意三件套：SQL 注释、bq_schema_comments、实体中文注释）**
 
 ```sql
 -- P7：Provider 认证模式。api_key=KeyStore 密钥；oauth_cli=官方 ant CLI 托管 OAuth 凭证。
@@ -296,12 +296,12 @@ INSERT OR REPLACE INTO bq_schema_comments(table_name, column_name, comment) VALU
 
 `ProviderConfigRecord` 增加 `String authMode` 组件并更新 `of(...)`；`ProviderPersistenceService` 双向映射。
 
-- [ ] **Step 4: 验证**
+- [x] **Step 4: 验证**
 
 Run: `cd backend; .\mvnw.cmd -q "-Dtest=SchemaCommentsCoverageTest,ProviderSettingsServiceTest" test`
 Expected: PASS（coverage 测试会强制 auth_mode 有非空中文说明）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git commit -m "feat(p7): V19 增加 provider auth_mode 字段并贯通持久层"
@@ -316,7 +316,7 @@ git commit -m "feat(p7): V19 增加 provider auth_mode 字段并贯通持久层"
 - Modify: `application.yml`（`babiq.anthropic.oauth.cli-path: ant`、`token-cache-seconds: 300`）+ 对应 `BaBiQProperties` 节点
 - Test: `settings/AnthropicOAuthCredentialSourceTest.java`、`settings/AntCliLoginLauncherTest.java`
 
-- [ ] **Step 1: 写失败测试（mock AntCliRunner，覆盖 4 个行为）**
+- [x] **Step 1: 写失败测试（mock AntCliRunner，覆盖 4 个行为）**
 
 ```java
 @Test
@@ -349,11 +349,11 @@ void login_launcher_should_not_use_short_command_timeout() {
 }
 ```
 
-- [ ] **Step 2: 跑测试失败**
+- [x] **Step 2: 跑测试失败**
 
 Run: `cd backend; .\mvnw.cmd -q "-Dtest=AnthropicOAuthCredentialSourceTest" test`
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 `AntCliRunner`：接口 + `AntCliResult(int exitCode, String stdout, String stderr)`；`DefaultAntCliRunner` 用 `ProcessBuilder`（可配置二进制路径；Windows 下若用户装了 Apache Ant 同名命令，靠 `cli-path` 指到 Anthropic CLI 全路径），**只用于短命令**：`ant --version`、`ant auth status`、`ant auth print-credentials --access-token`，超时 15s 销毁进程。
 
@@ -365,15 +365,14 @@ Run: `cd backend; .\mvnw.cmd -q "-Dtest=AnthropicOAuthCredentialSourceTest" test
 
 `AnthropicOAuthCredentialSource`：
 
-- `accessToken()`：TTL 内存缓存（`volatile` + 过期时间戳，注释说明为什么不用 SecretStore——见 D9）；CLI 失败抛带指引的 `IllegalStateException`。
-- `status()`：先执行 `ant --version` 判断 installed；再执行 `ant auth status` 得到 human-readable detail；最后可选执行 `ant auth print-credentials --access-token` 作为 loggedIn 的强判定。detail 必须截断且不得包含 token。
+- `accessToken()`：`synchronized` TTL 内存缓存（token + 过期时间戳，注释说明为什么不用 SecretStore——见 D9）；CLI 失败抛带 `ant auth login` / `cli-path` 指引的 `IllegalStateException`。
+- `status()`：先执行 `ant --version` 判断 CLI 是否可用并排除 Apache Ant 误命中；再复用 `accessToken()` 作为 loggedIn 的强判定。状态文案必须截断且不得包含 token。
 - `accessToken()` 必须调用 `ant auth print-credentials --access-token`，不能调用无 flag 的 `print-credentials`，因为无 flag 输出的是 credentials JSON，不能直接放进 Authorization header。
-- `invalidate()`：401 场景由工厂调用，清空缓存强制下次重取。
-- 行级中文注释覆盖：进程超时、缓存并发语义、为什么 stdout 只取首行非空内容。
+- 行级中文注释覆盖：进程超时、缓存过期语义、为什么 stdout 只取首行非空内容。
 
-- [ ] **Step 4: 跑测试通过**
+- [x] **Step 4: 跑测试通过**
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git commit -m "feat(p7): 新增 ant CLI 桥接与 OAuth 凭证源"
@@ -387,7 +386,7 @@ git commit -m "feat(p7): 新增 ant CLI 桥接与 OAuth 凭证源"
 - Create: `model/provider/AnthropicProviderFactory.java`
 - Test: `model/provider/AnthropicProviderFactoryTest.java`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```java
 @Test
@@ -425,9 +424,9 @@ void oauth_beta_features_should_append_oauth_beta() {
 }
 ```
 
-- [ ] **Step 2: 跑测试失败**
+- [x] **Step 2: 跑测试失败**
 
-- [ ] **Step 3: 实现（骨架，builder 方法名已在 §0 通过 Spring 官方文档、Context7 和本地 1.1.6 jar 确认）**
+- [x] **Step 3: 实现（骨架，builder 方法名已在 §0 通过 Spring 官方文档、Context7 和本地 1.1.6 jar 确认）**
 
 ```java
 /**
@@ -510,11 +509,11 @@ public class AnthropicProviderFactory implements ProviderFactory {
 
 （实现时补齐 `effectiveBaseUrl`——为空用 `AnthropicApi.DEFAULT_BASE_URL`、`requireText` 与 OpenAI 工厂同款报错文案、全部中文注释。）
 
-- [ ] **Step 4: 跑测试通过**
+- [x] **Step 4: 跑测试通过**
 
 Run: `cd backend; .\mvnw.cmd -q "-Dtest=AnthropicProviderFactoryTest" test`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git commit -m "feat(p7): 实现 Anthropic 双模式 ProviderFactory"
@@ -528,22 +527,22 @@ git commit -m "feat(p7): 实现 Anthropic 双模式 ProviderFactory"
 - Modify: `ModelMetadata.java`、`ProviderSettingsService.java`、`ProviderTestHandler.java`、`ProviderCreateHandler.java`、`ProviderUpdateHandler.java`、`ProviderPayloadMapper.java`（沿现有 Provider 设置路径，先读后改）
 - Test: `ModelMetadataTest`、`ProviderSettingsServiceTest`、`ProviderSettingsHandlersTest` 增量用例
 
-- [ ] **Step 1: 失败测试**：
+- [x] **Step 1: 失败测试**：
   - `contextWindowOf("claude-opus-4-8") == 1_000_000`、`claude-sonnet-4-6 == 1_000_000`、`claude-haiku-4-5 == 200_000`。
   - `provider/create` 请求 `type=ANTHROPIC, authMode=oauth_cli, apiKey=null` 能进入 service 并创建成功；不能被 `ProviderCreateHandler.draftFrom(..., true)` 提前拦截。
   - `provider/create` 请求 `type=ANTHROPIC, authMode=api_key, apiKey=null` 仍失败，错误消息明确要求 API Key。
   - `provider/create` 请求 `type=ANTHROPIC, authMode=oauth_cli, baseUrl=""` 可保存；持久化时 baseUrl 规范化为空字符串，运行时工厂用 `AnthropicApi.DEFAULT_BASE_URL`。
   - `provider/list` / `provider/update` 响应包含 `authMode`，且永远不包含明文 `apiKey` 或 OAuth token。
   - `provider/test` 对 API Key 模式仍复用 `ChatClientFactory.resolveChatModel`；对 OAuth 模式必须先调用 `AnthropicOAuthCredentialSource.accessToken()` 或等价强判定，未安装/未登录时返回失败，而不是只 build model 后误报成功。
-- [ ] **Step 2: 跑失败**
-- [ ] **Step 3: 实现**
+- [x] **Step 2: 跑失败**
+- [x] **Step 3: 实现**
   - `ModelMetadata` 加 `// Anthropic 系列（P7）` 注释块。
   - `ProviderDraft` 增加 `authMode` 字段；`ProviderCreateHandler` / `ProviderUpdateHandler` 先读取 `type` + `authMode`，再决定 `apiKey` 和 `baseUrl` 是否必填。
   - `ProviderSettingsService.validateRequired(...)` 按 `ProviderType` + `ProviderAuthMode` 分支：`ANTHROPIC + OAUTH_CLI` 不要求 apiKey；`ANTHROPIC` 允许 baseUrl 为空；其他既有 Provider 行为不变。
   - `ProviderPayloadMapper` 输出 `authMode`，旧桌面端未消费也不破坏兼容。
   - `ProviderTestHandler` / service 测试连接对 OAuth 模式触发 credential source 检查，错误文案包含 `ant auth login` 或 `cli-path` 指引。
-- [ ] **Step 4: 跑通过**
-- [ ] **Step 5: Commit** `feat(p7): 设置服务与测试连接支持 Anthropic 双模式`
+- [x] **Step 4: 跑通过**
+- [x] **Step 5: Commit** `feat(p7): 设置服务与测试连接支持 Anthropic 双模式`
 
 ---
 
@@ -553,14 +552,14 @@ git commit -m "feat(p7): 实现 Anthropic 双模式 ProviderFactory"
 - Create: `api/method/ProviderOAuthStatusHandler.java`、`api/method/ProviderOAuthLoginHandler.java`
 - Test: `api/method/ProviderOAuthHandlersTest.java`
 
-- [ ] **Step 1: 失败测试**：
+- [x] **Step 1: 失败测试**：
   - `provider/oauth/status` 返回 `{installed, loggedIn, detail}`；detail 脱敏、截断，不包含 `sk-ant-`、`Authorization`、refresh token。
   - `provider/oauth/login` 触发 `AntCliLoginLauncher.startLogin()`，立即返回 `{started:true}`，不阻塞 WebSocket 线程，也不使用 `DefaultAntCliRunner` 的 15s timeout。
   - CLI 未安装、`cli-path` 指向 Apache Ant 或不可执行时，返回明确错误码与安装/配置指引文案。
-- [ ] **Step 2: 跑失败**
-- [ ] **Step 3: 实现**（沿现有 `JsonRpcMethodHandler` 模式注册；login 由 `AntCliLoginLauncher` 启动，浏览器由 CLI 自己拉起；中文注释说明为什么不等待登录完成——桌面端轮询 status）
-- [ ] **Step 4: 跑通过**
-- [ ] **Step 5: Commit** `feat(p7): 新增 provider/oauth 状态与登录协议方法`
+- [x] **Step 2: 跑失败**
+- [x] **Step 3: 实现**（沿现有 `JsonRpcMethodHandler` 模式注册；login 由 `AntCliLoginLauncher` 启动，浏览器由 CLI 自己拉起；中文注释说明为什么不等待登录完成——桌面端轮询 status）
+- [x] **Step 4: 跑通过**
+- [x] **Step 5: Commit** `feat(p7): 新增 provider/oauth 状态与登录协议方法`
 
 ---
 
@@ -571,8 +570,8 @@ git commit -m "feat(p7): 实现 Anthropic 双模式 ProviderFactory"
 - Modify: `desktop/.../client/AgentClient.kt`（`providerOAuthStatus()`、`providerOAuthLogin()`）
 - Test: `SettingsModelsTest`、`AgentClientTest` 增量用例
 
-- [ ] **Step 1: 失败测试**（序列化往返含 authMode；缺省字段反序列化为 api_key；两个新方法的请求帧/响应解析） → **Step 2 跑失败** → **Step 3 实现** → **Step 4 跑通过**
-- [ ] **Step 5: Commit** `feat(p7): 桌面端 Provider 认证模式与 OAuth 协议模型`
+- [x] **Step 1: 失败测试**（序列化往返含 authMode；缺省字段反序列化为 api_key；两个新方法的请求帧/响应解析） → **Step 2 跑失败** → **Step 3 实现** → **Step 4 跑通过**
+- [x] **Step 5: Commit** `feat(p7): 桌面端 Provider 认证模式与 OAuth 协议模型`
 
 ---
 
@@ -582,12 +581,12 @@ git commit -m "feat(p7): 实现 Anthropic 双模式 ProviderFactory"
 - Modify: `desktop/.../ui/settings/SettingsPanel.kt`、`state/ChatController.kt`、`state/UiModels.kt`
 - Test: `SettingsPanelTest`、`ChatControllerTest` 增量用例
 
-- [ ] **Step 1: 失败测试**：
+- [x] **Step 1: 失败测试**：
   - 类型下拉含「Claude 官方」；选中且 authMode=oauth_cli 时隐藏 API Key 输入、显示 OAuth 状态区（未安装→安装指引；未登录→“去登录”按钮触发 `provider/oauth/login` 并开始轮询 status；已登录→绿色状态 chip）。
   - 预设按钮组 5 项（Claude官方-APIKey / Claude官方-OAuth / DeepSeek官方 / 阿里百炼 / OpenAI兼容中转），点选后表单预填。两个 Claude 官方预设都填 `baseUrl=https://api.anthropic.com`、模型默认 `claude-sonnet-4-6`、contextWindow `1000000`；OAuth 预设 `apiKey=null` 且 `authMode=oauth_cli`。
   - Provider 列表项新增「复制」：复制除 secretRef 外的全部字段，名称追加「-副本」，新行处于未保存编辑态。
-- [ ] **Step 2 跑失败** → **Step 3 实现**（沿现有 SettingsPanel 表单模式；轮询用现有协程作用域，间隔 2s、登录成功或 60s 超时停止）→ **Step 4 跑通过**
-- [ ] **Step 5: Commit** `feat(p7): 设置页支持 Claude 双模式、五类预设与复制 Provider`
+- [x] **Step 2 跑失败** → **Step 3 实现**（沿现有 SettingsPanel 表单模式；轮询用现有协程作用域，间隔 2s、登录成功或 60s 超时停止）→ **Step 4 跑通过**
+- [x] **Step 5: Commit** `feat(p7): 设置页支持 Claude 双模式、五类预设与复制 Provider`
 
 ---
 
@@ -612,7 +611,7 @@ cd desktop
 .\gradlew.bat test --rerun-tasks
 ```
 
-- [ ] **Step 3: 同步 CLAUDE.md / AGENTS.md**（当前检查点 + P7 验收命令 + 阶段边界：GPT OAuth 明确不做），与收尾提交一起。
+- [x] **Step 3: 同步 CLAUDE.md / AGENTS.md**（当前检查点 + P7 验收命令 + 阶段边界：GPT OAuth 明确不做）。
 - [ ] **Step 4: Commit** `docs(p7): 同步 Claude Provider 双模式检查点与验收命令`
 
 ---

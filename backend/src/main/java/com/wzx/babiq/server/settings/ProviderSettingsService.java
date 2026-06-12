@@ -33,6 +33,8 @@ public class ProviderSettingsService {
     private final ModelProviderRegistry registry;
     /** ChatClient 缓存工厂，Provider 更新后需要清理旧客户端。 */
     private final ObjectProvider<ChatClientFactory> chatClientFactoryProvider;
+    /** Anthropic OAuth CLI 凭证源，provider/test 需要显式检查登录状态。 */
+    private final ObjectProvider<AnthropicOAuthCredentialSource> anthropicOAuthCredentialSourceProvider;
 
     /**
      * 创建 Provider 设置服务。
@@ -45,11 +47,13 @@ public class ProviderSettingsService {
     public ProviderSettingsService(ProviderPersistenceService providerPersistenceService,
                                    SecretStore secretStore,
                                    ModelProviderRegistry registry,
-                                   ObjectProvider<ChatClientFactory> chatClientFactoryProvider) {
+                                   ObjectProvider<ChatClientFactory> chatClientFactoryProvider,
+                                   ObjectProvider<AnthropicOAuthCredentialSource> anthropicOAuthCredentialSourceProvider) {
         this.providerPersistenceService = providerPersistenceService;
         this.secretStore = secretStore;
         this.registry = registry;
         this.chatClientFactoryProvider = chatClientFactoryProvider;
+        this.anthropicOAuthCredentialSourceProvider = anthropicOAuthCredentialSourceProvider;
     }
 
     /**
@@ -193,7 +197,12 @@ public class ProviderSettingsService {
      */
     public ProviderTestResult testConnection(String providerId) {
         try {
-            chatClientFactoryProvider.getIfAvailable().resolveChatModel(providerId);
+            ModelProviderConfig providerConfig = registry.get(providerId);
+            if (providerConfig.type() == ProviderType.ANTHROPIC
+                    && providerConfig.effectiveAuthMode() == ProviderAuthMode.OAUTH_CLI) {
+                anthropicOAuthCredentialSourceProvider.getObject().accessToken();
+            }
+            chatClientFactoryProvider.getObject().resolveChatModel(providerId);
             return new ProviderTestResult(true, providerId, "Provider 配置可用");
         } catch (Exception exception) {
             return new ProviderTestResult(false, providerId, exception.getMessage());

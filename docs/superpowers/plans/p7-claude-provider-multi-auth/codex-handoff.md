@@ -8,6 +8,8 @@
 
 - **代码已完成并通过自动化验证**：后端新增 Anthropic 官方 Provider，支持 `api_key` 与 `oauth_cli` 两种认证模式；桌面端设置页已支持 Claude 双模式、OAuth 状态/登录按钮、五类 Provider 预设和复制 Provider。
 - **后端双模式链路已落地**：`ProviderType.ANTHROPIC`、`ProviderAuthMode`、`AnthropicProviderFactory`、`AnthropicOAuthCredentialSource`、`provider/oauth/status`、`provider/oauth/login` 已实现。
+- **2026-06-12 缓存语义修复已落地**：OAuth Bearer 不再在 `ChatModel` build 阶段写入 `defaultOptions`；`AnthropicProviderFactory` 改为 RestClient/WebClient 每次真实请求前动态读取 CLI access token，避免 `ChatClientFactory` 按 providerId 缓存后冻结短期 token。
+- **2026-06-12 自动化语义补齐**：测试已覆盖 OAuth 请求无 `x-api-key`、带动态 `Authorization: Bearer`、`anthropic-beta` 包含 `oauth-2025-04-20`、API Key 模式缺 key fail-fast、TTL 过期重取、Apache Ant 误判提示和 `provider/test` OAuth 登录状态检查。
 - **持久化已落地**：V19 migration 为 `bq_provider_configs` 增加 `auth_mode`，默认 `api_key`，并同步 `bq_schema_comments` 与 Entity 中文注释。
 - **桌面端已接入**：协议模型新增 `authMode` 与 OAuth DTO，`AgentClient`/`ChatController`/`SettingsPanel` 已贯通状态查询、登录启动、Provider 保存和复制。
 - **真实 Anthropic 人工烟测未执行**：需要本机具备 Anthropic API Key、官方 `ant` CLI、已完成 `ant auth login` 的账号环境。
@@ -22,10 +24,10 @@
 - `backend/src/main/java/com/wzx/babiq/server/model/ModelProviderConfig.java` 支持 `authMode`，并保留旧构造器兼容。
 - `backend/src/main/java/com/wzx/babiq/server/model/provider/AnthropicProviderFactory.java` 手工构建 `AnthropicApi` + `AnthropicChatModel`：
   - API Key 模式走 Spring AI 标准 `x-api-key`。
-  - OAuth CLI 模式用空 `SimpleApiKey("")` 抑制 `x-api-key`，请求时注入 `Authorization: Bearer <token>`。
+  - OAuth CLI 模式用空 `SimpleApiKey("")` 抑制 `x-api-key`，通过 RestClient/WebClient 拦截器在每次真实请求前动态注入 `Authorization: Bearer <token>`。
   - OAuth 模式追加 `anthropic-beta: oauth-2025-04-20`。
   - 默认 `maxTokens=4096`，避免 Anthropic Messages API 缺少 `max_tokens`。
-- `backend/src/main/java/com/wzx/babiq/server/settings/AnthropicOAuthCredentialSource.java` 通过官方 `ant auth print-credentials --access-token` 获取短期 access token，并只做内存 TTL 缓存。
+- `backend/src/main/java/com/wzx/babiq/server/settings/AnthropicOAuthCredentialSource.java` 通过官方 `ant auth print-credentials --access-token` 获取短期 access token，并只做内存 TTL 缓存；`status()` 会识别 Apache Ant 误命中并提示配置 `babiq.anthropic.oauth.cli-path`。
 - `backend/src/main/java/com/wzx/babiq/server/settings/DefaultAntCliLoginLauncher.java` 异步启动 `ant auth login`，不阻塞 JSON-RPC/WebSocket 线程。
 - `backend/src/main/java/com/wzx/babiq/server/api/method/ProviderOAuthStatusHandler.java` / `ProviderOAuthLoginHandler.java` 新增 OAuth 状态和登录协议。
 - `backend/src/main/resources/application.yml` 新增内置 `claude-oauth` Provider，以及 `babiq.anthropic.oauth.cli-path`、timeout、token cache 配置。
@@ -51,14 +53,23 @@ cd E:\BaBiQ\.worktrees\p7-claude-provider-multi-auth\backend
 .\mvnw.cmd -q "-Dtest=ProviderTestControllerIntegrationTest" test
 .\mvnw.cmd clean verify
 
+cd E:\BaBiQ\backend
+.\mvnw.cmd -q "-Dtest=AnthropicProviderFactoryTest,AnthropicOAuthCredentialSourceTest,ProviderSettingsServiceTest" test
+.\mvnw.cmd -q "-Dtest=AnthropicProviderFactoryTest,AnthropicOAuthCredentialSourceTest,ProviderOAuthHandlersTest,ProviderSettingsServiceTest,ProviderSettingsHandlersTest,ModelMetadataTest,ModelProviderRegistryTest,ProviderTestControllerIntegrationTest,SchemaCommentsCoverageTest" test
+.\mvnw.cmd clean verify
+
 cd E:\BaBiQ\.worktrees\p7-claude-provider-multi-auth\desktop
 .\gradlew.bat test --tests "*SettingsModelsTest" --tests "*AgentClientTest" --tests "*SettingsPanelTest" --tests "*ChatControllerTest"
 .\gradlew.bat test --tests "*SettingsPanelTest"
 .\gradlew.bat test
 .\gradlew.bat test --rerun-tasks
+
+cd E:\BaBiQ\desktop
+.\gradlew.bat test
+.\gradlew.bat test --rerun-tasks
 ```
 
-以上命令均已成功退出。`clean verify` 覆盖 V19 migration、`SchemaCommentsCoverageTest`、JSON-RPC 注册和后端集成测试；桌面端 `--rerun-tasks` 为真执行。
+以上命令均已成功退出。`clean verify` 覆盖 V19 migration、`SchemaCommentsCoverageTest`、JSON-RPC 注册和后端集成测试；桌面端 `--rerun-tasks` 为真执行。2026-06-12 增量验证覆盖 OAuth 动态 Bearer、头语义、TTL 过期重取、Apache Ant 误判、`provider/test` OAuth 登录检查，以及桌面全量回归。
 
 ## 尚未完成的人工烟测
 
@@ -88,4 +99,4 @@ cd E:\BaBiQ\.worktrees\p7-claude-provider-multi-auth\desktop
 
 1. 在真实 Anthropic 环境补人工烟测。
 2. 若 smoke 通过，更新本 handoff 和 `plan.md` 的人工烟测结果。
-3. 如需继续收口，可把 P7 检查点同步进仓库级 `AGENTS.md` / 阶段索引文档。
+3. 如需继续收口，可在新的 P7 收口阶段处理真实模型失败重试、Anthropic thinking 到 P5 `ReasoningItem` 映射或更细的 CLI 诊断文案。

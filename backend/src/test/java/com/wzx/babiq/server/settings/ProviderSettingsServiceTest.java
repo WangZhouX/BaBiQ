@@ -6,6 +6,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
@@ -13,6 +14,8 @@ import java.nio.file.Path;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
  * Provider 设置服务测试。
@@ -44,6 +47,8 @@ class ProviderSettingsServiceTest {
     private ProviderPersistenceService providerPersistenceService;
     @Autowired
     private SecretStore secretStore;
+    @MockBean
+    private AnthropicOAuthCredentialSource anthropicOAuthCredentialSource;
 
     @Test
     @DisplayName("创建 Provider 时明文 API Key 进入 SecretStore，数据库只保存 secretRef")
@@ -93,6 +98,29 @@ class ProviderSettingsServiceTest {
         assertThat(saved.authMode()).isEqualTo("oauth_cli");
         assertThat(saved.secretRef()).isNull();
         assertThat(saved.baseUrl()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("测试 Anthropic OAuth Provider 时必须检查 CLI 登录状态")
+    void test_connection_should_check_anthropic_oauth_cli_login_state() {
+        providerSettingsService.create(new ProviderSettingsService.ProviderDraft(
+                "claude-oauth-test",
+                "Claude OAuth Test",
+                "ANTHROPIC",
+                "oauth_cli",
+                "",
+                "claude-sonnet-4-6",
+                null,
+                0,
+                true));
+        when(anthropicOAuthCredentialSource.accessToken())
+                .thenThrow(new IllegalStateException("请先运行 ant auth login；如命中 Apache Ant 请配置 cli-path"));
+
+        ProviderSettingsService.ProviderTestResult result = providerSettingsService.testConnection("claude-oauth-test");
+
+        assertThat(result.ok()).isFalse();
+        assertThat(result.message()).contains("ant auth login").contains("cli-path");
+        verify(anthropicOAuthCredentialSource).accessToken();
     }
 
     @Test
