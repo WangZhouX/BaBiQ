@@ -25,8 +25,10 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -55,6 +57,7 @@ class WorkUnitManageToolTest {
                 "team",
                 "前端验收组",
                 "检查设置页",
+                null,
                 null,
                 toolContext(emitter));
 
@@ -87,6 +90,7 @@ class WorkUnitManageToolTest {
                 "start",
                 "team",
                 "前端验收组",
+                null,
                 null,
                 null,
                 new ToolContext(context));
@@ -126,6 +130,7 @@ class WorkUnitManageToolTest {
                 "html-test",
                 "new configured goal",
                 null,
+                null,
                 toolContext(emitter));
 
         assertThat(result.ok()).isTrue();
@@ -135,9 +140,31 @@ class WorkUnitManageToolTest {
     }
 
     @Test
-    void remove_should_soft_remove_work_unit_and_emit_removed_item() throws Exception {
+    void remove_should_require_explicit_confirmation_before_soft_remove() {
+        WorkUnitService service = mock(WorkUnitService.class);
+        WorkUnit workUnit = workUnit("wu_1", "orchestration", "登录页重构", "completed", "goal_1");
+        when(service.listVisible("thr_manage")).thenReturn(List.of(workUnit));
+
+        WorkUnitManageTool tool = new WorkUnitManageTool(service);
+        ToolResult result = tool.manage(
+                "remove",
+                null,
+                null,
+                null,
+                "wu_1",
+                null,
+                toolContext(null));
+
+        assertThat(result.ok()).isFalse();
+        assertThat(result.error()).contains("二次确认", "confirmed=true", "wu_1");
+        verify(service, never()).remove(anyString());
+    }
+
+    @Test
+    void remove_should_soft_remove_work_unit_after_confirmation_and_emit_removed_item() throws Exception {
         WorkUnitService service = mock(WorkUnitService.class);
         ItemEmitter emitter = mock(ItemEmitter.class);
+        WorkUnit workUnit = workUnit("wu_1", "orchestration", "登录页重构", "completed", "goal_1");
         WorkUnit removed = workUnit("wu_1", "orchestration", "登录页重构", "removed", "goal_1");
         WorkUnitItem removedItem = new WorkUnitItem(
                 "it_workunit_1",
@@ -150,6 +177,7 @@ class WorkUnitManageToolTest {
                 "拆分登录页流程",
                 1,
                 null);
+        when(service.listVisible("thr_manage")).thenReturn(List.of(workUnit));
         when(service.remove("wu_1")).thenReturn(removed);
         when(service.itemFor(removed)).thenReturn(removedItem);
 
@@ -160,6 +188,7 @@ class WorkUnitManageToolTest {
                 null,
                 null,
                 "wu_1",
+                true,
                 toolContext(emitter));
 
         assertThat(result.ok()).isTrue();
@@ -172,7 +201,7 @@ class WorkUnitManageToolTest {
     void missing_runtime_context_should_fail_fast() {
         WorkUnitManageTool tool = new WorkUnitManageTool(mock(WorkUnitService.class));
 
-        ToolResult result = tool.manage("append_goal", "team", "测试组", "目标", null, new ToolContext(Map.of()));
+        ToolResult result = tool.manage("append_goal", "team", "测试组", "目标", null, null, new ToolContext(Map.of()));
 
         assertThat(result.ok()).isFalse();
         assertThat(result.error()).contains("缺少");

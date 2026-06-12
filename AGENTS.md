@@ -257,6 +257,7 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
   - P6-2 flow 编排已完成自动化验收（`p6-2-flow-orchestration/`）：薄封装官方 `SequentialAgent / ParallelAgent / LlmRoutingAgent`，新增 `orchestrate_flow`、`orchestration` 协议 item、V14 编排持久化和桌面右侧编排面板；写用 approve-once（运行前整体批准 + 沙箱，4 条安全语义：沙箱硬边界 / 弹窗列清范围 / 批准后 flow 冻结 / 危险不可逆操作由沙箱禁止）；运行中逐工具审批 + 并发中断留 P6-2b；真实模型人工烟测尚未执行。
   - P6-3 团队协作已完成自动化验收（`p6-3-team-collaboration/`）：用 graph-core supervisor 模式（`StateGraph + 自定义 SupervisorNode + ReactAgent.asNode` 自搭）做 Leader 中枢协调；**注意 `SupervisorAgent` 类不在锁定的 1.1.2.3 jar（文档 v1.1.2.2 有，以本地 jar 为准）**；teammate 点对点真并发 swarm 留 P6-3b。
   - P6-4 slash 命名工作容器已完成自动化验收（`p6-4-slash-work-unit-commands/`）：桌面 `/编排`、`/团队` 解析为 `executionIntent`，后端确定性创建/复用 WorkUnit 并追加目标；slash 本身不自动执行，显式启动后才关联 goalId 并回写 flow/team 目标状态；右侧工作容器列表支持手动移除。
+  - P6-4 自然语言 WorkUnit 入口修订已完成（2026-06-11）：用户明确要求“使用编排 / flow / 团队 / team / 多 Agent 协作”时，主 Agent 必须先调用 `work_unit_manage` 创建/复用 WorkUnit 并提示右侧详情页配置；`orchestrate_flow` / `coordinate_team` 缺少 WorkUnit goalId 时拒绝裸跑，显式启动后的嵌套 flow/team 不再复用父 ReAct checkpoint 配置。
 - **下一步**：优先做 **P6-2 / P6-3 / P6-4 真实模型人工烟测**；通过后可补 **P6-2b 运行中逐节点工具审批 + 并发中断恢复**，或进入 **P6-4b WorkUnit 详情页增强**。
 
 如果仓库状态发生变化，不要盲信本检查点；必须重新核对代码、文档、测试和 `git status`。

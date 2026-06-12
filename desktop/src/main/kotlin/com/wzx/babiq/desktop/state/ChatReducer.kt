@@ -232,7 +232,7 @@ object ChatReducer {
 			)
 
 			is ThreadItem.Orchestration -> copy(
-				orchestrationState = OrchestrationUiState(current = item),
+				orchestrationState = orchestrationState.withCurrent(item),
 				runtimeExpanded = true,
 				runtimeEvents = runtimeEvents + RuntimeEvent(
 					id = item.id,

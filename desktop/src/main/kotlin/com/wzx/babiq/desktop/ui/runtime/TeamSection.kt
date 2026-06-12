@@ -15,6 +15,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -48,6 +49,7 @@ data class TeamSectionModel(
 	val sendingDirect: Boolean = false,
 	val config: WorkUnitDetailModel? = null,
 	val configMembers: List<TeamConfigMemberRow> = emptyList(),
+	val removeActionLabel: String? = null,
 )
 
 data class TeamMemberRow(
@@ -90,6 +92,7 @@ fun buildTeamSectionModel(
 			directError = state.directError,
 			sendingDirect = state.sendingDirect,
 			config = null,
+			removeActionLabel = runtimeRemoveActionLabel(team.status),
 		)
 	}
 	val config = state.configuringWorkUnit ?: return TeamSectionModel(false, "", "")
@@ -100,6 +103,7 @@ fun buildTeamSectionModel(
 		subtitle = "${statusLabel(config.status)} / ${config.goals.size} 个目标 / 等待手动启动",
 		config = detail,
 		configMembers = teamConfigMembers(detail),
+		removeActionLabel = detail.removeActionLabel,
 	)
 }
 
@@ -109,6 +113,8 @@ fun TeamSection(
 	modelLabel: String = "未选择模型",
 	providerState: ProviderState = ProviderState(),
 	onStartWorkUnit: (String) -> Unit = {},
+	onRemoveWorkUnit: (String) -> Unit = {},
+	onDismissTeam: () -> Unit = {},
 	onUpdateWorkUnitGoal: (String, String, String) -> Unit = { _, _, _ -> },
 	onUpdateWorkUnitConfig: (String, String) -> Unit = { _, _ -> },
 	onSendTeamMessage: (String, String) -> Unit = { _, _ -> },
@@ -137,8 +143,26 @@ fun TeamSection(
 			modifier = Modifier.fillMaxWidth().padding(12.dp),
 			verticalArrangement = Arrangement.spacedBy(10.dp),
 		) {
-			Text(model.title, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
-			Text(model.subtitle, style = MaterialTheme.typography.labelMedium, color = BaBiQColors.Muted)
+			Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+				Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+					Text(model.title, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
+					Text(model.subtitle, style = MaterialTheme.typography.labelMedium, color = BaBiQColors.Muted)
+				}
+				model.removeActionLabel?.let { label ->
+					TextButton(
+						onClick = {
+							val workUnitId = model.config?.workUnitId
+							if (workUnitId != null) {
+								onRemoveWorkUnit(workUnitId)
+							} else {
+								onDismissTeam()
+							}
+						},
+					) {
+						Text(label)
+					}
+				}
+			}
 			model.config?.let { config ->
 				TeamConfigPanel(
 					detail = config,
@@ -501,6 +525,9 @@ private fun statusLabel(status: String): String =
 		"canceled" -> "已取消"
 		else -> status
 	}
+
+private fun runtimeRemoveActionLabel(status: String): String? =
+	if (status.lowercase() in setOf("completed", "failed", "canceled")) "移除" else null
 
 private fun modeLabel(mode: String): String =
 	when (mode) {

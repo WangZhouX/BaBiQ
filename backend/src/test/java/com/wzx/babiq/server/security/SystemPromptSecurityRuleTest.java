@@ -44,6 +44,24 @@ class SystemPromptSecurityRuleTest {
     }
 
     @Test
+    void prompt_should_route_natural_language_orchestration_requests_to_work_unit() {
+        assertThat(SystemPromptSecurityRule.PROMPT)
+                .contains("work_unit_manage")
+                .contains("自然语言明确要求使用编排、流程、flow、团队、team 或多 Agent 协作")
+                .contains("不要直接调用 orchestrate_flow 或 coordinate_team")
+                .contains("右侧详情页")
+                .contains("显式启动已有 WorkUnit");
+    }
+
+    @Test
+    void prompt_should_require_double_confirmation_before_work_unit_remove() {
+        assertThat(SystemPromptSecurityRule.PROMPT)
+                .contains("二次确认")
+                .contains("confirmed=true")
+                .contains("移除 WorkUnit");
+    }
+
+    @Test
     void prompt_should_include_team_coordination_boundaries() {
         assertThat(SystemPromptSecurityRule.PROMPT)
                 .contains("coordinate_team")

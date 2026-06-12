@@ -19,6 +19,13 @@
 - 实现修订：WorkUnit 当前事实源使用 5 个状态：`waiting_config`、`running`、`completed`、`failed`、`removed`。原计划中的 `waiting_start` 没有独立落库；“待启动”是 `waiting_config` 下的 UI/业务提示含义。
 - 定向测试已通过；全量验证和最终提交见 `codex-handoff.md` 与本次完成报告。
 
+## 实施状态修订（2026-06-11）
+
+- **自然语言入口也必须走 WorkUnit**：slash 只是快捷入口；用户在普通对话中明确要求“使用编排 / flow / 团队 / team / 多 Agent 协作”时，主 Agent 也必须先调用 `work_unit_manage` 创建或复用工作容器，并提示用户在右侧详情页配置后显式启动。
+- **禁止裸跑真实执行工具**：`orchestrate_flow` 与 `coordinate_team` 只允许在显式启动 WorkUnit、且当前 `ToolContext` 已绑定 `WorkUnit goalId` 时运行；没有 goalId 时工具会直接返回配置提示，不创建 `bq_orchestrations` / `bq_teams` 运行记录。
+- **checkpoint 修复**：显式启动后，嵌套 flow/team 不再复用父 ReAct turn 的 `RunnableConfig`，避免父 checkpoint 被错误用于新建子图导致 `Resume request without a valid checkpoint!`。
+- 新增回归验证：`FlowOrchestrationToolWorkUnitTest`、`TeamCoordinationToolWorkUnitTest`、`SystemPromptSecurityRuleTest` 覆盖无 WorkUnit 拦截、自然语言 WorkUnit 提示和嵌套 flow 配置隔离。
+
 ## 0. 用户确认后的心智模型
 
 - `/子代理 <任务>`：一次性只读委派，不命名，不维护目标队列；结束后只保留本次委派摘要，可手动移除右侧卡片。
@@ -30,6 +37,7 @@
 - 用户可以通过和主 Agent 对话修改目标、追加目标、修改节点/成员职责或移除已完成容器，例如“让前端验收组继续检查技能页”“把 analyzer 的职责改成只核对原型差异”“移除登录页优化流程”。
 - 模型、Provider、高权限策略必须由用户在已有详情页手动配置；主 Agent 不自动替用户改模型配置。
 - 开始执行必须由用户显式触发：可以点击已有详情页里的“开始执行”，也可以在对话中明确告诉主 Agent 启动某个编排 / 团队。
+- 普通自然语言中的“用编排完成”“使用团队协作”不是启动信号，只是创建/复用 WorkUnit 的意图；必须先停在待配置 / 待启动，不能直接运行 `orchestrate_flow` 或 `coordinate_team`。
 - P6-4 原型只新增两个入口页：`P6-4 01 会话-斜杠创建编排容器`、`P6-4 02 会话-斜杠创建团队容器`。编排配置复用 `P6 06/07/08`，团队配置和执行复用 `P6 03/04/05`。
 
 ## 1. 范围
@@ -125,6 +133,12 @@ runRefId: team_... 或 orch_...
 - 用户点击详情页“开始执行”或明确说“启动某某编排/团队”时，才把目标切到 running，并由主 Agent 调用 `orchestrate_flow` / `coordinate_team`。
 
 > **确定性边界**：create / reuse / append-goal 全部在 `submit()` 路径服务端完成（slash intent 已含 mode+name+goal，无需模型判断），但这一步只创建“待配置 / 待启动”容器，不触发执行。`goalId` 只在用户显式启动时注入本轮 `ToolContext`；模型只负责在启动阶段调用 `coordinate_team` / `orchestrate_flow` 执行。`work_unit_manage` 工具保留给自然语言管理（修改目标/职责、补充 vs 排队、追加、移除、按用户要求启动）。这样去掉“模型必须先调 work_unit_manage 再串 goalId”的脆弱链，也避免 slash 命令绕过用户配置。
+
+### 2.5 自然语言入口与真实执行门控
+
+- 当用户自然语言明确要求“用编排 / flow / 团队 / team / 多 Agent 协作”时，主 Agent 的正确动作是调用 `work_unit_manage(action=append_goal, kind=orchestration|team, ...)`，不是直接调用 `orchestrate_flow` 或 `coordinate_team`。
+- `orchestrate_flow` / `coordinate_team` 是显式启动阶段的运行工具，只能在 `ToolContext` 已有 `babiq.workUnit.goalId` 时执行；缺少该上下文时必须拒绝并提示用户去右侧详情页配置和启动。
+- 该门控同样适用于真实模型烟测。烟测用语如果包含“请使用编排完成”，预期结果是生成 WorkUnit 和配置提示，而不是立即出现 `bq_orchestrations` / `bq_teams` 执行记录。
 
 ### 2.3 名称唯一
 

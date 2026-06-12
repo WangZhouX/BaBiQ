@@ -3,7 +3,7 @@
 > 状态：**草案，待用户确认**（2026-05-31 创建；同日完成原型评审与文档梳理）。
 > 本文件是 P6 大阶段的总纲，对标 `2026-05-21-p1-master.md` / `p2-master.md` / `p3-master.md`。
 > 确认后再按 §5.6 子阶段拆出各自的 `plan.md` + `codex-handoff.md`，逐子阶段实现并验收。
-> **进度**：调研结论已核对、UI 模型已评审定稿、Figma 原型已出 8 帧（见 §5.5）；P6-0 spike 已完成，P6-1 只读 `explorer` 子 Agent 委派已全量闭环；P6-2 flow 编排、P6-3 团队协作、P6-4 slash 命名工作容器均已完成代码实现和自动化验收，真实模型烟测按各子阶段 handoff 继续补齐。
+> **进度**：调研结论已核对、UI 模型已评审定稿、Figma 原型已出 8 帧（见 §5.5）；P6-0 spike 已完成，P6-1 只读 `explorer` 子 Agent 委派已全量闭环；P6-2 flow 编排、P6-3 团队协作、P6-4 slash/自然语言 WorkUnit 入口均已完成代码实现和自动化验收，真实模型烟测按各子阶段 handoff 继续补齐。
 
 ---
 
@@ -166,12 +166,19 @@
 - 桌面端（对应 P6 02 / 06 / 07 / 08）：对话 + 右侧「编排」卡 → 可展开「编排详情」分屏（拓扑 + 各节点状态）；点节点配「任务 / 模型」；「+ 添加 / ✕ 删除」节点（限顺序 / 并行结构，见 §5.4 分期边界）。**对话始终保留**。
 - 明确并行下的运行记录归属、token 归集、审批并发语义。
 - **2026-06-01 状态**：已落地 `orchestrate_flow` 工具、`OrchestrationItem` 协议、V14 编排持久化、桌面右侧编排卡，并通过后端专项 / 后端 `clean verify` / 桌面专项 / 桌面全量测试；真实模型烟测尚未执行。
+- **2026-06-11 修订**：`orchestrate_flow` 只能在显式启动 WorkUnit 且 `ToolContext` 已绑定 goalId 时运行；自然语言要求“用编排”先由 `work_unit_manage` 创建/复用 WorkUnit 并等待用户配置。嵌套 flow 不再复用父 ReAct `RunnableConfig`，避免误用父 checkpoint。
 
 #### P6-3：团队协作（Supervisor 中枢协调，对标 Claude Code swarm 的 hub-and-spoke）
 - Leader（主 Agent）迭代协调少量常驻 teammate（explorer/worker），消息经 Leader 中转（hub-and-spoke）；teammate 点对点互发（同时在线、不经 Leader）留 **P6-3b**。
 - 桌面端（对应 P6 03 / 05）：对话 + 右侧「团队」卡 + 消息时间线 → 可展开「团队执行」分屏；可切换「对话对象」直接喊话某常驻子 Agent。**对话始终保留**。
 - **用 graph-core supervisor 模式薄搭**（`StateGraph` + `SupervisorNode` 路由 teammate/`FINISH` + `ReactAgent.asNode` teammates + 共享 `MemorySaver`）；teammate = 官方 `ReactAgent`，approve-once 组队级授权。**注**：`SupervisorAgent` 类在文档（v1.1.2.2）但**不在 1.1.2.3 jar**（已 `jar tf` 核对），故用 graph-core 原语自搭。
 - **仅限本机进程内协作**；跨网络 A2A 仍划后续阶段。
+- **2026-06-11 修订**：`coordinate_team` 只能在显式启动 WorkUnit 且 `ToolContext` 已绑定 goalId 时运行；自然语言要求“用团队”先由 `work_unit_manage` 创建/复用 WorkUnit 并等待用户配置。团队 graph 使用自己的 child config，不复用父 turn checkpoint。
+
+#### P6-4：slash / 自然语言 WorkUnit 入口（显式配置与启动闸门）
+- slash `/编排`、`/团队` 是确定性快捷入口：服务端 create/reuse/append-goal 后停在待配置 / 待启动，不进入模型执行。
+- 普通自然语言中的“使用编排 / flow / 团队 / team / 多 Agent 协作”也走同一心智模型：主 Agent 先调用 `work_unit_manage` 准备 WorkUnit，并提示用户去右侧详情页检查节点/成员、模型、工具权限、写入范围和沙箱策略。
+- `orchestrate_flow` / `coordinate_team` 是显式启动阶段的运行工具；缺少 WorkUnit goalId 时必须拒绝裸跑，不写入 `bq_orchestrations` / `bq_teams` 运行记录。
 
 ---
 
@@ -230,6 +237,6 @@
 
 ## 10. 下一步
 
-1. 对 P6-2 / P6-3 / P6-4 做真实模型人工烟测：验证显式创建 WorkUnit、详情页配置、用户显式启动后 flow/team 执行、右侧面板状态和运行记录归属。
+1. 对 P6-2 / P6-3 / P6-4 做真实模型人工烟测：验证自然语言或 slash 先创建/复用 WorkUnit、详情页配置、用户显式启动后 flow/team 执行、右侧面板状态和运行记录归属；自然语言“请使用编排/团队完成”不得直接跑 `orchestrate_flow` / `coordinate_team`。
 2. 烟测通过后，优先决策进入 **P6-2b**（运行中逐节点工具审批 / 并发中断恢复补强）或 **P6-4b**（WorkUnit 详情页更强编辑、跳转和批量目标管理）。
 3. 每子阶段继续遵循：详细 plan → codex-handoff → TDD 实现 → 自动化 + 真实烟测 → 文档同步（CLAUDE.md / AGENTS.md / p6-task-index）。

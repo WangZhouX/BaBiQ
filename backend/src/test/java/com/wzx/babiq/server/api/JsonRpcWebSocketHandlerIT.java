@@ -2,6 +2,7 @@ package com.wzx.babiq.server.api;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wzx.babiq.server.agent.ReActStrategy;
 import com.wzx.babiq.server.agent.TurnExecutor;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -52,6 +53,12 @@ class JsonRpcWebSocketHandlerIT {
         @Primary
         TurnExecutor turnExecutor() {
             return mock(TurnExecutor.class);
+        }
+
+        @Bean
+        @Primary
+        ReActStrategy reActStrategy() {
+            return mock(ReActStrategy.class);
         }
     }
 

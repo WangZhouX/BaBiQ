@@ -21,9 +21,27 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.startsWith;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class TeamCoordinationToolWorkUnitTest {
+
+    @Test
+    void coordinate_team_should_refuse_without_work_unit_start_context() {
+        TeamCoordinationService coordinationService = mock(TeamCoordinationService.class);
+        TeamRepository repository = mock(TeamRepository.class);
+        WorkUnitService workUnitService = mock(WorkUnitService.class);
+        TeamCoordinationTool tool = new TeamCoordinationTool(
+                coordinationService,
+                repository,
+                new TeamApprovalService(),
+                workUnitService);
+
+        String output = tool.coordinateTeam("梳理登录页", List.of(), 2, noWorkUnitContext());
+
+        assertThat(output).contains("WorkUnit", "工作容器", "右侧详情页", "启动");
+        verifyNoInteractions(coordinationService, repository, workUnitService);
+    }
 
     @Test
     void coordinate_team_should_link_current_work_unit_goal() {
@@ -68,6 +86,11 @@ class TeamCoordinationToolWorkUnitTest {
     private ToolContext toolContext(String goalId) {
         return new ToolContext(Map.of(
                 WorkUnitContextKeys.GOAL_ID, goalId,
+                BaBiQSandboxInterceptor.CONTEXT_SANDBOX_MODE, SandboxMode.READ_ONLY.name()));
+    }
+
+    private ToolContext noWorkUnitContext() {
+        return new ToolContext(Map.of(
                 BaBiQSandboxInterceptor.CONTEXT_SANDBOX_MODE, SandboxMode.READ_ONLY.name()));
     }
 }

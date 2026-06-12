@@ -72,6 +72,24 @@ class TeamSectionTest {
 		assertEquals("supervisor -> explorer / 路由 / 第 2 轮", model.messages.single().meta)
 		assertTrue(model.messages.single().preview.length <= 80)
 		assertEquals(null, model.config)
+		assertEquals(null, model.removeActionLabel)
+	}
+
+	@Test
+	fun `completed team runtime model exposes dismiss action`() {
+		val team = ThreadItem.Team(
+			id = "it_team_1",
+			teamId = "team_1",
+			title = "failed team",
+			status = "failed",
+			summary = "checkpoint failed",
+			members = emptyList(),
+		)
+
+		val model = buildTeamSectionModel(TeamUiState(current = team), modelLabel = "deepseek-v4-pro")
+
+		assertTrue(model.visible)
+		assertEquals("移除", model.removeActionLabel)
 	}
 
 	@Test
@@ -112,6 +130,7 @@ class TeamSectionTest {
 		assertEquals(listOf("leader", "frontend"), model.configMembers.map { it.memberId })
 		assertEquals("检查 Compose UI", model.configMembers.first { it.memberId == "frontend" }.task)
 		assertEquals("provider:qwen:qwen-plus", model.configMembers.first { it.memberId == "frontend" }.modelValue)
+		assertEquals("移除", model.removeActionLabel)
 	}
 
 	@Test

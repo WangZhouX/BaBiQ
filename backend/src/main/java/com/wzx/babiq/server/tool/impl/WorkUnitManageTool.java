@@ -61,7 +61,7 @@ public class WorkUnitManageTool implements Tool {
 
     @org.springframework.ai.tool.annotation.Tool(
             name = "work_unit_manage",
-            description = "管理 BaBiQ 命名工作容器：创建/复用编排或团队、追加目标、修改待配置目标、关联待启动目标、移除已结束容器",
+            description = "管理 BaBiQ 命名工作容器：创建/复用编排或团队、追加目标、修改待配置目标、关联待启动目标、二次确认后移除已结束容器",
             resultConverter = DefaultToolCallResultConverter.class)
     public ToolResult manage(
             @ToolParam(description = "动作：append_goal/create/update_goal/start/remove，也可使用中文 创建/追加/修改目标/启动/移除")
@@ -74,6 +74,8 @@ public class WorkUnitManageTool implements Tool {
             String goal,
             @ToolParam(description = "容器 id；remove 或 start 可直接指定", required = false)
             String workUnitId,
+            @ToolParam(description = "仅 remove 动作使用。必须在用户明确二次确认后传 true；未确认时不要移除容器", required = false)
+            Boolean confirmed,
             ToolContext toolContext) {
         RuntimeContext runtime = runtime(toolContext);
         if (runtime == null) {
@@ -83,7 +85,7 @@ public class WorkUnitManageTool implements Tool {
             case ACTION_APPEND_GOAL -> appendGoal(kind, name, goal, runtime);
             case ACTION_UPDATE_GOAL -> updateGoal(kind, name, goal, workUnitId, runtime);
             case ACTION_START -> bindStartGoal(kind, name, workUnitId, runtime);
-            case ACTION_REMOVE -> remove(kind, name, workUnitId, runtime);
+            case ACTION_REMOVE -> remove(kind, name, workUnitId, Boolean.TRUE.equals(confirmed), runtime);
             default -> ToolResult.failure("不支持的工作容器动作: " + action);
         };
     }
@@ -105,7 +107,7 @@ public class WorkUnitManageTool implements Tool {
         emitAdded(runtime.emitter, item);
         return ToolResult.ok("已准备工作容器 " + item.workUnitId()
                 + "，当前目标 " + item.activeGoalId()
-                + "。这只是配置/排队，尚未启动真实执行。");
+                + "。这只是配置/排队，尚未启动真实执行；请在右侧详情页检查节点/成员、模型、工具权限、写入范围和沙箱策略后，再显式启动。");
     }
 
     private ToolResult bindStartGoal(String kind, String name, String workUnitId, RuntimeContext runtime) {
@@ -148,16 +150,18 @@ public class WorkUnitManageTool implements Tool {
                 + "，新的目标为: " + updatedGoal.goalText());
     }
 
-    private ToolResult remove(String kind, String name, String workUnitId, RuntimeContext runtime) {
-        String targetId = !isBlank(workUnitId)
-                ? workUnitId.trim()
-                : findWorkUnit(kind, name, null, runtime.observation.threadId())
-                .map(WorkUnit::workUnitId)
+    private ToolResult remove(String kind, String name, String workUnitId, boolean confirmed, RuntimeContext runtime) {
+        WorkUnit target = findWorkUnit(kind, name, workUnitId, runtime.observation.threadId())
                 .orElse(null);
-        if (targetId == null) {
+        if (target == null) {
             return ToolResult.failure("找不到要移除的工作容器");
         }
-        WorkUnit removed = service.remove(targetId);
+        if (!confirmed) {
+            return ToolResult.failure("移除 WorkUnit 需要二次确认。目标: "
+                    + target.kind() + " / " + target.name() + " / " + target.workUnitId()
+                    + "。请先向用户说明将软移除此编排或团队，确认审计记录仍保留；只有用户明确确认后，才能再次调用 work_unit_manage remove 并传 confirmed=true。");
+        }
+        WorkUnit removed = service.remove(target.workUnitId());
         WorkUnitItem item = service.itemFor(removed);
         emitUpdated(runtime.emitter, item);
         return ToolResult.ok("已移除工作容器 " + removed.workUnitId() + "，审计记录仍保留。");

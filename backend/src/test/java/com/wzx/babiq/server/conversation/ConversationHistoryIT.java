@@ -2,6 +2,7 @@ package com.wzx.babiq.server.conversation;
 
 import com.wzx.babiq.server.api.dto.ThreadLoadResult;
 import com.wzx.babiq.server.api.dto.ThreadListResult;
+import com.wzx.babiq.server.agent.ReActStrategy;
 import com.wzx.babiq.server.conversation.items.AgentMessageItem;
 import com.wzx.babiq.server.conversation.items.TurnSummaryItem;
 import com.wzx.babiq.server.conversation.items.UserMessageItem;
@@ -9,6 +10,9 @@ import com.wzx.babiq.server.conversation.repository.ConversationRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Primary;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
@@ -16,6 +20,7 @@ import java.nio.file.Path;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 
 /**
  * P2-2 会话历史集成测试。
@@ -34,6 +39,16 @@ class ConversationHistoryIT {
     @DynamicPropertySource
     static void persistenceProperties(DynamicPropertyRegistry registry) {
         registry.add("babiq.persistence.database-path", () -> TEST_DB.toString());
+    }
+
+    @TestConfiguration
+    static class MockAgentConfig {
+
+        @Bean
+        @Primary
+        ReActStrategy reActStrategy() {
+            return mock(ReActStrategy.class);
+        }
     }
 
     @Autowired

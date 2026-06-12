@@ -260,17 +260,25 @@ data class SubAgentUiState(
 data class OrchestrationUiState(
 	val current: ThreadItem.Orchestration? = null,
 	val configuringWorkUnit: WorkUnitInfo? = null,
+	val dismissedOrchestrationId: String? = null,
 ) {
 	/** 是否有可展示的流程编排轨迹。 */
 	val visible: Boolean
-		get() = current != null || configuringWorkUnit != null
+		get() = (current != null && current.orchestrationId != dismissedOrchestrationId) || configuringWorkUnit != null
 
 	/** 终态用于 UI 样式区分；终态仍保留在右侧面板，方便用户复盘节点结果。 */
 	val terminal: Boolean
 		get() = current?.status?.lowercase() in setOf("completed", "failed", "canceled")
 
+	fun withCurrent(item: ThreadItem.Orchestration): OrchestrationUiState =
+		copy(
+			current = item,
+			configuringWorkUnit = null,
+			dismissedOrchestrationId = dismissedOrchestrationId.takeIf { it == item.orchestrationId },
+		)
+
 	fun withConfiguration(info: WorkUnitInfo): OrchestrationUiState =
-		OrchestrationUiState(current = null, configuringWorkUnit = info)
+		OrchestrationUiState(configuringWorkUnit = info)
 
 	fun refreshConfiguration(info: WorkUnitInfo?): OrchestrationUiState =
 		if (configuringWorkUnit != null && info != null && info.kind.equals("orchestration", ignoreCase = true)) {
@@ -278,6 +286,9 @@ data class OrchestrationUiState(
 		} else {
 			this
 		}
+
+	fun dismissCurrent(): OrchestrationUiState =
+		copy(dismissedOrchestrationId = current?.orchestrationId)
 }
 
 /**
@@ -297,6 +308,7 @@ data class OrchestrationUiState(
 data class TeamUiState(
 	val current: ThreadItem.Team? = null,
 	val configuringWorkUnit: WorkUnitInfo? = null,
+	val dismissedTeamId: String? = null,
 	val messages: List<ThreadItem.TeamMessage> = emptyList(),
 	val selectedAgent: String? = null,
 	val directDraft: String = "",
@@ -305,7 +317,7 @@ data class TeamUiState(
 ) {
 	/** 是否有可展示的团队协作轨迹。 */
 	val visible: Boolean
-		get() = current != null || configuringWorkUnit != null
+		get() = (current != null && current.teamId != dismissedTeamId) || configuringWorkUnit != null
 
 	/** 团队是否已进入终态；终态仍保留给用户复盘，不自动隐藏。 */
 	val terminal: Boolean
@@ -331,6 +343,7 @@ data class TeamUiState(
 		return copy(
 			current = item,
 			configuringWorkUnit = null,
+			dismissedTeamId = dismissedTeamId.takeIf { it == item.teamId },
 			messages = nextMessages,
 			selectedAgent = nextSelected,
 			directError = null,
@@ -364,6 +377,9 @@ data class TeamUiState(
 	/** 更新右侧直发目标成员。 */
 	fun selectAgent(agentName: String): TeamUiState =
 		if (memberNames.contains(agentName)) copy(selectedAgent = agentName) else this
+
+	fun dismissCurrent(): TeamUiState =
+		copy(dismissedTeamId = current?.teamId)
 }
 
 /**

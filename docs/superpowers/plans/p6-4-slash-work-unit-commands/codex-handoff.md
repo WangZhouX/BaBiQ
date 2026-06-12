@@ -12,6 +12,8 @@
 - **桌面端已接入**：右侧运行详情新增工作容器列表，容器不会进入聊天正文；已完成或空闲容器支持手动移除，运行中由后端拒绝。
 - 这是在已有 P6-1/2/3 之上加一层**显式入口（slash）+ 命名可复用容器（WorkUnit）**；**复用现有执行引擎，不重写**。
 - 技术可行性已 Context7 + 现有代码双确认（见下）。
+- **2026-06-11 修订**：普通自然语言明确要求“使用编排 / flow / 团队 / team / 多 Agent 协作”时，也必须先走 `work_unit_manage` 创建/复用 WorkUnit 并提示右侧详情页配置；`orchestrate_flow` / `coordinate_team` 缺少 `ToolContext` goalId 会拒绝裸跑。显式启动后的嵌套 flow/team 不再复用父 ReAct `RunnableConfig`，避免触发 `Resume request without a valid checkpoint!`。
+- **2026-06-12 修订**：WorkUnit / 编排 / 团队移除必须二次确认。右侧页面手动移除先弹确认；Agent 通过 `work_unit_manage remove` 移除时，未传 `confirmed=true` 会失败并提示先向用户确认。WorkUnit 仍只软移除并保留审计；已结束的编排/团队运行卡片只做桌面端本地隐藏。
 
 ## 本次完成证据
 
@@ -30,6 +32,7 @@ cd E:\BaBiQ\backend
 .\mvnw.cmd "-Dtest=WorkUnitManageToolTest" test
 .\mvnw.cmd "-Dtest=FlowOrchestrationToolWorkUnitTest,TeamCoordinationToolWorkUnitTest,WorkUnitServiceTest,WorkUnitHandlersTest,WorkUnitManageToolTest" test
 .\mvnw.cmd "-Dtest=WorkUnitSlashIntentIT" test
+.\mvnw.cmd "-Dtest=FlowOrchestrationToolWorkUnitTest,TeamCoordinationToolWorkUnitTest,SystemPromptSecurityRuleTest" test
 
 cd E:\BaBiQ\desktop
 .\gradlew.bat test --tests "*ThreadItemJsonTest.can parse work unit item" --tests "*ChatReducerTest.work unit item updates runtime state without adding chat message" --tests "*ChatReducerTest.removed work unit item disappears from runtime state" --tests "*ChatReducerTest.work unit state from history keeps visible units and ignores removed units" --tests "*WorkUnitSectionTest" --tests "*ChatControllerTest.removeWorkUnit calls backend and hides runtime item" --tests "*AgentClientTest.work unit interfaces can list and remove containers"
@@ -54,6 +57,8 @@ plan 已整体改为下面这套；落地时**以此为准**：
 6. **slash create-only 不注入模型指令**：slash 创建容器后直接完成 turn，不进入 AgentLoop，因此不需要 `WorkUnitIntentInstructionBuilder`；显式启动阶段才通过 ToolContext 关联 goalId。
 7. **审批闸门必须保留**：用户显式启动 flow/team 时仍走 P6-2/P6-3 approve-once 弹窗——**补测试钉死**（启动时弹审批、批准后才执行）。
 8. **名称唯一包事务**：create-or-reuse 用 `TransactionTemplate`（复用压缩链路同款）防 TOCTOU。
+9. **自然语言请求不是启动许可**：用户说“请使用编排/团队完成”只表示要准备对应 WorkUnit。主 Agent 必须先调用 `work_unit_manage`，并提示用户在右侧详情页检查节点/成员、模型、工具权限、写入范围和沙箱策略；不得直接调用 `orchestrate_flow` / `coordinate_team`。
+10. **运行工具硬门控**：`orchestrate_flow` / `coordinate_team` 没有 WorkUnit goalId 时返回配置提示，不写运行记录、不调用执行服务；显式启动后 flow/team 使用自己的 child graph config，不复用父 turn checkpoint。
 
 ## 已验证的官方/现有机制（Context7 + 本地代码，直接用）
 

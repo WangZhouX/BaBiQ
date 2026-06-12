@@ -56,6 +56,7 @@ data class WorkUnitDetailModel(
 	val statusLabel: String,
 	val modelLabel: String,
 	val startActionLabel: String?,
+	val removeActionLabel: String?,
 	val editableGoalId: String?,
 	val editableGoalText: String?,
 	val configuration: WorkUnitConfiguration? = null,
@@ -147,6 +148,7 @@ fun WorkUnitConfigCard(
 	detail: WorkUnitDetailModel,
 	onStart: (String) -> Unit,
 	onUpdateGoal: (String, String, String) -> Unit,
+	onRemove: (String) -> Unit = {},
 ) {
 	var draftGoal by remember(detail.editableGoalId, detail.editableGoalText) {
 		mutableStateOf(detail.editableGoalText ?: "")
@@ -176,6 +178,9 @@ fun WorkUnitConfigCard(
 				detail.startActionLabel?.let { label ->
 					Button(onClick = { onStart(detail.workUnitId) }) { Text(label) }
 				}
+				detail.removeActionLabel?.let { label ->
+					TextButton(onClick = { onRemove(detail.workUnitId) }) { Text(label) }
+				}
 			}
 		}
 		Text("目标队列", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
@@ -198,6 +203,7 @@ fun workUnitDetailModel(info: WorkUnitInfo, modelLabel: String): WorkUnitDetailM
 		statusLabel = statusLabel(info.status),
 		modelLabel = modelLabel.ifBlank { "未选择模型" },
 		startActionLabel = startActionLabel(info),
+		removeActionLabel = removeActionLabel(info.status, info.removed),
 		editableGoalId = editableGoal(info)?.goalId,
 		editableGoalText = editableGoal(info)?.goalText,
 		configuration = info.configuration,
@@ -238,6 +244,13 @@ private fun startActionLabel(info: WorkUnitInfo): String? =
 		null
 	} else {
 		"开始执行"
+	}
+
+private fun removeActionLabel(status: String, removed: Boolean): String? =
+	if (removed || status.equals("running", ignoreCase = true) || status.equals("removed", ignoreCase = true)) {
+		null
+	} else {
+		"移除"
 	}
 
 private fun detailActionLabel(item: ThreadItem.WorkUnit): String {

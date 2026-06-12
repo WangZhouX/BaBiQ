@@ -4,7 +4,6 @@ import com.alibaba.cloud.ai.graph.CompileConfig;
 import com.alibaba.cloud.ai.graph.CompiledGraph;
 import com.alibaba.cloud.ai.graph.KeyStrategy;
 import com.alibaba.cloud.ai.graph.OverAllState;
-import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.StateGraph;
 import com.alibaba.cloud.ai.graph.action.AsyncEdgeAction;
 import com.alibaba.cloud.ai.graph.action.AsyncNodeAction;
@@ -66,10 +65,7 @@ public class TeamCoordinationService {
                     .build();
             StateGraph graph = buildGraph(spec, safeContext(parentToolContext), saver, compileConfig);
             CompiledGraph compiledGraph = graph.compile(compileConfig);
-            RunnableConfig runnableConfig = runnableConfig(parentToolContext);
-            OverAllState finalState = runnableConfig == null
-                    ? compiledGraph.invoke(Map.of("input", spec.goal())).orElse(null)
-                    : compiledGraph.invoke(Map.of("input", spec.goal()), runnableConfig).orElse(null);
+            OverAllState finalState = compiledGraph.invoke(Map.of("input", spec.goal())).orElse(null);
             int round = readRound(finalState);
             String currentAgent = finalState == null ? null : String.valueOf(finalState.value("next", "FINISH"));
             return new TeamExecutionResult("completed", "团队协作已完成", round, currentAgent);
@@ -201,9 +197,4 @@ public class TeamCoordinationService {
         return parentToolContext == null ? new ToolContext(Map.of()) : parentToolContext;
     }
 
-    private RunnableConfig runnableConfig(ToolContext parentToolContext) {
-        Object candidate = parentToolContext == null ? null
-                : parentToolContext.getContext().get(com.wzx.babiq.server.agent.delegation.SubAgentRuntimeFactory.AGENT_CONFIG_KEY);
-        return candidate instanceof RunnableConfig config ? config : null;
-    }
 }

@@ -41,6 +41,11 @@ public class TeamCoordinationTool implements Tool {
 
     /** 协议 item 类型。 */
     private static final String TYPE = "team";
+    /** 未从 WorkUnit 显式启动时的拒绝提示。 */
+    private static final String MISSING_WORK_UNIT_START_CONTEXT = """
+            无法直接启动团队协作：当前 turn 没有绑定 WorkUnit goalId。
+            请先使用 work_unit_manage 创建或复用团队工作容器，在右侧详情页完成成员、模型、权限和写入范围配置后，再显式启动该 WorkUnit。
+            """;
 
     /** 团队运行服务，负责构建官方 StateGraph。 */
     private final TeamCoordinationService coordinationService;
@@ -91,6 +96,8 @@ public class TeamCoordinationTool implements Tool {
                     Coordinate a supervisor-led multi-agent team using Spring AI Alibaba StateGraph and shared MemorySaver.
                     团队协作、主管调度、队友、team、supervisor、多 Agent 协作。Use this only when the user explicitly
                     asks for a team of agents or the task needs coordinated teammates; simple one-step tasks should not use it.
+                    Only call this after an explicit WorkUnit start has bound a goalId. For natural language requests to
+                    use a team, call work_unit_manage first and ask the user to configure/start the WorkUnit.
                     """)
     public String coordinateTeam(
             @ToolParam(description = "团队整体目标，必须说明完成标准") String goal,
@@ -98,6 +105,10 @@ public class TeamCoordinationTool implements Tool {
             List<TeamMemberInput> members,
             @ToolParam(description = "supervisor 最多调度轮数，默认 4，最大 12", required = false) Integer maxRounds,
             ToolContext toolContext) {
+        String workUnitGoalId = workUnitGoalId(toolContext);
+        if (workUnitGoalId == null) {
+            return MISSING_WORK_UNIT_START_CONTEXT.trim();
+        }
         TurnObservationContext observation = observation(toolContext);
         ItemEmitter emitter = emitter(toolContext);
         SandboxMode sandboxMode = sandboxMode(toolContext);
@@ -108,7 +119,6 @@ public class TeamCoordinationTool implements Tool {
         }
         repository.save(record(spec, observation, cwd, "running", "团队协作已审批并开始执行", null, 0, null),
                 memberRecords(spec, "pending", 0, 0, null));
-        String workUnitGoalId = WorkUnitContextKeys.goalId(toolContext);
         markWorkUnitGoalRunning(workUnitGoalId, spec.teamId());
         emit(emitter, item(spec, "running", "团队协作已审批并开始执行", 0, null));
         TeamExecutionResult result = coordinationService.run(spec, toolContext);
@@ -314,6 +324,11 @@ public class TeamCoordinationTool implements Tool {
     private String cwd(ToolContext toolContext) {
         Object value = toolContext == null ? null : toolContext.getContext().get(BaBiQSandboxInterceptor.CONTEXT_CWD);
         return value instanceof String text && !text.isBlank() ? text : null;
+    }
+
+    private String workUnitGoalId(ToolContext toolContext) {
+        String goalId = WorkUnitContextKeys.goalId(toolContext);
+        return goalId == null || goalId.isBlank() ? null : goalId;
     }
 
     private String blankToDefault(String value, String fallback) {

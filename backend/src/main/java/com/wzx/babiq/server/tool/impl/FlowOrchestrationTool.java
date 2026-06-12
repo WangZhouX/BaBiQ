@@ -1,11 +1,9 @@
 package com.wzx.babiq.server.tool.impl;
 
 import com.alibaba.cloud.ai.graph.OverAllState;
-import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.agent.Agent;
 import com.wzx.babiq.server.agent.delegation.BabiqAgentMode;
 import com.wzx.babiq.server.agent.delegation.BabiqAgentSpec;
-import com.wzx.babiq.server.agent.delegation.SubAgentRuntimeFactory;
 import com.wzx.babiq.server.agent.flow.BabiqFlowNode;
 import com.wzx.babiq.server.agent.flow.BabiqFlowSpec;
 import com.wzx.babiq.server.agent.flow.BabiqFlowTopology;
@@ -47,6 +45,11 @@ public class FlowOrchestrationTool implements Tool {
 
     /** 协议 item 类型。 */
     private static final String TYPE = "orchestration";
+    /** 未从 WorkUnit 显式启动时的拒绝提示。 */
+    private static final String MISSING_WORK_UNIT_START_CONTEXT = """
+            无法直接启动编排：当前 turn 没有绑定 WorkUnit goalId。
+            请先使用 work_unit_manage 创建或复用编排工作容器，在右侧详情页完成节点、模型、权限和写入范围配置后，再显式启动该 WorkUnit。
+            """;
 
     /** 官方 FlowAgent 薄封装服务。 */
     private final FlowOrchestrationService orchestrationService;
@@ -97,6 +100,8 @@ public class FlowOrchestrationTool implements Tool {
                     Run a frozen multi-agent flow using Spring AI Alibaba SequentialAgent, ParallelAgent or LlmRoutingAgent.
                     运行多 Agent 流程、编排、顺序、并行、路由、多节点任务。If any node writes files or uses high-risk tools,
                     this tool itself must be approved before the flow starts; child nodes still obey BaBiQ sandbox limits.
+                    Only call this after an explicit WorkUnit start has bound a goalId. For natural language requests to
+                    use orchestration, call work_unit_manage first and ask the user to configure/start the WorkUnit.
                     """)
     public String orchestrateFlow(
             @ToolParam(description = "流程整体任务，必须说明目标和完成标准") String task,
@@ -104,6 +109,10 @@ public class FlowOrchestrationTool implements Tool {
             @ToolParam(description = "节点列表；每个节点包含 name/displayName/task/toolNames/mode/writeScopes", required = false)
             List<FlowNodeInput> nodes,
             ToolContext toolContext) {
+        String workUnitGoalId = workUnitGoalId(toolContext);
+        if (workUnitGoalId == null) {
+            return MISSING_WORK_UNIT_START_CONTEXT.trim();
+        }
         TurnObservationContext observation = observation(toolContext);
         ItemEmitter emitter = emitter(toolContext);
         SandboxMode sandboxMode = sandboxMode(toolContext);
@@ -113,12 +122,11 @@ public class FlowOrchestrationTool implements Tool {
             approvalService.validateWriteScopes(spec, Path.of(cwd));
         }
         repository.save(record(spec, observation, cwd), nodeRecords(spec, "pending", 0, 0, null));
-        String workUnitGoalId = WorkUnitContextKeys.goalId(toolContext);
         markWorkUnitGoalRunning(workUnitGoalId, spec.orchestrationId());
         emit(emitter, item(spec, "running", "流程已审批并开始执行", spec.nodes()));
         try {
             Agent agent = orchestrationService.buildOfficialFlowAgent(spec, toolContext, null);
-            Optional<OverAllState> state = invoke(agent, task, toolContext);
+            Optional<OverAllState> state = invoke(agent, task);
             String output = state
                     .map(value -> value.value(spec.mergeOutputKey(), value.toString()))
                     .map(Object::toString)
@@ -153,11 +161,7 @@ public class FlowOrchestrationTool implements Tool {
     ) {
     }
 
-    private Optional<OverAllState> invoke(Agent agent, String task, ToolContext toolContext) throws Exception {
-        Object candidate = toolContext == null ? null : toolContext.getContext().get(SubAgentRuntimeFactory.AGENT_CONFIG_KEY);
-        if (candidate instanceof RunnableConfig config) {
-            return agent.invoke(task, config);
-        }
+    private Optional<OverAllState> invoke(Agent agent, String task) throws Exception {
         return agent.invoke(task);
     }
 
@@ -341,6 +345,11 @@ public class FlowOrchestrationTool implements Tool {
     private String cwd(ToolContext toolContext) {
         Object value = toolContext == null ? null : toolContext.getContext().get(BaBiQSandboxInterceptor.CONTEXT_CWD);
         return value instanceof String text && !text.isBlank() ? text : null;
+    }
+
+    private String workUnitGoalId(ToolContext toolContext) {
+        String goalId = WorkUnitContextKeys.goalId(toolContext);
+        return goalId == null || goalId.isBlank() ? null : goalId;
     }
 
     private String blankToDefault(String value, String fallback) {

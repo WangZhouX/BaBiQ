@@ -392,6 +392,42 @@ class ChatReducerTest {
 	}
 
 	@Test
+	fun `dismissed orchestration remains hidden for same flow and resets for new flow`() {
+		val firstItem = ThreadItem.Orchestration(
+			id = "it_orch_1",
+			orchestrationId = "orch_1",
+			title = "failed flow",
+			topology = "sequential",
+			status = "failed",
+			nodes = emptyList(),
+		)
+		val dismissedState = AppState.empty().copy(
+			orchestrationState = OrchestrationUiState(current = firstItem, dismissedOrchestrationId = "orch_1"),
+		)
+
+		val sameFlow = ChatReducer.reduce(
+			dismissedState,
+			AgentEvent.Server(ServerEvent.ItemUpdated("thread-1", "turn-1", firstItem.copy(summary = "updated"))),
+		)
+		assertFalse(sameFlow.orchestrationState.visible)
+		assertEquals("orch_1", sameFlow.orchestrationState.dismissedOrchestrationId)
+
+		val secondItem = firstItem.copy(
+			id = "it_orch_2",
+			orchestrationId = "orch_2",
+			status = "running",
+		)
+		val nextFlow = ChatReducer.reduce(
+			sameFlow,
+			AgentEvent.Server(ServerEvent.ItemAdded("thread-1", "turn-2", secondItem)),
+		)
+
+		assertTrue(nextFlow.orchestrationState.visible)
+		assertEquals("orch_2", nextFlow.orchestrationState.current?.orchestrationId)
+		assertEquals(null, nextFlow.orchestrationState.dismissedOrchestrationId)
+	}
+
+	@Test
 	fun `team item updates runtime team state without adding chat message`() {
 		val item = ThreadItem.Team(
 			id = "it_team_1",
@@ -430,6 +466,41 @@ class ChatReducerTest {
 		assertTrue(next.teamState.visible)
 		assertEquals(1, next.runtimeEvents.size)
 		assertEquals("Team:团队协作", next.runtimeEvents.single().title)
+	}
+
+	@Test
+	fun `dismissed team remains hidden for same team and resets for new team`() {
+		val firstItem = ThreadItem.Team(
+			id = "it_team_1",
+			teamId = "team_1",
+			title = "failed team",
+			status = "failed",
+			members = emptyList(),
+		)
+		val dismissedState = AppState.empty().copy(
+			teamState = TeamUiState(current = firstItem, dismissedTeamId = "team_1"),
+		)
+
+		val sameTeam = ChatReducer.reduce(
+			dismissedState,
+			AgentEvent.Server(ServerEvent.ItemUpdated("thread-1", "turn-1", firstItem.copy(summary = "updated"))),
+		)
+		assertFalse(sameTeam.teamState.visible)
+		assertEquals("team_1", sameTeam.teamState.dismissedTeamId)
+
+		val secondItem = firstItem.copy(
+			id = "it_team_2",
+			teamId = "team_2",
+			status = "running",
+		)
+		val nextTeam = ChatReducer.reduce(
+			sameTeam,
+			AgentEvent.Server(ServerEvent.ItemAdded("thread-1", "turn-2", secondItem)),
+		)
+
+		assertTrue(nextTeam.teamState.visible)
+		assertEquals("team_2", nextTeam.teamState.current?.teamId)
+		assertEquals(null, nextTeam.teamState.dismissedTeamId)
 	}
 
 	@Test

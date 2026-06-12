@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
@@ -80,6 +81,36 @@ enum class RuntimePanelContent {
 	SubAgent,
 }
 
+private sealed interface RuntimeRemovalTarget {
+	val title: String
+	val message: String
+
+	data class WorkUnit(
+		val workUnitId: String,
+		val displayName: String,
+	) : RuntimeRemovalTarget {
+		override val title: String = "确认移除工作容器"
+		override val message: String =
+			"将从右侧列表移除「$displayName」。这是软移除，SQLite 审计记录、历史运行记录和工具调用记录仍会保留。"
+	}
+
+	data class Orchestration(
+		val displayName: String,
+	) : RuntimeRemovalTarget {
+		override val title: String = "确认移除编排卡片"
+		override val message: String =
+			"将从右侧详情隐藏「$displayName」。这不会删除 WorkUnit、聊天历史或运行审计记录。"
+	}
+
+	data class Team(
+		val displayName: String,
+	) : RuntimeRemovalTarget {
+		override val title: String = "确认移除团队卡片"
+		override val message: String =
+			"将从右侧详情隐藏「$displayName」。这不会删除 WorkUnit、聊天历史或运行审计记录。"
+	}
+}
+
 fun runtimePanelTabs(state: AppState, selectedTab: RuntimePanelTab): List<RuntimePanelTabItem> {
 	val resolved = resolveRuntimePanelTab(state, selectedTab)
 	return listOfNotNull(
@@ -139,12 +170,33 @@ fun runtimePanelContent(tab: RuntimePanelTab): Set<RuntimePanelContent> =
 		RuntimePanelTab.SubAgent -> setOf(RuntimePanelContent.SubAgent)
 	}
 
+private fun AppState.workUnitRemovalDisplayName(workUnitId: String): String {
+	val detail = workUnitState.details.firstOrNull { it.workUnitId == workUnitId }
+	if (detail != null) {
+		return "${detail.kind.displayKindLabel()} · ${detail.name}"
+	}
+	val item = workUnitState.items.firstOrNull { it.workUnitId == workUnitId }
+	if (item != null) {
+		return "${item.kind.displayKindLabel()} · ${item.name}"
+	}
+	return workUnitId
+}
+
+private fun String.displayKindLabel(): String =
+	when (lowercase()) {
+		"orchestration" -> "编排"
+		"team" -> "团队"
+		else -> this
+	}
+
 @Composable
 fun RuntimeDetailsPanel(
 	state: AppState,
 	modifier: Modifier = Modifier,
 	onClose: () -> Unit,
 	onDismissSubAgent: () -> Unit = {},
+	onDismissOrchestration: () -> Unit = {},
+	onDismissTeam: () -> Unit = {},
 	onSelectWorkUnit: (String) -> Unit = {},
 	onConfigureWorkUnit: (String) -> Unit = {},
 	onStartWorkUnit: (String) -> Unit = {},
@@ -162,6 +214,47 @@ fun RuntimeDetailsPanel(
 	}
 	val effectiveTab = resolveRuntimePanelTab(state, selectedTab)
 	val tabs = runtimePanelTabs(state, effectiveTab)
+	var pendingRemoval by remember { mutableStateOf<RuntimeRemovalTarget?>(null) }
+	pendingRemoval?.let { target ->
+		AlertDialog(
+			onDismissRequest = { pendingRemoval = null },
+			title = { Text(target.title) },
+			text = { Text(target.message) },
+			confirmButton = {
+				TextButton(
+					onClick = {
+						when (target) {
+							is RuntimeRemovalTarget.WorkUnit -> onRemoveWorkUnit(target.workUnitId)
+							is RuntimeRemovalTarget.Orchestration -> onDismissOrchestration()
+							is RuntimeRemovalTarget.Team -> onDismissTeam()
+						}
+						pendingRemoval = null
+					},
+				) {
+					Text("确认移除")
+				}
+			},
+			dismissButton = {
+				TextButton(onClick = { pendingRemoval = null }) { Text("取消") }
+			},
+		)
+	}
+	val requestWorkUnitRemoval: (String) -> Unit = { workUnitId ->
+		pendingRemoval = RuntimeRemovalTarget.WorkUnit(
+			workUnitId = workUnitId,
+			displayName = state.workUnitRemovalDisplayName(workUnitId),
+		)
+	}
+	val requestOrchestrationDismiss: () -> Unit = {
+		pendingRemoval = RuntimeRemovalTarget.Orchestration(
+			displayName = state.orchestrationState.current?.title?.takeIf { it.isNotBlank() } ?: "当前编排",
+		)
+	}
+	val requestTeamDismiss: () -> Unit = {
+		pendingRemoval = RuntimeRemovalTarget.Team(
+			displayName = state.teamState.current?.title?.takeIf { it.isNotBlank() } ?: "当前团队",
+		)
+	}
 	Column(
 		modifier = modifier
 			.fillMaxHeight()
@@ -192,7 +285,7 @@ fun RuntimeDetailsPanel(
 				onSelect = onSelectWorkUnit,
 				onConfigure = onConfigureWorkUnit,
 				onStart = onStartWorkUnit,
-				onRemove = onRemoveWorkUnit,
+				onRemove = requestWorkUnitRemoval,
 				onUpdateGoal = onUpdateWorkUnitGoal,
 			)
 			DetailCard(
@@ -237,6 +330,8 @@ fun RuntimeDetailsPanel(
 					modelLabel = state.providerState.active.label,
 					providerState = state.providerState,
 					onStartWorkUnit = onStartWorkUnit,
+					onRemoveWorkUnit = requestWorkUnitRemoval,
+					onDismissOrchestration = requestOrchestrationDismiss,
 					onUpdateWorkUnitGoal = onUpdateWorkUnitGoal,
 					onUpdateWorkUnitConfig = onUpdateWorkUnitConfig,
 				)
@@ -245,6 +340,8 @@ fun RuntimeDetailsPanel(
 					modelLabel = state.providerState.active.label,
 					providerState = state.providerState,
 					onStartWorkUnit = onStartWorkUnit,
+					onRemoveWorkUnit = requestWorkUnitRemoval,
+					onDismissTeam = requestTeamDismiss,
 					onUpdateWorkUnitGoal = onUpdateWorkUnitGoal,
 					onUpdateWorkUnitConfig = onUpdateWorkUnitConfig,
 					onSendTeamMessage = onSendTeamMessage,

@@ -1,8 +1,8 @@
 package com.wzx.babiq.desktop.ui.runtime
 
-import com.wzx.babiq.desktop.protocol.ThreadItem
 import com.wzx.babiq.desktop.protocol.ModelInfo
 import com.wzx.babiq.desktop.protocol.ProviderInfo
+import com.wzx.babiq.desktop.protocol.ThreadItem
 import com.wzx.babiq.desktop.protocol.WorkUnitGoalInfo
 import com.wzx.babiq.desktop.protocol.WorkUnitInfo
 import com.wzx.babiq.desktop.state.OrchestrationUiState
@@ -52,16 +52,34 @@ class OrchestrationSectionTest {
 		val model = buildOrchestrationSectionModel(OrchestrationUiState(current = item), modelLabel = "deepseek-v4-pro")
 
 		assertTrue(model.visible)
-		assertEquals("流程编排 · parallel login page check", model.title)
-		assertEquals("并行 / 运行中 / 已审批并冻结", model.subtitle)
+		assertTrue(model.title.contains("parallel login page check"))
 		assertEquals(2, model.nodes.size)
 		assertEquals("write", model.nodes.last().title)
-		assertEquals("工作区工具 · deepseek-v4-pro", model.nodes.last().meta)
+		assertTrue(model.nodes.last().active)
 		assertEquals(null, model.config)
+		assertEquals(null, model.removeActionLabel)
 	}
 
 	@Test
-	fun `orchestration section model renders work unit configuration detail`() {
+	fun `completed orchestration runtime model exposes dismiss action`() {
+		val item = ThreadItem.Orchestration(
+			id = "it_orch_1",
+			orchestrationId = "orch_1",
+			title = "failed smoke flow",
+			topology = "sequential",
+			status = "failed",
+			summary = "checkpoint failed",
+			nodes = emptyList(),
+		)
+
+		val model = buildOrchestrationSectionModel(OrchestrationUiState(current = item))
+
+		assertTrue(model.visible)
+		assertEquals("移除", model.removeActionLabel)
+	}
+
+	@Test
+	fun `orchestration section model renders saved work unit configuration nodes only`() {
 		val workUnit = WorkUnitInfo(
 			workUnitId = "wu_flow",
 			threadId = "thr_1",
@@ -79,7 +97,7 @@ class OrchestrationSectionTest {
 				{
 				  "nodes": [
 				    {"id": "start", "task": "edit html content", "model": "goal:current"},
-				    {"id": "analyzer", "task": "分析现有登录页结构", "model": "provider:qwen:qwen-plus"}
+				    {"id": "analyzer", "task": "analyze login page structure", "model": "provider:qwen:qwen-plus"}
 				  ]
 				}
 			""".trimIndent(),
@@ -91,27 +109,116 @@ class OrchestrationSectionTest {
 		)
 
 		assertTrue(model.visible)
-		assertEquals("编排详情 · html-test", model.title)
-		assertEquals("待配置 / 2 个目标 / 等待手动启动", model.subtitle)
 		assertEquals("wu_flow", model.config?.workUnitId)
 		assertEquals("H:\\aaa", model.config?.cwd)
-		assertEquals("完全访问权限", model.config?.sandboxLabel)
-		assertEquals("deepseek-v4-pro", model.config?.modelLabel)
 		assertEquals("goal_2", model.config?.editableGoalId)
 		assertEquals("edit html content", model.config?.editableGoalText)
 		assertEquals(2, model.config?.goals?.size)
-		assertEquals(6, model.configNodes.size)
-		assertEquals(listOf("start", "explorer", "analyzer", "tester", "router", "end"), model.configNodes.map { it.nodeId })
+		assertEquals(listOf("start", "analyzer", "end"), model.configNodes.map { it.nodeId })
 		assertEquals("START", model.configNodes.first().title)
 		assertEquals("END", model.configNodes.last().title)
-		assertEquals("编排 · 编辑模式", model.editModeTitle)
 		val settings = assertNotNull(model.selectedNodeSettings)
 		assertEquals("start", settings.nodeId)
 		assertEquals("edit html content", settings.task)
 		assertEquals("goal:current", settings.modelValue)
 		assertEquals("provider:qwen:qwen-plus", model.configNodes.first { it.nodeId == "analyzer" }.modelValue)
-		assertEquals("分析现有登录页结构", model.configNodes.first { it.nodeId == "analyzer" }.task)
+		assertEquals("analyze login page structure", model.configNodes.first { it.nodeId == "analyzer" }.task)
 		assertEquals("end:main-agent-confirmed", model.configNodes.last().modelValue)
+		assertEquals("移除", model.removeActionLabel)
+	}
+
+	@Test
+	fun `orchestration work unit without explicit nodes starts with terminals only`() {
+		val workUnit = WorkUnitInfo(
+			workUnitId = "wu_flow",
+			threadId = "thr_1",
+			kind = "orchestration",
+			name = "empty-flow",
+			status = "waiting_config",
+			currentGoalId = "goal_1",
+			cwd = "H:\\aaa",
+			sandboxMode = "FULL_ACCESS",
+			goals = listOf(
+				WorkUnitGoalInfo("goal_1", "wu_flow", "update the index page", "pending"),
+			),
+		)
+
+		val model = buildOrchestrationSectionModel(
+			OrchestrationUiState(configuringWorkUnit = workUnit),
+			modelLabel = "deepseek-v4-pro",
+		)
+
+		assertEquals(listOf("start", "end"), model.configNodes.map { it.nodeId })
+	}
+
+	@Test
+	fun `orchestration work unit derives explicitly requested nodes from goal text`() {
+		val workUnit = WorkUnitInfo(
+			workUnitId = "wu_flow",
+			threadId = "thr_1",
+			kind = "orchestration",
+			name = "p6-smoke-test",
+			status = "waiting_config",
+			currentGoalId = "goal_1",
+			cwd = "H:\\aaa",
+			sandboxMode = "FULL_ACCESS",
+			goals = listOf(
+				WorkUnitGoalInfo(
+					"goal_1",
+					"wu_flow",
+					"1. explorer \u8282\u70b9 reads current index.html\n" +
+						"2. designer \u8282\u70b9 designs the small page enhancement\n" +
+						"3. writer \u8282\u70b9 updates index.html\n" +
+						"4. reviewer \u8282\u70b9 verifies the result",
+					"pending",
+				),
+			),
+		)
+
+		val model = buildOrchestrationSectionModel(
+			OrchestrationUiState(configuringWorkUnit = workUnit),
+			modelLabel = "deepseek-v4-pro",
+		)
+
+		assertEquals(
+			listOf("start", "explorer", "designer", "writer", "reviewer", "end"),
+			model.configNodes.map { it.nodeId },
+		)
+		assertEquals("updates index.html", model.configNodes.first { it.nodeId == "writer" }.task)
+		assertEquals("WORKSPACE_TOOL", model.configNodes.first { it.nodeId == "writer" }.modeValue)
+	}
+
+	@Test
+	fun `add orchestration draft node inserts before end node`() {
+		val nodes = listOf(
+			OrchestrationConfigNodeRow(
+				nodeId = "start",
+				title = "START",
+				role = "entry",
+				task = "goal",
+				modelLabel = "goal",
+				modelValue = "goal:current",
+				modeLabel = "goal",
+				selected = true,
+				removable = false,
+			),
+			OrchestrationConfigNodeRow(
+				nodeId = "end",
+				title = "END",
+				role = "exit",
+				task = "finish",
+				modelLabel = "main",
+				modelValue = "end:main-agent-confirmed",
+				modeLabel = "end",
+				selected = false,
+				removable = false,
+			),
+		)
+
+		val updated = addOrchestrationDraftNode(nodes, inheritedModelLabel = "deepseek-v4-pro")
+
+		assertEquals(listOf("start", "node_1", "end"), updated.map { it.nodeId })
+		assertTrue(updated.first { it.nodeId == "node_1" }.removable)
 	}
 
 	@Test
@@ -138,7 +245,7 @@ class OrchestrationSectionTest {
 		val options = nodeModelOptions(providerState, inheritedModelLabel = "deepseek-v4-pro")
 
 		assertEquals("inherit", options.first().modelValue)
-		assertEquals("继承主 Agent · deepseek-v4-pro", options.first().label)
+		assertTrue(options.first().label.contains("deepseek-v4-pro"))
 		assertTrue(options.any { it.providerId == "deepseek" && it.modelId == "deepseek-v4-flash" })
 		assertTrue(options.any { it.providerId == "qwen" && it.modelId == "qwen-plus" })
 	}

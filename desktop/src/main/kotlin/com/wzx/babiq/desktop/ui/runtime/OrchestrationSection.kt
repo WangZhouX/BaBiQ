@@ -56,6 +56,7 @@ data class OrchestrationSectionModel(
 	val configNodes: List<OrchestrationConfigNodeRow> = emptyList(),
 	val selectedNodeSettings: OrchestrationNodeSettingsModel? = null,
 	val addNodeActionLabel: String? = null,
+	val removeActionLabel: String? = null,
 	val editModeTitle: String? = null,
 )
 
@@ -75,6 +76,7 @@ data class OrchestrationConfigNodeRow(
 	val modelLabel: String,
 	val modelValue: String,
 	val modeLabel: String,
+	val modeValue: String = modeLabel,
 	val selected: Boolean,
 	val removable: Boolean,
 )
@@ -108,6 +110,7 @@ fun buildOrchestrationSectionModel(
 			nodes = item.nodes.map(::nodeRow),
 			summaryPreview = compactFlowSummary(item.summary),
 			config = null,
+			removeActionLabel = runtimeRemoveActionLabel(item.status),
 		)
 	}
 	val config = state.configuringWorkUnit ?: return OrchestrationSectionModel(false, "", "", emptyList())
@@ -123,6 +126,7 @@ fun buildOrchestrationSectionModel(
 		configNodes = configNodes,
 		selectedNodeSettings = selectedNode?.let(::nodeSettingsModel),
 		addNodeActionLabel = "添加节点",
+		removeActionLabel = detail.removeActionLabel,
 		editModeTitle = "编排 · 编辑模式",
 	)
 }
@@ -133,6 +137,8 @@ fun OrchestrationSection(
 	modelLabel: String = "未选择模型",
 	providerState: ProviderState = ProviderState(),
 	onStartWorkUnit: (String) -> Unit = {},
+	onRemoveWorkUnit: (String) -> Unit = {},
+	onDismissOrchestration: () -> Unit = {},
 	onUpdateWorkUnitGoal: (String, String, String) -> Unit = { _, _, _ -> },
 	onUpdateWorkUnitConfig: (String, String) -> Unit = { _, _ -> },
 ) {
@@ -149,8 +155,26 @@ fun OrchestrationSection(
 			modifier = Modifier.fillMaxWidth().padding(12.dp),
 			verticalArrangement = Arrangement.spacedBy(8.dp),
 		) {
-			Text(model.title, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
-			Text(model.subtitle, style = MaterialTheme.typography.labelMedium, color = BaBiQColors.Muted)
+			Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+				Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+					Text(model.title, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
+					Text(model.subtitle, style = MaterialTheme.typography.labelMedium, color = BaBiQColors.Muted)
+				}
+				model.removeActionLabel?.let { label ->
+					TextButton(
+						onClick = {
+							val workUnitId = model.config?.workUnitId
+							if (workUnitId != null) {
+								onRemoveWorkUnit(workUnitId)
+							} else {
+								onDismissOrchestration()
+							}
+						},
+					) {
+						Text(label)
+					}
+				}
+			}
 			model.config?.let { config ->
 				OrchestrationConfigPanel(
 					detail = config,
@@ -182,16 +206,19 @@ private fun OrchestrationConfigPanel(
 	onUpdateGoal: (String, String, String) -> Unit,
 	onUpdateConfig: (String, String) -> Unit,
 ) {
+	var draftNodes by remember(detail.workUnitId, nodes) {
+		mutableStateOf(nodes)
+	}
 	var selectedNodeId by remember(detail.workUnitId, nodes) {
 		mutableStateOf(defaultSettings?.nodeId ?: nodes.firstOrNull()?.nodeId)
 	}
-	val selectedRow = nodes.firstOrNull { it.nodeId == selectedNodeId } ?: nodes.firstOrNull()
+	val selectedRow = draftNodes.firstOrNull { it.nodeId == selectedNodeId } ?: draftNodes.firstOrNull()
 	val settings = selectedRow?.let(::nodeSettingsModel)
 	var draftTask by remember(detail.workUnitId, settings?.nodeId, settings?.task) {
 		mutableStateOf(settings?.task.orEmpty())
 	}
 	var selectedModelValues by remember(detail.workUnitId, nodes) {
-		mutableStateOf(nodes.associate { it.nodeId to it.modelValue })
+		mutableStateOf(draftNodes.associate { it.nodeId to it.modelValue })
 	}
 	val modelOptions = nodeModelOptions(providerState, detail.modelLabel)
 	val selectedModelValue = settings?.let { selectedModelValues[it.nodeId] ?: it.modelValue }
@@ -202,9 +229,33 @@ private fun OrchestrationConfigPanel(
 		OrchestrationTopologyFrame(
 			title = editModeTitle ?: "编排 · 编辑模式",
 			addNodeActionLabel = addNodeActionLabel,
-			nodes = nodes,
+			nodes = draftNodes,
 			selectedNodeId = selectedNodeId,
 			onSelect = { selectedNodeId = it },
+			onAddNode = addNodeActionLabel?.let {
+				{
+					val updatedNodes = addOrchestrationDraftNode(draftNodes, detail.modelLabel)
+					val addedNode = updatedNodes.firstOrNull { candidate ->
+						draftNodes.none { existing -> existing.nodeId == candidate.nodeId }
+					}
+					draftNodes = updatedNodes
+					if (addedNode != null) {
+						selectedNodeId = addedNode.nodeId
+					}
+					val updatedNodeIds = updatedNodes.map { it.nodeId }.toSet()
+					val nextModelValues = updatedNodes.associate { row -> row.nodeId to row.modelValue } +
+						selectedModelValues.filterKeys { it in updatedNodeIds }
+					selectedModelValues = nextModelValues
+					onUpdateConfig(
+						detail.workUnitId,
+						buildOrchestrationConfigJson(
+							detail = detail,
+							nodes = updatedNodes,
+							selectedModelValues = nextModelValues,
+						),
+					)
+				}
+			},
 		)
 		settings?.let { nodeSettings ->
 			Column(
@@ -241,6 +292,18 @@ private fun OrchestrationConfigPanel(
 				Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
 					Button(
 						onClick = {
+							val updatedNodes = draftNodes.map { row ->
+								if (row.nodeId == nodeSettings.nodeId) {
+									row.copy(
+										task = draftTask.trim(),
+										modelValue = selectedModelValues[row.nodeId] ?: row.modelValue,
+										modelLabel = selectedNodeModelLabel(nodeSettings, selectedModelValues, modelOptions),
+									)
+								} else {
+									row
+								}
+							}
+							draftNodes = updatedNodes
 							if (nodeSettings.nodeId == "start" && draftTask != nodeSettings.task) {
 								detail.editableGoalId?.let { goalId ->
 									onUpdateGoal(detail.workUnitId, goalId, draftTask)
@@ -250,7 +313,7 @@ private fun OrchestrationConfigPanel(
 								detail.workUnitId,
 								buildOrchestrationConfigJson(
 									detail = detail,
-									nodes = nodes,
+									nodes = updatedNodes,
 									updatedNodeId = nodeSettings.nodeId,
 									updatedTask = draftTask,
 									selectedModelValues = selectedModelValues,
@@ -317,6 +380,7 @@ private fun OrchestrationTopologyFrame(
 	nodes: List<OrchestrationConfigNodeRow>,
 	selectedNodeId: String?,
 	onSelect: (String) -> Unit,
+	onAddNode: (() -> Unit)? = null,
 ) {
 	Column(
 		modifier = Modifier
@@ -334,7 +398,7 @@ private fun OrchestrationTopologyFrame(
 			Text(title, style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
 			Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
 				addNodeActionLabel?.let { label ->
-					OutlinedButton(onClick = {}, enabled = false) { Text("+ $label") }
+					OutlinedButton(onClick = { onAddNode?.invoke() }, enabled = onAddNode != null) { Text("+ $label") }
 				}
 				Text("收起 ◀", style = MaterialTheme.typography.labelSmall, color = BaBiQColors.Muted)
 			}
@@ -359,46 +423,33 @@ private fun OrchestrationTopologyEditor(
 	selectedNodeId: String?,
 	onSelect: (String) -> Unit,
 ) {
-	val byId = nodes.associateBy { it.nodeId }
+	val startNode = nodes.firstOrNull { it.nodeId == "start" }
+	val endNode = nodes.firstOrNull { it.nodeId == "end" }
+	val middleNodes = nodes.filter { it.nodeId != "start" && it.nodeId != "end" }
 	Column(
 		modifier = Modifier.fillMaxWidth(),
 		horizontalAlignment = Alignment.CenterHorizontally,
 		verticalArrangement = Arrangement.spacedBy(0.dp),
 	) {
-		byId["start"]?.let { node ->
+		startNode?.let { node ->
 			OrchestrationTerminalNode(
 				node = node.copy(selected = node.nodeId == selectedNodeId),
 				onSelect = { onSelect(node.nodeId) },
 			)
 		}
-		VerticalConnector()
-		byId["explorer"]?.let { node ->
+		if (startNode != null && (middleNodes.isNotEmpty() || endNode != null)) {
+			VerticalConnector()
+		}
+		middleNodes.forEachIndexed { index, node ->
 			OrchestrationConfigNodeCard(
 				node = node.copy(selected = node.nodeId == selectedNodeId),
 				onSelect = { onSelect(node.nodeId) },
 			)
-		}
-		BranchConnector()
-		Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-			listOf("analyzer", "tester").forEach { nodeId ->
-				byId[nodeId]?.let { node ->
-					OrchestrationConfigNodeCard(
-						node = node.copy(selected = node.nodeId == selectedNodeId),
-						onSelect = { onSelect(node.nodeId) },
-						modifier = Modifier.weight(1f),
-					)
-				}
+			if (index < middleNodes.lastIndex || endNode != null) {
+				VerticalConnector()
 			}
 		}
-		BranchConnector()
-		byId["router"]?.let { node ->
-			OrchestrationConfigNodeCard(
-				node = node.copy(selected = node.nodeId == selectedNodeId),
-				onSelect = { onSelect(node.nodeId) },
-			)
-		}
-		VerticalConnector()
-		byId["end"]?.let { node ->
+		endNode?.let { node ->
 			OrchestrationTerminalNode(
 				node = node.copy(selected = node.nodeId == selectedNodeId),
 				onSelect = { onSelect(node.nodeId) },
@@ -414,30 +465,6 @@ private fun VerticalConnector() {
 			.size(width = 1.dp, height = 18.dp)
 			.background(BaBiQColors.Border),
 	)
-}
-
-@Composable
-private fun BranchConnector() {
-	Box(
-		modifier = Modifier
-			.fillMaxWidth()
-			.padding(horizontal = 36.dp)
-			.height(22.dp),
-	) {
-		Box(
-			modifier = Modifier
-				.align(Alignment.Center)
-				.fillMaxWidth()
-				.height(1.dp)
-				.background(BaBiQColors.Border),
-		)
-		Box(
-			modifier = Modifier
-				.align(Alignment.Center)
-				.size(width = 1.dp, height = 22.dp)
-				.background(BaBiQColors.Border),
-		)
-	}
 }
 
 @Composable
@@ -552,83 +579,229 @@ private fun FlowSummaryPreview(preview: String) {
 
 private fun configDraftNodes(detail: WorkUnitDetailModel): List<OrchestrationConfigNodeRow> {
 	val inheritedModel = detail.modelLabel.ifBlank { "未选择模型" }
-	val currentGoal = detail.editableGoalText
-		?: detail.goals.lastOrNull()?.label?.substringAfter("·")?.trim()
-		?: detail.title
-	val overrides = detail.configuration?.nodes.orEmpty().associateBy { it.id }
-	return listOf(
-		configNode(
-			nodeId = "start",
-			title = "START",
-			role = "目标入口",
-			task = currentGoal,
-			modeLabel = "目标设置",
-			modelLabel = "current",
-			modelValue = "goal:current",
-			selected = true,
-			removable = false,
-		),
-		configNode(
-			nodeId = "explorer",
-			title = "explorer",
-			role = "探查（只读）",
-			task = "读取相关文件并梳理当前状态",
-			modeLabel = "只读工具",
-			modelLabel = inheritedModel,
-			removable = false,
-		),
-		configNode(
-			nodeId = "analyzer",
-			title = "analyzer",
-			role = "依赖分析",
-			task = "分析模块依赖关系，定位循环依赖与高耦合点",
-			modeLabel = "只读工具",
-			modelLabel = inheritedModel,
-			removable = true,
-		),
-		configNode(
-			nodeId = "tester",
-			title = "tester",
-			role = "跑测试",
-			task = "运行相关测试并整理失败原因",
-			modeLabel = "工作区工具",
-			modelLabel = inheritedModel,
-			removable = true,
-		),
-		configNode(
-			nodeId = "router",
-			title = "汇总 router",
-			role = "合并 / 路由",
-			task = "汇总各节点结果，交给主 Agent 形成最终确认",
-			modeLabel = "汇总节点",
-			modelLabel = inheritedModel,
-			removable = true,
-		),
-		configNode(
-			nodeId = "end",
-			title = "END",
-			role = "完成出口",
-			task = "所有节点完成后，由主 Agent 确认输出并结束流程",
-			modeLabel = "结束节点",
-			modelLabel = "main-agent",
-			modelValue = "end:main-agent-confirmed",
-			removable = false,
-		),
-	).map { row ->
-		val override = overrides[row.nodeId] ?: return@map row
-		row.copy(
-			title = override.name?.takeIf { it.isNotBlank() } ?: row.title,
-			role = override.role?.takeIf { it.isNotBlank() } ?: row.role,
-			task = override.task?.takeIf { it.isNotBlank() } ?: row.task,
-			modelValue = override.model?.takeIf { it.isNotBlank() } ?: row.modelValue,
-			modelLabel = displayModelLabel(
-				override.model?.takeIf { it.isNotBlank() } ?: row.modelValue,
-				inheritedModel,
-			),
-			modeLabel = override.mode?.takeIf { it.isNotBlank() } ?: row.modeLabel,
+	val currentGoal = currentConfigGoal(detail)
+	val savedNodes = detail.configuration?.nodes.orEmpty()
+	if (savedNodes.isNotEmpty()) {
+		return normalizedConfigNodes(
+			entries = savedNodes,
+			currentGoal = currentGoal,
+			inheritedModel = inheritedModel,
 		)
 	}
+	val middleNodes = explicitNodeIdsFromGoal(currentGoal).map { nodeId ->
+		defaultConfigNodeFor(
+			nodeId = nodeId,
+			currentGoal = currentGoal,
+			inheritedModel = inheritedModel,
+		)
+	}
+	return listOf(startConfigNode(currentGoal)) + middleNodes + endConfigNode()
 }
+
+fun addOrchestrationDraftNode(
+	nodes: List<OrchestrationConfigNodeRow>,
+	inheritedModelLabel: String,
+): List<OrchestrationConfigNodeRow> {
+	val existingIds = nodes.map { it.nodeId }.toSet()
+	val nodeId = generateSequence(1) { it + 1 }
+		.map { "node_$it" }
+		.first { it !in existingIds }
+	val newNode = configNode(
+		nodeId = nodeId,
+		title = nodeId,
+		role = "自定义节点",
+		task = "补充这个节点的任务",
+		modeLabel = modeLabel("READ_ONLY_TOOL"),
+		modeValue = "READ_ONLY_TOOL",
+		modelLabel = inheritedModelLabel.ifBlank { "未选择模型" },
+		selected = true,
+		removable = true,
+	)
+	val cleared = nodes.map { it.copy(selected = false) }
+	val endIndex = cleared.indexOfFirst { it.nodeId == "end" }
+	if (endIndex < 0) {
+		return cleared + newNode
+	}
+	return cleared.take(endIndex) + newNode + cleared.drop(endIndex)
+}
+
+private fun currentConfigGoal(detail: WorkUnitDetailModel): String =
+	detail.editableGoalText
+		?: detail.goals.lastOrNull()?.label?.substringAfter("路")?.trim()
+		?: detail.title
+
+private fun normalizedConfigNodes(
+	entries: List<WorkUnitConfigEntry>,
+	currentGoal: String,
+	inheritedModel: String,
+): List<OrchestrationConfigNodeRow> {
+	val start = entries.firstOrNull { it.id.equals("start", ignoreCase = true) }
+	val end = entries.firstOrNull { it.id.equals("end", ignoreCase = true) }
+	val middle = entries.filterNot {
+		it.id.equals("start", ignoreCase = true) || it.id.equals("end", ignoreCase = true)
+	}
+	return listOf(
+		configNodeFromEntry(start, "start", currentGoal, inheritedModel, selected = true, removable = false),
+	) + middle.map { entry ->
+		configNodeFromEntry(entry, entry.id, currentGoal, inheritedModel, selected = false, removable = true)
+	} + listOf(
+		configNodeFromEntry(end, "end", currentGoal, inheritedModel, selected = false, removable = false),
+	)
+}
+
+private fun configNodeFromEntry(
+	entry: WorkUnitConfigEntry?,
+	fallbackId: String,
+	currentGoal: String,
+	inheritedModel: String,
+	selected: Boolean,
+	removable: Boolean,
+): OrchestrationConfigNodeRow {
+	val nodeId = entry?.id?.takeIf { it.isNotBlank() } ?: fallbackId
+	val modelValue = entry?.model?.takeIf { it.isNotBlank() } ?: defaultModelValueForNode(nodeId)
+	val modeValue = entry?.mode?.takeIf { it.isNotBlank() } ?: defaultModeForNode(nodeId)
+	return configNode(
+		nodeId = nodeId,
+		title = entry?.name?.takeIf { it.isNotBlank() } ?: defaultTitleForNode(nodeId),
+		role = entry?.role?.takeIf { it.isNotBlank() } ?: defaultRoleForNode(nodeId),
+		task = entry?.task?.takeIf { it.isNotBlank() } ?: defaultTaskForNode(nodeId, currentGoal),
+		modeLabel = displayModeLabel(modeValue),
+		modeValue = modeValue,
+		modelLabel = inheritedModel,
+		modelValue = modelValue,
+		selected = selected,
+		removable = removable,
+	)
+}
+
+private fun startConfigNode(currentGoal: String): OrchestrationConfigNodeRow =
+	configNode(
+		nodeId = "start",
+		title = "START",
+		role = "目标入口",
+		task = currentGoal,
+		modeLabel = "目标设置",
+		modeValue = "GOAL",
+		modelLabel = "current",
+		modelValue = "goal:current",
+		selected = true,
+		removable = false,
+	)
+
+private fun endConfigNode(): OrchestrationConfigNodeRow =
+	configNode(
+		nodeId = "end",
+		title = "END",
+		role = "完成出口",
+		task = "所有节点完成后，由主 Agent 确认输出并结束流程",
+		modeLabel = "结束节点",
+		modeValue = "END",
+		modelLabel = "main-agent",
+		modelValue = "end:main-agent-confirmed",
+		selected = false,
+		removable = false,
+	)
+
+private fun defaultConfigNodeFor(
+	nodeId: String,
+	currentGoal: String,
+	inheritedModel: String,
+): OrchestrationConfigNodeRow {
+	val normalizedId = nodeId.trim().ifBlank { "node" }
+	val modeValue = defaultModeForNode(normalizedId)
+	return configNode(
+		nodeId = normalizedId,
+		title = defaultTitleForNode(normalizedId),
+		role = defaultRoleForNode(normalizedId),
+		task = explicitNodeTask(currentGoal, normalizedId) ?: defaultTaskForNode(normalizedId, currentGoal),
+		modeLabel = displayModeLabel(modeValue),
+		modeValue = modeValue,
+		modelLabel = inheritedModel,
+		selected = false,
+		removable = true,
+	)
+}
+
+private fun explicitNodeIdsFromGoal(goal: String): List<String> =
+	ExplicitNodePattern.findAll(goal)
+		.map { it.groupValues[1].trim().lowercase() }
+		.filterNot { it == "start" || it == "end" }
+		.distinct()
+		.toList()
+
+private fun explicitNodeTask(goal: String, nodeId: String): String? {
+	val taskPattern = Regex(
+		"""(?im)^\s*(?:[-*]|\d+[.)、]?)?\s*${Regex.escape(nodeId)}\s*(?:节点|node)\s*[:：,，\-]?\s*(.+)$""",
+	)
+	return taskPattern.find(goal)
+		?.groupValues
+		?.getOrNull(1)
+		?.trim()
+		?.takeIf { it.isNotBlank() }
+}
+
+private val ExplicitNodePattern = Regex(
+	"""\b([A-Za-z][A-Za-z0-9_-]{1,31})\s*(?:节点|node)""",
+	RegexOption.IGNORE_CASE,
+)
+
+private fun defaultTitleForNode(nodeId: String): String =
+	when (nodeId.lowercase()) {
+		"start" -> "START"
+		"end" -> "END"
+		"router" -> "汇总 router"
+		else -> nodeId
+	}
+
+private fun defaultRoleForNode(nodeId: String): String =
+	when (nodeId.lowercase()) {
+		"start" -> "目标入口"
+		"end" -> "完成出口"
+		"explorer" -> "探索（只读）"
+		"designer" -> "方案设计"
+		"writer" -> "写入修改"
+		"reviewer" -> "复核验收"
+		"analyzer" -> "依赖分析"
+		"tester" -> "跑测试"
+		"router" -> "合并 / 路由"
+		else -> "自定义节点"
+	}
+
+private fun defaultTaskForNode(nodeId: String, currentGoal: String): String =
+	when (nodeId.lowercase()) {
+		"start" -> currentGoal
+		"end" -> "所有节点完成后，由主 Agent 确认输出并结束流程"
+		"explorer" -> "读取相关文件并梳理当前状态"
+		"designer" -> "设计实现方案并保留主要内容"
+		"writer" -> "按方案修改工作区文件"
+		"reviewer" -> "复核结果并确认是否满足目标"
+		"analyzer" -> "分析模块依赖关系，定位依赖缺口与高耦合点"
+		"tester" -> "运行相关测试并整理失败原因"
+		"router" -> "汇总各节点结果，交给主 Agent 形成最终确认"
+		else -> "补充这个节点的任务"
+	}
+
+private fun defaultModeForNode(nodeId: String): String =
+	when (nodeId.lowercase()) {
+		"start" -> "GOAL"
+		"end" -> "END"
+		"writer", "tester" -> "WORKSPACE_TOOL"
+		else -> "READ_ONLY_TOOL"
+	}
+
+private fun defaultModelValueForNode(nodeId: String): String =
+	when (nodeId.lowercase()) {
+		"start" -> "goal:current"
+		"end" -> "end:main-agent-confirmed"
+		else -> "inherit"
+	}
+
+private fun displayModeLabel(modeValue: String): String =
+	when (modeValue.uppercase()) {
+		"GOAL" -> "目标设置"
+		"END" -> "结束节点"
+		else -> modeLabel(modeValue)
+	}
 
 private fun configNode(
 	nodeId: String,
@@ -636,6 +809,7 @@ private fun configNode(
 	role: String,
 	task: String,
 	modeLabel: String,
+	modeValue: String = modeLabel,
 	modelLabel: String,
 	modelValue: String = "inherit",
 	selected: Boolean = false,
@@ -649,6 +823,7 @@ private fun configNode(
 		modelLabel = displayModelLabel(modelValue, modelLabel),
 		modelValue = modelValue,
 		modeLabel = modeLabel,
+		modeValue = modeValue,
 		selected = selected,
 		removable = removable,
 	)
@@ -726,8 +901,8 @@ private fun selectedNodeModelLabel(
 private fun buildOrchestrationConfigJson(
 	detail: WorkUnitDetailModel,
 	nodes: List<OrchestrationConfigNodeRow>,
-	updatedNodeId: String,
-	updatedTask: String,
+	updatedNodeId: String? = null,
+	updatedTask: String? = null,
 	selectedModelValues: Map<String, String>,
 ): String {
 	val entries = nodes.map { row ->
@@ -735,9 +910,9 @@ private fun buildOrchestrationConfigJson(
 			id = row.nodeId,
 			name = row.title,
 			role = row.role,
-			task = if (row.nodeId == updatedNodeId) updatedTask.trim() else row.task,
+			task = if (row.nodeId == updatedNodeId && updatedTask != null) updatedTask.trim() else row.task,
 			model = selectedModelValues[row.nodeId] ?: row.modelValue,
-			mode = row.modeLabel,
+			mode = row.modeValue,
 		)
 	}
 	return protocolJson.encodeToString(
@@ -779,6 +954,9 @@ private fun statusLabel(status: String): String =
 		"canceled" -> "已取消"
 		else -> status
 	}
+
+private fun runtimeRemoveActionLabel(status: String): String? =
+	if (status.lowercase() in setOf("completed", "failed", "canceled")) "移除" else null
 
 private fun topologyLabel(topology: String): String =
 	when (topology.lowercase()) {

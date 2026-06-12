@@ -985,6 +985,24 @@ class ChatController(
 	}
 
 	/**
+	 * 手动移除右侧流程编排运行卡片。
+	 *
+	 * 这只隐藏当前桌面端详情卡片，不删除聊天历史、WorkUnit 容器或 SQLite 审计记录。
+	 */
+	fun dismissOrchestrationCard() {
+		_state.update { it.copy(orchestrationState = it.orchestrationState.dismissCurrent()) }
+	}
+
+	/**
+	 * 手动移除右侧团队运行卡片。
+	 *
+	 * 这只隐藏当前桌面端详情卡片，不删除聊天历史、WorkUnit 容器或 SQLite 审计记录。
+	 */
+	fun dismissTeamCard() {
+		_state.update { it.copy(teamState = it.teamState.dismissCurrent()) }
+	}
+
+	/**
 	 * 手动移除一个编排/团队工作容器。
 	 *
 	 * 移除只影响当前列表可见性；后端仍保留 SQLite 审计记录，运行中的容器会由后端拒绝。
@@ -1186,8 +1204,17 @@ class ChatController(
 			try {
 				val removed = gateway.removeWorkUnit(workUnitId).toThreadItem()
 				_state.update {
+					val nextWorkUnitState = it.workUnitState.withItem(removed).copy(loading = false, error = null)
 					it.copy(
-						workUnitState = it.workUnitState.withItem(removed).copy(loading = false, error = null),
+						workUnitState = nextWorkUnitState,
+						orchestrationState = it.orchestrationState.copy(
+							configuringWorkUnit = it.orchestrationState.configuringWorkUnit
+								?.takeUnless { detail -> detail.workUnitId == workUnitId },
+						),
+						teamState = it.teamState.copy(
+							configuringWorkUnit = it.teamState.configuringWorkUnit
+								?.takeUnless { detail -> detail.workUnitId == workUnitId },
+						),
 						lastError = null,
 					)
 				}
