@@ -59,7 +59,7 @@
 | D4 | 后端递归编译：组→官方 FlowAgent，叶子→`DefaultFlowNodeAgentFactory` ReactAgent；每个并行组 mergeOutputKey = `<groupId>_output` | 薄封装路线不变；嵌套类型已用本地 jar 验证 |
 | D5 | `BabiqFlowSpec` 增加可空 `structure`；为空 = 旧平铺语义（全局 topology + 节点序），所有旧数据/旧协议自动兼容 | 不破坏 V14 已落库数据和 P6-2 既有测试 |
 | D6 | V20 migration：`bq_orchestrations` + `bq_work_unit_configs` 各加 `structure_json TEXT`（可空），三件套齐全 | 复用既有表；可空列零迁移成本 |
-| D7 | 画布纯 Compose 标准 API 实现，不引第三方图形/布局库 | 节点数 ≤ ~16 的场景，分层布局自研 ~100 行纯函数即可；引库违反仓库"优先官方/成熟生态、避免不必要依赖"取向 |
+| D7 | 画布纯 Compose 标准 API 实现，不引第三方图形/布局库 | **2026-06-13 选型调研结论**（按 CLAUDE.md §4 顺序查证）：① 成熟节点编辑器全在 Web 系（React Flow、litegraph.js、AntV G6、Neo4j NVL、Relation Graph 等，均 JS/TS），接入 Compose 唯一途径是嵌 JCEF/WebView——Chromium 运行时 + JS 桥 + 主题/手势割裂，引入成本过高；② JVM 系图可视化库已停滞或不匹配：JGraphX 2020 年官方 EOL、JUNG 多年无维护、GraphStream 是研究型查看器非编辑器，且全是 Swing/JavaFX 渲染需 SwingPanel 互操作；yFiles 商业许可；ELK Java 布局内核真实可用但带 Eclipse/EMF 依赖，对 ≤16 节点受限串并树是大炮打蚊子；③ Compose 生态无任何成熟节点编辑库（Context7 双关键词检索为空）。**引库省不掉真正的工作量**：渲染+布局只占 Task 6/7 约 300 行可单测代码，大头是与 `BabiqFlowStructure` 强耦合的交互语义（drop zone/undo/双模式），任何图形库都不提供。备选：若实现期拖拽机制遇阻，`mohamedrejeb/compose-dnd`（Compose 多平台拖放库，质量良好）为预审定的唯一候补，但其列表重排模型与缩放画布 drop zone 不直接匹配，默认不用 |
 | D8 | 画布活在右侧详情展开分屏（复用现有展开态）；面板收起时显示现有紧凑节点列表 | 遵守 p6-master "对话始终主体"UI 模型；紧凑列表复用 `OrchestrationNodeRowView` 零成本 |
 | D9 | 编辑/回放同一 `FlowCanvas`，按 mode 切换：编辑（配置期 WorkUnit）可改结构；回放（运行期 orchestration item）只读 + 状态着色。**回放态必须裁剪全部编辑 affordance**：线上插入点、模板/组按钮全部隐藏，启动按钮变"运行中"禁用态 | 一套布局/渲染两处用，状态来源都是现有协议事件，不加新协议；冻结后还显示编辑入口是语义矛盾（原型审查 A2） |
 | D10 | 节点添加以**线上 "+" 插入菜单**为主（连线/组内空位上点 "+" 弹出：探查/实现/验证/自定义 + 并行组/路由组，插入位置所见即所得），画布工具栏模板按钮保留为"追加到末尾"快捷方式；新节点任务为空 + placeholder，**空任务禁止启动** | 采纳原型方案（比纯工具栏+afterEntry 更直观）；菜单必须含全部 4 模板 + 2 种组（原型缺路由组，实现补齐）；吸收层1缺陷修复 |

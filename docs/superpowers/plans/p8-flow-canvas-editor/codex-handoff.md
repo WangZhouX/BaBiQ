@@ -3,7 +3,7 @@
 > 完整计划：`docs/superpowers/plans/p8-flow-canvas-editor/plan.md`（必读，按 Task 1→10 顺序执行）
 > 原型审查：`docs/superpowers/plans/p8-flow-canvas-editor/prototype-review.md`
 > 视觉基准：Figma「总原型UI」`frTp55zgrKf4NAWxn6LdI7` section `395:2` 七帧 `399:x`（P8 01-07），2026-06-13 复查通过
-> 锁定技术栈：Spring AI Alibaba `1.1.2.3`、Spring AI `1.1.6`、Java 21、SQLite + MyBatis-Plus + Flyway、Compose Desktop 纯标准 API（**禁止引入第三方图形/布局库**）
+> 锁定技术栈：Spring AI Alibaba `1.1.2.3`、Spring AI `1.1.6`、Java 21、SQLite + MyBatis-Plus + Flyway、Compose Desktop 纯标准 API（**不引入第三方图形/布局库**——不是偏好，是 2026-06-13 选型调研结论：成熟节点编辑器全在 JS/TS 生态需嵌 WebView，JVM 系 JGraphX/JUNG 已停滞且为 Swing 时代产物，Compose 生态无成熟节点编辑库；完整调研与唯一备选 compose-dnd 见 plan D7，遇阻先查 D7 再考虑加依赖）
 
 ## 当前状态（2026-06-13）
 
