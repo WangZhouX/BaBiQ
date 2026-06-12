@@ -31,6 +31,7 @@ data class WorkUnitConfigUpdateParams(
 
 @Serializable
 data class WorkUnitConfiguration(
+	val topology: String = "sequential",
 	val nodes: List<WorkUnitConfigEntry> = emptyList(),
 	val members: List<WorkUnitConfigEntry> = emptyList(),
 )

@@ -114,6 +114,7 @@ class OrchestrationSectionTest {
 		assertEquals("goal_2", model.config?.editableGoalId)
 		assertEquals("edit html content", model.config?.editableGoalText)
 		assertEquals(2, model.config?.goals?.size)
+		assertEquals("sequential", model.configTopology)
 		assertEquals(listOf("start", "analyzer", "end"), model.configNodes.map { it.nodeId })
 		assertEquals("START", model.configNodes.first().title)
 		assertEquals("END", model.configNodes.last().title)
@@ -125,6 +126,41 @@ class OrchestrationSectionTest {
 		assertEquals("analyze login page structure", model.configNodes.first { it.nodeId == "analyzer" }.task)
 		assertEquals("end:main-agent-confirmed", model.configNodes.last().modelValue)
 		assertEquals("移除", model.removeActionLabel)
+	}
+
+	@Test
+	fun `orchestration section model preserves parallel topology from saved configuration`() {
+		val workUnit = WorkUnitInfo(
+			workUnitId = "wu_flow",
+			threadId = "thr_1",
+			kind = "orchestration",
+			name = "parallel-flow",
+			status = "waiting_config",
+			currentGoalId = "goal_1",
+			cwd = "H:\\aaa",
+			sandboxMode = "FULL_ACCESS",
+			goals = listOf(
+				WorkUnitGoalInfo("goal_1", "wu_flow", "check page in parallel", "pending"),
+			),
+			configJson = """
+				{
+				  "topology": "parallel",
+				  "nodes": [
+				    {"id": "start", "task": "check page in parallel", "model": "goal:current"},
+				    {"id": "scan", "task": "read page", "model": "inherit"},
+				    {"id": "review", "task": "review result", "model": "inherit"}
+				  ]
+				}
+			""".trimIndent(),
+		)
+
+		val model = buildOrchestrationSectionModel(
+			OrchestrationUiState(configuringWorkUnit = workUnit),
+			modelLabel = "deepseek-v4-pro",
+		)
+
+		assertEquals("parallel", model.configTopology)
+		assertEquals(listOf("串行节点", "并行节点"), model.addNodeActions.map { it.label })
 	}
 
 	@Test
@@ -189,7 +225,7 @@ class OrchestrationSectionTest {
 	}
 
 	@Test
-	fun `add orchestration draft node inserts before end node`() {
+	fun `add orchestration draft serial node inserts before end node`() {
 		val nodes = listOf(
 			OrchestrationConfigNodeRow(
 				nodeId = "start",
@@ -219,6 +255,55 @@ class OrchestrationSectionTest {
 
 		assertEquals(listOf("start", "node_1", "end"), updated.map { it.nodeId })
 		assertTrue(updated.first { it.nodeId == "node_1" }.removable)
+	}
+
+	@Test
+	fun `add orchestration draft parallel node switches topology to parallel`() {
+		val nodes = listOf(
+			OrchestrationConfigNodeRow(
+				nodeId = "start",
+				title = "START",
+				role = "entry",
+				task = "goal",
+				modelLabel = "goal",
+				modelValue = "goal:current",
+				modeLabel = "goal",
+				selected = true,
+				removable = false,
+			),
+			OrchestrationConfigNodeRow(
+				nodeId = "scan",
+				title = "scan",
+				role = "reader",
+				task = "read",
+				modelLabel = "main",
+				modelValue = "inherit",
+				modeLabel = "read only",
+				selected = false,
+				removable = true,
+			),
+			OrchestrationConfigNodeRow(
+				nodeId = "end",
+				title = "END",
+				role = "exit",
+				task = "finish",
+				modelLabel = "main",
+				modelValue = "end:main-agent-confirmed",
+				modeLabel = "end",
+				selected = false,
+				removable = false,
+			),
+		)
+
+		val update = addOrchestrationDraftNodeWithTopology(
+			nodes = nodes,
+			inheritedModelLabel = "deepseek-v4-pro",
+			currentTopology = "sequential",
+			mode = OrchestrationDraftAddMode.Parallel,
+		)
+
+		assertEquals("parallel", update.topology)
+		assertEquals(listOf("start", "scan", "node_1", "end"), update.nodes.map { it.nodeId })
 	}
 
 	@Test

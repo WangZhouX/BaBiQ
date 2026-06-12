@@ -26,8 +26,34 @@ class WorkUnitModelsTest {
 
 		val config = assertNotNull(info.configuration)
 
+		assertEquals("sequential", config.topology)
 		assertEquals("修改 html 内容", config.nodes.first { it.id == "start" }.task)
 		assertEquals("provider:qwen:qwen-plus", config.nodes.first { it.id == "analyzer" }.model)
+	}
+
+	@Test
+	fun `work unit info decodes orchestration topology when configured`() {
+		val info = WorkUnitInfo(
+			workUnitId = "wu_flow",
+			threadId = "thr_1",
+			kind = "orchestration",
+			name = "html-test",
+			status = "waiting_config",
+			configJson = """
+				{
+				  "topology": "parallel",
+				  "nodes": [
+				    {"id": "start", "task": "修改 html 内容", "model": "goal:current"},
+				    {"id": "scan", "task": "读取页面", "model": "inherit"},
+				    {"id": "review", "task": "复核页面", "model": "inherit"}
+				  ]
+				}
+			""".trimIndent(),
+		)
+
+		val config = assertNotNull(info.configuration)
+
+		assertEquals("parallel", config.topology)
 	}
 
 	@Test

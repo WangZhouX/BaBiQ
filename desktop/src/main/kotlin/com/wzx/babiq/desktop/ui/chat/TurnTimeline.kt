@@ -113,8 +113,8 @@ fun deriveTurnTimeline(messages: List<ChatMessage>): List<TimelineItem> {
 						active = true,
 					)
 				} else {
-					flushProcess()
 					timeline += TimelineItem.Message(message)
+					flushProcess()
 				}
 			}
 			is ChatMessage.Reasoning -> {

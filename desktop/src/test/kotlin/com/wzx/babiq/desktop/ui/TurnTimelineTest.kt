@@ -12,7 +12,7 @@ import kotlin.test.assertTrue
 
 class TurnTimelineTest {
 	@Test
-	fun `completed turn folds reasoning tools and file reads into one process card before final answer`() {
+	fun `completed turn keeps final answer before folded process card`() {
 		val messages = listOf(
 			ChatMessage.User("u1", "查看当前目录"),
 			ChatMessage.Reasoning("r1", "先列目录，再读取唯一文件。", completed = true),
@@ -37,13 +37,13 @@ class TurnTimelineTest {
 
 		assertEquals(4, timeline.size)
 		assertIs<TimelineItem.Message>(timeline[0])
-		val process = assertIs<TimelineItem.Process>(timeline[1])
+		assertIs<TimelineItem.Message>(timeline[1])
+		val process = assertIs<TimelineItem.Process>(timeline[2])
 		assertEquals("本轮工作过程 · 3 步", process.title)
 		assertFalse(process.expandedByDefault)
 		assertEquals(listOf("推理", "列出目录 H:\\aaa", "读取文件 H:\\aaa\\index.html"), process.rows.map { it.summary })
 		assertEquals("先列目录，再读取唯一文件。", process.rows[0].detail)
 		assertEquals("index.html", process.rows[1].detail)
-		assertIs<TimelineItem.Message>(timeline[2])
 		assertIs<TimelineItem.Message>(timeline[3])
 	}
 

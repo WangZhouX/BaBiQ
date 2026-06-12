@@ -53,8 +53,10 @@ data class OrchestrationSectionModel(
 	val nodes: List<OrchestrationNodeRow>,
 	val summaryPreview: String? = null,
 	val config: WorkUnitDetailModel? = null,
+	val configTopology: String = "sequential",
 	val configNodes: List<OrchestrationConfigNodeRow> = emptyList(),
 	val selectedNodeSettings: OrchestrationNodeSettingsModel? = null,
+	val addNodeActions: List<OrchestrationAddNodeAction> = emptyList(),
 	val addNodeActionLabel: String? = null,
 	val removeActionLabel: String? = null,
 	val editModeTitle: String? = null,
@@ -97,6 +99,21 @@ data class OrchestrationNodeModelOption(
 	val modelValue: String,
 )
 
+data class OrchestrationAddNodeAction(
+	val label: String,
+	val mode: OrchestrationDraftAddMode,
+)
+
+enum class OrchestrationDraftAddMode {
+	Serial,
+	Parallel,
+}
+
+data class OrchestrationDraftNodeUpdate(
+	val nodes: List<OrchestrationConfigNodeRow>,
+	val topology: String,
+)
+
 fun buildOrchestrationSectionModel(
 	state: OrchestrationUiState,
 	modelLabel: String = "未选择模型",
@@ -115,6 +132,7 @@ fun buildOrchestrationSectionModel(
 	}
 	val config = state.configuringWorkUnit ?: return OrchestrationSectionModel(false, "", "", emptyList())
 	val detail = workUnitDetailModel(config, modelLabel)
+	val topology = config.configuration?.topology?.ifBlank { "sequential" } ?: "sequential"
 	val configNodes = configDraftNodes(detail)
 	val selectedNode = configNodes.firstOrNull { it.nodeId == "start" } ?: configNodes.firstOrNull()
 	return OrchestrationSectionModel(
@@ -123,8 +141,10 @@ fun buildOrchestrationSectionModel(
 		subtitle = "${statusLabel(config.status)} / ${config.goals.size} 个目标 / 等待手动启动",
 		nodes = emptyList(),
 		config = detail,
+		configTopology = topology,
 		configNodes = configNodes,
 		selectedNodeSettings = selectedNode?.let(::nodeSettingsModel),
+		addNodeActions = defaultAddNodeActions(),
 		addNodeActionLabel = "添加节点",
 		removeActionLabel = detail.removeActionLabel,
 		editModeTitle = "编排 · 编辑模式",
@@ -178,8 +198,10 @@ fun OrchestrationSection(
 			model.config?.let { config ->
 				OrchestrationConfigPanel(
 					detail = config,
+					topology = model.configTopology,
 					nodes = model.configNodes,
 					defaultSettings = model.selectedNodeSettings,
+					addNodeActions = model.addNodeActions,
 					addNodeActionLabel = model.addNodeActionLabel,
 					editModeTitle = model.editModeTitle,
 					providerState = providerState,
@@ -197,8 +219,10 @@ fun OrchestrationSection(
 @Composable
 private fun OrchestrationConfigPanel(
 	detail: WorkUnitDetailModel,
+	topology: String,
 	nodes: List<OrchestrationConfigNodeRow>,
 	defaultSettings: OrchestrationNodeSettingsModel?,
+	addNodeActions: List<OrchestrationAddNodeAction>,
 	addNodeActionLabel: String?,
 	editModeTitle: String?,
 	providerState: ProviderState,
@@ -208,6 +232,9 @@ private fun OrchestrationConfigPanel(
 ) {
 	var draftNodes by remember(detail.workUnitId, nodes) {
 		mutableStateOf(nodes)
+	}
+	var draftTopology by remember(detail.workUnitId, topology) {
+		mutableStateOf(topology)
 	}
 	var selectedNodeId by remember(detail.workUnitId, nodes) {
 		mutableStateOf(defaultSettings?.nodeId ?: nodes.firstOrNull()?.nodeId)
@@ -229,32 +256,40 @@ private fun OrchestrationConfigPanel(
 		OrchestrationTopologyFrame(
 			title = editModeTitle ?: "编排 · 编辑模式",
 			addNodeActionLabel = addNodeActionLabel,
+			addNodeActions = addNodeActions,
+			topology = draftTopology,
 			nodes = draftNodes,
 			selectedNodeId = selectedNodeId,
 			onSelect = { selectedNodeId = it },
-			onAddNode = addNodeActionLabel?.let {
-				{
-					val updatedNodes = addOrchestrationDraftNode(draftNodes, detail.modelLabel)
-					val addedNode = updatedNodes.firstOrNull { candidate ->
-						draftNodes.none { existing -> existing.nodeId == candidate.nodeId }
-					}
-					draftNodes = updatedNodes
-					if (addedNode != null) {
-						selectedNodeId = addedNode.nodeId
-					}
-					val updatedNodeIds = updatedNodes.map { it.nodeId }.toSet()
-					val nextModelValues = updatedNodes.associate { row -> row.nodeId to row.modelValue } +
-						selectedModelValues.filterKeys { it in updatedNodeIds }
-					selectedModelValues = nextModelValues
-					onUpdateConfig(
-						detail.workUnitId,
-						buildOrchestrationConfigJson(
-							detail = detail,
-							nodes = updatedNodes,
-							selectedModelValues = nextModelValues,
-						),
-					)
+			onAddNode = { action ->
+				val updated = addOrchestrationDraftNodeWithTopology(
+					nodes = draftNodes,
+					inheritedModelLabel = detail.modelLabel,
+					currentTopology = draftTopology,
+					mode = action.mode,
+				)
+				val updatedNodes = updated.nodes
+				val addedNode = updatedNodes.firstOrNull { candidate ->
+					draftNodes.none { existing -> existing.nodeId == candidate.nodeId }
 				}
+				draftNodes = updatedNodes
+				draftTopology = updated.topology
+				if (addedNode != null) {
+					selectedNodeId = addedNode.nodeId
+				}
+				val updatedNodeIds = updatedNodes.map { it.nodeId }.toSet()
+				val nextModelValues = updatedNodes.associate { row -> row.nodeId to row.modelValue } +
+					selectedModelValues.filterKeys { it in updatedNodeIds }
+				selectedModelValues = nextModelValues
+				onUpdateConfig(
+					detail.workUnitId,
+					buildOrchestrationConfigJson(
+						detail = detail,
+						topology = updated.topology,
+						nodes = updatedNodes,
+						selectedModelValues = nextModelValues,
+					),
+				)
 			},
 		)
 		settings?.let { nodeSettings ->
@@ -313,6 +348,7 @@ private fun OrchestrationConfigPanel(
 								detail.workUnitId,
 								buildOrchestrationConfigJson(
 									detail = detail,
+									topology = draftTopology,
 									nodes = updatedNodes,
 									updatedNodeId = nodeSettings.nodeId,
 									updatedTask = draftTask,
@@ -377,10 +413,12 @@ fun NodeModelSelector(
 private fun OrchestrationTopologyFrame(
 	title: String,
 	addNodeActionLabel: String?,
+	addNodeActions: List<OrchestrationAddNodeAction>,
+	topology: String,
 	nodes: List<OrchestrationConfigNodeRow>,
 	selectedNodeId: String?,
 	onSelect: (String) -> Unit,
-	onAddNode: (() -> Unit)? = null,
+	onAddNode: (OrchestrationAddNodeAction) -> Unit,
 ) {
 	Column(
 		modifier = Modifier
@@ -395,10 +433,15 @@ private fun OrchestrationTopologyFrame(
 			horizontalArrangement = Arrangement.SpaceBetween,
 			verticalAlignment = Alignment.CenterVertically,
 		) {
-			Text(title, style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
+			Text(
+				"$title · ${topologyLabel(topology)}",
+				style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+			)
 			Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-				addNodeActionLabel?.let { label ->
-					OutlinedButton(onClick = { onAddNode?.invoke() }, enabled = onAddNode != null) { Text("+ $label") }
+				if (addNodeActionLabel != null) {
+					addNodeActions.forEach { action ->
+						OutlinedButton(onClick = { onAddNode(action) }) { Text("+ ${action.label}") }
+					}
 				}
 				Text("收起 ◀", style = MaterialTheme.typography.labelSmall, color = BaBiQColors.Muted)
 			}
@@ -410,6 +453,7 @@ private fun OrchestrationTopologyFrame(
 				.background(BaBiQColors.Border),
 		)
 		OrchestrationTopologyEditor(
+			topology = topology,
 			nodes = nodes,
 			selectedNodeId = selectedNodeId,
 			onSelect = onSelect,
@@ -419,6 +463,7 @@ private fun OrchestrationTopologyFrame(
 
 @Composable
 private fun OrchestrationTopologyEditor(
+	topology: String,
 	nodes: List<OrchestrationConfigNodeRow>,
 	selectedNodeId: String?,
 	onSelect: (String) -> Unit,
@@ -440,13 +485,32 @@ private fun OrchestrationTopologyEditor(
 		if (startNode != null && (middleNodes.isNotEmpty() || endNode != null)) {
 			VerticalConnector()
 		}
-		middleNodes.forEachIndexed { index, node ->
-			OrchestrationConfigNodeCard(
-				node = node.copy(selected = node.nodeId == selectedNodeId),
-				onSelect = { onSelect(node.nodeId) },
-			)
-			if (index < middleNodes.lastIndex || endNode != null) {
+		if (topology.equals("parallel", ignoreCase = true) && middleNodes.size > 1) {
+			Row(
+				modifier = Modifier.fillMaxWidth(),
+				horizontalArrangement = Arrangement.spacedBy(8.dp),
+				verticalAlignment = Alignment.Top,
+			) {
+				middleNodes.forEach { node ->
+					OrchestrationConfigNodeCard(
+						node = node.copy(selected = node.nodeId == selectedNodeId),
+						onSelect = { onSelect(node.nodeId) },
+						modifier = Modifier.weight(1f),
+					)
+				}
+			}
+			if (endNode != null) {
 				VerticalConnector()
+			}
+		} else {
+			middleNodes.forEachIndexed { index, node ->
+				OrchestrationConfigNodeCard(
+					node = node.copy(selected = node.nodeId == selectedNodeId),
+					onSelect = { onSelect(node.nodeId) },
+				)
+				if (index < middleNodes.lastIndex || endNode != null) {
+					VerticalConnector()
+				}
 			}
 		}
 		endNode?.let { node ->
@@ -602,6 +666,20 @@ fun addOrchestrationDraftNode(
 	nodes: List<OrchestrationConfigNodeRow>,
 	inheritedModelLabel: String,
 ): List<OrchestrationConfigNodeRow> {
+	return addOrchestrationDraftNodeWithTopology(
+		nodes = nodes,
+		inheritedModelLabel = inheritedModelLabel,
+		currentTopology = "sequential",
+		mode = OrchestrationDraftAddMode.Serial,
+	).nodes
+}
+
+fun addOrchestrationDraftNodeWithTopology(
+	nodes: List<OrchestrationConfigNodeRow>,
+	inheritedModelLabel: String,
+	currentTopology: String,
+	mode: OrchestrationDraftAddMode,
+): OrchestrationDraftNodeUpdate {
 	val existingIds = nodes.map { it.nodeId }.toSet()
 	val nodeId = generateSequence(1) { it + 1 }
 		.map { "node_$it" }
@@ -619,11 +697,23 @@ fun addOrchestrationDraftNode(
 	)
 	val cleared = nodes.map { it.copy(selected = false) }
 	val endIndex = cleared.indexOfFirst { it.nodeId == "end" }
-	if (endIndex < 0) {
-		return cleared + newNode
+	val updatedNodes = if (endIndex < 0) {
+		cleared + newNode
+	} else {
+		cleared.take(endIndex) + newNode + cleared.drop(endIndex)
 	}
-	return cleared.take(endIndex) + newNode + cleared.drop(endIndex)
+	val updatedTopology = when (mode) {
+		OrchestrationDraftAddMode.Serial -> currentTopology.ifBlank { "sequential" }
+		OrchestrationDraftAddMode.Parallel -> "parallel"
+	}
+	return OrchestrationDraftNodeUpdate(updatedNodes, updatedTopology)
 }
+
+private fun defaultAddNodeActions(): List<OrchestrationAddNodeAction> =
+	listOf(
+		OrchestrationAddNodeAction("串行节点", OrchestrationDraftAddMode.Serial),
+		OrchestrationAddNodeAction("并行节点", OrchestrationDraftAddMode.Parallel),
+	)
 
 private fun currentConfigGoal(detail: WorkUnitDetailModel): String =
 	detail.editableGoalText
@@ -900,6 +990,7 @@ private fun selectedNodeModelLabel(
 
 private fun buildOrchestrationConfigJson(
 	detail: WorkUnitDetailModel,
+	topology: String,
 	nodes: List<OrchestrationConfigNodeRow>,
 	updatedNodeId: String? = null,
 	updatedTask: String? = null,
@@ -917,6 +1008,7 @@ private fun buildOrchestrationConfigJson(
 	}
 	return protocolJson.encodeToString(
 		WorkUnitConfiguration(
+			topology = topology.ifBlank { "sequential" },
 			nodes = entries,
 			members = detail.configuration?.members.orEmpty(),
 		),
