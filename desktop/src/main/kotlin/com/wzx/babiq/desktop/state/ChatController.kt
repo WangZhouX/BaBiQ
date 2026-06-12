@@ -1094,10 +1094,11 @@ class ChatController(
 		}
 	}
 
-	fun updateWorkUnitConfig(workUnitId: String, configJson: String) {
+	fun updateWorkUnitConfig(workUnitId: String, configJson: String, structureJson: String? = null) {
 		val detail = state.value.workUnitState.details.firstOrNull { it.workUnitId == workUnitId }
 		val threadId = state.value.currentThreadId ?: detail?.threadId ?: return
 		val normalizedConfig = configJson.trim()
+		val normalizedStructure = structureJson?.trim()?.takeIf { it.isNotBlank() }
 		if (workUnitId.isBlank() || normalizedConfig.isBlank()) {
 			return
 		}
@@ -1109,7 +1110,7 @@ class ChatController(
 				)
 			}
 			try {
-				val result = gateway.updateWorkUnitConfig(threadId, workUnitId, normalizedConfig)
+				val result = gateway.updateWorkUnitConfig(threadId, workUnitId, normalizedConfig, normalizedStructure)
 				_state.update {
 					val refreshed = it.workUnitState.details
 						.filterNot { detail -> detail.workUnitId == result.workUnit.workUnitId } + result.workUnit
@@ -1235,6 +1236,10 @@ class ChatController(
 			.firstOrNull { it.workUnitId == item.workUnitId }
 			?.configJson
 			?.takeIf { it.isNotBlank() }
+		val structureJson = state.value.workUnitState.details
+			.firstOrNull { it.workUnitId == item.workUnitId }
+			?.structureJson
+			?.takeIf { it.isNotBlank() }
 		val targetTool = when (item.kind.lowercase(Locale.ROOT)) {
 			"team" -> "coordinate_team"
 			else -> "orchestrate_flow"
@@ -1245,6 +1250,7 @@ class ChatController(
 			else -> item.kind
 		}
 		return buildString {
+			structureJson?.let { append("flow structure snapshot: ").append(it).append('\n') }
 			append("启动工作容器「").append(item.name).append("」的当前待执行目标。")
 			append("\n类型：").append(kindLabel)
 			append("\n容器 id：").append(item.workUnitId)

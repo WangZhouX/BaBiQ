@@ -507,6 +507,28 @@ class AgentClientTest {
 	}
 
 	@Test
+	fun `work unit config update sends structure json when present`() = runTest {
+		val transport = FakeAgentTransport()
+		val client = AgentClient(transport, backgroundScope)
+		client.connect()
+
+		val result = client.updateWorkUnitConfig(
+			threadId = "thr_1",
+			workUnitId = "wu_1",
+			configJson = """{"nodes":[{"id":"writer"}]}""",
+			structureJson = """{"root":{"groupId":"g_root","topology":"SEQUENTIAL","children":[{"nodeId":"writer"}]}}""",
+		)
+
+		val request = transport.sent.single()
+		assertEquals("workunit/config/update", request.method)
+		assertEquals("thr_1", request.paramsText("threadId"))
+		assertEquals("wu_1", request.paramsText("workUnitId"))
+		assertTrue(request.paramsText("structureJson").contains("g_root"))
+		assertEquals("wu_1", result.workUnit.workUnitId)
+		assertTrue(result.workUnit.structureJson.orEmpty().contains("g_root"))
+	}
+
+	@Test
 	fun `json rpc error 会转成 AgentClientException`() = runTest {
 		val transport = FakeAgentTransport(errorMethods = setOf("thread/create"))
 		val client = AgentClient(transport, backgroundScope)
@@ -938,6 +960,21 @@ class AgentClientTest {
 									})
 								},
 							)
+						},
+					)
+				}
+				"workunit/config/update" -> buildJsonObject {
+					put(
+						"workUnit",
+						buildJsonObject {
+							put("workUnitId", request.paramsText("workUnitId"))
+							put("threadId", request.paramsText("threadId"))
+							put("kind", "orchestration")
+							put("name", "flow")
+							put("status", "waiting_config")
+							put("removed", false)
+							put("configJson", request.paramsText("configJson"))
+							put("structureJson", request.paramsText("structureJson"))
 						},
 					)
 				}

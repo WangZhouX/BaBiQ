@@ -32,8 +32,21 @@ public record OrchestrationItem(
         String summary,
         Boolean approved,
         Boolean frozen,
+        String structureJson,
         List<NodeStatus> nodes
 ) implements ThreadItem {
+    public OrchestrationItem(String id,
+                             String type,
+                             String orchestrationId,
+                             String title,
+                             String topology,
+                             String status,
+                             String summary,
+                             Boolean approved,
+                             Boolean frozen,
+                             List<NodeStatus> nodes) {
+        this(id, type, orchestrationId, title, topology, status, summary, approved, frozen, null, nodes);
+    }
 
     /**
      * 单个流程节点的 UI 状态。

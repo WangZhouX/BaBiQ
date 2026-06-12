@@ -63,7 +63,7 @@ public class WorkUnitGoalUpdateHandler implements JsonRpcMethodHandler {
                 WorkUnitListHandler.toInfo(
                         workUnit,
                         refreshedGoals,
-                        WorkUnitListHandler.configJsonFor(service, workUnitId))
+                        WorkUnitListHandler.configFor(service, workUnitId))
         );
     }
 }

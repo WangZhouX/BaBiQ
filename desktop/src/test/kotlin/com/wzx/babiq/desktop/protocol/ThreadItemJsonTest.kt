@@ -208,6 +208,7 @@ class ThreadItemJsonTest {
 			      "summary": "流程已审批并开始执行",
 			      "approved": true,
 			      "frozen": true,
+			      "structureJson": "{\"root\":{\"groupId\":\"g_root\",\"topology\":\"SEQUENTIAL\",\"children\":[{\"nodeId\":\"node_scan\"},{\"nodeId\":\"node_write\"}]}}",
 			      "nodes": [
 			        {
 			          "nodeId": "node_scan",
@@ -242,6 +243,7 @@ class ThreadItemJsonTest {
 		assertEquals("orch_1", item.orchestrationId)
 		assertEquals("parallel", item.topology)
 		assertEquals(true, item.approved)
+		assertEquals(true, item.structureJson?.contains("g_root"))
 		assertEquals(2, item.nodes.size)
 		assertEquals("WORKSPACE_TOOL", item.nodes.last().mode)
 	}

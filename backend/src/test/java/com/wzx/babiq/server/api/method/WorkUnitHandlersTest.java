@@ -107,22 +107,25 @@ class WorkUnitHandlersTest {
         WorkUnit workUnit = sampleWorkUnit("wu_1", "orchestration", "html测试", "waiting_config", "goal_1", false);
         WorkUnitGoal goal = sampleGoal("goal_1", "wu_1", "检查 html", "pending");
         String configJson = "{\"nodes\":[{\"id\":\"analyzer\",\"model\":\"provider:qwen:qwen-plus\"}]}";
+        String structureJson = "{\"root\":{\"groupId\":\"g_root\",\"topology\":\"sequential\",\"children\":[{\"nodeId\":\"analyzer\"}]}}";
         when(service.listVisible("thr_1")).thenReturn(List.of(workUnit));
         when(service.listGoals("wu_1")).thenReturn(List.of(goal));
-        when(service.updateConfig("wu_1", configJson)).thenReturn(sampleConfig("wu_1", configJson));
-        when(service.findConfig("wu_1")).thenReturn(java.util.Optional.of(sampleConfig("wu_1", configJson)));
+        when(service.updateConfig("wu_1", configJson, structureJson)).thenReturn(sampleConfig("wu_1", configJson, structureJson));
+        when(service.findConfig("wu_1")).thenReturn(java.util.Optional.of(sampleConfig("wu_1", configJson, structureJson)));
 
         Object result = new WorkUnitConfigUpdateHandler(service)
                 .handle(objectMapper.valueToTree(Map.of(
                         "threadId", "thr_1",
                         "workUnitId", "wu_1",
-                        "configJson", configJson
+                        "configJson", configJson,
+                        "structureJson", structureJson
                 )), null);
 
         assertThat(result).isInstanceOf(WorkUnitConfigUpdateResult.class);
         WorkUnitConfigUpdateResult update = (WorkUnitConfigUpdateResult) result;
         assertThat(update.workUnit().configJson()).contains("provider:qwen:qwen-plus");
-        verify(service).updateConfig("wu_1", configJson);
+        assertThat(update.workUnit().structureJson()).contains("\"groupId\":\"g_root\"");
+        verify(service).updateConfig("wu_1", configJson, structureJson);
     }
 
     @Test
@@ -167,7 +170,11 @@ class WorkUnitHandlersTest {
     }
 
     private static WorkUnitConfig sampleConfig(String workUnitId, String configJson) {
-        return new WorkUnitConfig(workUnitId, configJson,
+        return sampleConfig(workUnitId, configJson, null);
+    }
+
+    private static WorkUnitConfig sampleConfig(String workUnitId, String configJson, String structureJson) {
+        return new WorkUnitConfig(workUnitId, configJson, structureJson,
                 Instant.parse("2026-06-02T07:00:00Z"),
                 Instant.parse("2026-06-02T08:00:00Z"));
     }

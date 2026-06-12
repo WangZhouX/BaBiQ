@@ -33,6 +33,10 @@ public class WorkUnitConfigEntity {
     @TableField("config_json")
     private String configJson;
 
+    /** 画布编排结构树 JSON；团队配置或旧版配置可为空。 */
+    @TableField("structure_json")
+    private String structureJson;
+
     /** 创建时间。 */
     @TableField("created_at")
     private String createdAt;

@@ -86,7 +86,7 @@ fun AppShell(
 	onStartWorkUnit: (String) -> Unit,
 	onRemoveWorkUnit: (String) -> Unit,
 	onUpdateWorkUnitGoal: (String, String, String) -> Unit,
-	onUpdateWorkUnitConfig: (String, String) -> Unit,
+	onUpdateWorkUnitConfig: (String, String, String?) -> Unit,
 	onSendTeamMessage: (String, String) -> Unit,
 	onSelectRunTurn: (String) -> Unit,
 	onSelectObservabilityRange: (String) -> Unit,

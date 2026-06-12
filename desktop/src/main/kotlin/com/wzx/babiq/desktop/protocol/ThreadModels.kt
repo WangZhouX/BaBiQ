@@ -242,6 +242,7 @@ sealed interface ThreadItem {
 		val summary: String? = null,
 		val approved: Boolean? = null,
 		val frozen: Boolean? = null,
+		val structureJson: String? = null,
 		val nodes: List<OrchestrationNode> = emptyList(),
 	) : ThreadItem
 

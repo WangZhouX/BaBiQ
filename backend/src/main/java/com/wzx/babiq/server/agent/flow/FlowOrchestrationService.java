@@ -14,11 +14,11 @@ import java.util.List;
 import java.util.function.Supplier;
 
 /**
- * P6-2 流程编排服务。
+ * P6-2/P8 流程编排服务。
  *
- * <p>服务层不自研 DAG/调度器，而是把 BaBiQ 的冻结流程规格翻译为 Spring AI Alibaba
- * Agent Framework 官方的 {@link SequentialAgent}、{@link ParallelAgent} 和
- * {@link LlmRoutingAgent}。BaBiQ 只保留审批、沙箱、协议和持久化边界。</p>
+ * <p>服务层不自研 DAG 或调度器，而是把 BaBiQ 的冻结流程规格递归翻译为 Spring AI Alibaba
+ * Agent Framework 官方的 {@link SequentialAgent}、{@link ParallelAgent} 和 {@link LlmRoutingAgent}。
+ * 叶子节点仍由 {@link FlowNodeAgentFactory} 创建 ReactAgent，审批、沙箱、协议和持久化边界保持在 BaBiQ。</p>
  */
 @Service
 public class FlowOrchestrationService {
@@ -27,12 +27,9 @@ public class FlowOrchestrationService {
     private final FlowNodeAgentFactory nodeAgentFactory;
     /** 运行前审批服务，负责冻结结构和解释范围。 */
     private final FlowApprovalService approvalService;
-    /** RoutingAgent 需要的路由模型供应器；通常继承当前 provider 的 ChatModel。 */
+    /** RoutingAgent 需要的路由模型供应器，通常继承当前 active provider。 */
     private final Supplier<ChatModel> routingModelSupplier;
 
-    /**
-     * 测试友好的构造器。
-     */
     public FlowOrchestrationService(FlowNodeAgentFactory nodeAgentFactory,
                                     FlowApprovalService approvalService,
                                     ChatModel routingModel) {
@@ -41,9 +38,6 @@ public class FlowOrchestrationService {
         this.routingModelSupplier = () -> routingModel;
     }
 
-    /**
-     * 生产构造器：路由模型通过 ChatClientFactory 延迟解析，跟随当前 active provider。
-     */
     @org.springframework.beans.factory.annotation.Autowired
     public FlowOrchestrationService(DefaultFlowNodeAgentFactory nodeAgentFactory,
                                     FlowApprovalService approvalService,
@@ -55,40 +49,60 @@ public class FlowOrchestrationService {
 
     /**
      * 构建官方 FlowAgent，但不立即执行。
-     *
-     * <p>该方法是 P6-2 不重复造轮子的关键断言点：不同拓扑只映射到官方组件，
-     * 子节点仍是 BaBiQ 包装后的 ReactAgent。</p>
      */
     public Agent buildOfficialFlowAgent(BabiqFlowSpec spec, ToolContext parentToolContext, String fallbackAgentName) {
         if (!spec.approved() || !spec.frozen()) {
             throw new IllegalStateException("流程必须先完成运行前整体审批并冻结");
         }
         ToolContext safeContext = parentToolContext == null ? new ToolContext(java.util.Map.of()) : parentToolContext;
-        List<Agent> agents = spec.nodes().stream()
-                .map(node -> nodeAgentFactory.create(node, safeContext))
+        return compileGroup(spec.structure().root(), spec, safeContext, fallbackAgentName, true);
+    }
+
+    /**
+     * 递归把结构树条目编译为官方 Agent：叶子复用现有节点工厂，组映射官方 FlowAgent。
+     */
+    private Agent compileEntry(BabiqFlowStructure.FlowEntry entry,
+                               BabiqFlowSpec spec,
+                               ToolContext toolContext,
+                               String fallbackAgentName) {
+        if (entry instanceof BabiqFlowStructure.FlowNodeRef ref) {
+            BabiqFlowNode node = spec.node(ref.nodeId())
+                    .orElseThrow(() -> new IllegalArgumentException("流程结构引用了不存在的节点: " + ref.nodeId()));
+            return nodeAgentFactory.create(node, toolContext);
+        }
+        return compileGroup((BabiqFlowStructure.FlowGroup) entry, spec, toolContext, fallbackAgentName, false);
+    }
+
+    private Agent compileGroup(BabiqFlowStructure.FlowGroup group,
+                               BabiqFlowSpec spec,
+                               ToolContext toolContext,
+                               String fallbackAgentName,
+                               boolean root) {
+        List<Agent> agents = group.children().stream()
+                .map(child -> compileEntry(child, spec, toolContext, fallbackAgentName))
                 .toList();
-        return switch (spec.topology()) {
+        String agentName = root ? spec.orchestrationId() : group.groupId();
+        String description = root ? spec.title() : spec.title() + " / " + group.groupId();
+        return switch (group.topology()) {
             case SEQUENTIAL -> SequentialAgent.builder()
-                    .name(spec.orchestrationId())
-                    .description(spec.title())
+                    .name(agentName)
+                    .description(description)
                     .subAgents(agents)
                     .saver(new MemorySaver())
                     .build();
             case PARALLEL -> ParallelAgent.builder()
-                    .name(spec.orchestrationId())
-                    .description(spec.title())
+                    .name(agentName)
+                    .description(description)
                     .subAgents(agents)
-                    .mergeOutputKey(spec.mergeOutputKey())
+                    .mergeOutputKey(root ? spec.mergeOutputKey() : group.groupId() + "_output")
                     .mergeStrategy(new ParallelAgent.DefaultMergeStrategy())
                     .saver(new MemorySaver())
                     .build();
             case ROUTING -> LlmRoutingAgent.builder()
-                    .name(spec.orchestrationId())
-                    .description(spec.title())
+                    .name(agentName)
+                    .description(description)
                     .model(routingModelSupplier.get())
-                    .fallbackAgent(fallbackAgentName == null || fallbackAgentName.isBlank()
-                            ? spec.nodes().getFirst().name()
-                            : fallbackAgentName)
+                    .fallbackAgent(resolveFallbackAgentName(group, spec, fallbackAgentName, root))
                     .systemPrompt("你是 BaBiQ 流程路由器，只能在给定节点中选择最合适的一个执行。")
                     .instruction("{input}")
                     .subAgents(agents)
@@ -97,9 +111,22 @@ public class FlowOrchestrationService {
         };
     }
 
-    /**
-     * 暴露审批服务，供工具层在实际执行前生成用户可读范围。
-     */
+    private String resolveFallbackAgentName(BabiqFlowStructure.FlowGroup group,
+                                            BabiqFlowSpec spec,
+                                            String fallbackAgentName,
+                                            boolean root) {
+        if (root && fallbackAgentName != null && !fallbackAgentName.isBlank()) {
+            return fallbackAgentName;
+        }
+        BabiqFlowStructure.FlowEntry first = group.children().getFirst();
+        if (first instanceof BabiqFlowStructure.FlowNodeRef ref) {
+            return spec.node(ref.nodeId())
+                    .map(BabiqFlowNode::name)
+                    .orElse(ref.nodeId());
+        }
+        return ((BabiqFlowStructure.FlowGroup) first).groupId();
+    }
+
     public FlowApprovalService approvalService() {
         return approvalService;
     }

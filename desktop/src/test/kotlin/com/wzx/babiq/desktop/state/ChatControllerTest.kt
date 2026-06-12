@@ -1519,8 +1519,9 @@ class ChatControllerTest {
 			threadId: String,
 			workUnitId: String,
 			configJson: String,
+			structureJson: String?,
 		): WorkUnitConfigUpdateResult {
-			calls += "updateWorkUnitConfig:$threadId:$workUnitId:$configJson"
+			calls += "updateWorkUnitConfig:$threadId:$workUnitId:$configJson:${structureJson ?: "<none>"}"
 			return WorkUnitConfigUpdateResult(
 				workUnit = WorkUnitInfo(
 					workUnitId = workUnitId,
@@ -1532,6 +1533,7 @@ class ChatControllerTest {
 					cwd = "H:\\aaa",
 					sandboxMode = "FULL_ACCESS",
 					configJson = configJson,
+					structureJson = structureJson,
 					goals = listOf(
 						WorkUnitGoalInfo(
 							goalId = "goal_1",

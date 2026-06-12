@@ -249,6 +249,7 @@ interface AgentGateway {
 		threadId: String,
 		workUnitId: String,
 		configJson: String,
+		structureJson: String? = null,
 	): WorkUnitConfigUpdateResult
 
 	/** 向当前团队协作中的某个队友直发补充消息。 */
@@ -811,12 +812,13 @@ class AgentClient(
 		threadId: String,
 		workUnitId: String,
 		configJson: String,
+		structureJson: String?,
 	): WorkUnitConfigUpdateResult {
 		val response = request(
 			method = "workunit/config/update",
 			params = protocolJson.encodeToJsonElement(
 				WorkUnitConfigUpdateParams.serializer(),
-				WorkUnitConfigUpdateParams(threadId, workUnitId, configJson),
+				WorkUnitConfigUpdateParams(threadId, workUnitId, configJson, structureJson),
 			),
 		)
 		return protocolJson.decodeFromJsonElement(WorkUnitConfigUpdateResult.serializer(), response.requireResult())

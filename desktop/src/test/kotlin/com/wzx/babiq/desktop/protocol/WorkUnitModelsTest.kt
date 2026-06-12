@@ -57,6 +57,42 @@ class WorkUnitModelsTest {
 	}
 
 	@Test
+	fun `work unit info decodes persisted flow structure json`() {
+		val info = WorkUnitInfo(
+			workUnitId = "wu_flow",
+			threadId = "thr_1",
+			kind = "orchestration",
+			name = "html-test",
+			status = "waiting_config",
+			structureJson = """
+				{
+				  "root": {
+				    "groupId": "g_root",
+				    "topology": "SEQUENTIAL",
+				    "children": [
+				      {"nodeId": "explorer"},
+				      {
+				        "groupId": "g_verify",
+				        "topology": "PARALLEL",
+				        "children": [
+				          {"nodeId": "tester"},
+				          {"nodeId": "reviewer"}
+				        ]
+				      }
+				    ]
+				  }
+				}
+			""".trimIndent(),
+		)
+
+		val structure = assertNotNull(info.structure)
+
+		assertEquals("g_root", structure.root.groupId)
+		assertEquals("explorer", structure.root.children.first().nodeId)
+		assertEquals("g_verify", structure.root.children.last().groupId)
+	}
+
+	@Test
 	fun `work unit info decodes persisted team member configuration`() {
 		val info = WorkUnitInfo(
 			workUnitId = "wu_team",

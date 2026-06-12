@@ -206,15 +206,23 @@ class WorkUnitServiceTest {
         String configJson = """
                 {"nodes":[{"id":"analyzer","model":"provider:qwen:qwen-plus","task":"分析依赖"}]}
                 """.trim();
+        String structureJson = """
+                {"root":{"groupId":"g_root","topology":"sequential","children":[{"nodeId":"analyzer"}]}}
+                """.trim();
 
-        WorkUnitConfig saved = service.updateConfig(item.workUnitId(), configJson);
+        WorkUnitConfig saved = service.updateConfig(item.workUnitId(), configJson, structureJson);
 
         assertThat(saved.workUnitId()).isEqualTo(item.workUnitId());
         assertThat(saved.configJson()).contains("qwen-plus");
+        assertThat(saved.structureJson()).contains("\"nodeId\":\"analyzer\"");
         assertThat(service.findConfig(item.workUnitId()))
                 .get()
                 .extracting(WorkUnitConfig::configJson)
                 .isEqualTo(configJson);
+        assertThat(service.findConfig(item.workUnitId()))
+                .get()
+                .extracting(WorkUnitConfig::structureJson)
+                .isEqualTo(structureJson);
         assertThat(service.listGoals(item.workUnitId())).extracting(WorkUnitGoal::goalText)
                 .containsExactly("goal before config");
     }

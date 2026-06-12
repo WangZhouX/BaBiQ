@@ -30,6 +30,22 @@ public record WorkUnitInfo(
         boolean removed,
         String updatedAt,
         String configJson,
+        String structureJson,
         List<WorkUnitGoalInfo> goals
 ) {
+    public WorkUnitInfo(String workUnitId,
+                        String threadId,
+                        String kind,
+                        String name,
+                        String status,
+                        String currentGoalId,
+                        String cwd,
+                        String sandboxMode,
+                        boolean removed,
+                        String updatedAt,
+                        String configJson,
+                        List<WorkUnitGoalInfo> goals) {
+        this(workUnitId, threadId, kind, name, status, currentGoalId, cwd, sandboxMode,
+                removed, updatedAt, configJson, null, goals);
+    }
 }

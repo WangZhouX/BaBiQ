@@ -42,21 +42,33 @@ public class WorkUnitListHandler implements JsonRpcMethodHandler {
         List<WorkUnitInfo> workUnits = service.listVisible(threadId).stream()
                 .map(workUnit -> toInfo(workUnit,
                         service.listGoals(workUnit.workUnitId()),
-                        configJsonFor(service, workUnit.workUnitId())))
+                        configFor(service, workUnit.workUnitId())))
                 .toList();
         return new WorkUnitListResult(workUnits);
     }
 
     static String configJsonFor(WorkUnitService service, String workUnitId) {
+        return configFor(service, workUnitId).configJson();
+    }
+
+    static WorkUnitConfigPayload configFor(WorkUnitService service, String workUnitId) {
         Optional<WorkUnitConfig> config = service.findConfig(workUnitId);
-        return config == null ? null : config.map(WorkUnitConfig::configJson).orElse(null);
+        if (config == null || config.isEmpty()) {
+            return new WorkUnitConfigPayload(null, null);
+        }
+        WorkUnitConfig value = config.get();
+        return new WorkUnitConfigPayload(value.configJson(), value.structureJson());
     }
 
     static WorkUnitInfo toInfo(WorkUnit workUnit, List<WorkUnitGoal> goals) {
-        return toInfo(workUnit, goals, null);
+        return toInfo(workUnit, goals, new WorkUnitConfigPayload(null, null));
     }
 
     static WorkUnitInfo toInfo(WorkUnit workUnit, List<WorkUnitGoal> goals, String configJson) {
+        return toInfo(workUnit, goals, new WorkUnitConfigPayload(configJson, null));
+    }
+
+    static WorkUnitInfo toInfo(WorkUnit workUnit, List<WorkUnitGoal> goals, WorkUnitConfigPayload config) {
         return new WorkUnitInfo(
                 workUnit.workUnitId(),
                 workUnit.threadId(),
@@ -68,9 +80,13 @@ public class WorkUnitListHandler implements JsonRpcMethodHandler {
                 workUnit.sandboxMode(),
                 workUnit.removed(),
                 asText(workUnit.updatedAt()),
-                configJson,
+                config == null ? null : config.configJson(),
+                config == null ? null : config.structureJson(),
                 goals.stream().map(WorkUnitListHandler::toGoalInfo).toList()
         );
+    }
+
+    record WorkUnitConfigPayload(String configJson, String structureJson) {
     }
 
     static WorkUnitGoalInfo toGoalInfo(WorkUnitGoal goal) {

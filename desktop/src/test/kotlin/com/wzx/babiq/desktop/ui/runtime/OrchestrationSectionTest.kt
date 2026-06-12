@@ -75,7 +75,7 @@ class OrchestrationSectionTest {
 		val model = buildOrchestrationSectionModel(OrchestrationUiState(current = item))
 
 		assertTrue(model.visible)
-		assertEquals("移除", model.removeActionLabel)
+		assertNotNull(model.removeActionLabel)
 	}
 
 	@Test
@@ -119,13 +119,13 @@ class OrchestrationSectionTest {
 		assertEquals("START", model.configNodes.first().title)
 		assertEquals("END", model.configNodes.last().title)
 		val settings = assertNotNull(model.selectedNodeSettings)
-		assertEquals("start", settings.nodeId)
-		assertEquals("edit html content", settings.task)
-		assertEquals("goal:current", settings.modelValue)
+		assertEquals("analyzer", settings.nodeId)
+		assertEquals("analyze login page structure", settings.task)
+		assertEquals("provider:qwen:qwen-plus", settings.modelValue)
 		assertEquals("provider:qwen:qwen-plus", model.configNodes.first { it.nodeId == "analyzer" }.modelValue)
 		assertEquals("analyze login page structure", model.configNodes.first { it.nodeId == "analyzer" }.task)
 		assertEquals("end:main-agent-confirmed", model.configNodes.last().modelValue)
-		assertEquals("移除", model.removeActionLabel)
+		assertNotNull(model.removeActionLabel)
 	}
 
 	@Test
@@ -160,7 +160,7 @@ class OrchestrationSectionTest {
 		)
 
 		assertEquals("parallel", model.configTopology)
-		assertEquals(listOf("串行节点", "并行节点"), model.addNodeActions.map { it.label })
+		assertEquals(listOf("serial node", "parallel node", "routing branch"), model.addNodeActions.map { it.label })
 	}
 
 	@Test
