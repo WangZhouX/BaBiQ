@@ -69,6 +69,7 @@
 | D14 | **视觉通道分离规范**：节点主体一律中性底色，角色只用左侧小色点表示；**颜色最强通道留给运行状态**（pending 灰 / running 强调色+呼吸 / completed 绿 / failed 红）；红色全局仅用于危险与失败语义，"编辑"等模式激活态用主题强调色 | 原型审查 A1：角色常驻色（如 reviewer 红）会在回放态被误读为失败，双重编码冲突必须让位 |
 | D15 | 节点设置 = **锚定浮层**：跟随选中节点定位（带指向标记、自动避让其他节点与画布边界），字段含任务、模型、**工具模式（只读/工作区写入）**、**重命名**、删除节点 | 原型审查 A3：固定右上浮层与被编节点距离远且遮挡；mode 决定审批写入范围必须可见可改；"参数内嵌节点卡"在缩放画布上输入体验差，锚定浮层是务实折中 |
 | D16 | 无"拖拽模式"开关：拖节点=结构操作（drop zone 高亮）、拖空白=平移画布，固定手势分工；组标签只显示"并行组/路由组"或自定义组名，技术 groupId 进 tooltip；不做"运行回放"侧卡（画布即状态显示器，收起态用现有紧凑列表） | 原型审查 B8/B6/B9：模式开关多一步心智负担且易残留；技术 id 不是 UI 文案；侧卡与画布信息重复 |
+| D17 | **对话式配置编辑**：扩展 `work_unit_manage` 新增 `read_config`（读当前草稿 nodes+structure+校验状态）与 `update_config`（**全量覆盖**提交，JSON 与桌面 `workunit/config/update` 同构），增删改节点 = 模型"读→改→全量写"；不做 add_node/remove_node 增量 action。编辑只动草稿、运行中容器拒绝；启动/移除沿用既有显式语义（agent 不能绕过 approve-once）。成功后 emit `WorkUnitItem` 驱动画布实时刷新；桌面本地有未保存草稿时提示"配置已被 Agent 更新"，提供[加载最新]/[保留草稿]（last-write-wins + V18 快照审计，不做三方合并） | 全量覆盖是 BaBiQ 已验证的模式（P4 `update_plan` 同语义）：无 op 合并冲突、快照天然可审计、schema 复用 orchestrate_flow 的 nodes+structure 形态；刷新通道复用现有 WorkUnitItem 协议零新增 |
 
 ---
 
@@ -84,7 +85,12 @@ backend/
 │   ├── OrchestrationRecord.java               # 修改：+structureJson
 │   └── OrchestrationRepository.java           # 修改：读写 structureJson
 ├── src/main/java/com/wzx/babiq/server/tool/impl/
-│   └── FlowOrchestrationTool.java             # 修改：orchestrate_flow 增可选 structure 入参 + 解析校验
+│   ├── FlowOrchestrationTool.java             # 修改：orchestrate_flow 增可选 structure 入参 + 解析校验
+│   └── WorkUnitManageTool.java                # 修改：+read_config/update_config 对话式配置编辑（D17）
+├── src/main/java/com/wzx/babiq/server/agent/
+│   └── ReActStrategy.java                     # 修改：system prompt 编排段补"读→改→全量写"引导
+├── src/main/java/com/wzx/babiq/server/capability/
+│   └── CapabilityAliasDictionary.java         # 修改：补"节点/加节点/删节点/改节点/编辑编排"中文别名
 ├── src/main/java/com/wzx/babiq/server/workunit/
 │   ├── WorkUnitConfig.java                    # 修改：+structureJson
 │   └── DefaultWorkUnitService.java            # 修改：config 校验（空任务/结构合法性）
@@ -217,6 +223,19 @@ INSERT OR REPLACE INTO bq_schema_comments(table_name, column_name, comment) VALU
 - [ ] **Step 1: 失败测试**：工具收到嵌套 structure 正确建 spec；非法结构返回模型可读错误（不抛栈）；审批文案按组分段且**口语化分步 + 每节点标注读/写**（"第 2 步 并行执行：designer（只读）、tester（只读）"，技术结构串折叠进详情区）；item JSON 双端往返 structure 字段缺省兼容；**config 含空任务/`补充这个节点的任务`占位时 `workunit/config/update` 通过但 `启动` 校验拒绝并提示节点名**。
 - [ ] **Step 2-4: 红→绿** → **Step 5: Commit** `feat(p8): 编排协议与工具支持嵌套结构`
 
+### Task 4b: 对话式配置编辑（agent 直达画布草稿，D17）
+
+**Files:** Modify `tool/impl/WorkUnitManageTool.java`（+`read_config`/`update_config` action）、`workunit/WorkUnitService.java`+`DefaultWorkUnitService.java`（复用 `workunit/config/update` 同一条 `updateConfiguration` 路径与 `BabiqFlowStructure` 校验，成功后 emit `WorkUnitItem`）、`agent/ReActStrategy.java`（system prompt 编排段）、`capability/CapabilityAliasDictionary.java`；Desktop Modify `state/ChatController.kt`+`ui/runtime/OrchestrationSection.kt`（草稿冲突提示条）；Test：`WorkUnitManageToolTest`、`WorkUnitServiceTest`、`CapabilityAliasDictionaryTest`、`SystemPromptSecurityRuleTest`（回归）、`ChatControllerTest`/`OrchestrationSectionTest` 增量
+
+- [ ] **Step 1: 写失败测试（后端）**：
+  - `read_config` 返回当前草稿 nodes+structure+校验状态（含空任务节点清单），容器不存在/类型不符报可读错误；
+  - `update_config` 全量覆盖：非法结构（组内嵌组/孤儿节点）返回模型可读错误且不落库；合法提交生成 V18 快照 + V20 structure、emit `WorkUnitItem`；
+  - **运行中容器拒绝 `update_config`**（冻结语义）；`update_config` 不改变 goal/启动状态（与 `start`/`append_goal` 职责互斥）；
+  - 中文别名命中：`tool_search`"给编排加一个节点"能召回 `work_unit_manage`。
+- [ ] **Step 2: 跑失败** → **Step 3: 实现**（action 描述写明"增删改节点请先 read_config 再整体 update_config"；system prompt 编排段补同样引导，改动后跑 `SystemPromptSecurityRuleTest` 回归）
+- [ ] **Step 4: 写失败测试（桌面）**：本地存在未保存画布草稿时收到 `WorkUnitItem` 配置更新 → 显示"配置已被 Agent 更新"提示条 + [加载最新][保留草稿]；无本地草稿时画布静默刷新；选择保留草稿后再保存 = 正常生成新快照。
+- [ ] **Step 5: 跑通过** → **Step 6: Commit** `feat(p8): 工作容器支持对话式节点配置编辑`
+
 ### Task 5: 桌面画布图模型与结构操作（纯函数层）
 
 **Files:** Create `ui/flowcanvas/FlowGraphModel.kt`；Test `FlowGraphModelTest.kt`
@@ -278,7 +297,7 @@ Box(Modifier.clipToBounds()
 
 ```powershell
 cd backend
-.\mvnw.cmd "-Dtest=BabiqFlowStructureTest,FlowOrchestrationServiceNestedTest,FlowOrchestrationServiceTest,FlowApprovalServiceTest,FlowNodeRuntimeTest,FlowConcurrencyAttributionTest,FlowOrchestrationToolTest,ThreadItemJsonTest,WorkUnitServiceTest,WorkUnitHandlersTest,SchemaCommentsCoverageTest,AgentLoopLineCountTest" test
+.\mvnw.cmd "-Dtest=BabiqFlowStructureTest,FlowOrchestrationServiceNestedTest,FlowOrchestrationServiceTest,FlowApprovalServiceTest,FlowNodeRuntimeTest,FlowConcurrencyAttributionTest,FlowOrchestrationToolTest,WorkUnitManageToolTest,CapabilityAliasDictionaryTest,SystemPromptSecurityRuleTest,ThreadItemJsonTest,WorkUnitServiceTest,WorkUnitHandlersTest,SchemaCommentsCoverageTest,AgentLoopLineCountTest" test
 .\mvnw.cmd clean verify
 ```
 
@@ -304,6 +323,7 @@ cd desktop
 5. **失败态**：构造一个必失败节点（如读取不存在路径）→ 该节点红框 + 错误摘要可见，下游节点呈中止灰态，流程状态/`bq_orchestrations` 记录 failed。
 6. **回归**：旧平铺编排（不带 structure 的历史记录）回放正常；P6-1 子代理、P6-3 团队、P6-4 slash 不受影响；对话栏全程可用。
 7. **降级**：分屏宽度 <600dp 时回退紧凑列表不崩。
+8. **对话式编辑**：对话输入"给编排加一个并行组，里面放两个探查节点"→ 画布实时出现对应结构；"把 writer 的任务改成 XX"→ 节点任务更新；"删掉 tester"→ 节点消失且结构合法；画布上留有未保存草稿时让 Agent 改配置 → 出现"配置已被 Agent 更新"提示条，[加载最新]/[保留草稿] 行为正确；对运行中容器要求改节点 → Agent 返回"已冻结不能修改"的可读拒绝。
 
 ## 6. 风险与回退
 
