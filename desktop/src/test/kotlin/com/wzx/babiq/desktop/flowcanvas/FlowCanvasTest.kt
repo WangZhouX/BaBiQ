@@ -64,4 +64,11 @@ class FlowCanvasTest {
 		assertEquals(palette.workspaceDot, workspace.roleColor)
 		assertNotEquals(readOnly.roleColor, workspace.roleColor)
 	}
+
+	@Test
+	fun `insert menu labels are localized for orchestration canvas`() {
+		assertEquals("串行节点", flowInsertKindLabel(FlowInsertKind.Serial))
+		assertEquals("并行节点", flowInsertKindLabel(FlowInsertKind.Parallel))
+		assertEquals("路由分支", flowInsertKindLabel(FlowInsertKind.Routing))
+	}
 }

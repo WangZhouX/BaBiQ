@@ -1,6 +1,7 @@
 package com.wzx.babiq.server.recovery;
 
 import com.wzx.babiq.server.context.compaction.ContextCompactionRecoveryService;
+import com.wzx.babiq.server.workunit.WorkUnitService;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.beans.factory.ObjectProvider;
@@ -19,6 +20,7 @@ public class RecoveryStartupRunner implements ApplicationRunner {
     private final TurnRecoveryService recoveryService;
     /** P3-3A 短期压缩恢复服务；使用 ObjectProvider 避免未来裁剪上下文模块时影响启动。 */
     private final ObjectProvider<ContextCompactionRecoveryService> compactionRecoveryService;
+    private final ObjectProvider<WorkUnitService> workUnitService;
     /** 启动恢复闸门，恢复完成后才允许长期记忆等后台调度器写库。 */
     private final StartupRecoveryCoordinator startupRecoveryCoordinator;
 
@@ -31,9 +33,11 @@ public class RecoveryStartupRunner implements ApplicationRunner {
      */
     public RecoveryStartupRunner(TurnRecoveryService recoveryService,
                                  ObjectProvider<ContextCompactionRecoveryService> compactionRecoveryService,
+                                 ObjectProvider<WorkUnitService> workUnitService,
                                  StartupRecoveryCoordinator startupRecoveryCoordinator) {
         this.recoveryService = recoveryService;
         this.compactionRecoveryService = compactionRecoveryService;
+        this.workUnitService = workUnitService;
         this.startupRecoveryCoordinator = startupRecoveryCoordinator;
     }
 
@@ -46,6 +50,7 @@ public class RecoveryStartupRunner implements ApplicationRunner {
     public void run(ApplicationArguments args) {
         recoveryService.recoverAbandonedState();
         compactionRecoveryService.ifAvailable(ContextCompactionRecoveryService::scan);
+        workUnitService.ifAvailable(WorkUnitService::recoverAbandonedRunning);
         startupRecoveryCoordinator.markRecoveryComplete();
     }
 }

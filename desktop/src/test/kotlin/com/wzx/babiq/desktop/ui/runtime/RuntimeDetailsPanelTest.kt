@@ -25,7 +25,7 @@ class RuntimeDetailsPanelTest {
 
 		val tabs = runtimePanelTabs(state, RuntimePanelTab.Run)
 
-		assertEquals(listOf(RuntimePanelTab.Run, RuntimePanelTab.Orchestration), tabs.map { it.tab })
+		assertEquals(listOf(RuntimePanelTab.Run, RuntimePanelTab.Orchestration, RuntimePanelTab.Team), tabs.map { it.tab })
 		assertTrue(tabs.first { it.tab == RuntimePanelTab.Run }.visible)
 		assertTrue(tabs.first { it.tab == RuntimePanelTab.Orchestration }.visible)
 		assertEquals(RuntimePanelTab.Orchestration, preferredRuntimePanelTab(state, RuntimePanelTab.Run))
@@ -35,27 +35,28 @@ class RuntimeDetailsPanelTest {
 	fun `runtime tab content does not include dedicated work unit editors`() {
 		val runContent = runtimePanelContent(RuntimePanelTab.Run)
 
-		assertTrue(RuntimePanelContent.WorkUnits in runContent)
+		assertFalse(RuntimePanelContent.WorkUnits in runContent)
 		assertFalse(RuntimePanelContent.Orchestration in runContent)
 		assertFalse(RuntimePanelContent.Team in runContent)
 		assertFalse(RuntimePanelContent.SubAgent in runContent)
-		assertEquals(setOf(RuntimePanelContent.Orchestration), runtimePanelContent(RuntimePanelTab.Orchestration))
-		assertEquals(setOf(RuntimePanelContent.Team), runtimePanelContent(RuntimePanelTab.Team))
+		assertEquals(setOf(RuntimePanelContent.WorkUnits, RuntimePanelContent.Orchestration), runtimePanelContent(RuntimePanelTab.Orchestration))
+		assertEquals(setOf(RuntimePanelContent.WorkUnits, RuntimePanelContent.Team), runtimePanelContent(RuntimePanelTab.Team))
 		assertEquals(setOf(RuntimePanelContent.SubAgent), runtimePanelContent(RuntimePanelTab.SubAgent))
 	}
 
 	@Test
-	fun `invisible requested tab falls back to run tab`() {
-		assertEquals(RuntimePanelTab.Run, resolveRuntimePanelTab(AppState(), RuntimePanelTab.Orchestration))
+	fun `orchestration and team tabs remain selectable without active runtime state`() {
+		assertEquals(RuntimePanelTab.Orchestration, resolveRuntimePanelTab(AppState(), RuntimePanelTab.Orchestration))
+		assertEquals(RuntimePanelTab.Team, resolveRuntimePanelTab(AppState(), RuntimePanelTab.Team))
 	}
 
 	@Test
-	fun `team and sub agent tabs only appear when their state is visible`() {
+	fun `team tab stays available while sub agent tab only appears when visible`() {
 		val teamState = AppState(teamState = TeamUiState(configuringWorkUnit = workUnit(kind = "team")))
 		val subAgentState = AppState(subAgentState = SubAgentUiState())
 
-		assertEquals(listOf(RuntimePanelTab.Run, RuntimePanelTab.Team), runtimePanelTabs(teamState, RuntimePanelTab.Run).map { it.tab })
-		assertEquals(listOf(RuntimePanelTab.Run), runtimePanelTabs(subAgentState, RuntimePanelTab.Run).map { it.tab })
+		assertEquals(listOf(RuntimePanelTab.Run, RuntimePanelTab.Orchestration, RuntimePanelTab.Team), runtimePanelTabs(teamState, RuntimePanelTab.Run).map { it.tab })
+		assertEquals(listOf(RuntimePanelTab.Run, RuntimePanelTab.Orchestration, RuntimePanelTab.Team), runtimePanelTabs(subAgentState, RuntimePanelTab.Run).map { it.tab })
 	}
 
 	@Test

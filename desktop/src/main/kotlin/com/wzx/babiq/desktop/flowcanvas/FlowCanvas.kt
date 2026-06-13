@@ -48,6 +48,13 @@ enum class FlowInsertKind {
 	Routing,
 }
 
+fun flowInsertKindLabel(kind: FlowInsertKind): String =
+	when (kind) {
+		FlowInsertKind.Serial -> "串行节点"
+		FlowInsertKind.Parallel -> "并行节点"
+		FlowInsertKind.Routing -> "路由分支"
+	}
+
 @Composable
 @OptIn(ExperimentalComposeUiApi::class)
 fun FlowCanvas(
@@ -227,21 +234,21 @@ private fun FlowInsertButton(
 		}
 		DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
 			DropdownMenuItem(
-				text = { Text("Serial node") },
+				text = { Text(flowInsertKindLabel(FlowInsertKind.Serial)) },
 				onClick = {
 					expanded = false
 					onInsert(point.anchorNodeId, FlowInsertKind.Serial)
 				},
 			)
 			DropdownMenuItem(
-				text = { Text("Parallel node") },
+				text = { Text(flowInsertKindLabel(FlowInsertKind.Parallel)) },
 				onClick = {
 					expanded = false
 					onInsert(point.anchorNodeId, FlowInsertKind.Parallel)
 				},
 			)
 			DropdownMenuItem(
-				text = { Text("Routing branch") },
+				text = { Text(flowInsertKindLabel(FlowInsertKind.Routing)) },
 				onClick = {
 					expanded = false
 					onInsert(point.anchorNodeId, FlowInsertKind.Routing)

@@ -290,7 +290,7 @@ data class OrchestrationUiState(
 		)
 
 	fun withConfiguration(info: WorkUnitInfo): OrchestrationUiState =
-		OrchestrationUiState(configuringWorkUnit = info)
+		copy(configuringWorkUnit = info, configDraftWorkUnitId = null, configConflict = null)
 
 	fun refreshConfiguration(info: WorkUnitInfo?): OrchestrationUiState =
 		if (configuringWorkUnit != null && info != null && info.kind.equals("orchestration", ignoreCase = true)) {
@@ -348,6 +348,9 @@ data class OrchestrationUiState(
 		} else {
 			this
 		}
+
+	fun clearConfiguration(): OrchestrationUiState =
+		copy(configuringWorkUnit = null, configDraftWorkUnitId = null, configConflict = null)
 
 	fun dismissCurrent(): OrchestrationUiState =
 		copy(dismissedOrchestrationId = current?.orchestrationId)
@@ -413,7 +416,7 @@ data class TeamUiState(
 	}
 
 	fun withConfiguration(info: WorkUnitInfo): TeamUiState =
-		TeamUiState(configuringWorkUnit = info)
+		copy(configuringWorkUnit = info)
 
 	fun refreshConfiguration(info: WorkUnitInfo?): TeamUiState =
 		if (configuringWorkUnit != null && info != null && info.kind.equals("team", ignoreCase = true)) {
@@ -439,6 +442,9 @@ data class TeamUiState(
 	/** 更新右侧直发目标成员。 */
 	fun selectAgent(agentName: String): TeamUiState =
 		if (memberNames.contains(agentName)) copy(selectedAgent = agentName) else this
+
+	fun clearConfiguration(): TeamUiState =
+		copy(configuringWorkUnit = null)
 
 	fun dismissCurrent(): TeamUiState =
 		copy(dismissedTeamId = current?.teamId)

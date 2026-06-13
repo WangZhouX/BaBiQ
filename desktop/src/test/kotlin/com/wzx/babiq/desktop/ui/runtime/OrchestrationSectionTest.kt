@@ -56,6 +56,8 @@ class OrchestrationSectionTest {
 		val model = buildOrchestrationSectionModel(OrchestrationUiState(current = item), modelLabel = "deepseek-v4-pro")
 
 		assertTrue(model.visible)
+		assertEquals("流程编排 · parallel login page check", model.title)
+		assertEquals("并行 / 运行中 / 已审批并冻结", model.subtitle)
 		assertTrue(model.title.contains("parallel login page check"))
 		assertEquals(2, model.nodes.size)
 		assertEquals("write", model.nodes.last().title)
@@ -65,7 +67,7 @@ class OrchestrationSectionTest {
 	}
 
 	@Test
-	fun `completed orchestration runtime model exposes dismiss action`() {
+	fun `completed orchestration runtime model does not expose fake remove action`() {
 		val item = ThreadItem.Orchestration(
 			id = "it_orch_1",
 			orchestrationId = "orch_1",
@@ -79,7 +81,39 @@ class OrchestrationSectionTest {
 		val model = buildOrchestrationSectionModel(OrchestrationUiState(current = item))
 
 		assertTrue(model.visible)
-		assertNotNull(model.removeActionLabel)
+		assertEquals(null, model.removeActionLabel)
+	}
+
+	@Test
+	fun `orchestration configuration detail takes precedence over runtime playback and exposes back action`() {
+		val runtimeItem = ThreadItem.Orchestration(
+			id = "it_orch_1",
+			orchestrationId = "orch_1",
+			title = "runtime flow",
+			topology = "sequential",
+			status = "running",
+			nodes = emptyList(),
+		)
+		val workUnit = WorkUnitInfo(
+			workUnitId = "wu_flow",
+			threadId = "thr_1",
+			kind = "orchestration",
+			name = "html-test",
+			status = "waiting_config",
+			currentGoalId = "goal_1",
+			cwd = "H:\\aaa",
+			sandboxMode = "FULL_ACCESS",
+			goals = listOf(WorkUnitGoalInfo("goal_1", "wu_flow", "edit page", "pending")),
+		)
+
+		val model = buildOrchestrationSectionModel(
+			OrchestrationUiState(current = runtimeItem, configuringWorkUnit = workUnit),
+			modelLabel = "deepseek-v4-pro",
+		)
+
+		assertEquals("编排详情 · html-test", model.title)
+		assertEquals("返回列表", model.backActionLabel)
+		assertEquals("wu_flow", model.config?.workUnitId)
 	}
 
 	@Test
@@ -188,7 +222,14 @@ class OrchestrationSectionTest {
 		)
 
 		assertEquals("parallel", model.configTopology)
-		assertEquals(listOf("serial node", "parallel node", "routing branch"), model.addNodeActions.map { it.label })
+		assertEquals(listOf("串行节点", "并行节点", "路由分支"), model.addNodeActions.map { it.label })
+		assertEquals("编排详情 · parallel-flow", model.title)
+		assertEquals("待配置 / 1 个目标 / 等待手动启动", model.subtitle)
+		assertEquals("添加节点", model.addNodeActionLabel)
+		assertEquals("编排画布", model.editModeTitle)
+		assertEquals("节点设置 · scan", model.selectedNodeSettings?.title)
+		assertEquals("继承主 Agent / deepseek-v4-pro", model.configNodes.first { it.nodeId == "scan" }.modelLabel)
+		assertEquals("只读工具", model.configNodes.first { it.nodeId == "scan" }.modeLabel)
 	}
 
 	@Test

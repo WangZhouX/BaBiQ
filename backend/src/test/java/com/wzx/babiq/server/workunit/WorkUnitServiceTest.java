@@ -175,6 +175,29 @@ class WorkUnitServiceTest {
     }
 
     @Test
+    void recover_abandoned_running_should_fail_stale_container_and_goal() {
+        Thread thread = Thread.newThread("thr_wu_recover", "H:/aaa");
+        WorkUnitItem item = service.createOrAppend(
+                new WorkUnitCreateRequest("orchestration", "stale flow", "goal before crash", null),
+                thread,
+                new Turn("turn_wu_recover", thread.id()),
+                thread.cwd(),
+                AgentRunPolicy.of(SandboxMode.WORKSPACE_WRITE, ApprovalPolicy.ON_REQUEST));
+        service.markGoalRunning(item.activeGoalId(), "orchestration", "orch_stale");
+
+        int recovered = service.recoverAbandonedRunning();
+
+        WorkUnit workUnit = service.listVisible(thread.id()).getFirst();
+        WorkUnitGoal goal = service.listGoals(item.workUnitId()).getFirst();
+        assertThat(recovered).isGreaterThanOrEqualTo(1);
+        assertThat(workUnit.status()).isEqualTo("failed");
+        assertThat(goal.status()).isEqualTo("failed");
+        assertThat(goal.errorMessage()).contains("启动恢复");
+        assertThat(goal.completedAt()).isNotNull();
+        assertThat(service.remove(item.workUnitId()).removed()).isTrue();
+    }
+
+    @Test
     void update_goal_should_change_pending_goal_text_without_starting_execution() {
         Thread thread = Thread.newThread("thr_wu_update", "H:/aaa");
         WorkUnitItem item = service.createOrAppend(

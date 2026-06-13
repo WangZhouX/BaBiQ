@@ -49,6 +49,7 @@ import com.wzx.babiq.desktop.flowcanvas.FlowInsertKind
 import com.wzx.babiq.desktop.flowcanvas.FlowNode
 import com.wzx.babiq.desktop.flowcanvas.FlowNodeMode
 import com.wzx.babiq.desktop.flowcanvas.FlowNodeStatus
+import com.wzx.babiq.desktop.flowcanvas.flowInsertKindLabel
 import com.wzx.babiq.desktop.protocol.ThreadItem
 import com.wzx.babiq.desktop.protocol.WorkUnitConfigEntry
 import com.wzx.babiq.desktop.protocol.WorkUnitConfiguration
@@ -75,6 +76,7 @@ data class OrchestrationSectionModel(
 	val addNodeActions: List<OrchestrationAddNodeAction> = emptyList(),
 	val addNodeActionLabel: String? = null,
 	val removeActionLabel: String? = null,
+	val backActionLabel: String? = null,
 	val editModeTitle: String? = null,
 	val configConflict: WorkUnitConfigConflict? = null,
 )
@@ -165,50 +167,54 @@ fun applyOrchestrationNodeSettings(
 
 fun buildOrchestrationSectionModel(
 	state: OrchestrationUiState,
-	modelLabel: String = "model not selected",
+	modelLabel: String = "未选择模型",
 ): OrchestrationSectionModel {
+	val config = state.configuringWorkUnit
+	if (config != null) {
+		val detail = workUnitDetailModel(config, modelLabel)
+		val graph = flowGraphFromWorkUnitDetail(detail)
+		val rows = configRowsFromGraph(graph, detail)
+		val selected = rows.firstOrNull { it.removable } ?: rows.firstOrNull()
+		return OrchestrationSectionModel(
+			visible = true,
+			title = "编排详情 · ${config.name}",
+			subtitle = "${statusLabel(config.status)} / ${goalCountLabel(config.goals.size)} / 等待手动启动",
+			nodes = emptyList(),
+			config = detail,
+			configTopology = graph.root.topology.wireValue,
+			configNodes = rows,
+			selectedNodeSettings = selected?.let(::nodeSettingsModel),
+			addNodeActions = defaultAddNodeActions(),
+			addNodeActionLabel = "添加节点",
+			removeActionLabel = detail.removeActionLabel,
+			backActionLabel = "返回列表",
+			editModeTitle = "编排画布",
+			configConflict = state.configConflict?.takeIf { it.workUnitId == config.workUnitId },
+		)
+	}
 	val item = state.current
 	if (item != null) {
 		return OrchestrationSectionModel(
 			visible = true,
-			title = "Flow orchestration - ${item.title}",
+			title = "流程编排 · ${item.title}",
 			subtitle = "${topologyLabel(item.topology)} / ${statusLabel(item.status)} / ${approvalLabel(item)}",
 			nodes = item.nodes.map(::nodeRow),
 			summaryPreview = compactFlowSummary(item.summary),
 			config = null,
-			removeActionLabel = runtimeRemoveActionLabel(item.status),
 		)
 	}
-	val config = state.configuringWorkUnit ?: return OrchestrationSectionModel(false, "", "", emptyList())
-	val detail = workUnitDetailModel(config, modelLabel)
-	val graph = flowGraphFromWorkUnitDetail(detail)
-	val rows = configRowsFromGraph(graph, detail)
-	val selected = rows.firstOrNull { it.removable } ?: rows.firstOrNull()
-	return OrchestrationSectionModel(
-		visible = true,
-		title = "Flow detail - ${config.name}",
-		subtitle = "${statusLabel(config.status)} / ${config.goals.size} goals / waiting for manual start",
-		nodes = emptyList(),
-		config = detail,
-		configTopology = graph.root.topology.wireValue,
-		configNodes = rows,
-		selectedNodeSettings = selected?.let(::nodeSettingsModel),
-		addNodeActions = defaultAddNodeActions(),
-		addNodeActionLabel = "add node",
-		removeActionLabel = detail.removeActionLabel,
-		editModeTitle = "Flow canvas",
-		configConflict = state.configConflict?.takeIf { it.workUnitId == config.workUnitId },
-	)
+	return OrchestrationSectionModel(false, "", "", emptyList())
 }
 
 @Composable
 fun OrchestrationSection(
 	state: OrchestrationUiState,
-	modelLabel: String = "model not selected",
+	modelLabel: String = "未选择模型",
 	providerState: ProviderState = ProviderState(),
 	onStartWorkUnit: (String) -> Unit = {},
 	onRemoveWorkUnit: (String) -> Unit = {},
 	onDismissOrchestration: () -> Unit = {},
+	onBackToList: () -> Unit = {},
 	onUpdateWorkUnitGoal: (String, String, String) -> Unit = { _, _, _ -> },
 	onUpdateWorkUnitConfig: (String, String, String?) -> Unit = { _, _, _ -> },
 	onMarkWorkUnitConfigDraftDirty: (String) -> Unit = {},
@@ -232,6 +238,9 @@ fun OrchestrationSection(
 				Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
 					Text(model.title, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
 					Text(model.subtitle, style = MaterialTheme.typography.labelMedium, color = BaBiQColors.Muted)
+				}
+				model.backActionLabel?.let { label ->
+					TextButton(onClick = onBackToList) { Text(label) }
 				}
 				model.removeActionLabel?.let { label ->
 					TextButton(
@@ -352,7 +361,7 @@ private fun OrchestrationConfigPanel(
 			OutlinedTextField(
 				value = draftGoal,
 				onValueChange = { draftGoal = it },
-				label = { Text("Current goal") },
+				label = { Text("当前目标") },
 				modifier = Modifier.fillMaxWidth(),
 				minLines = 2,
 				maxLines = 4,
@@ -362,7 +371,7 @@ private fun OrchestrationConfigPanel(
 					onClick = { onUpdateGoal(detail.workUnitId, goalId, draftGoal.trim()) },
 					enabled = draftGoal.isNotBlank() && draftGoal != (detail.editableGoalText ?: ""),
 				) {
-					Text("Save goal")
+					Text("保存目标")
 				}
 				OutlinedButton(
 					onClick = {
@@ -371,7 +380,7 @@ private fun OrchestrationConfigPanel(
 						applyGraphEdit(next)
 					},
 				) {
-					Text("+ node")
+					Text("+ 节点")
 				}
 				detail.startActionLabel?.let { label ->
 					Button(onClick = { onStart(detail.workUnitId) }) { Text(label) }
@@ -404,7 +413,7 @@ private fun OrchestrationConfigPanel(
 				verticalArrangement = Arrangement.spacedBy(8.dp),
 			) {
 				Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-					Text("Node settings - ${node.title}", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
+					Text("节点设置 · ${node.title}", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
 					TextButton(
 						onClick = {
 							val next = graph.removeNode(node.id)
@@ -412,7 +421,7 @@ private fun OrchestrationConfigPanel(
 						},
 						enabled = node.removable,
 					) {
-						Text("Delete")
+						Text("删除节点")
 					}
 				}
 				OutlinedTextField(
@@ -421,7 +430,7 @@ private fun OrchestrationConfigPanel(
 						draftTitle = it
 						onConfigDraftChanged(detail.workUnitId)
 					},
-					label = { Text("Name") },
+					label = { Text("节点名称") },
 					modifier = Modifier.fillMaxWidth(),
 					singleLine = true,
 				)
@@ -431,7 +440,7 @@ private fun OrchestrationConfigPanel(
 						draftTask = it
 						onConfigDraftChanged(detail.workUnitId)
 					},
-					label = { Text("Task") },
+					label = { Text("任务") },
 					modifier = Modifier.fillMaxWidth(),
 					minLines = 3,
 					maxLines = 6,
@@ -467,13 +476,13 @@ private fun OrchestrationConfigPanel(
 					},
 					enabled = nodeChanged,
 				) {
-					Text("Save node")
+					Text("保存节点")
 				}
 			}
 		}
-		Text("Goal queue", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
+		Text("目标队列", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
 		if (detail.goals.isEmpty()) {
-			Text("No goals", style = MaterialTheme.typography.bodySmall, color = BaBiQColors.Muted)
+			Text("暂无目标", style = MaterialTheme.typography.bodySmall, color = BaBiQColors.Muted)
 		} else {
 			detail.goals.forEach { goal -> Text(goal.label, style = MaterialTheme.typography.bodySmall) }
 		}
@@ -584,8 +593,8 @@ private fun NodeModeSelector(
 ) {
 	var expanded by remember { mutableStateOf(false) }
 	val options = listOf(
-		FlowNodeMode.ReadOnlyTool.wireValue to "Read only tools",
-		FlowNodeMode.WorkspaceTool.wireValue to "Workspace tools",
+		FlowNodeMode.ReadOnlyTool.wireValue to "只读工具",
+		FlowNodeMode.WorkspaceTool.wireValue to "工作区工具",
 	)
 	val selectedLabel = options.firstOrNull { it.first == selectedValue }?.second ?: modeLabel(selectedValue)
 	Column {
@@ -630,11 +639,11 @@ fun addOrchestrationDraftNodeWithTopology(
 	val newNode = configNode(
 		nodeId = nodeId,
 		title = nodeId,
-		role = "custom node",
-		task = "Fill in this node task",
+		role = "自定义节点",
+		task = "补充这个节点的任务",
 		modeLabel = modeLabel("READ_ONLY_TOOL"),
 		modeValue = "READ_ONLY_TOOL",
-		modelLabel = inheritedModelLabel.ifBlank { "model not selected" },
+		modelLabel = inheritedModelLabel.ifBlank { "未选择模型" },
 		selected = true,
 		removable = true,
 	)
@@ -655,9 +664,9 @@ fun nodeModelOptions(
 ): List<OrchestrationNodeModelOption> {
 	val inheritedLabel = inheritedModelLabel
 		.ifBlank { providerState.active.label }
-		.ifBlank { "model not selected" }
+		.ifBlank { "未选择模型" }
 	val options = mutableListOf(
-		OrchestrationNodeModelOption(null, null, "inherit main Agent / $inheritedLabel", "inherit"),
+		OrchestrationNodeModelOption(null, null, "继承主 Agent / $inheritedLabel", "inherit"),
 	)
 	providerState.providers
 		.filter { it.enabled }
@@ -685,9 +694,9 @@ fun nodeModelOptions(
 
 private fun defaultAddNodeActions(): List<OrchestrationAddNodeAction> =
 	listOf(
-		OrchestrationAddNodeAction("serial node", OrchestrationDraftAddMode.Serial),
-		OrchestrationAddNodeAction("parallel node", OrchestrationDraftAddMode.Parallel),
-		OrchestrationAddNodeAction("routing branch", OrchestrationDraftAddMode.Routing),
+		OrchestrationAddNodeAction(flowInsertKindLabel(FlowInsertKind.Serial), OrchestrationDraftAddMode.Serial),
+		OrchestrationAddNodeAction(flowInsertKindLabel(FlowInsertKind.Parallel), OrchestrationDraftAddMode.Parallel),
+		OrchestrationAddNodeAction(flowInsertKindLabel(FlowInsertKind.Routing), OrchestrationDraftAddMode.Routing),
 	)
 
 private fun configRowsFromGraph(graph: FlowGraph, detail: WorkUnitDetailModel): List<OrchestrationConfigNodeRow> {
@@ -720,11 +729,11 @@ private fun startConfigNode(currentGoal: String): OrchestrationConfigNodeRow =
 	configNode(
 		nodeId = "start",
 		title = "START",
-		role = "goal entry",
+		role = "目标入口",
 		task = currentGoal,
-		modeLabel = "goal",
+		modeLabel = "目标",
 		modeValue = "GOAL",
-		modelLabel = "current goal",
+		modelLabel = "当前目标",
 		modelValue = "goal:current",
 		selected = false,
 		removable = false,
@@ -734,11 +743,11 @@ private fun endConfigNode(): OrchestrationConfigNodeRow =
 	configNode(
 		nodeId = "end",
 		title = "END",
-		role = "flow exit",
-		task = "Main Agent confirms final output after all nodes finish.",
-		modeLabel = "end",
+		role = "流程出口",
+		task = "所有节点完成后由主 Agent 确认最终输出。",
+		modeLabel = "结束",
 		modeValue = "END",
-		modelLabel = "main Agent",
+		modelLabel = "主 Agent",
 		modelValue = "end:main-agent-confirmed",
 		selected = false,
 		removable = false,
@@ -773,7 +782,7 @@ private fun nodeSettingsModel(node: OrchestrationConfigNodeRow): OrchestrationNo
 	OrchestrationNodeSettingsModel(
 		nodeId = node.nodeId,
 		nodeTitle = node.title,
-		title = "Node settings - ${node.title}",
+		title = "节点设置 · ${node.title}",
 		task = node.task,
 		modelLabel = node.modelLabel,
 		modelValue = node.modelValue,
@@ -819,7 +828,7 @@ private fun nodeRow(node: ThreadItem.OrchestrationNode): OrchestrationNodeRow =
 		meta = listOfNotNull(
 			modeLabel(node.mode),
 			node.model?.takeIf { it.isNotBlank() },
-			node.toolCallCount?.let { "tools $it" },
+			node.toolCallCount?.let { "工具 $it" },
 			node.tokenEstimate?.let { "token $it" },
 		).joinToString(" / "),
 		detail = node.summary?.takeIf { it.isNotBlank() } ?: node.task.orEmpty().ifBlank { node.name },
@@ -853,7 +862,7 @@ private fun FlowSummaryPreview(preview: String) {
 			.padding(horizontal = 8.dp, vertical = 6.dp),
 		verticalArrangement = Arrangement.spacedBy(4.dp),
 	) {
-		Text("Flow summary", style = MaterialTheme.typography.bodySmall, color = BaBiQColors.Muted)
+		Text("流程摘要", style = MaterialTheme.typography.bodySmall, color = BaBiQColors.Muted)
 		Text(preview, style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold), maxLines = 3)
 	}
 }
@@ -868,44 +877,44 @@ private fun statusIcon(status: String): String =
 
 private fun statusLabel(status: String): String =
 	when (status.lowercase()) {
-		"idle", "pending", "waiting_config" -> "waiting config"
-		"running" -> "running"
-		"completed" -> "completed"
-		"failed" -> "failed"
-		"canceled" -> "canceled"
+		"idle", "pending", "waiting_config" -> "待配置"
+		"running" -> "运行中"
+		"completed" -> "已完成"
+		"failed" -> "失败"
+		"canceled" -> "已取消"
 		else -> status
 	}
 
-private fun runtimeRemoveActionLabel(status: String): String? =
-	if (status.lowercase() in setOf("completed", "failed", "canceled")) "remove" else null
-
 private fun topologyLabel(topology: String): String =
 	when (topology.lowercase()) {
-		"sequential" -> "sequential"
-		"parallel" -> "parallel"
-		"routing" -> "routing"
+		"sequential" -> "串行"
+		"parallel" -> "并行"
+		"routing" -> "路由"
 		else -> topology
 	}
 
 private fun modeLabel(mode: String): String =
 	when (mode.uppercase()) {
-		"READ_ONLY_TOOL" -> "read only"
-		"WORKSPACE_TOOL" -> "workspace"
-		"GOAL" -> "goal"
-		"END" -> "end"
+		"READ_ONLY_TOOL" -> "只读工具"
+		"WORKSPACE_TOOL" -> "工作区工具"
+		"GOAL" -> "目标"
+		"END" -> "结束"
 		else -> mode
 	}
 
 private fun approvalLabel(item: ThreadItem.Orchestration): String =
-	if (item.approved == true && item.frozen == true) "approved and frozen" else "not frozen"
+	if (item.approved == true && item.frozen == true) "已审批并冻结" else "未冻结"
 
 private fun displayModelLabel(modelValue: String, modelLabel: String): String =
 	when {
-		modelValue.startsWith("goal:") -> "current goal"
-		modelValue.startsWith("end:") -> "main Agent confirms output"
+		modelValue.startsWith("goal:") -> "当前目标"
+		modelValue.startsWith("end:") -> "主 Agent 确认输出"
 		modelValue.startsWith("provider:") -> modelValue.removePrefix("provider:").replace(":", " / ")
-		else -> "inherit main Agent / $modelLabel"
+		modelLabel.startsWith("继承主 Agent /") -> modelLabel
+		else -> "继承主 Agent / $modelLabel"
 	}
+
+private fun goalCountLabel(count: Int): String = "$count 个目标"
 
 private fun compactFlowSummary(summary: String?): String? {
 	val compact = summary.orEmpty()

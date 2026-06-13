@@ -50,6 +50,7 @@ data class TeamSectionModel(
 	val config: WorkUnitDetailModel? = null,
 	val configMembers: List<TeamConfigMemberRow> = emptyList(),
 	val removeActionLabel: String? = null,
+	val backActionLabel: String? = null,
 )
 
 data class TeamMemberRow(
@@ -78,6 +79,19 @@ fun buildTeamSectionModel(
 	state: TeamUiState,
 	modelLabel: String = "未选择模型",
 ): TeamSectionModel {
+	val config = state.configuringWorkUnit
+	if (config != null) {
+		val detail = workUnitDetailModel(config, modelLabel)
+		return TeamSectionModel(
+			visible = true,
+			title = "团队详情 · ${config.name}",
+			subtitle = "${statusLabel(config.status)} / ${config.goals.size} 个目标 / 等待手动启动",
+			config = detail,
+			configMembers = teamConfigMembers(detail),
+			removeActionLabel = detail.removeActionLabel,
+			backActionLabel = "返回列表",
+		)
+	}
 	val team = state.current
 	if (team != null) {
 		val selectedAgent = state.selectedAgent ?: team.currentAgent ?: team.members.firstOrNull()?.name
@@ -92,19 +106,10 @@ fun buildTeamSectionModel(
 			directError = state.directError,
 			sendingDirect = state.sendingDirect,
 			config = null,
-			removeActionLabel = runtimeRemoveActionLabel(team.status),
+			removeActionLabel = if (team.status.lowercase() in setOf("completed", "failed", "canceled")) "移除" else null,
 		)
 	}
-	val config = state.configuringWorkUnit ?: return TeamSectionModel(false, "", "")
-	val detail = workUnitDetailModel(config, modelLabel)
-	return TeamSectionModel(
-		visible = true,
-		title = "团队详情 · ${config.name}",
-		subtitle = "${statusLabel(config.status)} / ${config.goals.size} 个目标 / 等待手动启动",
-		config = detail,
-		configMembers = teamConfigMembers(detail),
-		removeActionLabel = detail.removeActionLabel,
-	)
+	return TeamSectionModel(false, "", "")
 }
 
 @Composable
@@ -115,6 +120,7 @@ fun TeamSection(
 	onStartWorkUnit: (String) -> Unit = {},
 	onRemoveWorkUnit: (String) -> Unit = {},
 	onDismissTeam: () -> Unit = {},
+	onBackToList: () -> Unit = {},
 	onUpdateWorkUnitGoal: (String, String, String) -> Unit = { _, _, _ -> },
 	onUpdateWorkUnitConfig: (String, String) -> Unit = { _, _ -> },
 	onSendTeamMessage: (String, String) -> Unit = { _, _ -> },
@@ -147,6 +153,9 @@ fun TeamSection(
 				Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
 					Text(model.title, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
 					Text(model.subtitle, style = MaterialTheme.typography.labelMedium, color = BaBiQColors.Muted)
+				}
+				model.backActionLabel?.let { label ->
+					TextButton(onClick = onBackToList) { Text(label) }
 				}
 				model.removeActionLabel?.let { label ->
 					TextButton(
@@ -525,9 +534,6 @@ private fun statusLabel(status: String): String =
 		"canceled" -> "已取消"
 		else -> status
 	}
-
-private fun runtimeRemoveActionLabel(status: String): String? =
-	if (status.lowercase() in setOf("completed", "failed", "canceled")) "移除" else null
 
 private fun modeLabel(mode: String): String =
 	when (mode) {

@@ -93,6 +93,8 @@ public interface WorkUnitService {
 
     void markGoalFailed(String goalId, String errorMessage);
 
+    int recoverAbandonedRunning();
+
     /**
      * 从 UI 移除容器。该操作只做软删除，不删除审计事实。
      */

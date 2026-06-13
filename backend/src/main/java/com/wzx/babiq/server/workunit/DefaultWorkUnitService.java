@@ -31,6 +31,9 @@ public class DefaultWorkUnitService implements WorkUnitService {
     static final String GOAL_PENDING = "pending";
     static final String GOAL_RUNNING = "running";
     static final String GOAL_COMPLETED = "completed";
+    static final String GOAL_FAILED = "failed";
+
+    private static final String ABANDONED_RUNNING_MESSAGE = "启动恢复：上一轮工作容器运行已中断";
 
     private final WorkUnitRepository repository;
 
@@ -360,6 +363,53 @@ public class DefaultWorkUnitService implements WorkUnitService {
                 workUnit.removedAt(),
                 workUnit.createdAt(),
                 now));
+    }
+
+    @Override
+    @Transactional
+    public int recoverAbandonedRunning() {
+        List<WorkUnit> runningWorkUnits = repository.listVisibleByStatus(STATUS_RUNNING);
+        Instant now = Instant.now();
+        for (WorkUnit workUnit : runningWorkUnits) {
+            failCurrentRunningGoal(workUnit, now);
+            repository.save(new WorkUnit(
+                    workUnit.workUnitId(),
+                    workUnit.threadId(),
+                    workUnit.kind(),
+                    workUnit.name(),
+                    workUnit.normalizedName(),
+                    STATUS_FAILED,
+                    workUnit.currentGoalId(),
+                    workUnit.cwd(),
+                    workUnit.sandboxMode(),
+                    workUnit.removed(),
+                    workUnit.removedAt(),
+                    workUnit.createdAt(),
+                    now));
+        }
+        return runningWorkUnits.size();
+    }
+
+    private void failCurrentRunningGoal(WorkUnit workUnit, Instant now) {
+        String goalId = workUnit.currentGoalId();
+        if (goalId == null || goalId.isBlank()) {
+            return;
+        }
+        repository.findGoalById(goalId)
+                .filter(goal -> GOAL_RUNNING.equals(goal.status()))
+                .ifPresent(goal -> repository.saveGoal(new WorkUnitGoal(
+                        goal.goalId(),
+                        goal.workUnitId(),
+                        goal.threadId(),
+                        goal.goalText(),
+                        GOAL_FAILED,
+                        goal.runRefType(),
+                        goal.runRefId(),
+                        goal.summary(),
+                        ABANDONED_RUNNING_MESSAGE,
+                        goal.createdAt(),
+                        goal.startedAt(),
+                        now)));
     }
 
     @Override

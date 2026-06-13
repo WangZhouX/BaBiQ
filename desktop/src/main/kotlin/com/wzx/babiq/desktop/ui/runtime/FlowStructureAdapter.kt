@@ -23,7 +23,7 @@ fun flowGraphFromWorkUnitDetail(detail: WorkUnitDetailModel): FlowGraph {
 				id = nodeId,
 				name = nodeId,
 				role = defaultRoleForFlowNode(nodeId),
-				task = explicitNodeTask(currentGoalText(detail), nodeId) ?: "Fill in this node task",
+				task = explicitNodeTask(currentGoalText(detail), nodeId) ?: "补充这个节点的任务",
 				mode = defaultModeForFlowNode(nodeId).wireValue,
 				model = "inherit",
 			)
@@ -105,10 +105,10 @@ fun newFlowNodeForGraph(graph: FlowGraph, inheritedModelLabel: String): FlowNode
 	return FlowNode(
 		id = id,
 		title = id,
-		role = "custom node",
-		task = "Fill in this node task",
+		role = "自定义节点",
+		task = "补充这个节点的任务",
 		mode = FlowNodeMode.ReadOnlyTool,
-		modelLabel = inheritedModelLabel.ifBlank { "inherit" },
+		modelLabel = "继承主 Agent / ${inheritedModelLabel.ifBlank { "当前模型" }}",
 		modelValue = "inherit",
 	)
 }
@@ -120,7 +120,7 @@ private fun WorkUnitConfigEntry.toFlowNode(inheritedModelLabel: String): FlowNod
 		id = id,
 		title = name?.takeIf { it.isNotBlank() } ?: defaultTitleForFlowNode(id),
 		role = role?.takeIf { it.isNotBlank() } ?: defaultRoleForFlowNode(id),
-		task = task?.takeIf { it.isNotBlank() } ?: "Fill in this node task",
+		task = task?.takeIf { it.isNotBlank() } ?: "补充这个节点的任务",
 		mode = FlowNodeMode.from(modeValue),
 		modelLabel = displayFlowModelLabel(modelValue, inheritedModelLabel),
 		modelValue = modelValue,
@@ -194,12 +194,12 @@ private fun defaultTitleForFlowNode(nodeId: String): String =
 
 private fun defaultRoleForFlowNode(nodeId: String): String =
 	when (nodeId.lowercase()) {
-		"explorer" -> "explorer"
-		"designer" -> "designer"
-		"writer" -> "writer"
-		"reviewer" -> "reviewer"
-		"tester" -> "tester"
-		else -> "custom node"
+		"explorer" -> "探索节点"
+		"designer" -> "方案设计"
+		"writer" -> "写入节点"
+		"reviewer" -> "复核节点"
+		"tester" -> "测试节点"
+		else -> "自定义节点"
 	}
 
 private fun defaultModeForFlowNode(nodeId: String): FlowNodeMode =
@@ -211,7 +211,7 @@ private fun defaultModeForFlowNode(nodeId: String): FlowNodeMode =
 private fun displayFlowModelLabel(modelValue: String, inheritedModel: String): String =
 	when {
 		modelValue.startsWith("provider:") -> modelValue.removePrefix("provider:").replace(":", " / ")
-		else -> "inherit main Agent / ${inheritedModel.ifBlank { "current model" }}"
+		else -> "继承主 Agent / ${inheritedModel.ifBlank { "当前模型" }}"
 	}
 
 private fun currentGoalText(detail: WorkUnitDetailModel): String =

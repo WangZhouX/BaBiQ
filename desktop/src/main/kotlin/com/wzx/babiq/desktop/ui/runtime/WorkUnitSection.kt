@@ -45,6 +45,7 @@ data class WorkUnitRowModel(
 	val activeGoal: String,
 	val goalCountText: String,
 	val removable: Boolean,
+	val removeBlockedLabel: String? = null,
 	val detailActionLabel: String,
 	val startActionLabel: String?,
 )
@@ -72,9 +73,13 @@ data class WorkUnitGoalRowModel(
 	val label: String,
 )
 
-fun buildWorkUnitSectionModel(state: WorkUnitUiState): WorkUnitSectionModel {
+fun buildWorkUnitSectionModel(
+	state: WorkUnitUiState,
+	kindFilter: String? = null,
+): WorkUnitSectionModel {
 	val rows = state.items
 		.filterNot { it.removed || it.status.equals("removed", ignoreCase = true) }
+		.filter { item -> kindFilter.isNullOrBlank() || item.kind.equals(kindFilter, ignoreCase = true) }
 		.map(::toRowModel)
 	return WorkUnitSectionModel(
 		visible = rows.isNotEmpty(),
@@ -86,13 +91,14 @@ fun buildWorkUnitSectionModel(state: WorkUnitUiState): WorkUnitSectionModel {
 @Composable
 fun WorkUnitSection(
 	state: WorkUnitUiState,
+	kindFilter: String? = null,
 	onSelect: (String) -> Unit = {},
 	onConfigure: (String) -> Unit = {},
 	onStart: (String) -> Unit = {},
 	onRemove: (String) -> Unit = {},
 	onUpdateGoal: (String, String, String) -> Unit = { _, _, _ -> },
 ) {
-	val model = buildWorkUnitSectionModel(state)
+	val model = buildWorkUnitSectionModel(state, kindFilter)
 	if (!model.visible) {
 		return
 	}
@@ -138,6 +144,10 @@ private fun WorkUnitRow(
 					}
 					if (row.removable) {
 						TextButton(onClick = { onRemove(row.workUnitId) }) { Text("移除") }
+					} else {
+						row.removeBlockedLabel?.let { label ->
+							Text(label, style = MaterialTheme.typography.labelSmall, color = BaBiQColors.Muted)
+						}
 					}
 				}
 			}
@@ -225,6 +235,7 @@ private fun toRowModel(item: ThreadItem.WorkUnit): WorkUnitRowModel =
 		activeGoal = item.currentGoal?.takeIf { it.isNotBlank() } ?: "暂无待执行目标",
 		goalCountText = "${item.goalCount} 个目标",
 		removable = !item.status.equals("running", ignoreCase = true),
+		removeBlockedLabel = if (item.status.equals("running", ignoreCase = true)) "运行中不可移除" else null,
 		detailActionLabel = detailActionLabel(item),
 		startActionLabel = startActionLabel(item),
 	)

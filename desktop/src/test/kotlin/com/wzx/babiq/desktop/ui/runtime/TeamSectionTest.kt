@@ -76,7 +76,7 @@ class TeamSectionTest {
 	}
 
 	@Test
-	fun `completed team runtime model exposes dismiss action`() {
+	fun `completed team runtime model exposes persistent remove action`() {
 		val team = ThreadItem.Team(
 			id = "it_team_1",
 			teamId = "team_1",
@@ -90,6 +90,37 @@ class TeamSectionTest {
 
 		assertTrue(model.visible)
 		assertEquals("移除", model.removeActionLabel)
+	}
+
+	@Test
+	fun `team configuration detail takes precedence over runtime playback and exposes back action`() {
+		val team = ThreadItem.Team(
+			id = "it_team_1",
+			teamId = "team_1",
+			title = "runtime team",
+			status = "running",
+			members = emptyList(),
+		)
+		val workUnit = WorkUnitInfo(
+			workUnitId = "wu_team",
+			threadId = "thr_1",
+			kind = "team",
+			name = "review-team",
+			status = "waiting_config",
+			currentGoalId = "goal_1",
+			cwd = "H:\\aaa",
+			sandboxMode = "WORKSPACE_WRITE",
+			goals = listOf(WorkUnitGoalInfo("goal_1", "wu_team", "review page", "pending")),
+		)
+
+		val model = buildTeamSectionModel(
+			TeamUiState(current = team, configuringWorkUnit = workUnit),
+			modelLabel = "deepseek-v4-pro",
+		)
+
+		assertEquals("团队详情 · review-team", model.title)
+		assertEquals("返回列表", model.backActionLabel)
+		assertEquals("wu_team", model.config?.workUnitId)
 	}
 
 	@Test
@@ -131,6 +162,7 @@ class TeamSectionTest {
 		assertEquals("检查 Compose UI", model.configMembers.first { it.memberId == "frontend" }.task)
 		assertEquals("provider:qwen:qwen-plus", model.configMembers.first { it.memberId == "frontend" }.modelValue)
 		assertEquals("移除", model.removeActionLabel)
+		assertEquals("返回列表", model.backActionLabel)
 	}
 
 	@Test

@@ -91,6 +91,7 @@ fun BaBiQDesktopApp(config: DesktopConfig = DesktopConfig()) {
 			onMarkWorkUnitConfigDraftDirty = { workUnitId -> controller.markWorkUnitConfigDraftDirty(workUnitId) },
 			onLoadLatestWorkUnitConfig = { workUnitId -> controller.loadLatestWorkUnitConfig(workUnitId) },
 			onKeepWorkUnitConfigDraft = { workUnitId -> controller.keepWorkUnitConfigDraft(workUnitId) },
+			onBackToWorkUnitList = { controller.clearWorkUnitConfiguration() },
 			onSendTeamMessage = { toAgent, content -> controller.sendTeamMessage(toAgent, content) },
 			onSelectRunTurn = { turnId -> controller.selectRunTurn(turnId) },
 			onSelectObservabilityRange = { range -> controller.selectObservabilityRange(range) },

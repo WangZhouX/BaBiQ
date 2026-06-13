@@ -24,6 +24,8 @@ public interface WorkUnitRepository {
 
     List<WorkUnit> listVisible(String threadId);
 
+    List<WorkUnit> listVisibleByStatus(String status);
+
     List<WorkUnitGoal> listGoals(String workUnitId);
 
     Optional<WorkUnitConfig> findConfig(String workUnitId);

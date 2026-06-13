@@ -50,6 +50,7 @@ class WorkUnitSectionTest {
 		assertEquals("团队", model.rows.last().kindLabel)
 		assertEquals("运行中", model.rows.last().statusLabel)
 		assertFalse(model.rows.last().removable)
+		assertEquals("运行中不可移除", model.rows.last().removeBlockedLabel)
 		assertEquals("查看团队", model.rows.last().detailActionLabel)
 		assertEquals(null, model.rows.last().startActionLabel)
 	}
@@ -57,6 +58,40 @@ class WorkUnitSectionTest {
 	@Test
 	fun `work unit section hides when there are no visible containers`() {
 		assertFalse(buildWorkUnitSectionModel(WorkUnitUiState()).visible)
+	}
+
+	@Test
+	fun `work unit section can filter containers by kind for dedicated tabs`() {
+		val state = WorkUnitUiState(
+			items = listOf(
+				ThreadItem.WorkUnit(
+					id = "it_flow",
+					workUnitId = "wu_flow",
+					kind = "orchestration",
+					name = "页面编排",
+					status = "waiting_config",
+					currentGoalId = "goal_flow",
+					currentGoal = "配置页面编排",
+					goalCount = 1,
+				),
+				ThreadItem.WorkUnit(
+					id = "it_team",
+					workUnitId = "wu_team",
+					kind = "team",
+					name = "复核团队",
+					status = "waiting_config",
+					currentGoalId = "goal_team",
+					currentGoal = "配置复核团队",
+					goalCount = 1,
+				),
+			),
+		)
+
+		val flowModel = buildWorkUnitSectionModel(state, kindFilter = "orchestration")
+		val teamModel = buildWorkUnitSectionModel(state, kindFilter = "team")
+
+		assertEquals(listOf("页面编排"), flowModel.rows.map { it.name })
+		assertEquals(listOf("复核团队"), teamModel.rows.map { it.name })
 	}
 
 	@Test

@@ -1,6 +1,7 @@
 package com.wzx.babiq.desktop.ui.runtime
 
 import com.wzx.babiq.desktop.flowcanvas.FlowEntry
+import com.wzx.babiq.desktop.flowcanvas.FlowGraph
 import com.wzx.babiq.desktop.flowcanvas.FlowTopology
 import com.wzx.babiq.desktop.protocol.FlowStructureDto
 import com.wzx.babiq.desktop.protocol.ThreadItem
@@ -153,5 +154,14 @@ class FlowStructureAdapterTest {
 
 		assertEquals(listOf("explorer", "writer"), graph.flattenNodeIds())
 		assertNotNull(structure.root.children.first().nodeId)
+	}
+
+	@Test
+	fun `new draft flow node uses localized default labels`() {
+		val node = newFlowNodeForGraph(FlowGraph(), inheritedModelLabel = "deepseek-v4-pro")
+
+		assertEquals("自定义节点", node.role)
+		assertEquals("补充这个节点的任务", node.task)
+		assertEquals("继承主 Agent / deepseek-v4-pro", node.modelLabel)
 	}
 }

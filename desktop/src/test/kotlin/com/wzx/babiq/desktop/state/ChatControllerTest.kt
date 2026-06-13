@@ -1068,6 +1068,80 @@ class ChatControllerTest {
 	}
 
 	@Test
+	fun `clearWorkUnitConfiguration returns from orchestration detail to work unit list`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(gateway, backgroundScope)
+		controller.connect()
+		val item = ThreadItem.WorkUnit(
+			id = "it_workunit_1",
+			workUnitId = "wu_1",
+			kind = "orchestration",
+			name = "html-test",
+			status = "waiting_config",
+			currentGoalId = "goal_1",
+			currentGoal = "old goal",
+			goalCount = 1,
+			removed = false,
+		)
+		gateway.events.emit(ServerEvent.ItemAdded("thread-1", "turn-1", item))
+		advanceUntilIdle()
+
+		controller.configureWorkUnit("wu_1")
+		controller.clearWorkUnitConfiguration()
+		advanceUntilIdle()
+
+		assertEquals("wu_1", controller.state.value.workUnitState.selectedWorkUnitId)
+		assertEquals(null, controller.state.value.orchestrationState.configuringWorkUnit)
+		assertFalse(controller.state.value.orchestrationState.visible)
+		assertTrue(controller.state.value.runtimeExpanded)
+	}
+
+	@Test
+	fun `configuring orchestration keeps existing team runtime details`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(gateway, backgroundScope)
+		controller.connect()
+		val team = ThreadItem.Team(
+			id = "it_team_runtime",
+			teamId = "team_runtime",
+			title = "P6-2 团队烟测",
+			status = "failed",
+			currentAgent = "reviewer",
+			members = listOf(
+				ThreadItem.TeamMember(
+					memberId = "reviewer",
+					name = "reviewer",
+					displayName = "Reviewer",
+					status = "failed",
+					mode = "READ_ONLY_TOOL",
+				),
+			),
+		)
+		val workUnit = ThreadItem.WorkUnit(
+			id = "it_workunit_flow",
+			workUnitId = "wu_flow",
+			kind = "orchestration",
+			name = "P6-2-smoke-test",
+			status = "waiting_config",
+			currentGoalId = "goal_flow",
+			currentGoal = "继续配置编排",
+			goalCount = 1,
+			removed = false,
+		)
+		gateway.events.emit(ServerEvent.ItemAdded("thread-1", "turn-1", team))
+		gateway.events.emit(ServerEvent.ItemAdded("thread-1", "turn-1", workUnit))
+		advanceUntilIdle()
+
+		controller.configureWorkUnit("wu_flow")
+		advanceUntilIdle()
+
+		assertEquals("wu_flow", controller.state.value.orchestrationState.configuringWorkUnit?.workUnitId)
+		assertEquals("team_runtime", controller.state.value.teamState.current?.teamId)
+		assertTrue(controller.state.value.teamState.visible)
+		assertEquals(listOf("reviewer"), controller.state.value.teamState.memberNames)
+	}
+
+	@Test
 	fun `updateWorkUnitGoal saves pending goal through backend and refreshes detail`() = runTest {
 		val workUnit = WorkUnitInfo(
 			workUnitId = "wu_1",

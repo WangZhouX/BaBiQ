@@ -125,6 +125,17 @@ public class SQLiteWorkUnitRepository implements WorkUnitRepository {
     }
 
     @Override
+    public List<WorkUnit> listVisibleByStatus(String status) {
+        return workUnitMapper.selectList(Wrappers.<WorkUnitEntity>lambdaQuery()
+                        .eq(WorkUnitEntity::getStatus, status)
+                        .eq(WorkUnitEntity::getRemoved, 0)
+                        .orderByAsc(WorkUnitEntity::getUpdatedAt))
+                .stream()
+                .map(this::toRecord)
+                .toList();
+    }
+
+    @Override
     public List<WorkUnitGoal> listGoals(String workUnitId) {
         return goalMapper.selectList(Wrappers.<WorkUnitGoalEntity>lambdaQuery()
                         .eq(WorkUnitGoalEntity::getWorkUnitId, workUnitId)

@@ -118,15 +118,15 @@ fun runtimePanelTabs(state: AppState, selectedTab: RuntimePanelTab): List<Runtim
 		RuntimePanelTabItem(
 			RuntimePanelTab.Orchestration,
 			"编排",
-			visible = state.orchestrationState.visible,
+			visible = true,
 			selected = resolved == RuntimePanelTab.Orchestration,
-		).takeIf { it.visible },
+		),
 		RuntimePanelTabItem(
 			RuntimePanelTab.Team,
 			"团队",
-			visible = state.teamState.visible,
+			visible = true,
 			selected = resolved == RuntimePanelTab.Team,
-		).takeIf { it.visible },
+		),
 		RuntimePanelTabItem(
 			RuntimePanelTab.SubAgent,
 			"子代理",
@@ -138,8 +138,8 @@ fun runtimePanelTabs(state: AppState, selectedTab: RuntimePanelTab): List<Runtim
 
 fun resolveRuntimePanelTab(state: AppState, requested: RuntimePanelTab): RuntimePanelTab =
 	when (requested) {
-		RuntimePanelTab.Orchestration -> requested.takeIf { state.orchestrationState.visible } ?: RuntimePanelTab.Run
-		RuntimePanelTab.Team -> requested.takeIf { state.teamState.visible } ?: RuntimePanelTab.Run
+		RuntimePanelTab.Orchestration -> RuntimePanelTab.Orchestration
+		RuntimePanelTab.Team -> RuntimePanelTab.Team
 		RuntimePanelTab.SubAgent -> requested.takeIf { state.subAgentState.visible } ?: RuntimePanelTab.Run
 		RuntimePanelTab.Run -> RuntimePanelTab.Run
 	}
@@ -155,7 +155,6 @@ fun runtimePanelContent(tab: RuntimePanelTab): Set<RuntimePanelContent> =
 	when (tab) {
 		RuntimePanelTab.Run -> setOf(
 			RuntimePanelContent.Plan,
-			RuntimePanelContent.WorkUnits,
 			RuntimePanelContent.Environment,
 			RuntimePanelContent.Context,
 			RuntimePanelContent.RunRecords,
@@ -165,8 +164,8 @@ fun runtimePanelContent(tab: RuntimePanelTab): Set<RuntimePanelContent> =
 			RuntimePanelContent.Events,
 			RuntimePanelContent.EmptyState,
 		)
-		RuntimePanelTab.Orchestration -> setOf(RuntimePanelContent.Orchestration)
-		RuntimePanelTab.Team -> setOf(RuntimePanelContent.Team)
+		RuntimePanelTab.Orchestration -> setOf(RuntimePanelContent.WorkUnits, RuntimePanelContent.Orchestration)
+		RuntimePanelTab.Team -> setOf(RuntimePanelContent.WorkUnits, RuntimePanelContent.Team)
 		RuntimePanelTab.SubAgent -> setOf(RuntimePanelContent.SubAgent)
 	}
 
@@ -199,6 +198,7 @@ fun RuntimeDetailsPanel(
 	onDismissTeam: () -> Unit = {},
 	onSelectWorkUnit: (String) -> Unit = {},
 	onConfigureWorkUnit: (String) -> Unit = {},
+	onBackToWorkUnitList: () -> Unit = {},
 	onStartWorkUnit: (String) -> Unit = {},
 	onRemoveWorkUnit: (String) -> Unit = {},
 	onUpdateWorkUnitGoal: (String, String, String) -> Unit = { _, _, _ -> },
@@ -282,78 +282,94 @@ fun RuntimeDetailsPanel(
 			)
 			when (effectiveTab) {
 				RuntimePanelTab.Run -> {
-			PlanSection(state.planState)
-			WorkUnitSection(
-				state.workUnitState,
-				onSelect = onSelectWorkUnit,
-				onConfigure = onConfigureWorkUnit,
-				onStart = onStartWorkUnit,
-				onRemove = requestWorkUnitRemoval,
-				onUpdateGoal = onUpdateWorkUnitGoal,
-			)
-			DetailCard(
-				title = "执行环境",
-				detail = buildString {
-					append("目录: ").append(state.workspace.projectName).append(" / ").append(state.workspace.cwd)
-					append("\n权限: ").append(state.workspace.permissionLabel ?: state.workspace.permissionMode ?: "未加载")
-					append("\n模型: ").append(state.providerState.active.label)
-				},
-			)
-			DetailCard(
-				title = "上下文来源",
-				detail = buildString {
-					append("窗口: ").append(state.contextWindowState.status?.let { "${(it.usageRatio * 100).toInt()}%" } ?: "未生成")
-					append("\n短期压缩: ").append(state.contextWindowState.status?.activeSummaryId ?: "未启用")
-					append("\n长期记忆: ").append(if (state.memoryState.status?.readEnabled == true) "注入开启" else "注入关闭")
-					append("\n能力装配: ").append(state.capabilityState.status?.summaryText() ?: "未加载")
-				},
-			)
-			RunRecordSection(
-				state = state.runRecordState,
-				memoryState = state.memoryState,
-				capabilityState = state.capabilityState,
-				onSelectRunTurn = onSelectRunTurn,
-			)
-			ObservabilitySection(
-				state = state.runRecordState.observability,
-				onSelectRange = onSelectObservabilityRange,
-			)
-			// 运行摘要在这里作为详情复用；聊天流里的 TurnSummaryBar 仍然是主展示位置。
-			state.latestSummary?.let { TurnSummaryBar(it) }
-			DetailCard("当前状态", "${state.turnState} / ${state.connectionState}")
-			state.runtimeEvents.forEach { event ->
-				DetailCard(event.title, event.detail + event.raw?.let { "\n$it" }.orEmpty())
-			}
-			if (state.runtimeEvents.isEmpty() && state.latestSummary == null) {
-				Text("暂无运行详情。完成一轮任务后，这里会显示工具轨迹和 token 明细。", color = BaBiQColors.Muted)
-			}
+					PlanSection(state.planState)
+					DetailCard(
+						title = "执行环境",
+						detail = buildString {
+							append("目录: ").append(state.workspace.projectName).append(" / ").append(state.workspace.cwd)
+							append("\n权限: ").append(state.workspace.permissionLabel ?: state.workspace.permissionMode ?: "未加载")
+							append("\n模型: ").append(state.providerState.active.label)
+						},
+					)
+					DetailCard(
+						title = "上下文来源",
+						detail = buildString {
+							append("窗口: ").append(state.contextWindowState.status?.let { "${(it.usageRatio * 100).toInt()}%" } ?: "未生成")
+							append("\n短期压缩: ").append(state.contextWindowState.status?.activeSummaryId ?: "未启用")
+							append("\n长期记忆: ").append(if (state.memoryState.status?.readEnabled == true) "注入开启" else "注入关闭")
+							append("\n能力装配: ").append(state.capabilityState.status?.summaryText() ?: "未加载")
+						},
+					)
+					RunRecordSection(
+						state = state.runRecordState,
+						memoryState = state.memoryState,
+						capabilityState = state.capabilityState,
+						onSelectRunTurn = onSelectRunTurn,
+					)
+					ObservabilitySection(
+						state = state.runRecordState.observability,
+						onSelectRange = onSelectObservabilityRange,
+					)
+					// 运行摘要在这里作为详情复用；聊天流里的 TurnSummaryBar 仍然是主展示位置。
+					state.latestSummary?.let { TurnSummaryBar(it) }
+					DetailCard("当前状态", "${state.turnState} / ${state.connectionState}")
+					state.runtimeEvents.forEach { event ->
+						DetailCard(event.title, event.detail + event.raw?.let { "\n$it" }.orEmpty())
+					}
+					if (state.runtimeEvents.isEmpty() && state.latestSummary == null) {
+						Text("暂无运行详情。完成一轮任务后，这里会显示工具轨迹和 token 明细。", color = BaBiQColors.Muted)
+					}
 				}
-				RuntimePanelTab.Orchestration -> OrchestrationSection(
-					state = state.orchestrationState,
-					modelLabel = state.providerState.active.label,
-					providerState = state.providerState,
-					onStartWorkUnit = onStartWorkUnit,
-					onRemoveWorkUnit = requestWorkUnitRemoval,
-					onDismissOrchestration = requestOrchestrationDismiss,
-					onUpdateWorkUnitGoal = onUpdateWorkUnitGoal,
-					onUpdateWorkUnitConfig = onUpdateWorkUnitConfig,
-					onMarkWorkUnitConfigDraftDirty = onMarkWorkUnitConfigDraftDirty,
-					onLoadLatestWorkUnitConfig = onLoadLatestWorkUnitConfig,
-					onKeepWorkUnitConfigDraft = onKeepWorkUnitConfigDraft,
-				)
-				RuntimePanelTab.Team -> TeamSection(
-					state = state.teamState,
-					modelLabel = state.providerState.active.label,
-					providerState = state.providerState,
-					onStartWorkUnit = onStartWorkUnit,
-					onRemoveWorkUnit = requestWorkUnitRemoval,
-					onDismissTeam = requestTeamDismiss,
-					onUpdateWorkUnitGoal = onUpdateWorkUnitGoal,
-					onUpdateWorkUnitConfig = { workUnitId, configJson ->
-						onUpdateWorkUnitConfig(workUnitId, configJson, null)
-					},
-					onSendTeamMessage = onSendTeamMessage,
-				)
+				RuntimePanelTab.Orchestration -> {
+					WorkUnitSection(
+						state = state.workUnitState,
+						kindFilter = "orchestration",
+						onSelect = onSelectWorkUnit,
+						onConfigure = onConfigureWorkUnit,
+						onStart = onStartWorkUnit,
+						onRemove = requestWorkUnitRemoval,
+						onUpdateGoal = onUpdateWorkUnitGoal,
+					)
+					OrchestrationSection(
+						state = state.orchestrationState,
+						modelLabel = state.providerState.active.label,
+						providerState = state.providerState,
+						onStartWorkUnit = onStartWorkUnit,
+						onRemoveWorkUnit = requestWorkUnitRemoval,
+						onDismissOrchestration = requestOrchestrationDismiss,
+						onBackToList = onBackToWorkUnitList,
+						onUpdateWorkUnitGoal = onUpdateWorkUnitGoal,
+						onUpdateWorkUnitConfig = onUpdateWorkUnitConfig,
+						onMarkWorkUnitConfigDraftDirty = onMarkWorkUnitConfigDraftDirty,
+						onLoadLatestWorkUnitConfig = onLoadLatestWorkUnitConfig,
+						onKeepWorkUnitConfigDraft = onKeepWorkUnitConfigDraft,
+					)
+				}
+				RuntimePanelTab.Team -> {
+					WorkUnitSection(
+						state = state.workUnitState,
+						kindFilter = "team",
+						onSelect = onSelectWorkUnit,
+						onConfigure = onConfigureWorkUnit,
+						onStart = onStartWorkUnit,
+						onRemove = requestWorkUnitRemoval,
+						onUpdateGoal = onUpdateWorkUnitGoal,
+					)
+					TeamSection(
+						state = state.teamState,
+						modelLabel = state.providerState.active.label,
+						providerState = state.providerState,
+						onStartWorkUnit = onStartWorkUnit,
+						onRemoveWorkUnit = requestWorkUnitRemoval,
+						onDismissTeam = requestTeamDismiss,
+						onBackToList = onBackToWorkUnitList,
+						onUpdateWorkUnitGoal = onUpdateWorkUnitGoal,
+						onUpdateWorkUnitConfig = { workUnitId, configJson ->
+							onUpdateWorkUnitConfig(workUnitId, configJson, null)
+						},
+						onSendTeamMessage = onSendTeamMessage,
+					)
+				}
 				RuntimePanelTab.SubAgent -> SubAgentSection(state.subAgentState, onDismiss = onDismissSubAgent)
 			}
 		}

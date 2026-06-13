@@ -1068,6 +1068,16 @@ class ChatController(
 		_state.update { it.withWorkUnitConfiguration(workUnitId) }
 	}
 
+	fun clearWorkUnitConfiguration() {
+		_state.update {
+			it.copy(
+				runtimeExpanded = true,
+				orchestrationState = it.orchestrationState.clearConfiguration(),
+				teamState = it.teamState.clearConfiguration(),
+			)
+		}
+	}
+
 	fun updateWorkUnitGoal(workUnitId: String, goalId: String, goalText: String) {
 		val detail = state.value.workUnitState.details.firstOrNull { it.workUnitId == workUnitId }
 		val threadId = state.value.currentThreadId ?: detail?.threadId ?: return
@@ -1199,14 +1209,14 @@ class ChatController(
 			"team" -> copy(
 				runtimeExpanded = true,
 				workUnitState = selectedWorkUnitState,
-				orchestrationState = OrchestrationUiState(),
+				orchestrationState = orchestrationState.clearConfiguration(),
 				teamState = teamState.withConfiguration(info),
 			)
 			else -> copy(
 				runtimeExpanded = true,
 				workUnitState = selectedWorkUnitState,
 				orchestrationState = orchestrationState.withConfiguration(info),
-				teamState = TeamUiState(),
+				teamState = teamState.clearConfiguration(),
 			)
 		}
 	}
