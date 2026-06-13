@@ -74,3 +74,8 @@ backend/src/main/resources/application-secret.yml
 backend/src/main/resources/application-secret.yaml
 backend/src/main/resources/application-secret.properties
 
+### Claude Code / Codex ###
+# Claude Code 与 Codex 的本地配置(settings.local.json、config 等)及项目级个人技能(如通用学习技能 teach),均为本地/个人内容,不纳入项目版本控制
+.claude/
+.codex/
+
