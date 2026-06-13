@@ -206,7 +206,7 @@ public class DefaultWorkUnitService implements WorkUnitService {
 
     @Override
     @Transactional
-    public WorkUnitConfig updateConfig(String workUnitId, String configJson) {
+    public WorkUnitConfig updateConfig(String workUnitId, String configJson, String structureJson) {
         if (workUnitId == null || workUnitId.isBlank()) {
             throw new IllegalArgumentException("工作容器 id 不能为空");
         }
@@ -226,6 +226,7 @@ public class DefaultWorkUnitService implements WorkUnitService {
         WorkUnitConfig saved = repository.saveConfig(new WorkUnitConfig(
                 workUnitId,
                 configJson.trim(),
+                normalizeOptionalJson(structureJson),
                 existing == null ? now : existing.createdAt(),
                 now));
         repository.save(new WorkUnit(
@@ -243,6 +244,13 @@ public class DefaultWorkUnitService implements WorkUnitService {
                 workUnit.createdAt(),
                 now));
         return saved;
+    }
+
+    private static String normalizeOptionalJson(String json) {
+        if (json == null || json.isBlank()) {
+            return null;
+        }
+        return json.trim();
     }
 
     @Override

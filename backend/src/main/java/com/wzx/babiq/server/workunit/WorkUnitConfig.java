@@ -16,7 +16,11 @@ import java.time.Instant;
 public record WorkUnitConfig(
         String workUnitId,
         String configJson,
+        String structureJson,
         Instant createdAt,
         Instant updatedAt
 ) {
+    public WorkUnitConfig(String workUnitId, String configJson, Instant createdAt, Instant updatedAt) {
+        this(workUnitId, configJson, null, createdAt, updatedAt);
+    }
 }

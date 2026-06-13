@@ -142,6 +142,7 @@ class ThreadItemJsonTest {
                 "两个节点并行执行",
                 true,
                 true,
+                "{\"root\":{\"groupId\":\"g_root\",\"topology\":\"parallel\",\"children\":[{\"nodeId\":\"node_scan\"},{\"nodeId\":\"node_write\"}]}}",
                 java.util.List.of(
                         new OrchestrationItem.NodeStatus(
                                 "node_scan", "scan", "读取节点", "completed", "READ_ONLY_TOOL",
@@ -158,6 +159,7 @@ class ThreadItemJsonTest {
                 .contains("\"orchestrationId\":\"orch_1\"")
                 .contains("\"topology\":\"parallel\"")
                 .contains("\"frozen\":true")
+                .contains("\"structureJson\"")
                 .contains("\"nodeId\":\"node_scan\"")
                 .contains("\"mode\":\"WORKSPACE_TOOL\"");
         assertThat(restored).isInstanceOf(OrchestrationItem.class);

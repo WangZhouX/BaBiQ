@@ -3,7 +3,7 @@ package com.wzx.babiq.desktop.ui.runtime
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,9 +11,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -30,10 +30,16 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.wzx.babiq.desktop.flowcanvas.FlowCanvas
+import com.wzx.babiq.desktop.flowcanvas.FlowCanvasMode
+import com.wzx.babiq.desktop.flowcanvas.FlowGraph
+import com.wzx.babiq.desktop.flowcanvas.FlowInsertKind
+import com.wzx.babiq.desktop.flowcanvas.FlowNode
+import com.wzx.babiq.desktop.flowcanvas.FlowNodeMode
+import com.wzx.babiq.desktop.flowcanvas.FlowNodeStatus
 import com.wzx.babiq.desktop.protocol.ThreadItem
 import com.wzx.babiq.desktop.protocol.WorkUnitConfigEntry
 import com.wzx.babiq.desktop.protocol.WorkUnitConfiguration
@@ -107,6 +113,7 @@ data class OrchestrationAddNodeAction(
 enum class OrchestrationDraftAddMode {
 	Serial,
 	Parallel,
+	Routing,
 }
 
 data class OrchestrationDraftNodeUpdate(
@@ -116,13 +123,13 @@ data class OrchestrationDraftNodeUpdate(
 
 fun buildOrchestrationSectionModel(
 	state: OrchestrationUiState,
-	modelLabel: String = "未选择模型",
+	modelLabel: String = "model not selected",
 ): OrchestrationSectionModel {
 	val item = state.current
 	if (item != null) {
 		return OrchestrationSectionModel(
 			visible = true,
-			title = "流程编排 · ${item.title}",
+			title = "Flow orchestration - ${item.title}",
 			subtitle = "${topologyLabel(item.topology)} / ${statusLabel(item.status)} / ${approvalLabel(item)}",
 			nodes = item.nodes.map(::nodeRow),
 			summaryPreview = compactFlowSummary(item.summary),
@@ -132,35 +139,35 @@ fun buildOrchestrationSectionModel(
 	}
 	val config = state.configuringWorkUnit ?: return OrchestrationSectionModel(false, "", "", emptyList())
 	val detail = workUnitDetailModel(config, modelLabel)
-	val topology = config.configuration?.topology?.ifBlank { "sequential" } ?: "sequential"
-	val configNodes = configDraftNodes(detail)
-	val selectedNode = configNodes.firstOrNull { it.nodeId == "start" } ?: configNodes.firstOrNull()
+	val graph = flowGraphFromWorkUnitDetail(detail)
+	val rows = configRowsFromGraph(graph, detail)
+	val selected = rows.firstOrNull { it.removable } ?: rows.firstOrNull()
 	return OrchestrationSectionModel(
 		visible = true,
-		title = "编排详情 · ${config.name}",
-		subtitle = "${statusLabel(config.status)} / ${config.goals.size} 个目标 / 等待手动启动",
+		title = "Flow detail - ${config.name}",
+		subtitle = "${statusLabel(config.status)} / ${config.goals.size} goals / waiting for manual start",
 		nodes = emptyList(),
 		config = detail,
-		configTopology = topology,
-		configNodes = configNodes,
-		selectedNodeSettings = selectedNode?.let(::nodeSettingsModel),
+		configTopology = graph.root.topology.wireValue,
+		configNodes = rows,
+		selectedNodeSettings = selected?.let(::nodeSettingsModel),
 		addNodeActions = defaultAddNodeActions(),
-		addNodeActionLabel = "添加节点",
+		addNodeActionLabel = "add node",
 		removeActionLabel = detail.removeActionLabel,
-		editModeTitle = "编排 · 编辑模式",
+		editModeTitle = "Flow canvas",
 	)
 }
 
 @Composable
 fun OrchestrationSection(
 	state: OrchestrationUiState,
-	modelLabel: String = "未选择模型",
+	modelLabel: String = "model not selected",
 	providerState: ProviderState = ProviderState(),
 	onStartWorkUnit: (String) -> Unit = {},
 	onRemoveWorkUnit: (String) -> Unit = {},
 	onDismissOrchestration: () -> Unit = {},
 	onUpdateWorkUnitGoal: (String, String, String) -> Unit = { _, _, _ -> },
-	onUpdateWorkUnitConfig: (String, String) -> Unit = { _, _ -> },
+	onUpdateWorkUnitConfig: (String, String, String?) -> Unit = { _, _, _ -> },
 ) {
 	val model = buildOrchestrationSectionModel(state, modelLabel)
 	if (!model.visible) {
@@ -173,7 +180,7 @@ fun OrchestrationSection(
 	) {
 		Column(
 			modifier = Modifier.fillMaxWidth().padding(12.dp),
-			verticalArrangement = Arrangement.spacedBy(8.dp),
+			verticalArrangement = Arrangement.spacedBy(10.dp),
 		) {
 			Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
 				Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -184,11 +191,7 @@ fun OrchestrationSection(
 					TextButton(
 						onClick = {
 							val workUnitId = model.config?.workUnitId
-							if (workUnitId != null) {
-								onRemoveWorkUnit(workUnitId)
-							} else {
-								onDismissOrchestration()
-							}
+							if (workUnitId != null) onRemoveWorkUnit(workUnitId) else onDismissOrchestration()
 						},
 					) {
 						Text(label)
@@ -198,17 +201,14 @@ fun OrchestrationSection(
 			model.config?.let { config ->
 				OrchestrationConfigPanel(
 					detail = config,
-					topology = model.configTopology,
-					nodes = model.configNodes,
-					defaultSettings = model.selectedNodeSettings,
-					addNodeActions = model.addNodeActions,
-					addNodeActionLabel = model.addNodeActionLabel,
-					editModeTitle = model.editModeTitle,
 					providerState = providerState,
 					onStart = onStartWorkUnit,
 					onUpdateGoal = onUpdateWorkUnitGoal,
 					onUpdateConfig = onUpdateWorkUnitConfig,
 				)
+			}
+			if (model.config == null && state.current != null) {
+				RuntimeFlowCanvas(item = state.current)
 			}
 			model.nodes.forEach { row -> OrchestrationNodeRowView(row) }
 			model.summaryPreview?.let { preview -> FlowSummaryPreview(preview) }
@@ -219,80 +219,80 @@ fun OrchestrationSection(
 @Composable
 private fun OrchestrationConfigPanel(
 	detail: WorkUnitDetailModel,
-	topology: String,
-	nodes: List<OrchestrationConfigNodeRow>,
-	defaultSettings: OrchestrationNodeSettingsModel?,
-	addNodeActions: List<OrchestrationAddNodeAction>,
-	addNodeActionLabel: String?,
-	editModeTitle: String?,
 	providerState: ProviderState,
 	onStart: (String) -> Unit,
 	onUpdateGoal: (String, String, String) -> Unit,
-	onUpdateConfig: (String, String) -> Unit,
+	onUpdateConfig: (String, String, String?) -> Unit,
 ) {
-	var draftNodes by remember(detail.workUnitId, nodes) {
-		mutableStateOf(nodes)
+	var graph by remember(detail.workUnitId, detail.configJson, detail.structureJson) {
+		mutableStateOf(flowGraphFromWorkUnitDetail(detail))
 	}
-	var draftTopology by remember(detail.workUnitId, topology) {
-		mutableStateOf(topology)
+	var draftGoal by remember(detail.editableGoalId, detail.editableGoalText) {
+		mutableStateOf(detail.editableGoalText ?: "")
 	}
-	var selectedNodeId by remember(detail.workUnitId, nodes) {
-		mutableStateOf(defaultSettings?.nodeId ?: nodes.firstOrNull()?.nodeId)
+	val selectedNode = graph.selectedNode
+	var draftTask by remember(detail.workUnitId, selectedNode?.id, selectedNode?.task) {
+		mutableStateOf(selectedNode?.task.orEmpty())
 	}
-	val selectedRow = draftNodes.firstOrNull { it.nodeId == selectedNodeId } ?: draftNodes.firstOrNull()
-	val settings = selectedRow?.let(::nodeSettingsModel)
-	var draftTask by remember(detail.workUnitId, settings?.nodeId, settings?.task) {
-		mutableStateOf(settings?.task.orEmpty())
-	}
-	var selectedModelValues by remember(detail.workUnitId, nodes) {
-		mutableStateOf(draftNodes.associate { it.nodeId to it.modelValue })
+	var selectedModelValue by remember(detail.workUnitId, selectedNode?.id, selectedNode?.modelValue) {
+		mutableStateOf(selectedNode?.modelValue ?: "inherit")
 	}
 	val modelOptions = nodeModelOptions(providerState, detail.modelLabel)
-	val selectedModelValue = settings?.let { selectedModelValues[it.nodeId] ?: it.modelValue }
-	val hasNodeChanges = settings != null &&
+	val selectedModelLabel = modelOptions.firstOrNull { it.modelValue == selectedModelValue }?.label
+		?: selectedNode?.modelLabel
+		?: "inherit"
+	val nodeChanged = selectedNode != null &&
 		draftTask.isNotBlank() &&
-		(draftTask != settings.task || selectedModelValue != settings.modelValue)
-	Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-		OrchestrationTopologyFrame(
-			title = editModeTitle ?: "编排 · 编辑模式",
-			addNodeActionLabel = addNodeActionLabel,
-			addNodeActions = addNodeActions,
-			topology = draftTopology,
-			nodes = draftNodes,
-			selectedNodeId = selectedNodeId,
-			onSelect = { selectedNodeId = it },
-			onAddNode = { action ->
-				val updated = addOrchestrationDraftNodeWithTopology(
-					nodes = draftNodes,
-					inheritedModelLabel = detail.modelLabel,
-					currentTopology = draftTopology,
-					mode = action.mode,
-				)
-				val updatedNodes = updated.nodes
-				val addedNode = updatedNodes.firstOrNull { candidate ->
-					draftNodes.none { existing -> existing.nodeId == candidate.nodeId }
+		(draftTask != selectedNode.task || selectedModelValue != selectedNode.modelValue)
+	val persistGraph: (FlowGraph) -> Unit = { next ->
+		onUpdateConfig(detail.workUnitId, buildFlowConfigJson(detail, next), buildFlowStructureJson(next))
+	}
+	Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+		detail.editableGoalId?.let { goalId ->
+			OutlinedTextField(
+				value = draftGoal,
+				onValueChange = { draftGoal = it },
+				label = { Text("Current goal") },
+				modifier = Modifier.fillMaxWidth(),
+				minLines = 2,
+				maxLines = 4,
+			)
+			Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+				Button(
+					onClick = { onUpdateGoal(detail.workUnitId, goalId, draftGoal.trim()) },
+					enabled = draftGoal.isNotBlank() && draftGoal != (detail.editableGoalText ?: ""),
+				) {
+					Text("Save goal")
 				}
-				draftNodes = updatedNodes
-				draftTopology = updated.topology
-				if (addedNode != null) {
-					selectedNodeId = addedNode.nodeId
+				OutlinedButton(
+					onClick = {
+						val node = newFlowNodeForGraph(graph, detail.modelLabel)
+						val next = graph.insertSerial(graph.flattenNodeIds().lastOrNull(), node)
+						graph = next
+						persistGraph(next)
+					},
+				) {
+					Text("+ node")
 				}
-				val updatedNodeIds = updatedNodes.map { it.nodeId }.toSet()
-				val nextModelValues = updatedNodes.associate { row -> row.nodeId to row.modelValue } +
-					selectedModelValues.filterKeys { it in updatedNodeIds }
-				selectedModelValues = nextModelValues
-				onUpdateConfig(
-					detail.workUnitId,
-					buildOrchestrationConfigJson(
-						detail = detail,
-						topology = updated.topology,
-						nodes = updatedNodes,
-						selectedModelValues = nextModelValues,
-					),
-				)
+				detail.startActionLabel?.let { label ->
+					Button(onClick = { onStart(detail.workUnitId) }) { Text(label) }
+				}
+			}
+		}
+		CanvasFrame(
+			graph = graph,
+			onSelect = { graph = graph.copy(selectedNodeId = it) },
+			onInsert = { anchor, kind ->
+				val node = newFlowNodeForGraph(graph, detail.modelLabel)
+				val next = when (kind) {
+					FlowInsertKind.Serial -> graph.insertSerial(anchor, node)
+					FlowInsertKind.Parallel, FlowInsertKind.Routing -> graph.insertParallel(anchor ?: graph.flattenNodeIds().lastOrNull(), node)
+				}
+				graph = next
+				persistGraph(next)
 			},
 		)
-		settings?.let { nodeSettings ->
+		selectedNode?.let { node ->
 			Column(
 				modifier = Modifier
 					.fillMaxWidth()
@@ -301,79 +301,99 @@ private fun OrchestrationConfigPanel(
 				verticalArrangement = Arrangement.spacedBy(8.dp),
 			) {
 				Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-					Text(nodeSettings.title, style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
-					TextButton(onClick = {}, enabled = false) { Text("删除节点") }
+					Text("Node settings - ${node.title}", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
+					TextButton(
+						onClick = {
+							val next = graph.removeNode(node.id)
+							graph = next
+							persistGraph(next)
+						},
+						enabled = node.removable,
+					) {
+						Text("Delete")
+					}
 				}
 				OutlinedTextField(
 					value = draftTask,
 					onValueChange = { draftTask = it },
-					label = { Text("任务") },
+					label = { Text("Task") },
 					modifier = Modifier.fillMaxWidth(),
 					minLines = 3,
 					maxLines = 6,
 				)
 				NodeModelSelector(
-					selectedLabel = selectedNodeModelLabel(
-						nodeSettings = nodeSettings,
-						selectedModelValues = selectedModelValues,
-						options = modelOptions,
-					),
+					selectedLabel = selectedModelLabel,
 					options = modelOptions,
-					enabled = nodeModelSelectionEnabled(nodeSettings),
-					onSelect = { option ->
-						selectedModelValues = selectedModelValues + (nodeSettings.nodeId to option.modelValue)
-					},
+					enabled = modelOptions.isNotEmpty(),
+					onSelect = { selectedModelValue = it.modelValue },
 				)
-				Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-					Button(
-						onClick = {
-							val updatedNodes = draftNodes.map { row ->
-								if (row.nodeId == nodeSettings.nodeId) {
-									row.copy(
-										task = draftTask.trim(),
-										modelValue = selectedModelValues[row.nodeId] ?: row.modelValue,
-										modelLabel = selectedNodeModelLabel(nodeSettings, selectedModelValues, modelOptions),
-									)
-								} else {
-									row
-								}
-							}
-							draftNodes = updatedNodes
-							if (nodeSettings.nodeId == "start" && draftTask != nodeSettings.task) {
-								detail.editableGoalId?.let { goalId ->
-									onUpdateGoal(detail.workUnitId, goalId, draftTask)
-								}
-							}
-							onUpdateConfig(
-								detail.workUnitId,
-								buildOrchestrationConfigJson(
-									detail = detail,
-									topology = draftTopology,
-									nodes = updatedNodes,
-									updatedNodeId = nodeSettings.nodeId,
-									updatedTask = draftTask,
-									selectedModelValues = selectedModelValues,
-								),
-							)
-						},
-						enabled = hasNodeChanges,
-					) {
-						Text("保存节点")
-					}
-					detail.startActionLabel?.let { label ->
-						Button(onClick = { onStart(detail.workUnitId) }) { Text(label) }
-					}
+				Button(
+					onClick = {
+						val updated = node.copy(
+							task = draftTask.trim(),
+							modelValue = selectedModelValue,
+							modelLabel = selectedModelLabel,
+						)
+						val next = graph.replaceNode(updated)
+						graph = next
+						persistGraph(next)
+					},
+					enabled = nodeChanged,
+				) {
+					Text("Save node")
 				}
 			}
 		}
-		Text("目标队列", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
+		Text("Goal queue", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
 		if (detail.goals.isEmpty()) {
-			Text("暂无目标", style = MaterialTheme.typography.bodySmall, color = BaBiQColors.Muted)
+			Text("No goals", style = MaterialTheme.typography.bodySmall, color = BaBiQColors.Muted)
 		} else {
-			detail.goals.forEach { goal ->
-				Text(goal.label, style = MaterialTheme.typography.bodySmall)
-			}
+			detail.goals.forEach { goal -> Text(goal.label, style = MaterialTheme.typography.bodySmall) }
 		}
+	}
+}
+
+@Composable
+private fun CanvasFrame(
+	graph: FlowGraph,
+	onSelect: (String) -> Unit,
+	onInsert: (String?, FlowInsertKind) -> Unit,
+) {
+	Box(
+		modifier = Modifier
+			.fillMaxWidth()
+			.height(360.dp)
+			.background(BaBiQColors.Background, RoundedCornerShape(10.dp))
+			.border(1.dp, BaBiQColors.Border, RoundedCornerShape(10.dp))
+			.padding(10.dp)
+			.horizontalScroll(rememberScrollState())
+			.verticalScroll(rememberScrollState()),
+	) {
+		FlowCanvas(
+			graph = graph,
+			mode = FlowCanvasMode.Edit,
+			onSelectNode = onSelect,
+			onInsert = onInsert,
+		)
+	}
+}
+
+@Composable
+private fun RuntimeFlowCanvas(item: ThreadItem.Orchestration) {
+	Box(
+		modifier = Modifier
+			.fillMaxWidth()
+			.height(320.dp)
+			.background(BaBiQColors.Background, RoundedCornerShape(10.dp))
+			.border(1.dp, BaBiQColors.Border, RoundedCornerShape(10.dp))
+			.padding(10.dp)
+			.horizontalScroll(rememberScrollState())
+			.verticalScroll(rememberScrollState()),
+	) {
+		FlowCanvas(
+			graph = flowGraphFromOrchestrationItem(item),
+			mode = FlowCanvasMode.Playback,
+		)
 	}
 }
 
@@ -386,16 +406,10 @@ fun NodeModelSelector(
 ) {
 	var expanded by remember { mutableStateOf(false) }
 	Column {
-		OutlinedButton(
-			onClick = { expanded = true },
-			enabled = enabled && options.isNotEmpty(),
-		) {
-			Text(selectedLabel)
+		OutlinedButton(onClick = { expanded = true }, enabled = enabled && options.isNotEmpty()) {
+			Text(selectedLabel, maxLines = 1, overflow = TextOverflow.Ellipsis)
 		}
-		DropdownMenu(
-			expanded = expanded,
-			onDismissRequest = { expanded = false },
-		) {
+		DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
 			options.forEach { option ->
 				DropdownMenuItem(
 					text = { Text(option.label) },
@@ -409,270 +423,16 @@ fun NodeModelSelector(
 	}
 }
 
-@Composable
-private fun OrchestrationTopologyFrame(
-	title: String,
-	addNodeActionLabel: String?,
-	addNodeActions: List<OrchestrationAddNodeAction>,
-	topology: String,
-	nodes: List<OrchestrationConfigNodeRow>,
-	selectedNodeId: String?,
-	onSelect: (String) -> Unit,
-	onAddNode: (OrchestrationAddNodeAction) -> Unit,
-) {
-	Column(
-		modifier = Modifier
-			.fillMaxWidth()
-			.background(BaBiQColors.Background, RoundedCornerShape(10.dp))
-			.border(1.dp, BaBiQColors.Border, RoundedCornerShape(10.dp))
-			.padding(10.dp),
-		verticalArrangement = Arrangement.spacedBy(12.dp),
-	) {
-		Row(
-			modifier = Modifier.fillMaxWidth(),
-			horizontalArrangement = Arrangement.SpaceBetween,
-			verticalAlignment = Alignment.CenterVertically,
-		) {
-			Text(
-				"$title · ${topologyLabel(topology)}",
-				style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-			)
-			Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-				if (addNodeActionLabel != null) {
-					addNodeActions.forEach { action ->
-						OutlinedButton(onClick = { onAddNode(action) }) { Text("+ ${action.label}") }
-					}
-				}
-				Text("收起 ◀", style = MaterialTheme.typography.labelSmall, color = BaBiQColors.Muted)
-			}
-		}
-		Box(
-			modifier = Modifier
-				.fillMaxWidth()
-				.height(1.dp)
-				.background(BaBiQColors.Border),
-		)
-		OrchestrationTopologyEditor(
-			topology = topology,
-			nodes = nodes,
-			selectedNodeId = selectedNodeId,
-			onSelect = onSelect,
-		)
-	}
-}
-
-@Composable
-private fun OrchestrationTopologyEditor(
-	topology: String,
-	nodes: List<OrchestrationConfigNodeRow>,
-	selectedNodeId: String?,
-	onSelect: (String) -> Unit,
-) {
-	val startNode = nodes.firstOrNull { it.nodeId == "start" }
-	val endNode = nodes.firstOrNull { it.nodeId == "end" }
-	val middleNodes = nodes.filter { it.nodeId != "start" && it.nodeId != "end" }
-	Column(
-		modifier = Modifier.fillMaxWidth(),
-		horizontalAlignment = Alignment.CenterHorizontally,
-		verticalArrangement = Arrangement.spacedBy(0.dp),
-	) {
-		startNode?.let { node ->
-			OrchestrationTerminalNode(
-				node = node.copy(selected = node.nodeId == selectedNodeId),
-				onSelect = { onSelect(node.nodeId) },
-			)
-		}
-		if (startNode != null && (middleNodes.isNotEmpty() || endNode != null)) {
-			VerticalConnector()
-		}
-		if (topology.equals("parallel", ignoreCase = true) && middleNodes.size > 1) {
-			Row(
-				modifier = Modifier.fillMaxWidth(),
-				horizontalArrangement = Arrangement.spacedBy(8.dp),
-				verticalAlignment = Alignment.Top,
-			) {
-				middleNodes.forEach { node ->
-					OrchestrationConfigNodeCard(
-						node = node.copy(selected = node.nodeId == selectedNodeId),
-						onSelect = { onSelect(node.nodeId) },
-						modifier = Modifier.weight(1f),
-					)
-				}
-			}
-			if (endNode != null) {
-				VerticalConnector()
-			}
-		} else {
-			middleNodes.forEachIndexed { index, node ->
-				OrchestrationConfigNodeCard(
-					node = node.copy(selected = node.nodeId == selectedNodeId),
-					onSelect = { onSelect(node.nodeId) },
-				)
-				if (index < middleNodes.lastIndex || endNode != null) {
-					VerticalConnector()
-				}
-			}
-		}
-		endNode?.let { node ->
-			OrchestrationTerminalNode(
-				node = node.copy(selected = node.nodeId == selectedNodeId),
-				onSelect = { onSelect(node.nodeId) },
-			)
-		}
-	}
-}
-
-@Composable
-private fun VerticalConnector() {
-	Box(
-		modifier = Modifier
-			.size(width = 1.dp, height = 18.dp)
-			.background(BaBiQColors.Border),
-	)
-}
-
-@Composable
-private fun OrchestrationTerminalNode(
-	node: OrchestrationConfigNodeRow,
-	onSelect: () -> Unit,
-) {
-	Box(
-		modifier = Modifier
-			.background(BaBiQColors.Panel, RoundedCornerShape(999.dp))
-			.border(
-				1.dp,
-				if (node.selected) BaBiQColors.Accent else BaBiQColors.Border,
-				RoundedCornerShape(999.dp),
-			)
-			.clickable(onClick = onSelect)
-			.padding(horizontal = 18.dp, vertical = 7.dp),
-	) {
-		Text(node.title, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
-	}
-}
-
-@Composable
-private fun OrchestrationConfigNodeCard(
-	node: OrchestrationConfigNodeRow,
-	onSelect: () -> Unit,
-	modifier: Modifier = Modifier.fillMaxWidth(),
-) {
-	Column(
-		modifier = modifier
-			.background(BaBiQColors.Background, RoundedCornerShape(10.dp))
-			.border(
-				1.dp,
-				if (node.selected) BaBiQColors.Accent else BaBiQColors.Border,
-				RoundedCornerShape(10.dp),
-			)
-			.clickable(onClick = onSelect)
-			.padding(horizontal = 12.dp, vertical = 10.dp),
-		verticalArrangement = Arrangement.spacedBy(4.dp),
-	) {
-		Row(
-			modifier = Modifier.fillMaxWidth(),
-			horizontalArrangement = Arrangement.SpaceBetween,
-			verticalAlignment = Alignment.CenterVertically,
-		) {
-			Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-				Box(
-					modifier = Modifier
-						.size(8.dp)
-						.background(if (node.selected) BaBiQColors.Accent else BaBiQColors.Muted, CircleShape),
-				)
-				Text(node.title, style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold))
-			}
-			if (node.removable) {
-				Text("×", style = MaterialTheme.typography.bodySmall, color = BaBiQColors.Muted)
-			}
-		}
-		Text("${node.role} / ${node.modeLabel}", style = MaterialTheme.typography.labelSmall, color = BaBiQColors.Muted)
-		Text(
-			node.task,
-			style = MaterialTheme.typography.labelSmall,
-			maxLines = 1,
-			overflow = TextOverflow.Ellipsis,
-		)
-	}
-}
-
-@Composable
-private fun OrchestrationNodeRowView(row: OrchestrationNodeRow) {
-	Column(
-		modifier = Modifier
-			.fillMaxWidth()
-			.background(
-				if (row.active) BaBiQColors.Accent.copy(alpha = 0.10f) else BaBiQColors.Accent.copy(alpha = 0.06f),
-				RoundedCornerShape(6.dp),
-			)
-			.padding(horizontal = 8.dp, vertical = 6.dp),
-		verticalArrangement = Arrangement.spacedBy(4.dp),
-	) {
-		Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-			Text(row.icon, style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold))
-			Text(row.title, style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold))
-		}
-		Text(row.meta, style = MaterialTheme.typography.labelSmall, color = BaBiQColors.Muted)
-		Text(
-			row.detail,
-			style = MaterialTheme.typography.bodySmall,
-			maxLines = 2,
-			overflow = TextOverflow.Ellipsis,
-		)
-	}
-}
-
-@Composable
-private fun FlowSummaryPreview(preview: String) {
-	Column(
-		modifier = Modifier
-			.fillMaxWidth()
-			.background(BaBiQColors.Accent.copy(alpha = 0.06f), RoundedCornerShape(6.dp))
-			.padding(horizontal = 8.dp, vertical = 6.dp),
-		verticalArrangement = Arrangement.spacedBy(4.dp),
-	) {
-		Text("流程摘要", style = MaterialTheme.typography.bodySmall, color = BaBiQColors.Muted)
-		Text(
-			preview,
-			style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
-			maxLines = 3,
-			overflow = TextOverflow.Ellipsis,
-		)
-	}
-}
-
-private fun configDraftNodes(detail: WorkUnitDetailModel): List<OrchestrationConfigNodeRow> {
-	val inheritedModel = detail.modelLabel.ifBlank { "未选择模型" }
-	val currentGoal = currentConfigGoal(detail)
-	val savedNodes = detail.configuration?.nodes.orEmpty()
-	if (savedNodes.isNotEmpty()) {
-		return normalizedConfigNodes(
-			entries = savedNodes,
-			currentGoal = currentGoal,
-			inheritedModel = inheritedModel,
-		)
-	}
-	val middleNodes = explicitNodeIdsFromGoal(currentGoal).map { nodeId ->
-		defaultConfigNodeFor(
-			nodeId = nodeId,
-			currentGoal = currentGoal,
-			inheritedModel = inheritedModel,
-		)
-	}
-	return listOf(startConfigNode(currentGoal)) + middleNodes + endConfigNode()
-}
-
 fun addOrchestrationDraftNode(
 	nodes: List<OrchestrationConfigNodeRow>,
 	inheritedModelLabel: String,
-): List<OrchestrationConfigNodeRow> {
-	return addOrchestrationDraftNodeWithTopology(
+): List<OrchestrationConfigNodeRow> =
+	addOrchestrationDraftNodeWithTopology(
 		nodes = nodes,
 		inheritedModelLabel = inheritedModelLabel,
 		currentTopology = "sequential",
 		mode = OrchestrationDraftAddMode.Serial,
 	).nodes
-}
 
 fun addOrchestrationDraftNodeWithTopology(
 	nodes: List<OrchestrationConfigNodeRow>,
@@ -687,94 +447,103 @@ fun addOrchestrationDraftNodeWithTopology(
 	val newNode = configNode(
 		nodeId = nodeId,
 		title = nodeId,
-		role = "自定义节点",
-		task = "补充这个节点的任务",
+		role = "custom node",
+		task = "Fill in this node task",
 		modeLabel = modeLabel("READ_ONLY_TOOL"),
 		modeValue = "READ_ONLY_TOOL",
-		modelLabel = inheritedModelLabel.ifBlank { "未选择模型" },
+		modelLabel = inheritedModelLabel.ifBlank { "model not selected" },
 		selected = true,
 		removable = true,
 	)
 	val cleared = nodes.map { it.copy(selected = false) }
 	val endIndex = cleared.indexOfFirst { it.nodeId == "end" }
-	val updatedNodes = if (endIndex < 0) {
-		cleared + newNode
-	} else {
-		cleared.take(endIndex) + newNode + cleared.drop(endIndex)
-	}
+	val updatedNodes = if (endIndex < 0) cleared + newNode else cleared.take(endIndex) + newNode + cleared.drop(endIndex)
 	val updatedTopology = when (mode) {
 		OrchestrationDraftAddMode.Serial -> currentTopology.ifBlank { "sequential" }
 		OrchestrationDraftAddMode.Parallel -> "parallel"
+		OrchestrationDraftAddMode.Routing -> "routing"
 	}
 	return OrchestrationDraftNodeUpdate(updatedNodes, updatedTopology)
 }
 
-private fun defaultAddNodeActions(): List<OrchestrationAddNodeAction> =
-	listOf(
-		OrchestrationAddNodeAction("串行节点", OrchestrationDraftAddMode.Serial),
-		OrchestrationAddNodeAction("并行节点", OrchestrationDraftAddMode.Parallel),
+fun nodeModelOptions(
+	providerState: ProviderState,
+	inheritedModelLabel: String,
+): List<OrchestrationNodeModelOption> {
+	val inheritedLabel = inheritedModelLabel
+		.ifBlank { providerState.active.label }
+		.ifBlank { "model not selected" }
+	val options = mutableListOf(
+		OrchestrationNodeModelOption(null, null, "inherit main Agent / $inheritedLabel", "inherit"),
 	)
-
-private fun currentConfigGoal(detail: WorkUnitDetailModel): String =
-	detail.editableGoalText
-		?: detail.goals.lastOrNull()?.label?.substringAfter("路")?.trim()
-		?: detail.title
-
-private fun normalizedConfigNodes(
-	entries: List<WorkUnitConfigEntry>,
-	currentGoal: String,
-	inheritedModel: String,
-): List<OrchestrationConfigNodeRow> {
-	val start = entries.firstOrNull { it.id.equals("start", ignoreCase = true) }
-	val end = entries.firstOrNull { it.id.equals("end", ignoreCase = true) }
-	val middle = entries.filterNot {
-		it.id.equals("start", ignoreCase = true) || it.id.equals("end", ignoreCase = true)
-	}
-	return listOf(
-		configNodeFromEntry(start, "start", currentGoal, inheritedModel, selected = true, removable = false),
-	) + middle.map { entry ->
-		configNodeFromEntry(entry, entry.id, currentGoal, inheritedModel, selected = false, removable = true)
-	} + listOf(
-		configNodeFromEntry(end, "end", currentGoal, inheritedModel, selected = false, removable = false),
-	)
+	providerState.providers
+		.filter { it.enabled }
+		.forEach { provider ->
+			if (provider.models.isEmpty()) {
+				options += OrchestrationNodeModelOption(
+					providerId = provider.id,
+					modelId = null,
+					label = listOf(provider.label, provider.model?.takeIf { it.isNotBlank() }).filterNotNull().joinToString(" "),
+					modelValue = "provider:${provider.id}",
+				)
+			} else {
+				provider.models.forEach { model ->
+					options += OrchestrationNodeModelOption(
+						providerId = provider.id,
+						modelId = model.id,
+						label = "${provider.label} ${model.label}",
+						modelValue = "provider:${provider.id}:${model.id}",
+					)
+				}
+			}
+		}
+	return options.distinctBy { it.modelValue }
 }
 
-private fun configNodeFromEntry(
-	entry: WorkUnitConfigEntry?,
-	fallbackId: String,
-	currentGoal: String,
-	inheritedModel: String,
-	selected: Boolean,
-	removable: Boolean,
-): OrchestrationConfigNodeRow {
-	val nodeId = entry?.id?.takeIf { it.isNotBlank() } ?: fallbackId
-	val modelValue = entry?.model?.takeIf { it.isNotBlank() } ?: defaultModelValueForNode(nodeId)
-	val modeValue = entry?.mode?.takeIf { it.isNotBlank() } ?: defaultModeForNode(nodeId)
-	return configNode(
-		nodeId = nodeId,
-		title = entry?.name?.takeIf { it.isNotBlank() } ?: defaultTitleForNode(nodeId),
-		role = entry?.role?.takeIf { it.isNotBlank() } ?: defaultRoleForNode(nodeId),
-		task = entry?.task?.takeIf { it.isNotBlank() } ?: defaultTaskForNode(nodeId, currentGoal),
-		modeLabel = displayModeLabel(modeValue),
-		modeValue = modeValue,
-		modelLabel = inheritedModel,
+private fun defaultAddNodeActions(): List<OrchestrationAddNodeAction> =
+	listOf(
+		OrchestrationAddNodeAction("serial node", OrchestrationDraftAddMode.Serial),
+		OrchestrationAddNodeAction("parallel node", OrchestrationDraftAddMode.Parallel),
+		OrchestrationAddNodeAction("routing branch", OrchestrationDraftAddMode.Routing),
+	)
+
+private fun configRowsFromGraph(graph: FlowGraph, detail: WorkUnitDetailModel): List<OrchestrationConfigNodeRow> {
+	val currentGoal = currentConfigGoal(detail)
+	return listOf(startConfigNode(currentGoal)) +
+		graph.nodes.mapIndexed { index, node -> node.toConfigRow(selected = index == 0) } +
+		listOf(endConfigNode())
+}
+
+private fun FlowNode.toConfigRow(selected: Boolean): OrchestrationConfigNodeRow =
+	configNode(
+		nodeId = id,
+		title = title,
+		role = role,
+		task = task,
+		modeLabel = modeLabel(mode.wireValue),
+		modeValue = mode.wireValue,
+		modelLabel = modelLabel,
 		modelValue = modelValue,
 		selected = selected,
 		removable = removable,
 	)
-}
+
+private fun currentConfigGoal(detail: WorkUnitDetailModel): String =
+	detail.editableGoalText
+		?: detail.goals.lastOrNull()?.label?.substringAfter(" - ")?.trim()
+		?: detail.title
 
 private fun startConfigNode(currentGoal: String): OrchestrationConfigNodeRow =
 	configNode(
 		nodeId = "start",
 		title = "START",
-		role = "目标入口",
+		role = "goal entry",
 		task = currentGoal,
-		modeLabel = "目标设置",
+		modeLabel = "goal",
 		modeValue = "GOAL",
-		modelLabel = "current",
+		modelLabel = "current goal",
 		modelValue = "goal:current",
-		selected = true,
+		selected = false,
 		removable = false,
 	)
 
@@ -782,116 +551,15 @@ private fun endConfigNode(): OrchestrationConfigNodeRow =
 	configNode(
 		nodeId = "end",
 		title = "END",
-		role = "完成出口",
-		task = "所有节点完成后，由主 Agent 确认输出并结束流程",
-		modeLabel = "结束节点",
+		role = "flow exit",
+		task = "Main Agent confirms final output after all nodes finish.",
+		modeLabel = "end",
 		modeValue = "END",
-		modelLabel = "main-agent",
+		modelLabel = "main Agent",
 		modelValue = "end:main-agent-confirmed",
 		selected = false,
 		removable = false,
 	)
-
-private fun defaultConfigNodeFor(
-	nodeId: String,
-	currentGoal: String,
-	inheritedModel: String,
-): OrchestrationConfigNodeRow {
-	val normalizedId = nodeId.trim().ifBlank { "node" }
-	val modeValue = defaultModeForNode(normalizedId)
-	return configNode(
-		nodeId = normalizedId,
-		title = defaultTitleForNode(normalizedId),
-		role = defaultRoleForNode(normalizedId),
-		task = explicitNodeTask(currentGoal, normalizedId) ?: defaultTaskForNode(normalizedId, currentGoal),
-		modeLabel = displayModeLabel(modeValue),
-		modeValue = modeValue,
-		modelLabel = inheritedModel,
-		selected = false,
-		removable = true,
-	)
-}
-
-private fun explicitNodeIdsFromGoal(goal: String): List<String> =
-	ExplicitNodePattern.findAll(goal)
-		.map { it.groupValues[1].trim().lowercase() }
-		.filterNot { it == "start" || it == "end" }
-		.distinct()
-		.toList()
-
-private fun explicitNodeTask(goal: String, nodeId: String): String? {
-	val taskPattern = Regex(
-		"""(?im)^\s*(?:[-*]|\d+[.)、]?)?\s*${Regex.escape(nodeId)}\s*(?:节点|node)\s*[:：,，\-]?\s*(.+)$""",
-	)
-	return taskPattern.find(goal)
-		?.groupValues
-		?.getOrNull(1)
-		?.trim()
-		?.takeIf { it.isNotBlank() }
-}
-
-private val ExplicitNodePattern = Regex(
-	"""\b([A-Za-z][A-Za-z0-9_-]{1,31})\s*(?:节点|node)""",
-	RegexOption.IGNORE_CASE,
-)
-
-private fun defaultTitleForNode(nodeId: String): String =
-	when (nodeId.lowercase()) {
-		"start" -> "START"
-		"end" -> "END"
-		"router" -> "汇总 router"
-		else -> nodeId
-	}
-
-private fun defaultRoleForNode(nodeId: String): String =
-	when (nodeId.lowercase()) {
-		"start" -> "目标入口"
-		"end" -> "完成出口"
-		"explorer" -> "探索（只读）"
-		"designer" -> "方案设计"
-		"writer" -> "写入修改"
-		"reviewer" -> "复核验收"
-		"analyzer" -> "依赖分析"
-		"tester" -> "跑测试"
-		"router" -> "合并 / 路由"
-		else -> "自定义节点"
-	}
-
-private fun defaultTaskForNode(nodeId: String, currentGoal: String): String =
-	when (nodeId.lowercase()) {
-		"start" -> currentGoal
-		"end" -> "所有节点完成后，由主 Agent 确认输出并结束流程"
-		"explorer" -> "读取相关文件并梳理当前状态"
-		"designer" -> "设计实现方案并保留主要内容"
-		"writer" -> "按方案修改工作区文件"
-		"reviewer" -> "复核结果并确认是否满足目标"
-		"analyzer" -> "分析模块依赖关系，定位依赖缺口与高耦合点"
-		"tester" -> "运行相关测试并整理失败原因"
-		"router" -> "汇总各节点结果，交给主 Agent 形成最终确认"
-		else -> "补充这个节点的任务"
-	}
-
-private fun defaultModeForNode(nodeId: String): String =
-	when (nodeId.lowercase()) {
-		"start" -> "GOAL"
-		"end" -> "END"
-		"writer", "tester" -> "WORKSPACE_TOOL"
-		else -> "READ_ONLY_TOOL"
-	}
-
-private fun defaultModelValueForNode(nodeId: String): String =
-	when (nodeId.lowercase()) {
-		"start" -> "goal:current"
-		"end" -> "end:main-agent-confirmed"
-		else -> "inherit"
-	}
-
-private fun displayModeLabel(modeValue: String): String =
-	when (modeValue.uppercase()) {
-		"GOAL" -> "目标设置"
-		"END" -> "结束节点"
-		else -> modeLabel(modeValue)
-	}
 
 private fun configNode(
 	nodeId: String,
@@ -918,76 +586,17 @@ private fun configNode(
 		removable = removable,
 	)
 
-private fun displayModelLabel(modelValue: String, modelLabel: String): String =
-	when {
-		modelValue.startsWith("goal:") -> "当前目标"
-		modelValue.startsWith("end:") -> "主 Agent 确认输出"
-		modelValue.startsWith("provider:") -> modelValue.removePrefix("provider:").replace(":", " / ")
-		else -> "继承主 Agent · $modelLabel"
-	}
-
 private fun nodeSettingsModel(node: OrchestrationConfigNodeRow): OrchestrationNodeSettingsModel =
 	OrchestrationNodeSettingsModel(
 		nodeId = node.nodeId,
-		title = "节点设置 · ${node.title}",
+		title = "Node settings - ${node.title}",
 		task = node.task,
 		modelLabel = node.modelLabel,
 		modelValue = node.modelValue,
 		removable = node.removable,
 	)
 
-fun nodeModelOptions(
-	providerState: ProviderState,
-	inheritedModelLabel: String,
-): List<OrchestrationNodeModelOption> {
-	val inheritedLabel = inheritedModelLabel
-		.ifBlank { providerState.active.label }
-		.ifBlank { "未选择模型" }
-	val options = mutableListOf(
-		OrchestrationNodeModelOption(
-			providerId = null,
-			modelId = null,
-			label = "继承主 Agent · $inheritedLabel",
-			modelValue = "inherit",
-		),
-	)
-	providerState.providers
-		.filter { it.enabled }
-		.forEach { provider ->
-			if (provider.models.isEmpty()) {
-				val providerModel = provider.model?.takeIf { it.isNotBlank() }
-				options += OrchestrationNodeModelOption(
-					providerId = provider.id,
-					modelId = null,
-					label = listOf(provider.label, providerModel).filterNotNull().joinToString(" "),
-					modelValue = "provider:${provider.id}",
-				)
-			} else {
-				provider.models.forEach { model ->
-					options += OrchestrationNodeModelOption(
-						providerId = provider.id,
-						modelId = model.id,
-						label = "${provider.label} ${model.label}",
-						modelValue = "provider:${provider.id}:${model.id}",
-					)
-				}
-			}
-		}
-	return options.distinctBy { it.modelValue }
-}
-
-private fun nodeModelSelectionEnabled(nodeSettings: OrchestrationNodeSettingsModel): Boolean =
-	nodeSettings.nodeId !in setOf("start", "end")
-
-private fun selectedNodeModelLabel(
-	nodeSettings: OrchestrationNodeSettingsModel,
-	selectedModelValues: Map<String, String>,
-	options: List<OrchestrationNodeModelOption>,
-): String {
-	val selectedValue = selectedModelValues[nodeSettings.nodeId] ?: nodeSettings.modelValue
-	return options.firstOrNull { it.modelValue == selectedValue }?.label ?: nodeSettings.modelLabel
-}
-
+@Suppress("unused")
 private fun buildOrchestrationConfigJson(
 	detail: WorkUnitDetailModel,
 	topology: String,
@@ -996,16 +605,18 @@ private fun buildOrchestrationConfigJson(
 	updatedTask: String? = null,
 	selectedModelValues: Map<String, String>,
 ): String {
-	val entries = nodes.map { row ->
-		WorkUnitConfigEntry(
-			id = row.nodeId,
-			name = row.title,
-			role = row.role,
-			task = if (row.nodeId == updatedNodeId && updatedTask != null) updatedTask.trim() else row.task,
-			model = selectedModelValues[row.nodeId] ?: row.modelValue,
-			mode = row.modeValue,
-		)
-	}
+	val entries = nodes
+		.filterNot { it.nodeId.equals("start", ignoreCase = true) || it.nodeId.equals("end", ignoreCase = true) }
+		.map { row ->
+			WorkUnitConfigEntry(
+				id = row.nodeId,
+				name = row.title,
+				role = row.role,
+				task = if (row.nodeId == updatedNodeId && updatedTask != null) updatedTask.trim() else row.task,
+				model = selectedModelValues[row.nodeId] ?: row.modelValue,
+				mode = row.modeValue,
+			)
+		}
 	return protocolJson.encodeToString(
 		WorkUnitConfiguration(
 			topology = topology.ifBlank { "sequential" },
@@ -1022,51 +633,93 @@ private fun nodeRow(node: ThreadItem.OrchestrationNode): OrchestrationNodeRow =
 		meta = listOfNotNull(
 			modeLabel(node.mode),
 			node.model?.takeIf { it.isNotBlank() },
-			node.toolCallCount?.let { "工具 $it 次" },
+			node.toolCallCount?.let { "tools $it" },
 			node.tokenEstimate?.let { "token $it" },
-		).joinToString(" · "),
+		).joinToString(" / "),
 		detail = node.summary?.takeIf { it.isNotBlank() } ?: node.task.orEmpty().ifBlank { node.name },
 		active = node.status.equals("running", ignoreCase = true),
 	)
+
+@Composable
+private fun OrchestrationNodeRowView(row: OrchestrationNodeRow) {
+	Column(
+		modifier = Modifier
+			.fillMaxWidth()
+			.background(
+				if (row.active) BaBiQColors.Accent.copy(alpha = 0.10f) else BaBiQColors.Accent.copy(alpha = 0.06f),
+				RoundedCornerShape(6.dp),
+			)
+			.padding(horizontal = 8.dp, vertical = 6.dp),
+		verticalArrangement = Arrangement.spacedBy(4.dp),
+	) {
+		Text("${row.icon} ${row.title}", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold))
+		Text(row.meta, style = MaterialTheme.typography.labelSmall, color = BaBiQColors.Muted)
+		Text(row.detail, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+	}
+}
+
+@Composable
+private fun FlowSummaryPreview(preview: String) {
+	Column(
+		modifier = Modifier
+			.fillMaxWidth()
+			.background(BaBiQColors.Accent.copy(alpha = 0.06f), RoundedCornerShape(6.dp))
+			.padding(horizontal = 8.dp, vertical = 6.dp),
+		verticalArrangement = Arrangement.spacedBy(4.dp),
+	) {
+		Text("Flow summary", style = MaterialTheme.typography.bodySmall, color = BaBiQColors.Muted)
+		Text(preview, style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold), maxLines = 3)
+	}
+}
 
 private fun statusIcon(status: String): String =
 	when (status.lowercase()) {
 		"completed" -> "OK"
 		"running" -> "RUN"
-		"failed" -> "!"
+		"failed" -> "ERR"
 		else -> "WAIT"
 	}
 
 private fun statusLabel(status: String): String =
 	when (status.lowercase()) {
-		"idle", "pending", "waiting_config" -> "待配置"
-		"running" -> "运行中"
-		"completed" -> "已完成"
-		"failed" -> "失败"
-		"canceled" -> "已取消"
+		"idle", "pending", "waiting_config" -> "waiting config"
+		"running" -> "running"
+		"completed" -> "completed"
+		"failed" -> "failed"
+		"canceled" -> "canceled"
 		else -> status
 	}
 
 private fun runtimeRemoveActionLabel(status: String): String? =
-	if (status.lowercase() in setOf("completed", "failed", "canceled")) "移除" else null
+	if (status.lowercase() in setOf("completed", "failed", "canceled")) "remove" else null
 
 private fun topologyLabel(topology: String): String =
 	when (topology.lowercase()) {
-		"sequential" -> "顺序"
-		"parallel" -> "并行"
-		"routing" -> "路由"
+		"sequential" -> "sequential"
+		"parallel" -> "parallel"
+		"routing" -> "routing"
 		else -> topology
 	}
 
 private fun modeLabel(mode: String): String =
 	when (mode.uppercase()) {
-		"READ_ONLY_TOOL" -> "只读工具"
-		"WORKSPACE_TOOL" -> "工作区工具"
+		"READ_ONLY_TOOL" -> "read only"
+		"WORKSPACE_TOOL" -> "workspace"
+		"GOAL" -> "goal"
+		"END" -> "end"
 		else -> mode
 	}
 
 private fun approvalLabel(item: ThreadItem.Orchestration): String =
-	if (item.approved == true && item.frozen == true) "已审批并冻结" else "未冻结"
+	if (item.approved == true && item.frozen == true) "approved and frozen" else "not frozen"
+
+private fun displayModelLabel(modelValue: String, modelLabel: String): String =
+	when {
+		modelValue.startsWith("goal:") -> "current goal"
+		modelValue.startsWith("end:") -> "main Agent confirms output"
+		modelValue.startsWith("provider:") -> modelValue.removePrefix("provider:").replace(":", " / ")
+		else -> "inherit main Agent / $modelLabel"
+	}
 
 private fun compactFlowSummary(summary: String?): String? {
 	val compact = summary.orEmpty()
@@ -1076,15 +729,9 @@ private fun compactFlowSummary(summary: String?): String? {
 		.map { it.trimStart('#').trim().replace("`", "") }
 		.filter { it.isNotBlank() }
 		.take(2)
-		.joinToString(" · ")
+		.joinToString(" / ")
 		.replace(Regex("\\s+"), " ")
 		.trim()
-	if (compact.isBlank()) {
-		return null
-	}
-	return if (compact.length <= FlowSummaryMaxChars) {
-		compact
-	} else {
-		compact.take(FlowSummaryMaxChars - 3).trimEnd() + "..."
-	}
+	if (compact.isBlank()) return null
+	return if (compact.length <= FlowSummaryMaxChars) compact else compact.take(FlowSummaryMaxChars - 3).trimEnd() + "..."
 }

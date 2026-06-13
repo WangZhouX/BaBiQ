@@ -69,7 +69,11 @@ public interface WorkUnitService {
      */
     WorkUnitGoal updateGoal(String goalId, String goalText);
 
-    WorkUnitConfig updateConfig(String workUnitId, String configJson);
+    default WorkUnitConfig updateConfig(String workUnitId, String configJson) {
+        return updateConfig(workUnitId, configJson, null);
+    }
+
+    WorkUnitConfig updateConfig(String workUnitId, String configJson, String structureJson);
 
     Optional<WorkUnitConfig> findConfig(String workUnitId);
 

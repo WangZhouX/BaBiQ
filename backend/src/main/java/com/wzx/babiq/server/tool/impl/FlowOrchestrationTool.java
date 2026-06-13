@@ -2,6 +2,8 @@ package com.wzx.babiq.server.tool.impl;
 
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.agent.Agent;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wzx.babiq.server.agent.delegation.BabiqAgentMode;
 import com.wzx.babiq.server.agent.delegation.BabiqAgentSpec;
 import com.wzx.babiq.server.agent.flow.BabiqFlowNode;
@@ -45,6 +47,8 @@ public class FlowOrchestrationTool implements Tool {
 
     /** 协议 item 类型。 */
     private static final String TYPE = "orchestration";
+    /** 只用于持久化和协议回显结构树，不参与模型推理。 */
+    private static final ObjectMapper JSON = new ObjectMapper();
     /** 未从 WorkUnit 显式启动时的拒绝提示。 */
     private static final String MISSING_WORK_UNIT_START_CONTEXT = """
             无法直接启动编排：当前 turn 没有绑定 WorkUnit goalId。
@@ -232,6 +236,7 @@ public class FlowOrchestrationTool implements Tool {
                 spec.sandboxMode().name(),
                 spec.approved(),
                 spec.frozen(),
+                structureJson(spec),
                 summary,
                 error);
     }
@@ -265,6 +270,7 @@ public class FlowOrchestrationTool implements Tool {
                 summary,
                 spec.approved(),
                 spec.frozen(),
+                structureJson(spec),
                 nodes.stream()
                         .map(node -> new OrchestrationItem.NodeStatus(
                                 node.nodeId(),
@@ -277,7 +283,15 @@ public class FlowOrchestrationTool implements Tool {
                                 0,
                                 0,
                                 summary))
-                        .toList());
+                .toList());
+    }
+
+    private String structureJson(BabiqFlowSpec spec) {
+        try {
+            return JSON.writeValueAsString(spec.structure());
+        } catch (JsonProcessingException exception) {
+            return null;
+        }
     }
 
     private void emit(ItemEmitter emitter, OrchestrationItem item) {

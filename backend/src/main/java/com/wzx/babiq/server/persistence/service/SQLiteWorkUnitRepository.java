@@ -180,6 +180,7 @@ public class SQLiteWorkUnitRepository implements WorkUnitRepository {
         WorkUnitConfigEntity entity = new WorkUnitConfigEntity();
         entity.setWorkUnitId(record.workUnitId());
         entity.setConfigJson(record.configJson());
+        entity.setStructureJson(record.structureJson());
         entity.setCreatedAt(PersistenceTime.write(record.createdAt()));
         entity.setUpdatedAt(PersistenceTime.write(record.updatedAt()));
         return entity;
@@ -222,6 +223,7 @@ public class SQLiteWorkUnitRepository implements WorkUnitRepository {
         return new WorkUnitConfig(
                 entity.getWorkUnitId(),
                 entity.getConfigJson(),
+                entity.getStructureJson(),
                 PersistenceTime.read(entity.getCreatedAt()),
                 PersistenceTime.read(entity.getUpdatedAt()));
     }

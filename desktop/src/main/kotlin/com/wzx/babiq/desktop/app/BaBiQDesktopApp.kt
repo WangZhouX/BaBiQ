@@ -85,8 +85,8 @@ fun BaBiQDesktopApp(config: DesktopConfig = DesktopConfig()) {
 			onUpdateWorkUnitGoal = { workUnitId, goalId, goalText ->
 				controller.updateWorkUnitGoal(workUnitId, goalId, goalText)
 			},
-			onUpdateWorkUnitConfig = { workUnitId, configJson ->
-				controller.updateWorkUnitConfig(workUnitId, configJson)
+			onUpdateWorkUnitConfig = { workUnitId, configJson, structureJson ->
+				controller.updateWorkUnitConfig(workUnitId, configJson, structureJson)
 			},
 			onSendTeamMessage = { toAgent, content -> controller.sendTeamMessage(toAgent, content) },
 			onSelectRunTurn = { turnId -> controller.selectRunTurn(turnId) },

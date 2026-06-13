@@ -17,7 +17,23 @@ public record OrchestrationRecord(
         String sandboxMode,
         boolean approved,
         boolean frozen,
+        String structureJson,
         String summary,
         String errorMessage
 ) {
+    public OrchestrationRecord(String orchestrationId,
+                               String threadId,
+                               String turnId,
+                               String title,
+                               String topology,
+                               String status,
+                               String cwd,
+                               String sandboxMode,
+                               boolean approved,
+                               boolean frozen,
+                               String summary,
+                               String errorMessage) {
+        this(orchestrationId, threadId, turnId, title, topology, status, cwd, sandboxMode,
+                approved, frozen, null, summary, errorMessage);
+    }
 }

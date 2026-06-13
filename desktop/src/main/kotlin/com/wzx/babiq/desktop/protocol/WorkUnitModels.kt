@@ -27,6 +27,7 @@ data class WorkUnitConfigUpdateParams(
 	val threadId: String,
 	val workUnitId: String,
 	val configJson: String,
+	val structureJson: String? = null,
 )
 
 @Serializable
@@ -34,6 +35,7 @@ data class WorkUnitConfiguration(
 	val topology: String = "sequential",
 	val nodes: List<WorkUnitConfigEntry> = emptyList(),
 	val members: List<WorkUnitConfigEntry> = emptyList(),
+	val structure: FlowStructureDto? = null,
 )
 
 @Serializable
@@ -74,10 +76,14 @@ data class WorkUnitInfo(
 	val removed: Boolean = false,
 	val updatedAt: String? = null,
 	val configJson: String? = null,
+	val structureJson: String? = null,
 	val goals: List<WorkUnitGoalInfo> = emptyList(),
 ) {
 	val configuration: WorkUnitConfiguration?
 		get() = decodeWorkUnitConfiguration(configJson)
+
+	val structure: FlowStructureDto?
+		get() = decodeFlowStructure(structureJson) ?: configuration?.structure
 
 	fun toThreadItem(): ThreadItem.WorkUnit {
 		val currentGoal = goals.lastOrNull { goal -> goal.goalId == currentGoalId }
@@ -135,6 +141,17 @@ private fun decodeWorkUnitConfiguration(configJson: String?): WorkUnitConfigurat
 	val json = configJson?.takeIf { it.isNotBlank() } ?: return null
 	return try {
 		protocolJson.decodeFromString<WorkUnitConfiguration>(json)
+	} catch (_: SerializationException) {
+		null
+	} catch (_: IllegalArgumentException) {
+		null
+	}
+}
+
+private fun decodeFlowStructure(structureJson: String?): FlowStructureDto? {
+	val json = structureJson?.takeIf { it.isNotBlank() } ?: return null
+	return try {
+		protocolJson.decodeFromString<FlowStructureDto>(json)
 	} catch (_: SerializationException) {
 		null
 	} catch (_: IllegalArgumentException) {

@@ -60,6 +60,10 @@ public class OrchestrationEntity {
     /** 是否已冻结节点和工具范围。 */
     private Integer frozen;
 
+    /** 画布编排结构树 JSON；为空时表示旧版平铺 topology。 */
+    @TableField("structure_json")
+    private String structureJson;
+
     /** 流程短摘要，供右侧运行详情显示。 */
     private String summary;
 

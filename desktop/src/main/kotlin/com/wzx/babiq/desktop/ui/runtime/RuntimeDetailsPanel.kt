@@ -202,7 +202,7 @@ fun RuntimeDetailsPanel(
 	onStartWorkUnit: (String) -> Unit = {},
 	onRemoveWorkUnit: (String) -> Unit = {},
 	onUpdateWorkUnitGoal: (String, String, String) -> Unit = { _, _, _ -> },
-	onUpdateWorkUnitConfig: (String, String) -> Unit = { _, _ -> },
+	onUpdateWorkUnitConfig: (String, String, String?) -> Unit = { _, _, _ -> },
 	onSendTeamMessage: (String, String) -> Unit = { _, _ -> },
 	onSelectRunTurn: (String) -> Unit,
 	onSelectObservabilityRange: (String) -> Unit,
@@ -343,7 +343,9 @@ fun RuntimeDetailsPanel(
 					onRemoveWorkUnit = requestWorkUnitRemoval,
 					onDismissTeam = requestTeamDismiss,
 					onUpdateWorkUnitGoal = onUpdateWorkUnitGoal,
-					onUpdateWorkUnitConfig = onUpdateWorkUnitConfig,
+					onUpdateWorkUnitConfig = { workUnitId, configJson ->
+						onUpdateWorkUnitConfig(workUnitId, configJson, null)
+					},
 					onSendTeamMessage = onSendTeamMessage,
 				)
 				RuntimePanelTab.SubAgent -> SubAgentSection(state.subAgentState, onDismiss = onDismissSubAgent)

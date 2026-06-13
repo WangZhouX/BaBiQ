@@ -43,6 +43,7 @@ class OrchestrationRepositoryTest {
                         "WORKSPACE_WRITE",
                         true,
                         true,
+                        "{\"root\":{\"groupId\":\"g_root\",\"topology\":\"parallel\",\"children\":[{\"nodeId\":\"node_scan\"},{\"nodeId\":\"node_write\"}]}}",
                         "两个节点并行执行",
                         null),
                 List.of(
@@ -59,6 +60,7 @@ class OrchestrationRepositoryTest {
 
         assertThat(run).isPresent();
         assertThat(run.get().approved()).isTrue();
+        assertThat(run.get().structureJson()).contains("\"groupId\":\"g_root\"");
         assertThat(nodes).hasSize(2);
         assertThat(nodes.get(0).status()).isEqualTo("completed");
         assertThat(nodes.get(0).toolCallCount()).isEqualTo(2);

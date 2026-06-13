@@ -112,6 +112,7 @@ public class SQLiteOrchestrationRepository implements OrchestrationRepository {
         entity.setSandboxMode(record.sandboxMode());
         entity.setApproved(record.approved() ? 1 : 0);
         entity.setFrozen(record.frozen() ? 1 : 0);
+        entity.setStructureJson(record.structureJson());
         entity.setSummary(record.summary());
         entity.setErrorMessage(record.errorMessage());
         return entity;
@@ -145,6 +146,7 @@ public class SQLiteOrchestrationRepository implements OrchestrationRepository {
                 entity.getSandboxMode(),
                 entity.getApproved() != null && entity.getApproved() == 1,
                 entity.getFrozen() != null && entity.getFrozen() == 1,
+                entity.getStructureJson(),
                 entity.getSummary(),
                 entity.getErrorMessage());
     }

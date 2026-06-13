@@ -36,6 +36,7 @@ public class WorkUnitConfigUpdateHandler implements JsonRpcMethodHandler {
         String threadId = ContextStatusHandler.requiredText(params, "threadId");
         String workUnitId = ContextStatusHandler.requiredText(params, "workUnitId");
         String configJson = ContextStatusHandler.requiredText(params, "configJson").trim();
+        String structureJson = optionalText(params, "structureJson");
         if (configJson.isBlank()) {
             throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "configJson 不能为空");
         }
@@ -45,12 +46,20 @@ public class WorkUnitConfigUpdateHandler implements JsonRpcMethodHandler {
                 .findFirst()
                 .orElseThrow(() -> new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "工作容器不存在或已移除"));
 
-        service.updateConfig(workUnitId, configJson);
+        service.updateConfig(workUnitId, configJson, structureJson);
         return new WorkUnitConfigUpdateResult(
                 WorkUnitListHandler.toInfo(
                         workUnit,
                         service.listGoals(workUnitId),
-                        WorkUnitListHandler.configJsonFor(service, workUnitId))
+                        WorkUnitListHandler.configFor(service, workUnitId))
         );
+    }
+
+    private static String optionalText(JsonNode params, String fieldName) {
+        if (params == null || !params.hasNonNull(fieldName)) {
+            return null;
+        }
+        String value = params.get(fieldName).asText();
+        return value == null || value.isBlank() ? null : value.trim();
     }
 }

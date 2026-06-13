@@ -62,6 +62,44 @@ class BabiqFlowSpecTest {
                 .hasMessageContaining("至少两个");
     }
 
+    @Test
+    void missing_structure_should_upgrade_to_legacy_flat_root_group() {
+        BabiqFlowSpec spec = new BabiqFlowSpec(
+                "orch_legacy",
+                "legacy flat flow",
+                BabiqFlowTopology.SEQUENTIAL,
+                List.of(readNode("scan", 2), readNode("plan", 1)),
+                "final",
+                false,
+                false,
+                SandboxMode.READ_ONLY);
+
+        assertThat(spec.structure()).isNotNull();
+        assertThat(spec.structure().root().topology()).isEqualTo(BabiqFlowTopology.SEQUENTIAL);
+        assertThat(spec.structure().flattenNodeIds()).containsExactly("node_plan", "node_scan");
+    }
+
+    @Test
+    void explicit_structure_should_be_validated_against_nodes() {
+        BabiqFlowStructure invalid = new BabiqFlowStructure(new BabiqFlowStructure.FlowGroup(
+                "g_root",
+                BabiqFlowTopology.SEQUENTIAL,
+                List.of(new BabiqFlowStructure.FlowNodeRef("node_scan"))));
+
+        assertThatThrownBy(() -> new BabiqFlowSpec(
+                "orch_structured",
+                "structured flow",
+                BabiqFlowTopology.SEQUENTIAL,
+                List.of(readNode("scan", 1), readNode("write", 2)),
+                "final",
+                false,
+                false,
+                SandboxMode.READ_ONLY,
+                invalid))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("未被结构引用");
+    }
+
     private static BabiqFlowNode readNode(String name, int order) {
         return new BabiqFlowNode(
                 "node_" + name,

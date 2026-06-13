@@ -24,6 +24,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.wzx.babiq.desktop.protocol.ThreadItem
+import com.wzx.babiq.desktop.protocol.FlowStructureDto
 import com.wzx.babiq.desktop.protocol.WorkUnitConfiguration
 import com.wzx.babiq.desktop.protocol.WorkUnitGoalInfo
 import com.wzx.babiq.desktop.protocol.WorkUnitInfo
@@ -61,6 +62,8 @@ data class WorkUnitDetailModel(
 	val editableGoalText: String?,
 	val configuration: WorkUnitConfiguration? = null,
 	val configJson: String? = null,
+	val structure: FlowStructureDto? = null,
+	val structureJson: String? = null,
 	val goals: List<WorkUnitGoalRowModel>,
 )
 
@@ -208,6 +211,8 @@ fun workUnitDetailModel(info: WorkUnitInfo, modelLabel: String): WorkUnitDetailM
 		editableGoalText = editableGoal(info)?.goalText,
 		configuration = info.configuration,
 		configJson = info.configJson,
+		structure = info.structure,
+		structureJson = info.structureJson,
 		goals = info.goals.map(::toGoalRowModel),
 	)
 
