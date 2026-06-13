@@ -100,6 +100,9 @@ data class FlowGraph(
 	fun insertParallel(anchorNodeId: String?, node: FlowNode): FlowGraph =
 		insertNode(anchorNodeId, node, InsertMode.Parallel)
 
+	fun insertRouting(anchorNodeId: String?, node: FlowNode): FlowGraph =
+		insertNode(anchorNodeId, node, InsertMode.Routing)
+
 	/**
 	 * 移动一个已有节点引用，不改变节点自身配置。
 	 *
@@ -145,7 +148,8 @@ data class FlowGraph(
 		require(node.id !in nodeMap) { "duplicate node id: ${node.id}" }
 		val nextRoot = when (mode) {
 			InsertMode.Serial -> root.insertSerial(afterNodeId, node.id)
-			InsertMode.Parallel -> root.insertParallel(afterNodeId, node.id)
+			InsertMode.Parallel -> root.insertGroup(afterNodeId, node.id, FlowTopology.Parallel)
+			InsertMode.Routing -> root.insertGroup(afterNodeId, node.id, FlowTopology.Routing)
 		}
 		return copy(nodes = nodes + node, root = nextRoot, selectedNodeId = node.id)
 	}
@@ -199,6 +203,7 @@ data class FlowGraphHistory(
 private enum class InsertMode {
 	Serial,
 	Parallel,
+	Routing,
 }
 
 private fun FlowEntry.Group.insertSerial(afterNodeId: String?, nodeId: String): FlowEntry.Group {
@@ -217,7 +222,7 @@ private fun FlowEntry.Group.insertSerial(afterNodeId: String?, nodeId: String): 
 	}
 }
 
-private fun FlowEntry.Group.insertParallel(anchorNodeId: String?, nodeId: String): FlowEntry.Group {
+private fun FlowEntry.Group.insertGroup(anchorNodeId: String?, nodeId: String, topology: FlowTopology): FlowEntry.Group {
 	if (anchorNodeId == null || children.isEmpty()) {
 		return copy(children = children + FlowEntry.NodeRef(nodeId))
 	}
@@ -237,7 +242,7 @@ private fun FlowEntry.Group.insertParallel(anchorNodeId: String?, nodeId: String
 		is FlowEntry.NodeRef -> {
 			val group = FlowEntry.Group(
 				groupId = "g_$anchorNodeId",
-				topology = FlowTopology.Parallel,
+				topology = topology,
 				children = listOf(child, FlowEntry.NodeRef(nodeId)),
 			)
 			copy(children = children.updateAt(index, group))

@@ -328,7 +328,8 @@ private fun OrchestrationConfigPanel(
 				val node = newFlowNodeForGraph(graph, detail.modelLabel)
 				val next = when (kind) {
 					FlowInsertKind.Serial -> graph.insertSerial(anchor, node)
-					FlowInsertKind.Parallel, FlowInsertKind.Routing -> graph.insertParallel(anchor ?: graph.flattenNodeIds().lastOrNull(), node)
+					FlowInsertKind.Parallel -> graph.insertParallel(anchor ?: graph.flattenNodeIds().lastOrNull(), node)
+					FlowInsertKind.Routing -> graph.insertRouting(anchor ?: graph.flattenNodeIds().lastOrNull(), node)
 				}
 				applyGraphEdit(next)
 			},

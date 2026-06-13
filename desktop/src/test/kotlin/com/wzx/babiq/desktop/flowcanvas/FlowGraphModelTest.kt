@@ -37,6 +37,18 @@ class FlowGraphModelTest {
 	}
 
 	@Test
+	fun `routing insert wraps anchor in a routing group`() {
+		val graph = FlowGraph()
+			.insertSerial(null, FlowNode("router", "router", "route", "choose branch"))
+			.insertRouting("router", FlowNode("writer", "writer", "write", "handle selected branch"))
+
+		val group = graph.root.children.single() as FlowEntry.Group
+
+		assertEquals(FlowTopology.Routing, group.topology)
+		assertEquals(listOf("router", "writer"), graph.flattenNodeIds())
+	}
+
+	@Test
 	fun `remove node collapses single child parallel group`() {
 		val graph = FlowGraph()
 			.insertSerial(null, FlowNode("explorer", "explorer", "read", "scan files"))
