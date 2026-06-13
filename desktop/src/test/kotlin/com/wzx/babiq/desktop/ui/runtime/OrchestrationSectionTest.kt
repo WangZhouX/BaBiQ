@@ -5,6 +5,9 @@ import com.wzx.babiq.desktop.protocol.ProviderInfo
 import com.wzx.babiq.desktop.protocol.ThreadItem
 import com.wzx.babiq.desktop.protocol.WorkUnitGoalInfo
 import com.wzx.babiq.desktop.protocol.WorkUnitInfo
+import com.wzx.babiq.desktop.flowcanvas.FlowGraph
+import com.wzx.babiq.desktop.flowcanvas.FlowGraphHistory
+import com.wzx.babiq.desktop.flowcanvas.FlowNode
 import com.wzx.babiq.desktop.state.OrchestrationUiState
 import com.wzx.babiq.desktop.state.ProviderSelection
 import com.wzx.babiq.desktop.state.ProviderState
@@ -304,6 +307,21 @@ class OrchestrationSectionTest {
 
 		assertEquals("parallel", update.topology)
 		assertEquals(listOf("start", "scan", "node_1", "end"), update.nodes.map { it.nodeId })
+	}
+
+	@Test
+	fun `orchestration graph edit history supports undo and redo`() {
+		val start = FlowGraph()
+		val history = FlowGraphHistory(start)
+		val node = FlowNode("node_1", "node_1", "custom", "write task")
+
+		val edited = applyOrchestrationGraphEdit(history, start.insertSerial(null, node))
+		val undone = undoOrchestrationGraphEdit(edited)
+		val redone = redoOrchestrationGraphEdit(undone)
+
+		assertEquals(listOf("node_1"), edited.current.flattenNodeIds())
+		assertEquals(emptyList(), undone.current.flattenNodeIds())
+		assertEquals(listOf("node_1"), redone.current.flattenNodeIds())
 	}
 
 	@Test

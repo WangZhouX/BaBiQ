@@ -30,6 +30,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -37,6 +44,7 @@ import com.wzx.babiq.desktop.flowcanvas.FlowCanvas
 import com.wzx.babiq.desktop.flowcanvas.FlowCanvasMode
 import com.wzx.babiq.desktop.flowcanvas.FlowDropTarget
 import com.wzx.babiq.desktop.flowcanvas.FlowGraph
+import com.wzx.babiq.desktop.flowcanvas.FlowGraphHistory
 import com.wzx.babiq.desktop.flowcanvas.FlowInsertKind
 import com.wzx.babiq.desktop.flowcanvas.FlowNode
 import com.wzx.babiq.desktop.flowcanvas.FlowNodeMode
@@ -121,6 +129,13 @@ data class OrchestrationDraftNodeUpdate(
 	val nodes: List<OrchestrationConfigNodeRow>,
 	val topology: String,
 )
+
+fun applyOrchestrationGraphEdit(history: FlowGraphHistory, next: FlowGraph): FlowGraphHistory =
+	if (history.current == next) history else history.apply(next)
+
+fun undoOrchestrationGraphEdit(history: FlowGraphHistory): FlowGraphHistory = history.undo()
+
+fun redoOrchestrationGraphEdit(history: FlowGraphHistory): FlowGraphHistory = history.redo()
 
 fun buildOrchestrationSectionModel(
 	state: OrchestrationUiState,
@@ -225,9 +240,10 @@ private fun OrchestrationConfigPanel(
 	onUpdateGoal: (String, String, String) -> Unit,
 	onUpdateConfig: (String, String, String?) -> Unit,
 ) {
-	var graph by remember(detail.workUnitId, detail.configJson, detail.structureJson) {
-		mutableStateOf(flowGraphFromWorkUnitDetail(detail))
+	var history by remember(detail.workUnitId, detail.configJson, detail.structureJson) {
+		mutableStateOf(FlowGraphHistory(flowGraphFromWorkUnitDetail(detail)))
 	}
+	val graph = history.current
 	var draftGoal by remember(detail.editableGoalId, detail.editableGoalText) {
 		mutableStateOf(detail.editableGoalText ?: "")
 	}
@@ -248,7 +264,33 @@ private fun OrchestrationConfigPanel(
 	val persistGraph: (FlowGraph) -> Unit = { next ->
 		onUpdateConfig(detail.workUnitId, buildFlowConfigJson(detail, next), buildFlowStructureJson(next))
 	}
-	Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+	fun applyGraphEdit(next: FlowGraph) {
+		val nextHistory = applyOrchestrationGraphEdit(history, next)
+		history = nextHistory
+		persistGraph(nextHistory.current)
+	}
+	Column(
+		modifier = Modifier
+			.fillMaxWidth()
+			.onPreviewKeyEvent { event ->
+				if (event.type != KeyEventType.KeyDown || !event.isCtrlPressed || event.key != Key.Z) {
+					return@onPreviewKeyEvent false
+				}
+				val nextHistory = if (event.isShiftPressed) {
+					redoOrchestrationGraphEdit(history)
+				} else {
+					undoOrchestrationGraphEdit(history)
+				}
+				if (nextHistory == history) {
+					false
+				} else {
+					history = nextHistory
+					persistGraph(nextHistory.current)
+					true
+				}
+			},
+		verticalArrangement = Arrangement.spacedBy(10.dp),
+	) {
 		detail.editableGoalId?.let { goalId ->
 			OutlinedTextField(
 				value = draftGoal,
@@ -269,8 +311,7 @@ private fun OrchestrationConfigPanel(
 					onClick = {
 						val node = newFlowNodeForGraph(graph, detail.modelLabel)
 						val next = graph.insertSerial(graph.flattenNodeIds().lastOrNull(), node)
-						graph = next
-						persistGraph(next)
+						applyGraphEdit(next)
 					},
 				) {
 					Text("+ node")
@@ -282,20 +323,18 @@ private fun OrchestrationConfigPanel(
 		}
 		CanvasFrame(
 			graph = graph,
-			onSelect = { graph = graph.copy(selectedNodeId = it) },
+			onSelect = { history = history.copy(current = graph.copy(selectedNodeId = it)) },
 			onInsert = { anchor, kind ->
 				val node = newFlowNodeForGraph(graph, detail.modelLabel)
 				val next = when (kind) {
 					FlowInsertKind.Serial -> graph.insertSerial(anchor, node)
 					FlowInsertKind.Parallel, FlowInsertKind.Routing -> graph.insertParallel(anchor ?: graph.flattenNodeIds().lastOrNull(), node)
 				}
-				graph = next
-				persistGraph(next)
+				applyGraphEdit(next)
 			},
 			onMove = { nodeId, target ->
 				val next = graph.moveEntry(nodeId, target)
-				graph = next
-				persistGraph(next)
+				applyGraphEdit(next)
 			},
 		)
 		selectedNode?.let { node ->
@@ -311,8 +350,7 @@ private fun OrchestrationConfigPanel(
 					TextButton(
 						onClick = {
 							val next = graph.removeNode(node.id)
-							graph = next
-							persistGraph(next)
+							applyGraphEdit(next)
 						},
 						enabled = node.removable,
 					) {
@@ -341,8 +379,7 @@ private fun OrchestrationConfigPanel(
 							modelLabel = selectedModelLabel,
 						)
 						val next = graph.replaceNode(updated)
-						graph = next
-						persistGraph(next)
+						applyGraphEdit(next)
 					},
 					enabled = nodeChanged,
 				) {
