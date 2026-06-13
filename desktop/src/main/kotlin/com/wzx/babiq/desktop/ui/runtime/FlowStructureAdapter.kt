@@ -40,17 +40,31 @@ fun flowGraphFromWorkUnitDetail(detail: WorkUnitDetailModel): FlowGraph {
 }
 
 fun flowGraphFromOrchestrationItem(item: ThreadItem.Orchestration): FlowGraph {
-	val nodes = item.nodes.map { node ->
+	val rawNodes = item.nodes.map { node ->
+		val status = FlowNodeStatus.from(node.status)
 		FlowNode(
 			id = node.nodeId,
 			title = node.displayName?.takeIf { it.isNotBlank() } ?: node.name,
 			role = node.name,
 			task = node.summary?.takeIf { it.isNotBlank() } ?: node.task.orEmpty(),
 			mode = FlowNodeMode.from(node.mode),
-			status = FlowNodeStatus.from(node.status),
+			status = status,
 			modelLabel = node.model ?: "inherit",
 			modelValue = node.model ?: "inherit",
+			errorSummary = node.summary?.takeIf { status == FlowNodeStatus.Failed && it.isNotBlank() },
 		)
+	}
+	val failedIndex = rawNodes.indexOfFirst { it.status == FlowNodeStatus.Failed }
+	val nodes = if (failedIndex < 0) {
+		rawNodes
+	} else {
+		rawNodes.mapIndexed { index, node ->
+			if (index > failedIndex && node.status == FlowNodeStatus.Pending) {
+				node.copy(status = FlowNodeStatus.Canceled)
+			} else {
+				node
+			}
+		}
 	}
 	val structure = item.structureJson
 		?.takeIf { it.isNotBlank() }

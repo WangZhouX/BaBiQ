@@ -47,6 +47,7 @@ data class FlowNode(
 	val status: FlowNodeStatus = FlowNodeStatus.Pending,
 	val modelLabel: String = "inherit",
 	val modelValue: String = "inherit",
+	val errorSummary: String? = null,
 	val removable: Boolean = true,
 )
 

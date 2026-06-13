@@ -24,6 +24,32 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
+data class FlowNodeCardStyle(
+	val borderColor: Color,
+	val statusColor: Color,
+	val statusText: String,
+	val roleColor: Color,
+	val errorSummary: String?,
+)
+
+fun flowNodeCardStyle(
+	node: FlowNode,
+	selected: Boolean,
+	palette: FlowCanvasPalette,
+): FlowNodeCardStyle {
+	val statusBorder = when (node.status) {
+		FlowNodeStatus.Failed -> palette.failed
+		else -> null
+	}
+	return FlowNodeCardStyle(
+		borderColor = statusBorder ?: if (selected) palette.selectedBorder else palette.nodeBorder,
+		statusColor = statusColor(node.status, palette),
+		statusText = statusText(node.status),
+		roleColor = roleColor(node, palette),
+		errorSummary = node.errorSummary?.takeIf { node.status == FlowNodeStatus.Failed && it.isNotBlank() },
+	)
+}
+
 @Composable
 fun FlowNodeCard(
 	node: FlowNode,
@@ -32,13 +58,14 @@ fun FlowNodeCard(
 	modifier: Modifier = Modifier,
 	onSelect: (String) -> Unit = {},
 ) {
+	val style = flowNodeCardStyle(node, selected, palette)
 	Column(
 		modifier = modifier
 			.clip(RoundedCornerShape(6.dp))
 			.background(palette.nodeBackground)
 			.border(
 				width = 1.dp,
-				color = if (selected) palette.selectedBorder else palette.nodeBorder,
+				color = style.borderColor,
 				shape = RoundedCornerShape(6.dp),
 			)
 			.clickable { onSelect(node.id) }
@@ -58,7 +85,7 @@ fun FlowNodeCard(
 				Box(
 					modifier = Modifier
 						.size(8.dp)
-						.background(roleColor(node, palette), CircleShape),
+						.background(style.roleColor, CircleShape),
 				)
 				Text(
 					text = node.title,
@@ -71,8 +98,8 @@ fun FlowNodeCard(
 			}
 			Spacer(Modifier.size(4.dp))
 			Text(
-				text = statusText(node.status),
-				color = statusColor(node.status, palette),
+				text = style.statusText,
+				color = style.statusColor,
 				fontSize = 10.sp,
 				maxLines = 1,
 			)
@@ -91,6 +118,15 @@ fun FlowNodeCard(
 			maxLines = 1,
 			overflow = TextOverflow.Ellipsis,
 		)
+		style.errorSummary?.let { summary ->
+			Text(
+				text = summary,
+				color = palette.failed,
+				fontSize = 10.sp,
+				maxLines = 1,
+				overflow = TextOverflow.Ellipsis,
+			)
+		}
 	}
 }
 

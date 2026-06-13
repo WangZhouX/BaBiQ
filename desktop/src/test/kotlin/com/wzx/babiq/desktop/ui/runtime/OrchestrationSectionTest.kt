@@ -8,6 +8,7 @@ import com.wzx.babiq.desktop.protocol.WorkUnitInfo
 import com.wzx.babiq.desktop.flowcanvas.FlowGraph
 import com.wzx.babiq.desktop.flowcanvas.FlowGraphHistory
 import com.wzx.babiq.desktop.flowcanvas.FlowNode
+import com.wzx.babiq.desktop.flowcanvas.FlowNodeStatus
 import com.wzx.babiq.desktop.state.OrchestrationUiState
 import com.wzx.babiq.desktop.state.ProviderSelection
 import com.wzx.babiq.desktop.state.ProviderState
@@ -79,6 +80,28 @@ class OrchestrationSectionTest {
 
 		assertTrue(model.visible)
 		assertNotNull(model.removeActionLabel)
+	}
+
+	@Test
+	fun `runtime flow graph marks pending downstream nodes canceled after failure`() {
+		val item = ThreadItem.Orchestration(
+			id = "it_orch_1",
+			orchestrationId = "orch_1",
+			title = "failed flow",
+			topology = "sequential",
+			status = "failed",
+			nodes = listOf(
+				ThreadItem.OrchestrationNode("scan", "scan", status = "completed", mode = "READ_ONLY_TOOL", summary = "done"),
+				ThreadItem.OrchestrationNode("write", "write", status = "failed", mode = "WORKSPACE_TOOL", summary = "write failed"),
+				ThreadItem.OrchestrationNode("review", "review", status = "pending", mode = "READ_ONLY_TOOL", task = "review output"),
+			),
+		)
+
+		val graph = flowGraphFromOrchestrationItem(item)
+
+		assertEquals(FlowNodeStatus.Failed, graph.nodeMap.getValue("write").status)
+		assertEquals("write failed", graph.nodeMap.getValue("write").errorSummary)
+		assertEquals(FlowNodeStatus.Canceled, graph.nodeMap.getValue("review").status)
 	}
 
 	@Test
