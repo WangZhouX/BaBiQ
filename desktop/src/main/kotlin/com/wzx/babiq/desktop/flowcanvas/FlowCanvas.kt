@@ -2,6 +2,7 @@ package com.wzx.babiq.desktop.flowcanvas
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
@@ -16,11 +17,17 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.onPointerEvent
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
@@ -42,6 +49,7 @@ enum class FlowInsertKind {
 }
 
 @Composable
+@OptIn(ExperimentalComposeUiApi::class)
 fun FlowCanvas(
 	graph: FlowGraph,
 	modifier: Modifier = Modifier,
@@ -53,6 +61,7 @@ fun FlowCanvas(
 ) {
 	val layout = remember(graph, layoutConfig) { layoutFlowCanvas(graph, layoutConfig) }
 	val density = LocalDensity.current
+	var camera by remember(graph.root) { mutableStateOf(FlowCanvasCamera()) }
 	Box(
 		modifier = modifier
 			.size(
@@ -60,53 +69,81 @@ fun FlowCanvas(
 				height = layout.size.height.dp,
 			)
 			.clip(RoundedCornerShape(8.dp))
-			.background(palette.background),
-	) {
-		Canvas(Modifier.matchParentSize()) {
-			val scale = density.density
-			drawGrid(layout.size, palette, scale)
-			layout.edges.forEach { edge ->
-				drawLine(
-					color = palette.edge,
-					start = edge.from.toOffset(scale),
-					end = edge.to.toOffset(scale),
-					strokeWidth = 1.2.dp.toPx(),
-					cap = StrokeCap.Round,
+			.background(palette.background)
+			.onPointerEvent(PointerEventType.Scroll) { event ->
+				val change = event.changes.firstOrNull() ?: return@onPointerEvent
+				val multiplier = if (change.scrollDelta.y < 0f) 1.1f else 0.9f
+				camera = camera.zoomAt(
+					cursorX = change.position.x,
+					cursorY = change.position.y,
+					scaleMultiplier = multiplier,
 				)
-				if (edge.hasArrow) {
-					drawArrowHead(edge.from.toOffset(scale), edge.to.toOffset(scale), palette, 7.dp.toPx())
+				change.consume()
+			}
+			.pointerInput(Unit) {
+				detectDragGestures { change, dragAmount ->
+					camera = camera.pan(dragAmount.x, dragAmount.y)
+					change.consume()
+				}
+			},
+	) {
+		Box(
+			modifier = Modifier
+				.matchParentSize()
+				.graphicsLayer {
+					scaleX = camera.scale
+					scaleY = camera.scale
+					translationX = camera.offsetX
+					translationY = camera.offsetY
+					transformOrigin = TransformOrigin(0f, 0f)
+				},
+		) {
+			Canvas(Modifier.matchParentSize()) {
+				val scale = density.density
+				drawGrid(layout.size, palette, scale)
+				layout.edges.forEach { edge ->
+					drawLine(
+						color = palette.edge,
+						start = edge.from.toOffset(scale),
+						end = edge.to.toOffset(scale),
+						strokeWidth = 1.2.dp.toPx(),
+						cap = StrokeCap.Round,
+					)
+					if (edge.hasArrow) {
+						drawArrowHead(edge.from.toOffset(scale), edge.to.toOffset(scale), palette, 7.dp.toPx())
+					}
 				}
 			}
-		}
-		TerminalPill(layout.start, palette)
-		TerminalPill(layout.end, palette)
-		layout.nodes.forEach { nodeLayout ->
-			val node = graph.nodeMap[nodeLayout.nodeId] ?: return@forEach
-			FlowNodeCard(
-				node = node,
-				selected = graph.selectedNodeId == node.id,
-				palette = palette,
-				onSelect = onSelectNode,
-				modifier = Modifier
-					.offset {
-						IntOffset(
-							with(density) { nodeLayout.rect.x.dp.roundToPx() },
-							with(density) { nodeLayout.rect.y.dp.roundToPx() },
-						)
-					}
-					.size(
-						width = nodeLayout.rect.width.dp,
-						height = nodeLayout.rect.height.dp,
-					),
-			)
-		}
-		if (mode == FlowCanvasMode.Edit) {
-			layout.insertPoints.forEach { point ->
-				FlowInsertButton(
-					point = point,
+			TerminalPill(layout.start, palette)
+			TerminalPill(layout.end, palette)
+			layout.nodes.forEach { nodeLayout ->
+				val node = graph.nodeMap[nodeLayout.nodeId] ?: return@forEach
+				FlowNodeCard(
+					node = node,
+					selected = graph.selectedNodeId == node.id,
 					palette = palette,
-					onInsert = onInsert,
+					onSelect = onSelectNode,
+					modifier = Modifier
+						.offset {
+							IntOffset(
+								with(density) { nodeLayout.rect.x.dp.roundToPx() },
+								with(density) { nodeLayout.rect.y.dp.roundToPx() },
+							)
+						}
+						.size(
+							width = nodeLayout.rect.width.dp,
+							height = nodeLayout.rect.height.dp,
+						),
 				)
+			}
+			if (mode == FlowCanvasMode.Edit) {
+				layout.insertPoints.forEach { point ->
+					FlowInsertButton(
+						point = point,
+						palette = palette,
+						onInsert = onInsert,
+					)
+				}
 			}
 		}
 	}
