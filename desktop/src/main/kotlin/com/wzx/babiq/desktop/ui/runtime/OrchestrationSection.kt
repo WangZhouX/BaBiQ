@@ -35,6 +35,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.wzx.babiq.desktop.flowcanvas.FlowCanvas
 import com.wzx.babiq.desktop.flowcanvas.FlowCanvasMode
+import com.wzx.babiq.desktop.flowcanvas.FlowDropTarget
 import com.wzx.babiq.desktop.flowcanvas.FlowGraph
 import com.wzx.babiq.desktop.flowcanvas.FlowInsertKind
 import com.wzx.babiq.desktop.flowcanvas.FlowNode
@@ -291,6 +292,11 @@ private fun OrchestrationConfigPanel(
 				graph = next
 				persistGraph(next)
 			},
+			onMove = { nodeId, target ->
+				val next = graph.moveEntry(nodeId, target)
+				graph = next
+				persistGraph(next)
+			},
 		)
 		selectedNode?.let { node ->
 			Column(
@@ -358,6 +364,7 @@ private fun CanvasFrame(
 	graph: FlowGraph,
 	onSelect: (String) -> Unit,
 	onInsert: (String?, FlowInsertKind) -> Unit,
+	onMove: (String, FlowDropTarget) -> Unit = { _, _ -> },
 ) {
 	Box(
 		modifier = Modifier
@@ -374,6 +381,7 @@ private fun CanvasFrame(
 			mode = FlowCanvasMode.Edit,
 			onSelectNode = onSelect,
 			onInsert = onInsert,
+			onMove = onMove,
 		)
 	}
 }

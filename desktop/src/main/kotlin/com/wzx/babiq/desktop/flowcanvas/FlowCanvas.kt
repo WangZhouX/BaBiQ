@@ -58,6 +58,7 @@ fun FlowCanvas(
 	layoutConfig: FlowCanvasLayoutConfig = FlowCanvasLayoutConfig(),
 	onSelectNode: (String) -> Unit = {},
 	onInsert: (String?, FlowInsertKind) -> Unit = { _, _ -> },
+	onMove: (String, FlowDropTarget) -> Unit = { _, _ -> },
 ) {
 	val layout = remember(graph, layoutConfig) { layoutFlowCanvas(graph, layoutConfig) }
 	val density = LocalDensity.current
@@ -118,6 +119,7 @@ fun FlowCanvas(
 			TerminalPill(layout.end, palette)
 			layout.nodes.forEach { nodeLayout ->
 				val node = graph.nodeMap[nodeLayout.nodeId] ?: return@forEach
+				var dragOffset by remember(node.id, layout) { mutableStateOf(Offset.Zero) }
 				FlowNodeCard(
 					node = node,
 					selected = graph.selectedNodeId == node.id,
@@ -133,7 +135,28 @@ fun FlowCanvas(
 						.size(
 							width = nodeLayout.rect.width.dp,
 							height = nodeLayout.rect.height.dp,
-						),
+						)
+						.graphicsLayer {
+							translationX = dragOffset.x
+							translationY = dragOffset.y
+						}
+						.pointerInput(node.id, layout) {
+							detectDragGestures(
+								onDragEnd = {
+									nearestDropTarget(
+										nodeId = node.id,
+										center = nodeLayout.rect.center.toOffset(density.density) + dragOffset,
+										layout = layout,
+										scale = density.density,
+									)?.let { target -> onMove(node.id, target) }
+									dragOffset = Offset.Zero
+								},
+								onDragCancel = { dragOffset = Offset.Zero },
+							) { change, dragAmount ->
+								dragOffset += dragAmount
+								change.consume()
+							}
+						},
 				)
 			}
 			if (mode == FlowCanvasMode.Edit) {
@@ -273,3 +296,19 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawArrowHead(
 }
 
 private fun FlowPoint.toOffset(scale: Float): Offset = Offset(x * scale, y * scale)
+
+private fun nearestDropTarget(
+	nodeId: String,
+	center: Offset,
+	layout: FlowCanvasLayoutResult,
+	scale: Float,
+): FlowDropTarget? =
+	layout.nodes
+		.filterNot { it.nodeId == nodeId }
+		.minByOrNull { candidate ->
+			val candidateCenter = candidate.rect.center.toOffset(scale)
+			val dx = center.x - candidateCenter.x
+			val dy = center.y - candidateCenter.y
+			dx * dx + dy * dy
+		}
+		?.let { FlowDropTarget.AfterNode(it.nodeId) }

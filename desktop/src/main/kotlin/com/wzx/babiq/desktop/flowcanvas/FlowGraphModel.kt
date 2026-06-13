@@ -50,6 +50,16 @@ data class FlowNode(
 	val removable: Boolean = true,
 )
 
+/**
+ * FlowDropTarget 描述一次拖拽释放后的结构目标。
+ *
+ * 当前画布仍是受限树，不保存自由坐标；拖拽只表达“放到某节点之后”或“放进某个组”。
+ */
+sealed interface FlowDropTarget {
+	data class AfterNode(val nodeId: String) : FlowDropTarget
+	data class IntoGroup(val groupId: String) : FlowDropTarget
+}
+
 sealed interface FlowEntry {
 	data class NodeRef(val nodeId: String) : FlowEntry
 
@@ -89,6 +99,33 @@ data class FlowGraph(
 
 	fun insertParallel(anchorNodeId: String?, node: FlowNode): FlowGraph =
 		insertNode(anchorNodeId, node, InsertMode.Parallel)
+
+	/**
+	 * 移动一个已有节点引用，不改变节点自身配置。
+	 *
+	 * 该方法先从结构树移除引用，再按目标位置重新插入；构造完成后仍会走 init 校验，
+	 * 因而深度和唯一引用约束会继续被测试锁住。
+	 */
+	fun moveEntry(nodeId: String, target: FlowDropTarget): FlowGraph {
+		if (nodeId !in nodeMap || nodeMap[nodeId]?.removable == false) {
+			return this
+		}
+		if (target is FlowDropTarget.AfterNode && target.nodeId == nodeId) {
+			return this
+		}
+		if (target is FlowDropTarget.AfterNode && !root.containsNode(target.nodeId)) {
+			return this
+		}
+		if (target is FlowDropTarget.IntoGroup && !root.containsGroup(target.groupId)) {
+			return this
+		}
+		val withoutNode = root.removeNode(nodeId)
+		val nextRoot = when (target) {
+			is FlowDropTarget.AfterNode -> withoutNode.insertSerial(target.nodeId, nodeId)
+			is FlowDropTarget.IntoGroup -> withoutNode.insertIntoGroup(target.groupId, nodeId) ?: return this
+		}
+		return copy(root = nextRoot, selectedNodeId = nodeId)
+	}
 
 	fun removeNode(nodeId: String): FlowGraph {
 		if (nodeId !in nodeMap || nodeMap[nodeId]?.removable == false) {
@@ -218,6 +255,27 @@ private fun FlowEntry.Group.removeNode(nodeId: String): FlowEntry.Group =
 		},
 	)
 
+private fun FlowEntry.Group.insertIntoGroup(groupId: String, nodeId: String): FlowEntry.Group? {
+	if (this.groupId == groupId) {
+		return copy(children = children + FlowEntry.NodeRef(nodeId))
+	}
+	var inserted = false
+	val nextChildren = children.map { child ->
+		if (child is FlowEntry.Group) {
+			val next = child.insertIntoGroup(groupId, nodeId)
+			if (next != null) {
+				inserted = true
+				next
+			} else {
+				child
+			}
+		} else {
+			child
+		}
+	}
+	return if (inserted) copy(children = nextChildren) else null
+}
+
 private fun FlowEntry.Group.collapseIfSingle(): FlowEntry =
 	if (topology != FlowTopology.Sequential && children.size == 1) {
 		children.single()
@@ -244,6 +302,12 @@ private fun FlowEntry.containsNode(nodeId: String): Boolean =
 	when (this) {
 		is FlowEntry.NodeRef -> this.nodeId == nodeId
 		is FlowEntry.Group -> children.any { it.containsNode(nodeId) }
+	}
+
+private fun FlowEntry.containsGroup(groupId: String): Boolean =
+	when (this) {
+		is FlowEntry.NodeRef -> false
+		is FlowEntry.Group -> this.groupId == groupId || children.any { it.containsGroup(groupId) }
 	}
 
 private fun <T> List<T>.updateAt(index: Int, value: T): List<T> =

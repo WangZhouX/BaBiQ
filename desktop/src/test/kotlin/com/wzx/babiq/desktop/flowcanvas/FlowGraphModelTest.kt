@@ -64,4 +64,47 @@ class FlowGraphModelTest {
 		assertEquals(emptyList(), history.undo().current.flattenNodeIds())
 		assertEquals(listOf("node_1"), history.undo().redo().current.flattenNodeIds())
 	}
+
+	@Test
+	fun `moveEntry reorders node in root sequence`() {
+		val graph = FlowGraph()
+			.insertSerial(null, FlowNode("scan", "scan", "read", "scan files"))
+			.insertSerial("scan", FlowNode("write", "write", "write", "update file"))
+			.insertSerial("write", FlowNode("review", "review", "review", "check result"))
+
+		val moved = graph.moveEntry("scan", FlowDropTarget.AfterNode("review"))
+
+		assertEquals(listOf("write", "review", "scan"), moved.flattenNodeIds())
+		assertEquals("scan", moved.selectedNodeId)
+	}
+
+	@Test
+	fun `moveEntry can move root node into existing parallel group`() {
+		val graph = FlowGraph()
+			.insertSerial(null, FlowNode("scan", "scan", "read", "scan files"))
+			.insertSerial("scan", FlowNode("review", "review", "review", "check result"))
+			.insertParallel("scan", FlowNode("write", "write", "write", "update file"))
+
+		val moved = graph.moveEntry("review", FlowDropTarget.IntoGroup("g_scan"))
+		val group = moved.root.children.single() as FlowEntry.Group
+
+		assertEquals(FlowTopology.Parallel, group.topology)
+		assertEquals(listOf("scan", "write", "review"), group.children.map { (it as FlowEntry.NodeRef).nodeId })
+	}
+
+	@Test
+	fun `moveEntry can move grouped node back to parent sequence`() {
+		val graph = FlowGraph()
+			.insertSerial(null, FlowNode("scan", "scan", "read", "scan files"))
+			.insertSerial("scan", FlowNode("review", "review", "review", "check result"))
+			.insertParallel("scan", FlowNode("write", "write", "write", "update file"))
+
+		val moved = graph.moveEntry("write", FlowDropTarget.AfterNode("review"))
+
+		assertEquals(listOf("scan", "review", "write"), moved.flattenNodeIds())
+		assertEquals(
+			listOf(FlowEntry.NodeRef("scan"), FlowEntry.NodeRef("review"), FlowEntry.NodeRef("write")),
+			moved.root.children,
+		)
+	}
 }
