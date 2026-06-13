@@ -15,6 +15,8 @@
 - 做功能或修 bug 前，使用 `superpowers:test-driven-development`。
 - 声称完成、通过、可进入下一阶段前，使用 `superpowers:verification-before-completion`。
 
+学习/教学类请求（用户想系统学习某个主题、概念或技能本身，而不是开发 BaBiQ）时，使用 `teach` 技能（`/teach <主题>`）：它把当前目录当作有状态的学习工作区，产出 `MISSION.md`、分级 `lessons/`、`learning-records/` 等。注意 teach 会在当前工作目录写入这些文件，应在专门的学习目录运行，不要在 BaBiQ 仓库根目录使用，以免污染仓库。
+
 ---
 
 ## 1. 项目定位
