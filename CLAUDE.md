@@ -279,15 +279,15 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
   - 后端新增 Anthropic 官方 Provider，支持 `api_key` 与官方 `ant` CLI `oauth_cli` 双模式；桌面端设置页已支持 Claude 双模式、OAuth 状态/登录按钮、五类 Provider 预设和复制 Provider。
   - 2026-06-12 已修复 OAuth Bearer token 被 ChatClient 缓存冻结的问题：`AnthropicProviderFactory` 不再在 build 阶段读取 token，而是在 RestClient/WebClient 每次真实请求前动态注入 Bearer；自动化已覆盖无 `x-api-key`、动态 Bearer、`anthropic-beta: oauth-2025-04-20`、API Key fail-fast、TTL 过期重取和 Apache Ant 误判。
   - 真实 Anthropic API Key / `ant auth login` 人工烟测尚未执行，需要具备账号、官方 CLI 和本机登录环境后复验。
-- P8 画布编排编辑器已完成代码实现与自动化验收：
+- P8 画布编排编辑器已完成补做后的代码实现与自动化验证（2026-06-13）：
   - `docs/superpowers/plans/p8-flow-canvas-editor/plan.md`
   - `docs/superpowers/plans/p8-flow-canvas-editor/prototype-review.md`
   - `docs/superpowers/plans/p8-flow-canvas-editor/codex-handoff.md`
-  - 已按 Context7 核对 Spring AI Alibaba / Spring AI / Compose Multiplatform 相关边界；实现继续薄封装官方 `SequentialAgent` / `ParallelAgent` / `LlmRoutingAgent`，不自研图执行器，不引入第三方图形库。
-  - 后端新增受限结构树 `BabiqFlowStructure`、V20 `structure_json` 持久化，并让 `FlowOrchestrationService` 递归编译官方 FlowAgent；WorkUnit 配置和运行 `orchestration` item 均可携带结构快照。
-  - 桌面端新增可移植 `desktop.flowcanvas` 组件包、结构适配层和画布式编排详情；START/END 仅作为端点渲染，新增节点默认从空图开始，串行边带箭头、并行边不带箭头，编辑/回放复用同一布局。
-  - 已验证：`cd backend; .\mvnw.cmd clean verify` 通过；`cd desktop; .\gradlew.bat test --rerun-tasks` 通过。
-  - 真实模型嵌套运行、人工 UI 烟测和窄分屏视觉复核尚未执行，需要在可操作桌面和真实 Provider 环境下复验。
+  - 已按 Context7 核对 Spring AI Alibaba / Spring AI / Compose Multiplatform 相关边界；继续薄封装官方 `SequentialAgent` / `ParallelAgent` / `LlmRoutingAgent`，不自研图执行器，不引入第三方图形库。
+  - 已补齐 R1-R8：画布缩放/平移相机、节点拖拽改结构 `moveEntry`、undo/redo、Routing 组插入、节点名称/任务/模型/工具模式编辑、失败红框/错误摘要/下游中止灰态、`work_unit_manage read_config/update_config` 对话式配置编辑、本地草稿冲突提示和 `FlowCanvasTest` 状态映射覆盖。
+  - 后端仍保持受限结构树 `BabiqFlowStructure`、V20 `structure_json` 持久化和递归官方 FlowAgent 编译；WorkUnit 配置和运行 `orchestration` item 均可携带结构快照。
+  - 已验证：后端 P8 定向套件 64 tests / 0 failures；`cd backend; .\mvnw.cmd clean verify` 通过；桌面 P8 定向套件通过；`cd desktop; .\gradlew.bat test --rerun-tasks` 通过且 13 个任务真执行。
+  - `plan.md` §5 的真实模型嵌套运行、人工 UI 操作、旧数据桌面回归、窄分屏视觉复核和对话式真实模型链路尚未执行；不得声明 P8 全量验收通过。
 - **下一步**：优先做 **P8 真实模型 + UI 人工烟测**（结构编辑、审批弹窗、运行回放、失败态、窄分屏降级、对话式配置编辑），并补做 **P7 真实 Anthropic 人工烟测**；通过后再进入 P6-2b 运行中审批/中断恢复或 P8 后续增强。
 
 如果仓库状态已发生变化，不要盲信本检查点；必须重新核对代码、文档、测试和 `git status`。
@@ -327,12 +327,12 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
 
 **下一阶段边界：**
 
-- P2-1、P2-2、P2-3、P2-4、P2-5、P2-6 已完成；用户已暂时验收 P2，P3-1 最小上下文底座、P3-2 当前窗口管理运行时、P3-3 短期记忆/上下文压缩、P3-3a 鲁棒性补强、P3-4 长期记忆异步流水线、P3-5 按需能力装配、P3-5a Lucene 能力搜索替换、P3-6 官方 SkillRegistry 薄封装、P4 Plan/Todo 可视化、P5 ReasoningItem 接通、P6-1 只读子 Agent 委派已全量闭环（代码 + 自动化 + 真实烟测），P6-2 flow 编排、P6-3 团队协作、P6-4 slash 命名工作容器已完成自动化验收，P7 Claude 官方 Provider 双认证已完成自动化验收，P8 画布编排编辑器已完成实现和自动化验收；P6-0 spike 完成。
+- P2-1、P2-2、P2-3、P2-4、P2-5、P2-6 已完成；用户已暂时验收 P2，P3-1 最小上下文底座、P3-2 当前窗口管理运行时、P3-3 短期记忆/上下文压缩、P3-3a 鲁棒性补强、P3-4 长期记忆异步流水线、P3-5 按需能力装配、P3-5a Lucene 能力搜索替换、P3-6 官方 SkillRegistry 薄封装、P4 Plan/Todo 可视化、P5 ReasoningItem 接通、P6-1 只读子 Agent 委派已全量闭环（代码 + 自动化 + 真实烟测），P6-2 flow 编排、P6-3 团队协作、P6-4 slash 命名工作容器已完成自动化验收，P7 Claude 官方 Provider 双认证已完成自动化验收，P8 画布编排编辑器补做后已完成代码实现和自动化验证，人工烟测未执行；P6-0 spike 完成。
 - P2-6 已完成 MCP Client 最小接入；后续如要扩展远程 MCP、OAuth、插件市场、MCP server 开发或复杂沙箱编排，必须进入新阶段计划，不得混入 P2 收口。
 - P7 范围限定为 Anthropic Claude 官方 API Key / 官方 `ant` CLI OAuth 双模式接入；GPT/OpenAI OAuth、订阅额度复用或自实现 Anthropic OAuth client 明确不做，后续若要扩展必须新建阶段 plan。
 - P8 范围限定为受限结构树画布编辑、递归官方 FlowAgent 编译、WorkUnit 配置结构持久化和桌面右侧详情画布；自由 DAG、LoopAgent、运行中编辑、逐节点审批、节点坐标持久化、minimap、团队画布化和 capability 节点搜索均不在本阶段。
 - P3 当前限定为 Codex 级当前窗口管理、短期记忆/上下文压缩、长期记忆平台；Multi-Agent、真 OS 沙箱、A2A、多模态仍属于后续阶段，不能混入 P3。
-- P3-1 已完成最小底座；P3-2 已完成真实 Agent 前置接入、快照持久化和 UI 指示；P3-3 已完成短期压缩、summary 替换 active window 和 `ContextCompactionItem` 事件；P3-3a 已补齐压缩审计、事务安装、乐观锁和恢复服务；P3-4 已完成长期记忆异步提取、secret redaction、Phase 2 归并和 summary read path 注入；P3-5 已完成按需工具/Skill/MCP 能力装配、`tool_search`、长期记忆检索增强和桌面控制；P3-5a 已把能力搜索底层替换为 Spring AI Community Lucene/BM25 并移除自实现 fallback；P3-6 已把本地 Skill 层改为薄封装官方 `FileSystemSkillRegistry`，并迁移到 `.agents/skills` 用户/项目目录；P4 已完成计划/Todo 可视化的协议、工具、prompt 和桌面运行面板接入；P5 已接通真实 reasoning_content 到 ReasoningItem 和桌面思考过程折叠块；P6-1 已接通只读 `explorer` 子 Agent 委派、运行记录归属和桌面子 Agent 面板；P6-2 已接通 flow 编排工具、官方 flow agent 薄封装、编排持久化和桌面编排面板；P6-3 已接通团队协作 supervisor；P6-4 已接通 slash 命名 WorkUnit、目标队列、右侧容器列表和显式启动 goalId 归属；P7 已接通 Claude Provider 双认证、OAuth CLI 登录状态协议、桌面预设/复制和动态 Bearer 注入；P8 已接通结构化 flow 画布、结构 JSON 持久化、递归 FlowAgent 编译和桌面运行回放。后续专项增强必须先写详细 plan 并由用户确认。
+- P3-1 已完成最小底座；P3-2 已完成真实 Agent 前置接入、快照持久化和 UI 指示；P3-3 已完成短期压缩、summary 替换 active window 和 `ContextCompactionItem` 事件；P3-3a 已补齐压缩审计、事务安装、乐观锁和恢复服务；P3-4 已完成长期记忆异步提取、secret redaction、Phase 2 归并和 summary read path 注入；P3-5 已完成按需工具/Skill/MCP 能力装配、`tool_search`、长期记忆检索增强和桌面控制；P3-5a 已把能力搜索底层替换为 Spring AI Community Lucene/BM25 并移除自实现 fallback；P3-6 已把本地 Skill 层改为薄封装官方 `FileSystemSkillRegistry`，并迁移到 `.agents/skills` 用户/项目目录；P4 已完成计划/Todo 可视化的协议、工具、prompt 和桌面运行面板接入；P5 已接通真实 reasoning_content 到 ReasoningItem 和桌面思考过程折叠块；P6-1 已接通只读 `explorer` 子 Agent 委派、运行记录归属和桌面子 Agent 面板；P6-2 已接通 flow 编排工具、官方 flow agent 薄封装、编排持久化和桌面编排面板；P6-3 已接通团队协作 supervisor；P6-4 已接通 slash 命名 WorkUnit、目标队列、右侧容器列表和显式启动 goalId 归属；P7 已接通 Claude Provider 双认证、OAuth CLI 登录状态协议、桌面预设/复制和动态 Bearer 注入；P8 补做后已接通结构化 flow 画布、结构 JSON 持久化、递归 FlowAgent 编译、缩放/平移、节点拖拽、undo/redo、Routing 插入、失败态回放和对话式配置编辑；P8 人工烟测仍待执行。后续专项增强必须先写详细 plan 并由用户确认。
 - P2 范围内 SQLite 使用 MyBatis-Plus 和 Java 常见分层，但 Agent 核心不得直接依赖 Mapper；必须通过 repository/adapter 或 application service 隔离。
 - 后续任何新增业务表或业务字段都必须同步 SQL 中文注释、`bq_schema_comments` 元数据和覆盖测试。
 
