@@ -28,6 +28,7 @@ import com.wzx.babiq.desktop.protocol.ProviderTestResult
 import com.wzx.babiq.desktop.protocol.RunRecoveryStatusResult
 import com.wzx.babiq.desktop.protocol.RunTurnDetailResult
 import com.wzx.babiq.desktop.protocol.RunTurnListResult
+import com.wzx.babiq.desktop.protocol.RuntimeItemRemoveResult
 import com.wzx.babiq.desktop.protocol.SandboxPolicyResult
 import com.wzx.babiq.desktop.protocol.ServerEvent
 import com.wzx.babiq.desktop.protocol.SettingsUpdateParams
@@ -484,6 +485,23 @@ class AgentClientTest {
 	}
 
 	@Test
+	fun `runtime item remove hides team audit item through backend`() = runTest {
+		val transport = FakeAgentTransport()
+		val client = AgentClient(transport, backgroundScope)
+		client.connect()
+
+		val removed: RuntimeItemRemoveResult = client.removeRuntimeItem("it_team_1", "team")
+
+		val request = transport.sent.single()
+		assertEquals("runtime/item/remove", request.method)
+		assertEquals("it_team_1", request.paramsText("itemId"))
+		assertEquals("team", request.paramsText("type"))
+		assertEquals("it_team_1", removed.itemId)
+		assertEquals("team", removed.type)
+		assertTrue(removed.removed)
+	}
+
+	@Test
 	fun `work unit goal update sends direct json rpc request`() = runTest {
 		val transport = FakeAgentTransport()
 		val client = AgentClient(transport, backgroundScope)
@@ -926,6 +944,12 @@ class AgentClientTest {
 					put("workUnitId", request.paramsText("workUnitId"))
 					put("kind", "orchestration")
 					put("name", "登录页重构")
+					put("status", "removed")
+					put("removed", true)
+				}
+				"runtime/item/remove" -> buildJsonObject {
+					put("itemId", request.paramsText("itemId"))
+					put("type", request.paramsText("type"))
 					put("status", "removed")
 					put("removed", true)
 				}

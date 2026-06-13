@@ -3,6 +3,7 @@ package com.wzx.babiq.server.conversation;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wzx.babiq.server.api.dto.RuntimeItemRemoveResult;
 import com.wzx.babiq.server.api.dto.ThreadArchiveResult;
 import com.wzx.babiq.server.api.dto.ThreadListResult;
 import com.wzx.babiq.server.api.dto.ThreadLoadResult;
@@ -18,6 +19,8 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 /**
  * 会话历史应用服务。
@@ -30,6 +33,8 @@ public class ConversationApplicationService {
 
     /** 单次加载历史 item 的硬上限，避免 UI 一次性拉取过大的 SQLite payload。 */
     private static final int MAX_LOAD_LIMIT = 500;
+    /** 允许用户在右侧运行详情里持久化隐藏的运行态 item 类型。 */
+    private static final Set<String> REMOVABLE_RUNTIME_ITEM_TYPES = Set.of("team", "orchestration");
 
     /** 对话持久化仓库，是读取历史和归档的唯一入口。 */
     private final ConversationRepository repository;
@@ -128,6 +133,38 @@ public class ConversationApplicationService {
         repository.archiveThread(threadId, java.time.Instant.now());
         conversationService.removeThread(threadId);
         return new ThreadArchiveResult(true, threadId, true);
+    }
+
+    /**
+     * 持久化隐藏右侧运行详情里的运行态 item。
+     *
+     * <p>不删除 payload 和审计表，只把 bq_items.status 标记为 removed。后续 thread/load 会过滤
+     * removed 状态，因此重启或重新打开会话后不会再次显示这张运行卡片。</p>
+     *
+     * @param itemId 协议 item id
+     * @param type 调用方声明的协议类型，用于避免误删普通聊天消息
+     * @return 软移除结果
+     */
+    public RuntimeItemRemoveResult removeRuntimeItem(String itemId, String type) {
+        String normalizedItemId = itemId == null ? "" : itemId.trim();
+        String normalizedType = type == null ? "" : type.trim().toLowerCase(Locale.ROOT);
+        if (normalizedItemId.isEmpty() || normalizedType.isEmpty()) {
+            throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "itemId 和 type 不能为空");
+        }
+        if (!REMOVABLE_RUNTIME_ITEM_TYPES.contains(normalizedType)) {
+            throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "仅支持移除 team 或 orchestration 运行记录");
+        }
+        ItemRecord existing = repository.findItem(normalizedItemId)
+                .orElseThrow(() -> new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS,
+                        "运行记录 item 不存在: " + normalizedItemId));
+        if (!existing.type().equals(normalizedType)) {
+            throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS,
+                    "运行记录类型不匹配: " + existing.type());
+        }
+        ItemRecord removed = repository.markItemRemoved(normalizedItemId, java.time.Instant.now())
+                .orElseThrow(() -> new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS,
+                        "运行记录 item 不存在: " + normalizedItemId));
+        return new RuntimeItemRemoveResult(removed.itemId(), removed.type(), removed.status(), true);
     }
 
     private ThreadSummaryDto toSummary(ThreadEntity entity) {

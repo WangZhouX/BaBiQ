@@ -63,6 +63,23 @@ public interface ConversationRepository {
     void saveItem(ItemRecord record);
 
     /**
+     * 按 itemId 查询单条协议 item。
+     *
+     * @param itemId 协议层 item id
+     * @return 找到时返回 item 记录
+     */
+    Optional<ItemRecord> findItem(String itemId);
+
+    /**
+     * 把运行态 item 标记为 removed，用于右侧运行详情持久化隐藏。
+     *
+     * @param itemId 协议层 item id
+     * @param removedAt 移除时间
+     * @return 更新后的 item 记录
+     */
+    Optional<ItemRecord> markItemRemoved(String itemId, Instant removedAt);
+
+    /**
      * 按会话读取 item。
      *
      * @param threadId 会话标识

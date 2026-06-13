@@ -41,6 +41,8 @@ import com.wzx.babiq.desktop.protocol.ProviderTestResult
 import com.wzx.babiq.desktop.protocol.RunRecoveryStatusResult
 import com.wzx.babiq.desktop.protocol.RunTurnDetailResult
 import com.wzx.babiq.desktop.protocol.RunTurnListResult
+import com.wzx.babiq.desktop.protocol.RuntimeItemRemoveParams
+import com.wzx.babiq.desktop.protocol.RuntimeItemRemoveResult
 import com.wzx.babiq.desktop.protocol.SandboxPolicySetParams
 import com.wzx.babiq.desktop.protocol.SandboxPolicyResult
 import com.wzx.babiq.desktop.protocol.ServerEvent
@@ -235,6 +237,9 @@ interface AgentGateway {
 
 	/** 手动移除一个已完成或空闲的工作容器；运行中的容器由后端拒绝移除。 */
 	suspend fun removeWorkUnit(workUnitId: String): WorkUnitRemoveResult
+
+	/** 持久化隐藏右侧运行详情里的终态运行 item，例如 team 或 orchestration。 */
+	suspend fun removeRuntimeItem(itemId: String, type: String): RuntimeItemRemoveResult
 
 	/** 直接保存工作容器中的待执行目标，供右侧详情面板配置使用。 */
 	suspend fun updateWorkUnitGoal(
@@ -784,6 +789,20 @@ class AgentClient(
 			),
 		)
 		return protocolJson.decodeFromJsonElement(WorkUnitRemoveResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `runtime/item/remove`，让 team/orchestration 运行卡片在历史加载后也保持隐藏。
+	 */
+	override suspend fun removeRuntimeItem(itemId: String, type: String): RuntimeItemRemoveResult {
+		val response = request(
+			method = "runtime/item/remove",
+			params = protocolJson.encodeToJsonElement(
+				RuntimeItemRemoveParams.serializer(),
+				RuntimeItemRemoveParams(itemId, type),
+			),
+		)
+		return protocolJson.decodeFromJsonElement(RuntimeItemRemoveResult.serializer(), response.requireResult())
 	}
 
 	/**

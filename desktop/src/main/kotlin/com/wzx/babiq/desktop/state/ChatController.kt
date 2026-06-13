@@ -990,16 +990,32 @@ class ChatController(
 	 * 这只隐藏当前桌面端详情卡片，不删除聊天历史、WorkUnit 容器或 SQLite 审计记录。
 	 */
 	fun dismissOrchestrationCard() {
-		_state.update { it.copy(orchestrationState = it.orchestrationState.dismissCurrent()) }
+		val current = state.value.orchestrationState.current ?: return
+		scope.launch(start = CoroutineStart.UNDISPATCHED) {
+			try {
+				gateway.removeRuntimeItem(current.id, current.type)
+				_state.update { it.copy(orchestrationState = it.orchestrationState.dismissCurrent(), lastError = null) }
+			} catch (exception: Exception) {
+				_state.update { it.copy(lastError = exception.message ?: "移除编排运行记录失败") }
+			}
+		}
 	}
 
 	/**
 	 * 手动移除右侧团队运行卡片。
 	 *
-	 * 这只隐藏当前桌面端详情卡片，不删除聊天历史、WorkUnit 容器或 SQLite 审计记录。
+	 * 该动作会把对应 team item 标记为 removed；team 审计表和工具记录仍然保留。
 	 */
 	fun dismissTeamCard() {
-		_state.update { it.copy(teamState = it.teamState.dismissCurrent()) }
+		val current = state.value.teamState.current ?: return
+		scope.launch(start = CoroutineStart.UNDISPATCHED) {
+			try {
+				gateway.removeRuntimeItem(current.id, current.type)
+				_state.update { it.copy(teamState = it.teamState.dismissCurrent(), lastError = null) }
+			} catch (exception: Exception) {
+				_state.update { it.copy(lastError = exception.message ?: "移除团队运行记录失败") }
+			}
+		}
 	}
 
 	/**

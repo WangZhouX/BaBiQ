@@ -180,8 +180,40 @@ class LongTermMemoryPipelineTest {
         }
 
         @Override
+        public Optional<ItemRecord> findItem(String itemId) {
+            return items.stream()
+                    .filter(item -> item.itemId().equals(itemId))
+                    .findFirst();
+        }
+
+        @Override
+        public Optional<ItemRecord> markItemRemoved(String itemId, Instant removedAt) {
+            for (int index = 0; index < items.size(); index++) {
+                ItemRecord existing = items.get(index);
+                if (existing.itemId().equals(itemId)) {
+                    ItemRecord removed = new ItemRecord(
+                            existing.itemId(),
+                            existing.threadId(),
+                            existing.turnId(),
+                            existing.type(),
+                            existing.sequenceNo(),
+                            existing.payloadJson(),
+                            "removed",
+                            existing.createdAt(),
+                            removedAt);
+                    items.set(index, removed);
+                    return Optional.of(removed);
+                }
+            }
+            return Optional.empty();
+        }
+
+        @Override
         public List<ItemRecord> listItems(String threadId, int limit) {
-            return items.stream().limit(limit).toList();
+            return items.stream()
+                    .filter(item -> !"removed".equals(item.status()))
+                    .limit(limit)
+                    .toList();
         }
 
         @Override
@@ -191,7 +223,9 @@ class LongTermMemoryPipelineTest {
 
         @Override
         public long countItems(String threadId) {
-            return items.size();
+            return items.stream()
+                    .filter(item -> !"removed".equals(item.status()))
+                    .count();
         }
 
         @Override

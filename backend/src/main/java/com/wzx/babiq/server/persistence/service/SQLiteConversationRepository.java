@@ -128,6 +128,34 @@ public class SQLiteConversationRepository implements ConversationRepository {
     }
 
     @Override
+    public Optional<ItemRecord> findItem(String itemId) {
+        if (itemId == null || itemId.isBlank()) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(itemMapper.selectOne(Wrappers.<ItemEntity>lambdaQuery()
+                        .eq(ItemEntity::getItemId, itemId)))
+                .map(this::toRecord);
+    }
+
+    @Override
+    @Transactional
+    public Optional<ItemRecord> markItemRemoved(String itemId, Instant removedAt) {
+        if (itemId == null || itemId.isBlank()) {
+            return Optional.empty();
+        }
+        ItemEntity existing = itemMapper.selectOne(Wrappers.<ItemEntity>lambdaQuery()
+                .eq(ItemEntity::getItemId, itemId));
+        if (existing == null) {
+            return Optional.empty();
+        }
+        existing.setStatus("removed");
+        existing.setUpdatedAt(PersistenceTime.write(removedAt));
+        itemMapper.updateById(existing);
+        touchThread(existing.getThreadId(), removedAt);
+        return Optional.of(toRecord(existing));
+    }
+
+    @Override
     public List<ItemRecord> listItems(String threadId, int limit) {
         return listItems(threadId, limit, null);
     }
@@ -137,6 +165,7 @@ public class SQLiteConversationRepository implements ConversationRepository {
         int sanitizedLimit = Math.max(1, limit);
         var query = Wrappers.<ItemEntity>lambdaQuery()
                 .eq(ItemEntity::getThreadId, threadId)
+                .ne(ItemEntity::getStatus, "removed")
                 .orderByDesc(ItemEntity::getSequenceNo)
                 .last("LIMIT " + sanitizedLimit);
         if (beforeItemId != null && !beforeItemId.isBlank()) {
@@ -155,7 +184,8 @@ public class SQLiteConversationRepository implements ConversationRepository {
     @Override
     public long countItems(String threadId) {
         Long count = itemMapper.selectCount(Wrappers.<ItemEntity>lambdaQuery()
-                .eq(ItemEntity::getThreadId, threadId));
+                .eq(ItemEntity::getThreadId, threadId)
+                .ne(ItemEntity::getStatus, "removed"));
         return count == null ? 0L : count;
     }
 

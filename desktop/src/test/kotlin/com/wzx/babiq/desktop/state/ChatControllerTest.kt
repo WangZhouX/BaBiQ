@@ -43,6 +43,7 @@ import com.wzx.babiq.desktop.protocol.RunRecoveryStatusResult
 import com.wzx.babiq.desktop.protocol.RunTurnDetailResult
 import com.wzx.babiq.desktop.protocol.RunTurnListResult
 import com.wzx.babiq.desktop.protocol.RunTurnSummaryInfo
+import com.wzx.babiq.desktop.protocol.RuntimeItemRemoveResult
 import com.wzx.babiq.desktop.protocol.SandboxPolicyResult
 import com.wzx.babiq.desktop.protocol.ServerEvent
 import com.wzx.babiq.desktop.protocol.SettingsUpdateParams
@@ -881,6 +882,28 @@ class ChatControllerTest {
 	}
 
 	@Test
+	fun `dismissTeamCard persists removed runtime team item`() = runTest {
+		val gateway = FakeGateway()
+		val controller = ChatController(gateway, backgroundScope)
+		controller.connect()
+		val item = ThreadItem.Team(
+			id = "it_team_1",
+			teamId = "team_1",
+			title = "failed team",
+			status = "failed",
+			members = emptyList(),
+		)
+		gateway.events.emit(ServerEvent.ItemAdded("thread-1", "turn-1", item))
+		advanceUntilIdle()
+
+		controller.dismissTeamCard()
+		advanceUntilIdle()
+
+		assertTrue(gateway.calls.contains("removeRuntimeItem:it_team_1:team"))
+		assertFalse(controller.state.value.teamState.visible)
+	}
+
+	@Test
 	fun `openThread refreshes full work unit details from backend`() = runTest {
 		val workUnit = WorkUnitInfo(
 			workUnitId = "wu_1",
@@ -1570,6 +1593,11 @@ class ChatControllerTest {
 				status = "removed",
 				removed = true,
 			)
+		}
+
+		override suspend fun removeRuntimeItem(itemId: String, type: String): RuntimeItemRemoveResult {
+			calls += "removeRuntimeItem:$itemId:$type"
+			return RuntimeItemRemoveResult(itemId, type, "removed", true)
 		}
 
 		override suspend fun updateWorkUnitGoal(

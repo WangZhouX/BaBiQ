@@ -2,8 +2,10 @@ package com.wzx.babiq.server.conversation;
 
 import com.wzx.babiq.server.api.dto.ThreadLoadResult;
 import com.wzx.babiq.server.api.dto.ThreadListResult;
+import com.wzx.babiq.server.api.dto.RuntimeItemRemoveResult;
 import com.wzx.babiq.server.agent.ReActStrategy;
 import com.wzx.babiq.server.conversation.items.AgentMessageItem;
+import com.wzx.babiq.server.conversation.items.TeamItem;
 import com.wzx.babiq.server.conversation.items.TurnSummaryItem;
 import com.wzx.babiq.server.conversation.items.UserMessageItem;
 import com.wzx.babiq.server.conversation.repository.ConversationRepository;
@@ -17,6 +19,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -82,5 +85,50 @@ class ConversationHistoryIT {
         assertThat(loadResult.items()).hasSize(3);
         assertThat(loadResult.items().get(0).get("type").asText()).isEqualTo("userMessage");
         assertThat(loadResult.latestSummary()).isNotNull();
+    }
+
+    @Test
+    void removed_team_runtime_item_should_not_reload_from_history() {
+        Thread thread = conversationService.createThread("H:\\aaa");
+        Turn turn = conversationService.startTurn(thread.id(), "run team", "deepseek", "deepseek-v4-pro",
+                "H:\\aaa", "DANGER_FULL_ACCESS", "ON_REQUEST");
+        TeamItem team = new TeamItem(
+                "it_team_1",
+                "team",
+                "team_1",
+                "P6-2 Flow Smoke Test",
+                "failed",
+                "Resume request without a valid checkpoint!",
+                true,
+                true,
+                null,
+                1,
+                5,
+                List.of(new TeamItem.MemberStatus(
+                        "member_explorer",
+                        "explorer",
+                        "Explorer",
+                        "failed",
+                        "READ_ONLY_TOOL",
+                        "read index.html",
+                        0,
+                        0,
+                        "checkpoint failed"
+                )));
+        recorder.recordItemAdded(thread.id(), turn.id(), team);
+
+        assertThat(applicationService.loadThread(thread.id(), 200, null).items())
+                .extracting(item -> item.path("type").asText())
+                .contains("team");
+
+        RuntimeItemRemoveResult removed = applicationService.removeRuntimeItem("it_team_1", "team");
+
+        assertThat(removed).isEqualTo(new RuntimeItemRemoveResult("it_team_1", "team", "removed", true));
+        assertThat(repository.findItem("it_team_1")).get()
+                .extracting("status")
+                .isEqualTo("removed");
+        assertThat(applicationService.loadThread(thread.id(), 200, null).items())
+                .extracting(item -> item.path("type").asText())
+                .doesNotContain("team");
     }
 }
