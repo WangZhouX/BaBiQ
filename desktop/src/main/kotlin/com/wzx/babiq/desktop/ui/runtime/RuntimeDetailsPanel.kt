@@ -203,6 +203,9 @@ fun RuntimeDetailsPanel(
 	onRemoveWorkUnit: (String) -> Unit = {},
 	onUpdateWorkUnitGoal: (String, String, String) -> Unit = { _, _, _ -> },
 	onUpdateWorkUnitConfig: (String, String, String?) -> Unit = { _, _, _ -> },
+	onMarkWorkUnitConfigDraftDirty: (String) -> Unit = {},
+	onLoadLatestWorkUnitConfig: (String) -> Unit = {},
+	onKeepWorkUnitConfigDraft: (String) -> Unit = {},
 	onSendTeamMessage: (String, String) -> Unit = { _, _ -> },
 	onSelectRunTurn: (String) -> Unit,
 	onSelectObservabilityRange: (String) -> Unit,
@@ -334,6 +337,9 @@ fun RuntimeDetailsPanel(
 					onDismissOrchestration = requestOrchestrationDismiss,
 					onUpdateWorkUnitGoal = onUpdateWorkUnitGoal,
 					onUpdateWorkUnitConfig = onUpdateWorkUnitConfig,
+					onMarkWorkUnitConfigDraftDirty = onMarkWorkUnitConfigDraftDirty,
+					onLoadLatestWorkUnitConfig = onLoadLatestWorkUnitConfig,
+					onKeepWorkUnitConfigDraft = onKeepWorkUnitConfigDraft,
 				)
 				RuntimePanelTab.Team -> TeamSection(
 					state = state.teamState,

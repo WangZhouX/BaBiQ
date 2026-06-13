@@ -71,4 +71,13 @@ class SystemPromptSecurityRuleTest {
                 .contains("FINISH")
                 .contains("不要用于简单单步任务");
     }
+
+    @Test
+    void prompt_should_require_read_config_before_work_unit_config_update() {
+        assertThat(SystemPromptSecurityRule.PROMPT)
+                .contains("read_config")
+                .contains("update_config")
+                .contains("增删改节点")
+                .contains("整体写回");
+    }
 }

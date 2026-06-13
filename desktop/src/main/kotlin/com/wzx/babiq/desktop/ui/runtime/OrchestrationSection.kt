@@ -56,6 +56,7 @@ import com.wzx.babiq.desktop.protocol.WorkUnitInfo
 import com.wzx.babiq.desktop.protocol.protocolJson
 import com.wzx.babiq.desktop.state.OrchestrationUiState
 import com.wzx.babiq.desktop.state.ProviderState
+import com.wzx.babiq.desktop.state.WorkUnitConfigConflict
 import com.wzx.babiq.desktop.ui.theme.BaBiQColors
 import kotlinx.serialization.encodeToString
 
@@ -75,6 +76,7 @@ data class OrchestrationSectionModel(
 	val addNodeActionLabel: String? = null,
 	val removeActionLabel: String? = null,
 	val editModeTitle: String? = null,
+	val configConflict: WorkUnitConfigConflict? = null,
 )
 
 data class OrchestrationNodeRow(
@@ -195,6 +197,7 @@ fun buildOrchestrationSectionModel(
 		addNodeActionLabel = "add node",
 		removeActionLabel = detail.removeActionLabel,
 		editModeTitle = "Flow canvas",
+		configConflict = state.configConflict?.takeIf { it.workUnitId == config.workUnitId },
 	)
 }
 
@@ -208,6 +211,9 @@ fun OrchestrationSection(
 	onDismissOrchestration: () -> Unit = {},
 	onUpdateWorkUnitGoal: (String, String, String) -> Unit = { _, _, _ -> },
 	onUpdateWorkUnitConfig: (String, String, String?) -> Unit = { _, _, _ -> },
+	onMarkWorkUnitConfigDraftDirty: (String) -> Unit = {},
+	onLoadLatestWorkUnitConfig: (String) -> Unit = {},
+	onKeepWorkUnitConfigDraft: (String) -> Unit = {},
 ) {
 	val model = buildOrchestrationSectionModel(state, modelLabel)
 	if (!model.visible) {
@@ -245,6 +251,10 @@ fun OrchestrationSection(
 					onStart = onStartWorkUnit,
 					onUpdateGoal = onUpdateWorkUnitGoal,
 					onUpdateConfig = onUpdateWorkUnitConfig,
+					configConflict = model.configConflict,
+					onConfigDraftChanged = onMarkWorkUnitConfigDraftDirty,
+					onLoadLatestConfig = onLoadLatestWorkUnitConfig,
+					onKeepLocalDraft = onKeepWorkUnitConfigDraft,
 				)
 			}
 			if (model.config == null && state.current != null) {
@@ -263,6 +273,10 @@ private fun OrchestrationConfigPanel(
 	onStart: (String) -> Unit,
 	onUpdateGoal: (String, String, String) -> Unit,
 	onUpdateConfig: (String, String, String?) -> Unit,
+	configConflict: WorkUnitConfigConflict?,
+	onConfigDraftChanged: (String) -> Unit,
+	onLoadLatestConfig: (String) -> Unit,
+	onKeepLocalDraft: (String) -> Unit,
 ) {
 	var history by remember(detail.workUnitId, detail.configJson, detail.structureJson) {
 		mutableStateOf(FlowGraphHistory(flowGraphFromWorkUnitDetail(detail)))
@@ -324,9 +338,16 @@ private fun OrchestrationConfigPanel(
 					persistGraph(nextHistory.current)
 					true
 				}
-			},
+		},
 		verticalArrangement = Arrangement.spacedBy(10.dp),
 	) {
+		configConflict?.let { conflict ->
+			WorkUnitConfigConflictBanner(
+				conflict = conflict,
+				onLoadLatest = { onLoadLatestConfig(conflict.workUnitId) },
+				onKeepDraft = { onKeepLocalDraft(conflict.workUnitId) },
+			)
+		}
 		detail.editableGoalId?.let { goalId ->
 			OutlinedTextField(
 				value = draftGoal,
@@ -396,14 +417,20 @@ private fun OrchestrationConfigPanel(
 				}
 				OutlinedTextField(
 					value = draftTitle,
-					onValueChange = { draftTitle = it },
+					onValueChange = {
+						draftTitle = it
+						onConfigDraftChanged(detail.workUnitId)
+					},
 					label = { Text("Name") },
 					modifier = Modifier.fillMaxWidth(),
 					singleLine = true,
 				)
 				OutlinedTextField(
 					value = draftTask,
-					onValueChange = { draftTask = it },
+					onValueChange = {
+						draftTask = it
+						onConfigDraftChanged(detail.workUnitId)
+					},
 					label = { Text("Task") },
 					modifier = Modifier.fillMaxWidth(),
 					minLines = 3,
@@ -413,11 +440,17 @@ private fun OrchestrationConfigPanel(
 					selectedLabel = selectedModelLabel,
 					options = modelOptions,
 					enabled = modelOptions.isNotEmpty(),
-					onSelect = { selectedModelValue = it.modelValue },
+					onSelect = {
+						selectedModelValue = it.modelValue
+						onConfigDraftChanged(detail.workUnitId)
+					},
 				)
 				NodeModeSelector(
 					selectedValue = selectedModeValue,
-					onSelect = { selectedModeValue = it },
+					onSelect = {
+						selectedModeValue = it
+						onConfigDraftChanged(detail.workUnitId)
+					},
 				)
 				Button(
 					onClick = {
@@ -443,6 +476,31 @@ private fun OrchestrationConfigPanel(
 			Text("No goals", style = MaterialTheme.typography.bodySmall, color = BaBiQColors.Muted)
 		} else {
 			detail.goals.forEach { goal -> Text(goal.label, style = MaterialTheme.typography.bodySmall) }
+		}
+	}
+}
+
+@Composable
+private fun WorkUnitConfigConflictBanner(
+	conflict: WorkUnitConfigConflict,
+	onLoadLatest: () -> Unit,
+	onKeepDraft: () -> Unit,
+) {
+	Card(
+		shape = RoundedCornerShape(8.dp),
+		colors = CardDefaults.cardColors(containerColor = BaBiQColors.Warning.copy(alpha = 0.12f)),
+		border = BorderStroke(1.dp, BaBiQColors.Warning.copy(alpha = 0.28f)),
+	) {
+		Column(
+			modifier = Modifier.fillMaxWidth().padding(10.dp),
+			verticalArrangement = Arrangement.spacedBy(8.dp),
+		) {
+			Text(conflict.title, style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
+			Text(conflict.message, style = MaterialTheme.typography.bodySmall, color = BaBiQColors.Muted)
+			Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+				Button(onClick = onLoadLatest) { Text(conflict.loadLatestLabel) }
+				TextButton(onClick = onKeepDraft) { Text(conflict.keepDraftLabel) }
+			}
 		}
 	}
 }

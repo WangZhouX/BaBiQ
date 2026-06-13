@@ -48,6 +48,10 @@ public final class SystemPromptSecurityRule {
             调用 coordinate_team 时必须一次性说明团队目标、成员 task、允许工具、只读/工作区工具模式、写入范围和最大调度轮数。
             coordinate_team 会进行运行前整体审批并冻结成员、工具和写入范围;审批后不得在团队运行中偷偷新增成员、提升权限或扩大写入范围。
             supervisor 只能在已审批成员之间路由或 FINISH，成员中间消息只作为团队审计材料，最终用户可见结论仍由主 Agent 汇总。
+            WorkUnit configuration editing rules:
+            对已有编排 WorkUnit 增删改节点、修改节点任务、模型、模式或拓扑时，必须先调用 work_unit_manage read_config 读取当前草稿。
+            修改时必须使用 work_unit_manage update_config 提交完整 configJson，并在有结构树时同时提交完整 structureJson；不要只描述局部差异。
+            update_config 是整体写回，不会启动编排、不会改变 goal 队列，也不会绕过运行中冻结语义。
             """;
 
     private SystemPromptSecurityRule() {

@@ -1094,6 +1094,39 @@ class ChatController(
 		}
 	}
 
+	fun markWorkUnitConfigDraftDirty(workUnitId: String) {
+		if (workUnitId.isBlank()) {
+			return
+		}
+		_state.update {
+			it.copy(orchestrationState = it.orchestrationState.markConfigDraftDirty(workUnitId))
+		}
+	}
+
+	fun loadLatestWorkUnitConfig(workUnitId: String) {
+		if (workUnitId.isBlank()) {
+			return
+		}
+		_state.update {
+			it.copy(orchestrationState = it.orchestrationState.acceptLatestConfig(workUnitId))
+		}
+		val threadId = state.value.currentThreadId
+			?: state.value.workUnitState.details.firstOrNull { it.workUnitId == workUnitId }?.threadId
+			?: return
+		scope.launch(start = CoroutineStart.UNDISPATCHED) {
+			loadWorkUnits(threadId)
+		}
+	}
+
+	fun keepWorkUnitConfigDraft(workUnitId: String) {
+		if (workUnitId.isBlank()) {
+			return
+		}
+		_state.update {
+			it.copy(orchestrationState = it.orchestrationState.keepLocalConfigDraft(workUnitId))
+		}
+	}
+
 	fun updateWorkUnitConfig(workUnitId: String, configJson: String, structureJson: String? = null) {
 		val detail = state.value.workUnitState.details.firstOrNull { it.workUnitId == workUnitId }
 		val threadId = state.value.currentThreadId ?: detail?.threadId ?: return
@@ -1120,7 +1153,10 @@ class ChatController(
 						.copy(loading = false, error = null)
 					it.copy(
 						workUnitState = nextWorkUnitState,
-						orchestrationState = it.orchestrationState.refreshConfiguration(nextWorkUnitState.selectedDetail),
+						orchestrationState = it.orchestrationState
+							.acceptLatestConfig(result.workUnit.workUnitId)
+							.refreshConfiguration(nextWorkUnitState.selectedDetail)
+							.markConfigDraftSaved(result.workUnit.workUnitId),
 						teamState = it.teamState.refreshConfiguration(nextWorkUnitState.selectedDetail),
 						lastError = null,
 					)
@@ -1325,6 +1361,17 @@ class ChatController(
 
 	fun applyEvent(event: AgentEvent) {
 		_state.update { ChatReducer.reduce(it, event) }
+		val workUnitThreadId = when (val server = (event as? AgentEvent.Server)?.event) {
+			is ServerEvent.ItemAdded -> server.threadId.takeIf { server.item is ThreadItem.WorkUnit }
+			is ServerEvent.ItemUpdated -> server.threadId.takeIf { server.item is ThreadItem.WorkUnit }
+			is ServerEvent.ItemCompleted -> server.threadId.takeIf { server.item is ThreadItem.WorkUnit }
+			else -> null
+		}
+		if (workUnitThreadId != null && workUnitThreadId == state.value.currentThreadId) {
+			scope.launch(start = CoroutineStart.UNDISPATCHED) {
+				loadWorkUnits(workUnitThreadId)
+			}
+		}
 	}
 
 	private suspend fun connectOnce() {

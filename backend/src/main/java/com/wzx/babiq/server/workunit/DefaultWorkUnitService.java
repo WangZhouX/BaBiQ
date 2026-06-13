@@ -222,6 +222,9 @@ public class DefaultWorkUnitService implements WorkUnitService {
             throw new IllegalStateException("运行中的工作容器不能修改配置");
         }
         Instant now = Instant.now();
+        if ("orchestration".equals(workUnit.kind())) {
+            WorkUnitFlowConfigValidator.validateOrThrow(configJson, structureJson);
+        }
         WorkUnitConfig existing = repository.findConfig(workUnitId).orElse(null);
         WorkUnitConfig saved = repository.saveConfig(new WorkUnitConfig(
                 workUnitId,

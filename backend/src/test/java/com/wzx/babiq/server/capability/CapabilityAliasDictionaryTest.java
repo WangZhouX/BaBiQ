@@ -80,4 +80,18 @@ class CapabilityAliasDictionaryTest {
 
         assertThat(enriched).contains("团队", "协作", "协调", "调度", "主管", "队友");
     }
+
+    @Test
+    @DisplayName("work_unit_manage should include node editing aliases")
+    void enrich_should_add_aliases_for_work_unit_config_editing() {
+        String enriched = CapabilityAliasDictionary.enrich("work_unit_manage", "Manage WorkUnit containers");
+
+        assertThat(enriched)
+                .contains("WorkUnit")
+                .contains("配置")
+                .contains("节点")
+                .contains("加节点")
+                .contains("改节点")
+                .contains("删节点");
+    }
 }

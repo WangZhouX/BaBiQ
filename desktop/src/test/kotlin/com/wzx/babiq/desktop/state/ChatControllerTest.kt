@@ -1083,6 +1083,92 @@ class ChatControllerTest {
 	}
 
 	@Test
+	fun `agent work unit update prompts latest config conflict when local orchestration draft is dirty`() = runTest {
+		val localDraft = WorkUnitInfo(
+			workUnitId = "wu_1",
+			threadId = "thread-1",
+			kind = "orchestration",
+			name = "html-test",
+			status = "waiting_config",
+			currentGoalId = "goal_1",
+			cwd = "H:\\aaa",
+			sandboxMode = "FULL_ACCESS",
+			goals = listOf(WorkUnitGoalInfo("goal_1", "wu_1", "old goal", "pending")),
+			configJson = """{"nodes":[{"id":"writer","task":"local draft"}]}""",
+		)
+		val latest = localDraft.copy(configJson = """{"nodes":[{"id":"reviewer","task":"agent update"}]}""")
+		val gateway = FakeGateway(workUnits = WorkUnitListResult(listOf(latest)))
+		val controller = ChatController(
+			gateway,
+			backgroundScope,
+			initialState = AppState(
+				connectionState = ConnectionState.Connected,
+				currentThreadId = "thread-1",
+				workUnitState = WorkUnitUiState().replaceAll(listOf(localDraft)).select("wu_1"),
+				orchestrationState = OrchestrationUiState(configuringWorkUnit = localDraft),
+			),
+		)
+
+		controller.markWorkUnitConfigDraftDirty("wu_1")
+		controller.applyEvent(AgentEvent.Server(ServerEvent.ItemUpdated("thread-1", "turn-1", latest.toThreadItem())))
+		advanceUntilIdle()
+
+		assertEquals("wu_1", controller.state.value.orchestrationState.configConflict?.workUnitId)
+		assertEquals("配置已被 Agent 更新", controller.state.value.orchestrationState.configConflict?.title)
+		assertEquals(localDraft.configJson, controller.state.value.orchestrationState.configuringWorkUnit?.configJson)
+
+		controller.loadLatestWorkUnitConfig("wu_1")
+		advanceUntilIdle()
+
+		assertTrue(gateway.calls.contains("listWorkUnits:thread-1"))
+		assertNull(controller.state.value.orchestrationState.configConflict)
+		assertNull(controller.state.value.orchestrationState.configDraftWorkUnitId)
+		assertEquals(latest.configJson, controller.state.value.orchestrationState.configuringWorkUnit?.configJson)
+	}
+
+	@Test
+	fun `keeping local orchestration draft lets next save create fresh config snapshot`() = runTest {
+		val workUnit = WorkUnitInfo(
+			workUnitId = "wu_1",
+			threadId = "thread-1",
+			kind = "orchestration",
+			name = "html-test",
+			status = "waiting_config",
+			currentGoalId = "goal_1",
+			cwd = "H:\\aaa",
+			sandboxMode = "FULL_ACCESS",
+			goals = listOf(WorkUnitGoalInfo("goal_1", "wu_1", "old goal", "pending")),
+			configJson = """{"nodes":[{"id":"writer","task":"local draft"}]}""",
+		)
+		val gateway = FakeGateway(workUnits = WorkUnitListResult(listOf(workUnit)))
+		val controller = ChatController(
+			gateway,
+			backgroundScope,
+			initialState = AppState(
+				connectionState = ConnectionState.Connected,
+				currentThreadId = "thread-1",
+				workUnitState = WorkUnitUiState().replaceAll(listOf(workUnit)).select("wu_1"),
+				orchestrationState = OrchestrationUiState(configuringWorkUnit = workUnit)
+					.markConfigDraftDirty("wu_1")
+					.withAgentConfigUpdate(workUnit.toThreadItem()),
+			),
+		)
+
+		controller.keepWorkUnitConfigDraft("wu_1")
+		assertNull(controller.state.value.orchestrationState.configConflict)
+		assertEquals("wu_1", controller.state.value.orchestrationState.configDraftWorkUnitId)
+
+		val savedConfig = """{"nodes":[{"id":"writer","task":"kept draft"}]}"""
+		controller.updateWorkUnitConfig("wu_1", savedConfig, null)
+		advanceUntilIdle()
+
+		assertTrue(gateway.calls.contains("updateWorkUnitConfig:thread-1:wu_1:$savedConfig:<none>"))
+		assertNull(controller.state.value.orchestrationState.configConflict)
+		assertNull(controller.state.value.orchestrationState.configDraftWorkUnitId)
+		assertEquals(savedConfig, controller.state.value.orchestrationState.configuringWorkUnit?.configJson)
+	}
+
+	@Test
 	fun `运行详情收起后即使存在工作容器也能再次展开`() = runTest {
 		val gateway = FakeGateway()
 		val controller = ChatController(

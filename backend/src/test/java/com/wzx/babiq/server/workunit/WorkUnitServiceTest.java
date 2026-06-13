@@ -228,6 +228,31 @@ class WorkUnitServiceTest {
     }
 
     @Test
+    void work_unit_config_should_reject_invalid_flow_structure_without_persisting() {
+        Thread thread = Thread.newThread("thr_wu_config_invalid", "H:/aaa");
+        WorkUnitItem item = service.createOrAppend(
+                new WorkUnitCreateRequest("orchestration", "invalid-flow", "goal before config", null),
+                thread,
+                new Turn("turn_wu_config_invalid", thread.id()),
+                thread.cwd(),
+                AgentRunPolicy.of(SandboxMode.WORKSPACE_WRITE, ApprovalPolicy.ON_REQUEST));
+        String configJson = """
+                {"nodes":[{"id":"analyzer","task":"analyze"},{"id":"writer","task":"write"}]}
+                """.trim();
+        String invalidStructureJson = """
+                {"root":{"groupId":"g_root","topology":"SEQUENTIAL","children":[{"nodeId":"analyzer"}]}}
+                """.trim();
+
+        assertThatThrownBy(() -> service.updateConfig(item.workUnitId(), configJson, invalidStructureJson))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("structure");
+
+        assertThat(service.findConfig(item.workUnitId())).isEmpty();
+        assertThat(service.listGoals(item.workUnitId())).extracting(WorkUnitGoal::goalText)
+                .containsExactly("goal before config");
+    }
+
+    @Test
     void update_goal_should_reject_running_goal() {
         Thread thread = Thread.newThread("thr_wu_update_running", "H:/aaa");
         WorkUnitItem item = service.createOrAppend(

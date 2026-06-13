@@ -218,6 +218,7 @@ object ChatReducer {
 
 			is ThreadItem.WorkUnit -> copy(
 				workUnitState = workUnitState.withItem(item),
+				orchestrationState = orchestrationState.withAgentConfigUpdate(item),
 				runtimeExpanded = runtimeExpanded || (!item.removed && !item.status.equals("removed", ignoreCase = true)),
 				runtimeEvents = runtimeEvents + RuntimeEvent(
 					id = item.id,

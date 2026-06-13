@@ -96,6 +96,9 @@ public final class CapabilityAliasDictionary {
         map.put("team", List.of("团队", "队友", "多Agent", "协作", "成员"));
         map.put("supervisor", List.of("主管", "调度", "协调", "路由"));
         map.put("member", List.of("成员", "队友", "协作者"));
+        map.put("work", List.of("WorkUnit", "工作容器", "配置", "节点", "加节点", "改节点", "删节点"));
+        map.put("unit", List.of("WorkUnit", "工作容器", "容器"));
+        map.put("manage", List.of("管理", "配置", "节点", "加节点", "改节点", "删节点"));
         return Map.copyOf(map);
     }
 

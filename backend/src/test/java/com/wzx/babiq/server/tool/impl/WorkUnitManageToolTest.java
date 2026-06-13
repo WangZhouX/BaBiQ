@@ -9,6 +9,7 @@ import com.wzx.babiq.server.interceptor.BaBiQSandboxInterceptor;
 import com.wzx.babiq.server.observability.TurnObservationContext;
 import com.wzx.babiq.server.tool.ToolResult;
 import com.wzx.babiq.server.workunit.WorkUnit;
+import com.wzx.babiq.server.workunit.WorkUnitConfig;
 import com.wzx.babiq.server.workunit.WorkUnitContextKeys;
 import com.wzx.babiq.server.workunit.WorkUnitCreateRequest;
 import com.wzx.babiq.server.workunit.WorkUnitGoal;
@@ -137,6 +138,125 @@ class WorkUnitManageToolTest {
         assertThat(result.output()).contains("goal_1", "new configured goal");
         verify(service).updateGoal("goal_1", "new configured goal");
         verify(emitter).emitItemUpdated(refreshedItem);
+    }
+
+    @Test
+    void read_config_should_return_current_orchestration_config_with_validation_summary() {
+        WorkUnitService service = mock(WorkUnitService.class);
+        WorkUnit workUnit = workUnit("wu_1", "orchestration", "html-test", "waiting_config", "goal_1");
+        String configJson = "{\"nodes\":[{\"id\":\"analyzer\",\"task\":\"Analyze page\"}]}";
+        String structureJson = "{\"root\":{\"groupId\":\"g_root\",\"topology\":\"SEQUENTIAL\",\"children\":[{\"nodeId\":\"analyzer\"}]}}";
+        when(service.listVisible("thr_manage")).thenReturn(List.of(workUnit));
+        when(service.findConfig("wu_1")).thenReturn(java.util.Optional.of(
+                new WorkUnitConfig("wu_1", configJson, structureJson, Instant.now(), Instant.now())));
+
+        WorkUnitManageTool tool = new WorkUnitManageTool(service);
+        ToolResult result = tool.manage(
+                "read_config",
+                "orchestration",
+                "html-test",
+                null,
+                null,
+                null,
+                null,
+                null,
+                toolContext(null));
+
+        assertThat(result.ok()).isTrue();
+        assertThat(result.output())
+                .contains("wu_1", "configJson", "structureJson", "analyzer", "validation=ok");
+        verify(service).findConfig("wu_1");
+    }
+
+    @Test
+    void update_config_should_persist_valid_orchestration_config_and_emit_refreshed_item() throws Exception {
+        WorkUnitService service = mock(WorkUnitService.class);
+        ItemEmitter emitter = mock(ItemEmitter.class);
+        WorkUnit workUnit = workUnit("wu_1", "orchestration", "html-test", "waiting_config", "goal_1");
+        WorkUnitItem refreshedItem = new WorkUnitItem(
+                "it_workunit_1",
+                "workUnit",
+                "wu_1",
+                "orchestration",
+                "html-test",
+                "waiting_config",
+                "goal_1",
+                "old goal",
+                1,
+                null);
+        String configJson = "{\"nodes\":[{\"id\":\"analyzer\",\"task\":\"Analyze page\"}]}";
+        String structureJson = "{\"root\":{\"groupId\":\"g_root\",\"topology\":\"SEQUENTIAL\",\"children\":[{\"nodeId\":\"analyzer\"}]}}";
+        when(service.listVisible("thr_manage")).thenReturn(List.of(workUnit));
+        when(service.updateConfig("wu_1", configJson, structureJson)).thenReturn(
+                new WorkUnitConfig("wu_1", configJson, structureJson, Instant.now(), Instant.now()));
+        when(service.itemFor(workUnit)).thenReturn(refreshedItem);
+
+        WorkUnitManageTool tool = new WorkUnitManageTool(service);
+        ToolResult result = tool.manage(
+                "update_config",
+                "orchestration",
+                "html-test",
+                null,
+                null,
+                null,
+                configJson,
+                structureJson,
+                toolContext(emitter));
+
+        assertThat(result.ok()).isTrue();
+        assertThat(result.output()).contains("wu_1", "configuration updated");
+        verify(service).updateConfig("wu_1", configJson, structureJson);
+        verify(emitter).emitItemUpdated(refreshedItem);
+    }
+
+    @Test
+    void update_config_should_return_readable_error_for_wrong_kind_without_persisting() {
+        WorkUnitService service = mock(WorkUnitService.class);
+        WorkUnit workUnit = workUnit("wu_team", "team", "review-team", "waiting_config", "goal_1");
+        when(service.listVisible("thr_manage")).thenReturn(List.of(workUnit));
+
+        WorkUnitManageTool tool = new WorkUnitManageTool(service);
+        ToolResult result = tool.manage(
+                "update_config",
+                "team",
+                "review-team",
+                null,
+                null,
+                null,
+                "{\"nodes\":[]}",
+                null,
+                toolContext(null));
+
+        assertThat(result.ok()).isFalse();
+        assertThat(result.error()).contains("orchestration", "read_config", "update_config");
+        verify(service, never()).updateConfig(anyString(), anyString(), any());
+    }
+
+    @Test
+    void update_config_should_surface_running_container_error_without_emitting_item() throws Exception {
+        WorkUnitService service = mock(WorkUnitService.class);
+        ItemEmitter emitter = mock(ItemEmitter.class);
+        WorkUnit workUnit = workUnit("wu_1", "orchestration", "html-test", "running", "goal_1");
+        String configJson = "{\"nodes\":[{\"id\":\"analyzer\"}]}";
+        when(service.listVisible("thr_manage")).thenReturn(List.of(workUnit));
+        when(service.updateConfig("wu_1", configJson, null))
+                .thenThrow(new IllegalStateException("running WorkUnit cannot update config"));
+
+        WorkUnitManageTool tool = new WorkUnitManageTool(service);
+        ToolResult result = tool.manage(
+                "update_config",
+                null,
+                null,
+                null,
+                "wu_1",
+                null,
+                configJson,
+                null,
+                toolContext(emitter));
+
+        assertThat(result.ok()).isFalse();
+        assertThat(result.error()).contains("running", "config");
+        verify(emitter, never()).emitItemUpdated(any());
     }
 
     @Test

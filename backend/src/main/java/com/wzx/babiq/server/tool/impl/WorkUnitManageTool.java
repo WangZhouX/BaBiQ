@@ -12,8 +12,10 @@ import com.wzx.babiq.server.sandbox.SandboxMode;
 import com.wzx.babiq.server.tool.Tool;
 import com.wzx.babiq.server.tool.ToolResult;
 import com.wzx.babiq.server.workunit.WorkUnit;
+import com.wzx.babiq.server.workunit.WorkUnitConfig;
 import com.wzx.babiq.server.workunit.WorkUnitContextKeys;
 import com.wzx.babiq.server.workunit.WorkUnitCreateRequest;
+import com.wzx.babiq.server.workunit.WorkUnitFlowConfigValidator;
 import com.wzx.babiq.server.workunit.WorkUnitGoal;
 import com.wzx.babiq.server.workunit.WorkUnitService;
 import org.springframework.ai.chat.model.ToolContext;
@@ -43,6 +45,8 @@ public class WorkUnitManageTool implements Tool {
     private static final String ACTION_UPDATE_GOAL = "update_goal";
     private static final String ACTION_START = "start";
     private static final String ACTION_REMOVE = "remove";
+    private static final String ACTION_READ_CONFIG = "read_config";
+    private static final String ACTION_UPDATE_CONFIG = "update_config";
     private static final String STATUS_RUNNING = "running";
     private static final String GOAL_PENDING = "pending";
     private static final String KIND_ORCHESTRATION = "orchestration";
@@ -59,12 +63,26 @@ public class WorkUnitManageTool implements Tool {
         return "work_unit_manage";
     }
 
+    public ToolResult manage(String action,
+                             String kind,
+                             String name,
+                             String goal,
+                             String workUnitId,
+                             Boolean confirmed,
+                             ToolContext toolContext) {
+        return manage(action, kind, name, goal, workUnitId, confirmed, null, null, toolContext);
+    }
+
     @org.springframework.ai.tool.annotation.Tool(
             name = "work_unit_manage",
-            description = "管理 BaBiQ 命名工作容器：创建/复用编排或团队、追加目标、修改待配置目标、关联待启动目标、二次确认后移除已结束容器",
+            description = """
+                    管理 BaBiQ 命名工作容器：创建/复用编排或团队、追加目标、修改待配置目标、关联待启动目标、二次确认后移除已结束容器。
+                    对已有编排 WorkUnit 增删改节点、修改节点任务、模型、模式或拓扑时，必须先 read_config 读取当前草稿，再用 update_config 整体写回完整 configJson/structureJson。
+                    update_config 只修改草稿配置，不会启动编排，也不会改变 goal 队列。
+                    """,
             resultConverter = DefaultToolCallResultConverter.class)
     public ToolResult manage(
-            @ToolParam(description = "动作：append_goal/create/update_goal/start/remove，也可使用中文 创建/追加/修改目标/启动/移除")
+            @ToolParam(description = "动作：append_goal/create/update_goal/start/remove/read_config/update_config。增删改编排节点请先 read_config 再整体 update_config。")
             String action,
             @ToolParam(description = "容器类型：orchestration/flow/编排 或 team/团队", required = false)
             String kind,
@@ -76,6 +94,10 @@ public class WorkUnitManageTool implements Tool {
             String workUnitId,
             @ToolParam(description = "仅 remove 动作使用。必须在用户明确二次确认后传 true；未确认时不要移除容器", required = false)
             Boolean confirmed,
+            @ToolParam(description = "Full config JSON for update_config.", required = false)
+            String configJson,
+            @ToolParam(description = "Optional flow structure JSON for update_config.", required = false)
+            String structureJson,
             ToolContext toolContext) {
         RuntimeContext runtime = runtime(toolContext);
         if (runtime == null) {
@@ -86,6 +108,8 @@ public class WorkUnitManageTool implements Tool {
             case ACTION_UPDATE_GOAL -> updateGoal(kind, name, goal, workUnitId, runtime);
             case ACTION_START -> bindStartGoal(kind, name, workUnitId, runtime);
             case ACTION_REMOVE -> remove(kind, name, workUnitId, Boolean.TRUE.equals(confirmed), runtime);
+            case ACTION_READ_CONFIG -> readConfig(kind, name, workUnitId, runtime);
+            case ACTION_UPDATE_CONFIG -> updateConfig(kind, name, workUnitId, configJson, structureJson, runtime);
             default -> ToolResult.failure("不支持的工作容器动作: " + action);
         };
     }
@@ -148,6 +172,69 @@ public class WorkUnitManageTool implements Tool {
         emitUpdated(runtime.emitter, item);
         return ToolResult.ok("已修改工作容器目标 " + updatedGoal.goalId()
                 + "，新的目标为: " + updatedGoal.goalText());
+    }
+
+    private ToolResult readConfig(String kind, String name, String workUnitId, RuntimeContext runtime) {
+        WorkUnit workUnit = findWorkUnit(kind, name, workUnitId, runtime.observation.threadId())
+                .orElse(null);
+        if (workUnit == null) {
+            return ToolResult.failure("Cannot find WorkUnit for read_config.");
+        }
+        if (!KIND_ORCHESTRATION.equals(workUnit.kind())) {
+            return ToolResult.failure("read_config/update_config currently supports orchestration WorkUnits only: "
+                    + workUnit.kind() + " / " + workUnit.workUnitId());
+        }
+        Optional<WorkUnitConfig> config = service.findConfig(workUnit.workUnitId());
+        String configJson = config.map(WorkUnitConfig::configJson).orElse("{\"nodes\":[]}");
+        String structureJson = config.map(WorkUnitConfig::structureJson).orElse(null);
+        String validation = config
+                .map(value -> WorkUnitFlowConfigValidator.validationSummary(value.configJson(), value.structureJson()))
+                .orElse("validation=empty");
+        List<String> emptyTaskNodes = config
+                .map(value -> WorkUnitFlowConfigValidator.emptyTaskNodeIds(value.configJson()))
+                .orElse(List.of());
+        return ToolResult.ok("""
+                workUnitId=%s
+                kind=%s
+                status=%s
+                configJson=%s
+                structureJson=%s
+                %s
+                emptyTaskNodes=%s
+                """
+                .formatted(workUnit.workUnitId(), workUnit.kind(), workUnit.status(),
+                        configJson, structureJson == null ? "<none>" : structureJson, validation, emptyTaskNodes)
+                .trim());
+    }
+
+    private ToolResult updateConfig(String kind,
+                                    String name,
+                                    String workUnitId,
+                                    String configJson,
+                                    String structureJson,
+                                    RuntimeContext runtime) {
+        WorkUnit workUnit = findWorkUnit(kind, name, workUnitId, runtime.observation.threadId())
+                .orElse(null);
+        if (workUnit == null) {
+            return ToolResult.failure("Cannot find WorkUnit for update_config.");
+        }
+        if (!KIND_ORCHESTRATION.equals(workUnit.kind())) {
+            return ToolResult.failure("read_config/update_config currently supports orchestration WorkUnits only: "
+                    + workUnit.kind() + " / " + workUnit.workUnitId());
+        }
+        if (isBlank(configJson)) {
+            return ToolResult.failure("update_config requires full configJson.");
+        }
+        try {
+            service.updateConfig(workUnit.workUnitId(), configJson.trim(), structureJson == null ? null : structureJson.trim());
+        } catch (IllegalArgumentException | IllegalStateException exception) {
+            String message = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
+            return ToolResult.failure("update_config failed: " + message);
+        }
+        WorkUnitItem item = service.itemFor(workUnit);
+        emitUpdated(runtime.emitter, item);
+        return ToolResult.ok("configuration updated for " + workUnit.workUnitId()
+                + ". Goal queue and start status were not changed.");
     }
 
     private ToolResult remove(String kind, String name, String workUnitId, boolean confirmed, RuntimeContext runtime) {
@@ -245,6 +332,8 @@ public class WorkUnitManageTool implements Tool {
             case "update", "update_goal", "modify", "修改", "更新", "修改目标", "更新目标" -> ACTION_UPDATE_GOAL;
             case "start", "启动", "开始" -> ACTION_START;
             case "remove", "delete", "移除", "删除" -> ACTION_REMOVE;
+            case "read_config", "readconfig", "get_config", "inspect_config" -> ACTION_READ_CONFIG;
+            case "update_config", "updateconfig", "save_config", "replace_config" -> ACTION_UPDATE_CONFIG;
             default -> action.trim().toLowerCase(Locale.ROOT);
         };
     }

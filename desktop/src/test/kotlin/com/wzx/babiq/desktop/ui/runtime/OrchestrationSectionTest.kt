@@ -216,6 +216,33 @@ class OrchestrationSectionTest {
 	}
 
 	@Test
+	fun `orchestration section model exposes agent config update conflict banner`() {
+		val workUnit = WorkUnitInfo(
+			workUnitId = "wu_flow",
+			threadId = "thr_1",
+			kind = "orchestration",
+			name = "agent-updated-flow",
+			status = "waiting_config",
+			currentGoalId = "goal_1",
+			cwd = "H:\\aaa",
+			sandboxMode = "FULL_ACCESS",
+			goals = listOf(WorkUnitGoalInfo("goal_1", "wu_flow", "update the index page", "pending")),
+		)
+
+		val model = buildOrchestrationSectionModel(
+			OrchestrationUiState(configuringWorkUnit = workUnit)
+				.markConfigDraftDirty("wu_flow")
+				.withAgentConfigUpdate(workUnit.toThreadItem()),
+			modelLabel = "deepseek-v4-pro",
+		)
+
+		assertEquals("wu_flow", model.configConflict?.workUnitId)
+		assertEquals("配置已被 Agent 更新", model.configConflict?.title)
+		assertEquals("加载最新", model.configConflict?.loadLatestLabel)
+		assertEquals("保留草稿", model.configConflict?.keepDraftLabel)
+	}
+
+	@Test
 	fun `orchestration work unit derives explicitly requested nodes from goal text`() {
 		val workUnit = WorkUnitInfo(
 			workUnitId = "wu_flow",

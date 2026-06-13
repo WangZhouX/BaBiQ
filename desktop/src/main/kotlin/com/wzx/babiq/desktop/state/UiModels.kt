@@ -257,10 +257,20 @@ data class SubAgentUiState(
  *
  * @property current 当前或最近一次流程编排 item；为空表示本轮没有触发流程编排。
  */
+data class WorkUnitConfigConflict(
+	val workUnitId: String,
+	val title: String = "配置已被 Agent 更新",
+	val message: String = "右侧编排配置已有新的后端版本。可以加载最新配置，或保留当前本地草稿继续保存。",
+	val loadLatestLabel: String = "加载最新",
+	val keepDraftLabel: String = "保留草稿",
+)
+
 data class OrchestrationUiState(
 	val current: ThreadItem.Orchestration? = null,
 	val configuringWorkUnit: WorkUnitInfo? = null,
 	val dismissedOrchestrationId: String? = null,
+	val configDraftWorkUnitId: String? = null,
+	val configConflict: WorkUnitConfigConflict? = null,
 ) {
 	/** 是否有可展示的流程编排轨迹。 */
 	val visible: Boolean
@@ -275,6 +285,8 @@ data class OrchestrationUiState(
 			current = item,
 			configuringWorkUnit = null,
 			dismissedOrchestrationId = dismissedOrchestrationId.takeIf { it == item.orchestrationId },
+			configDraftWorkUnitId = null,
+			configConflict = null,
 		)
 
 	fun withConfiguration(info: WorkUnitInfo): OrchestrationUiState =
@@ -282,7 +294,57 @@ data class OrchestrationUiState(
 
 	fun refreshConfiguration(info: WorkUnitInfo?): OrchestrationUiState =
 		if (configuringWorkUnit != null && info != null && info.kind.equals("orchestration", ignoreCase = true)) {
-			copy(configuringWorkUnit = info)
+			if (configConflict?.workUnitId == info.workUnitId && configDraftWorkUnitId == info.workUnitId) {
+				this
+			} else {
+				copy(configuringWorkUnit = info)
+			}
+		} else {
+			this
+		}
+
+	fun markConfigDraftDirty(workUnitId: String): OrchestrationUiState =
+		if (workUnitId.isBlank() || configuringWorkUnit?.workUnitId != workUnitId) {
+			this
+		} else {
+			copy(configDraftWorkUnitId = workUnitId)
+		}
+
+	fun markConfigDraftSaved(workUnitId: String): OrchestrationUiState =
+		if (configuringWorkUnit?.workUnitId == workUnitId) {
+			copy(
+				configDraftWorkUnitId = configDraftWorkUnitId.takeUnless { it == workUnitId },
+				configConflict = configConflict?.takeUnless { it.workUnitId == workUnitId },
+			)
+		} else {
+			this
+		}
+
+	fun withAgentConfigUpdate(item: ThreadItem.WorkUnit): OrchestrationUiState {
+		if (
+			item.removed ||
+			!item.kind.equals("orchestration", ignoreCase = true) ||
+			configuringWorkUnit?.workUnitId != item.workUnitId ||
+			configDraftWorkUnitId != item.workUnitId
+		) {
+			return this
+		}
+		return copy(configConflict = WorkUnitConfigConflict(item.workUnitId))
+	}
+
+	fun acceptLatestConfig(workUnitId: String): OrchestrationUiState =
+		if (configuringWorkUnit?.workUnitId == workUnitId) {
+			copy(
+				configDraftWorkUnitId = configDraftWorkUnitId.takeUnless { it == workUnitId },
+				configConflict = configConflict?.takeUnless { it.workUnitId == workUnitId },
+			)
+		} else {
+			this
+		}
+
+	fun keepLocalConfigDraft(workUnitId: String): OrchestrationUiState =
+		if (configuringWorkUnit?.workUnitId == workUnitId) {
+			copy(configConflict = configConflict?.takeUnless { it.workUnitId == workUnitId })
 		} else {
 			this
 		}
