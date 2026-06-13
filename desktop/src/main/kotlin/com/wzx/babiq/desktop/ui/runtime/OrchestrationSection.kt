@@ -100,10 +100,13 @@ data class OrchestrationConfigNodeRow(
 
 data class OrchestrationNodeSettingsModel(
 	val nodeId: String,
+	val nodeTitle: String,
 	val title: String,
 	val task: String,
 	val modelLabel: String,
 	val modelValue: String,
+	val modeLabel: String,
+	val modeValue: String,
 	val removable: Boolean,
 )
 
@@ -136,6 +139,27 @@ fun applyOrchestrationGraphEdit(history: FlowGraphHistory, next: FlowGraph): Flo
 fun undoOrchestrationGraphEdit(history: FlowGraphHistory): FlowGraphHistory = history.undo()
 
 fun redoOrchestrationGraphEdit(history: FlowGraphHistory): FlowGraphHistory = history.redo()
+
+fun applyOrchestrationNodeSettings(
+	graph: FlowGraph,
+	nodeId: String,
+	title: String,
+	task: String,
+	modeValue: String,
+	modelValue: String,
+	modelLabel: String,
+): FlowGraph {
+	val node = graph.nodeMap[nodeId] ?: return graph
+	return graph.replaceNode(
+		node.copy(
+			title = title.trim().ifBlank { node.id },
+			task = task.trim(),
+			mode = FlowNodeMode.from(modeValue),
+			modelValue = modelValue,
+			modelLabel = modelLabel,
+		),
+	)
+}
 
 fun buildOrchestrationSectionModel(
 	state: OrchestrationUiState,
@@ -248,8 +272,14 @@ private fun OrchestrationConfigPanel(
 		mutableStateOf(detail.editableGoalText ?: "")
 	}
 	val selectedNode = graph.selectedNode
+	var draftTitle by remember(detail.workUnitId, selectedNode?.id, selectedNode?.title) {
+		mutableStateOf(selectedNode?.title.orEmpty())
+	}
 	var draftTask by remember(detail.workUnitId, selectedNode?.id, selectedNode?.task) {
 		mutableStateOf(selectedNode?.task.orEmpty())
+	}
+	var selectedModeValue by remember(detail.workUnitId, selectedNode?.id, selectedNode?.mode) {
+		mutableStateOf(selectedNode?.mode?.wireValue ?: FlowNodeMode.ReadOnlyTool.wireValue)
 	}
 	var selectedModelValue by remember(detail.workUnitId, selectedNode?.id, selectedNode?.modelValue) {
 		mutableStateOf(selectedNode?.modelValue ?: "inherit")
@@ -259,8 +289,14 @@ private fun OrchestrationConfigPanel(
 		?: selectedNode?.modelLabel
 		?: "inherit"
 	val nodeChanged = selectedNode != null &&
+		draftTitle.trim().isNotBlank() &&
 		draftTask.isNotBlank() &&
-		(draftTask != selectedNode.task || selectedModelValue != selectedNode.modelValue)
+		(
+			draftTitle.trim() != selectedNode.title ||
+				draftTask != selectedNode.task ||
+				selectedModeValue != selectedNode.mode.wireValue ||
+				selectedModelValue != selectedNode.modelValue
+		)
 	val persistGraph: (FlowGraph) -> Unit = { next ->
 		onUpdateConfig(detail.workUnitId, buildFlowConfigJson(detail, next), buildFlowStructureJson(next))
 	}
@@ -359,6 +395,13 @@ private fun OrchestrationConfigPanel(
 					}
 				}
 				OutlinedTextField(
+					value = draftTitle,
+					onValueChange = { draftTitle = it },
+					label = { Text("Name") },
+					modifier = Modifier.fillMaxWidth(),
+					singleLine = true,
+				)
+				OutlinedTextField(
 					value = draftTask,
 					onValueChange = { draftTask = it },
 					label = { Text("Task") },
@@ -372,14 +415,21 @@ private fun OrchestrationConfigPanel(
 					enabled = modelOptions.isNotEmpty(),
 					onSelect = { selectedModelValue = it.modelValue },
 				)
+				NodeModeSelector(
+					selectedValue = selectedModeValue,
+					onSelect = { selectedModeValue = it },
+				)
 				Button(
 					onClick = {
-						val updated = node.copy(
-							task = draftTask.trim(),
+						val next = applyOrchestrationNodeSettings(
+							graph = graph,
+							nodeId = node.id,
+							title = draftTitle,
+							task = draftTask,
+							modeValue = selectedModeValue,
 							modelValue = selectedModelValue,
 							modelLabel = selectedModelLabel,
 						)
-						val next = graph.replaceNode(updated)
 						applyGraphEdit(next)
 					},
 					enabled = nodeChanged,
@@ -462,6 +512,35 @@ fun NodeModelSelector(
 					onClick = {
 						expanded = false
 						onSelect(option)
+					},
+				)
+			}
+		}
+	}
+}
+
+@Composable
+private fun NodeModeSelector(
+	selectedValue: String,
+	onSelect: (String) -> Unit,
+) {
+	var expanded by remember { mutableStateOf(false) }
+	val options = listOf(
+		FlowNodeMode.ReadOnlyTool.wireValue to "Read only tools",
+		FlowNodeMode.WorkspaceTool.wireValue to "Workspace tools",
+	)
+	val selectedLabel = options.firstOrNull { it.first == selectedValue }?.second ?: modeLabel(selectedValue)
+	Column {
+		OutlinedButton(onClick = { expanded = true }) {
+			Text(selectedLabel, maxLines = 1, overflow = TextOverflow.Ellipsis)
+		}
+		DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+			options.forEach { option ->
+				DropdownMenuItem(
+					text = { Text(option.second) },
+					onClick = {
+						expanded = false
+						onSelect(option.first)
 					},
 				)
 			}
@@ -635,10 +714,13 @@ private fun configNode(
 private fun nodeSettingsModel(node: OrchestrationConfigNodeRow): OrchestrationNodeSettingsModel =
 	OrchestrationNodeSettingsModel(
 		nodeId = node.nodeId,
+		nodeTitle = node.title,
 		title = "Node settings - ${node.title}",
 		task = node.task,
 		modelLabel = node.modelLabel,
 		modelValue = node.modelValue,
+		modeLabel = node.modeLabel,
+		modeValue = node.modeValue,
 		removable = node.removable,
 	)
 

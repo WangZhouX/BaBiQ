@@ -125,6 +125,8 @@ class OrchestrationSectionTest {
 		assertEquals("analyzer", settings.nodeId)
 		assertEquals("analyze login page structure", settings.task)
 		assertEquals("provider:qwen:qwen-plus", settings.modelValue)
+		assertEquals("READ_ONLY_TOOL", settings.modeValue)
+		assertEquals("analyzer", settings.nodeTitle)
 		assertEquals("provider:qwen:qwen-plus", model.configNodes.first { it.nodeId == "analyzer" }.modelValue)
 		assertEquals("analyze login page structure", model.configNodes.first { it.nodeId == "analyzer" }.task)
 		assertEquals("end:main-agent-confirmed", model.configNodes.last().modelValue)
@@ -322,6 +324,28 @@ class OrchestrationSectionTest {
 		assertEquals(listOf("node_1"), edited.current.flattenNodeIds())
 		assertEquals(emptyList(), undone.current.flattenNodeIds())
 		assertEquals(listOf("node_1"), redone.current.flattenNodeIds())
+	}
+
+	@Test
+	fun `apply node settings updates title mode task and model`() {
+		val graph = FlowGraph()
+			.insertSerial(null, FlowNode("writer", "writer", "custom", "old task"))
+
+		val updated = applyOrchestrationNodeSettings(
+			graph = graph,
+			nodeId = "writer",
+			title = "Writer node",
+			task = "new task",
+			modeValue = "WORKSPACE_TOOL",
+			modelValue = "provider:qwen:qwen-plus",
+			modelLabel = "Qwen qwen-plus",
+		)
+		val writer = updated.nodeMap.getValue("writer")
+
+		assertEquals("Writer node", writer.title)
+		assertEquals("new task", writer.task)
+		assertEquals("WORKSPACE_TOOL", writer.mode.wireValue)
+		assertEquals("provider:qwen:qwen-plus", writer.modelValue)
 	}
 
 	@Test
