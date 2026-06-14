@@ -121,6 +121,10 @@ public class FlowOrchestrationTool implements Tool {
         if (workUnitGoalId == null) {
             return MISSING_WORK_UNIT_START_CONTEXT.trim();
         }
+        String workUnitKindError = requireWorkUnitKind(workUnitGoalId, TYPE);
+        if (workUnitKindError != null) {
+            return workUnitKindError;
+        }
         TurnObservationContext observation = observation(toolContext);
         ItemEmitter emitter = emitter(toolContext);
         SandboxMode sandboxMode = sandboxMode(toolContext);
@@ -201,10 +205,7 @@ public class FlowOrchestrationTool implements Tool {
 
     private RunnableConfig flowConfig(ToolContext toolContext, BabiqFlowSpec spec, TurnObservationContext observation) {
         Map<String, Object> context = toolContext == null ? Map.of() : toolContext.getContext();
-        Object candidate = context.get(SubAgentRuntimeFactory.AGENT_CONFIG_KEY);
-        RunnableConfig.Builder builder = candidate instanceof RunnableConfig parentConfig
-                ? RunnableConfig.builder(parentConfig)
-                : RunnableConfig.builder().threadId(observation == null ? spec.orchestrationId() : observation.threadId());
+        RunnableConfig.Builder builder = RunnableConfig.builder().threadId(spec.orchestrationId());
         copyContextValueToMetadata(context, builder, TurnObservationContext.METADATA_KEY);
         copyContextValueToMetadata(context, builder, BaBiQSandboxInterceptor.CONTEXT_CWD);
         copyContextValueToMetadata(context, builder, BaBiQSandboxInterceptor.CONTEXT_WRITABLE_ROOTS);
@@ -363,6 +364,18 @@ public class FlowOrchestrationTool implements Tool {
     private void markWorkUnitGoalRunning(String goalId, String orchestrationId) {
         if (workUnitService != null && goalId != null) {
             workUnitService.markGoalRunning(goalId, "orchestration", orchestrationId);
+        }
+    }
+
+    private String requireWorkUnitKind(String goalId, String expectedKind) {
+        if (workUnitService == null || goalId == null) {
+            return null;
+        }
+        try {
+            workUnitService.requireGoalKind(goalId, expectedKind);
+            return null;
+        } catch (IllegalArgumentException | IllegalStateException exception) {
+            return exception.getMessage() == null ? "WorkUnit kind mismatch" : exception.getMessage();
         }
     }
 

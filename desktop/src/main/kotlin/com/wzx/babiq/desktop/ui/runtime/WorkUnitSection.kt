@@ -269,6 +269,7 @@ private fun startActionLabel(info: WorkUnitInfo): String? =
 			info.status.equals("removed", ignoreCase = true) -> null
 		info.goals.any { it.status.equals("pending", ignoreCase = true) } -> "开始执行"
 		info.status.equals("failed", ignoreCase = true) && info.goals.isNotEmpty() -> "重新执行"
+		info.status.equals("completed", ignoreCase = true) && info.goals.isNotEmpty() -> "重新执行"
 		else -> null
 	}
 

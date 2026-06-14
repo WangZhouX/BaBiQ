@@ -109,6 +109,10 @@ public class TeamCoordinationTool implements Tool {
         if (workUnitGoalId == null) {
             return MISSING_WORK_UNIT_START_CONTEXT.trim();
         }
+        String workUnitKindError = requireWorkUnitKind(workUnitGoalId, TYPE);
+        if (workUnitKindError != null) {
+            return workUnitKindError;
+        }
         TurnObservationContext observation = observation(toolContext);
         ItemEmitter emitter = emitter(toolContext);
         SandboxMode sandboxMode = sandboxMode(toolContext);
@@ -284,6 +288,18 @@ public class TeamCoordinationTool implements Tool {
     private void markWorkUnitGoalRunning(String goalId, String teamId) {
         if (workUnitService != null && goalId != null) {
             workUnitService.markGoalRunning(goalId, "team", teamId);
+        }
+    }
+
+    private String requireWorkUnitKind(String goalId, String expectedKind) {
+        if (workUnitService == null || goalId == null) {
+            return null;
+        }
+        try {
+            workUnitService.requireGoalKind(goalId, expectedKind);
+            return null;
+        } catch (IllegalArgumentException | IllegalStateException exception) {
+            return exception.getMessage() == null ? "WorkUnit kind mismatch" : exception.getMessage();
         }
     }
 

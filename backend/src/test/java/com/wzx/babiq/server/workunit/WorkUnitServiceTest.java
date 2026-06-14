@@ -175,6 +175,27 @@ class WorkUnitServiceTest {
     }
 
     @Test
+    void mark_goal_completed_should_clear_stale_error_message() {
+        Thread thread = Thread.newThread("thr_wu_clear_error", "H:/aaa");
+        WorkUnitItem item = service.createOrAppend(
+                new WorkUnitCreateRequest("orchestration", "clear-error", "retry goal", null),
+                thread,
+                new Turn("turn_wu_clear_error", thread.id()),
+                thread.cwd(),
+                AgentRunPolicy.of(SandboxMode.WORKSPACE_WRITE, ApprovalPolicy.ON_REQUEST));
+        service.markGoalRunning(item.activeGoalId(), "orchestration", "orch_clear_error");
+        service.markGoalFailed(item.activeGoalId(), "old error");
+
+        service.markGoalCompleted(item.activeGoalId(), "recovered");
+
+        WorkUnitGoal goal = service.listGoals(item.workUnitId()).getFirst();
+        assertThat(goal.status()).isEqualTo("completed");
+        assertThat(goal.summary()).isEqualTo("recovered");
+        assertThat(goal.errorMessage()).isNull();
+        assertThat(service.listVisible(thread.id()).getFirst().status()).isEqualTo("completed");
+    }
+
+    @Test
     void select_pending_goal_for_turn_should_clone_failed_goal_for_retry() {
         Thread thread = Thread.newThread("thr_wu_retry", "H:/aaa");
         WorkUnitItem item = service.createOrAppend(
@@ -198,6 +219,32 @@ class WorkUnitServiceTest {
         assertThat(workUnit.currentGoalId()).isEqualTo(retry.goalId());
         assertThat(service.selectPendingGoalForTurn(thread.id(), item.workUnitId()).goalId())
                 .isEqualTo(retry.goalId());
+    }
+
+    @Test
+    void select_pending_goal_for_turn_should_clone_completed_goal_for_rerun() {
+        Thread thread = Thread.newThread("thr_wu_rerun", "H:/aaa");
+        WorkUnitItem item = service.createOrAppend(
+                new WorkUnitCreateRequest("orchestration", "rerun flow", "completed goal", null),
+                thread,
+                new Turn("turn_wu_rerun", thread.id()),
+                thread.cwd(),
+                AgentRunPolicy.of(SandboxMode.WORKSPACE_WRITE, ApprovalPolicy.ON_REQUEST));
+        service.markGoalRunning(item.activeGoalId(), "orchestration", "orch_completed_rerun");
+        service.markGoalCompleted(item.activeGoalId(), "flow returned semantic smoke failure");
+
+        WorkUnitGoal rerun = service.selectPendingGoalForTurn(thread.id(), item.workUnitId());
+
+        assertThat(rerun.goalId()).isNotEqualTo(item.activeGoalId());
+        assertThat(rerun.goalText()).isEqualTo("completed goal");
+        assertThat(rerun.status()).isEqualTo("pending");
+        assertThat(service.listGoals(item.workUnitId())).extracting(WorkUnitGoal::status)
+                .containsExactly("completed", "pending");
+        WorkUnit workUnit = service.listVisible(thread.id()).getFirst();
+        assertThat(workUnit.status()).isEqualTo("waiting_config");
+        assertThat(workUnit.currentGoalId()).isEqualTo(rerun.goalId());
+        assertThat(service.selectPendingGoalForTurn(thread.id(), item.workUnitId()).goalId())
+                .isEqualTo(rerun.goalId());
     }
 
     @Test

@@ -164,4 +164,34 @@ class WorkUnitSectionTest {
 		assertEquals(null, detail.editableGoalId)
 		assertEquals(null, detail.editableGoalText)
 	}
+
+	@Test
+	fun `completed work unit detail can be restarted as a fresh run`() {
+		val detail = workUnitDetailModel(
+			WorkUnitInfo(
+				workUnitId = "wu_1",
+				threadId = "thr_1",
+				kind = "orchestration",
+				name = "html-test",
+				status = "completed",
+				currentGoalId = "goal_1",
+				cwd = "H:\\aaa",
+				sandboxMode = "FULL_ACCESS",
+				goals = listOf(
+					WorkUnitGoalInfo(
+						goalId = "goal_1",
+						workUnitId = "wu_1",
+						goalText = "edit html content",
+						status = "completed",
+						summary = "flow returned a semantic smoke failure",
+					),
+				),
+			),
+			modelLabel = "deepseek-v4-pro",
+		)
+
+		assertEquals("重新执行", detail.startActionLabel)
+		assertEquals(null, detail.editableGoalId)
+		assertEquals(null, detail.editableGoalText)
+	}
 }

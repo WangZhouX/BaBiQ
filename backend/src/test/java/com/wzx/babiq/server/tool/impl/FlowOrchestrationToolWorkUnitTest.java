@@ -24,10 +24,12 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.startsWith;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 class FlowOrchestrationToolWorkUnitTest {
@@ -72,6 +74,27 @@ class FlowOrchestrationToolWorkUnitTest {
     }
 
     @Test
+    void orchestrate_flow_should_refuse_team_work_unit_goal() throws Exception {
+        FlowOrchestrationService flowService = mock(FlowOrchestrationService.class);
+        OrchestrationRepository repository = mock(OrchestrationRepository.class);
+        WorkUnitService workUnitService = mock(WorkUnitService.class);
+        doThrow(new IllegalStateException("WorkUnit kind mismatch: expected orchestration but was team"))
+                .when(workUnitService).requireGoalKind("goal_team_1", "orchestration");
+        FlowOrchestrationTool tool = new FlowOrchestrationTool(
+                flowService,
+                repository,
+                new FlowApprovalService(),
+                workUnitService);
+
+        String output = tool.orchestrateFlow("do not run flow for team", "sequential", List.of(), toolContext("goal_team_1"));
+
+        assertThat(output).contains("WorkUnit", "orchestration", "team");
+        verify(workUnitService).requireGoalKind("goal_team_1", "orchestration");
+        verifyNoMoreInteractions(workUnitService);
+        verifyNoInteractions(flowService, repository);
+    }
+
+    @Test
     void orchestrate_flow_should_pass_sandbox_metadata_to_nested_flow_config() throws Exception {
         FlowOrchestrationService flowService = mock(FlowOrchestrationService.class);
         OrchestrationRepository repository = mock(OrchestrationRepository.class);
@@ -101,6 +124,35 @@ class FlowOrchestrationToolWorkUnitTest {
                 .contains(SandboxMode.WORKSPACE_WRITE.name());
         assertThat(configCaptor.getValue().metadata(BaBiQSandboxInterceptor.CONTEXT_WRITABLE_ROOTS))
                 .contains(List.of("H:\\aaa"));
+    }
+
+    @Test
+    void orchestrate_flow_should_not_inherit_parent_checkpoint_resume_config() throws Exception {
+        FlowOrchestrationService flowService = mock(FlowOrchestrationService.class);
+        OrchestrationRepository repository = mock(OrchestrationRepository.class);
+        WorkUnitService workUnitService = mock(WorkUnitService.class);
+        Agent agent = mock(Agent.class);
+        when(flowService.buildOfficialFlowAgent(any(BabiqFlowSpec.class), any(ToolContext.class), isNull()))
+                .thenReturn(agent);
+        when(agent.invoke(anyString(), any(RunnableConfig.class))).thenReturn(Optional.empty());
+        FlowOrchestrationTool tool = new FlowOrchestrationTool(
+                flowService,
+                repository,
+                new FlowApprovalService(),
+                workUnitService);
+
+        tool.orchestrateFlow("整理登录页", "sequential", List.of(),
+                toolContextWithParentResumeConfig("goal_flow_resume"));
+
+        ArgumentCaptor<BabiqFlowSpec> specCaptor = ArgumentCaptor.forClass(BabiqFlowSpec.class);
+        ArgumentCaptor<RunnableConfig> configCaptor = ArgumentCaptor.forClass(RunnableConfig.class);
+        verify(flowService).buildOfficialFlowAgent(specCaptor.capture(), any(ToolContext.class), isNull());
+        verify(agent).invoke(anyString(), configCaptor.capture());
+        RunnableConfig config = configCaptor.getValue();
+        assertThat(config.threadId()).contains(specCaptor.getValue().orchestrationId());
+        assertThat(config.checkPointId()).isEmpty();
+        assertThat(config.nextNode()).isEmpty();
+        assertThat(config.metadata(RunnableConfig.HUMAN_FEEDBACK_METADATA_KEY)).isEmpty();
     }
 
     @Test
@@ -145,6 +197,18 @@ class FlowOrchestrationToolWorkUnitTest {
                 BaBiQSandboxInterceptor.CONTEXT_CWD, "H:\\aaa",
                 BaBiQSandboxInterceptor.CONTEXT_WRITABLE_ROOTS, List.of("H:\\aaa"),
                 BaBiQSandboxInterceptor.CONTEXT_SANDBOX_MODE, SandboxMode.WORKSPACE_WRITE.name()));
+    }
+
+    private ToolContext toolContextWithParentResumeConfig(String goalId) {
+        return new ToolContext(Map.of(
+                WorkUnitContextKeys.GOAL_ID, goalId,
+                SubAgentRuntimeFactory.AGENT_CONFIG_KEY, RunnableConfig.builder()
+                        .threadId("thr_parent")
+                        .checkPointId("cp_parent")
+                        .nextNode("node_parent")
+                        .resume()
+                        .build(),
+                BaBiQSandboxInterceptor.CONTEXT_SANDBOX_MODE, SandboxMode.READ_ONLY.name()));
     }
 
     private ToolContext noWorkUnitContext() {

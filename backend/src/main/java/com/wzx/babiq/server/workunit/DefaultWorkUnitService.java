@@ -101,6 +101,24 @@ public class DefaultWorkUnitService implements WorkUnitService {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public void requireGoalKind(String goalId, String expectedKind) {
+        if (goalId == null || goalId.isBlank()) {
+            throw new IllegalArgumentException("WorkUnit goalId must not be blank");
+        }
+        if (expectedKind == null || expectedKind.isBlank()) {
+            throw new IllegalArgumentException("WorkUnit expected kind must not be blank");
+        }
+        WorkUnitGoal goal = repository.findGoalById(goalId)
+                .orElseThrow(() -> new IllegalArgumentException("WorkUnit goal does not exist: " + goalId));
+        WorkUnit workUnit = repository.findById(goal.workUnitId())
+                .orElseThrow(() -> new IllegalArgumentException("WorkUnit does not exist: " + goal.workUnitId()));
+        if (!expectedKind.equals(workUnit.kind())) {
+            throw new IllegalStateException("WorkUnit kind mismatch: expected " + expectedKind + " but was " + workUnit.kind());
+        }
+    }
+
+    @Override
     public WorkUnitItem itemFor(WorkUnit workUnit) {
         if (workUnit == null) {
             throw new IllegalArgumentException("工作容器不能为空");
@@ -308,7 +326,7 @@ public class DefaultWorkUnitService implements WorkUnitService {
                 goal.runRefType(),
                 goal.runRefId(),
                 summary,
-                goal.errorMessage(),
+                null,
                 goal.createdAt(),
                 goal.startedAt(),
                 now));
@@ -496,17 +514,17 @@ public class DefaultWorkUnitService implements WorkUnitService {
                 return goal;
             }
         }
-        if (STATUS_FAILED.equals(workUnit.status())) {
-            return createRetryGoal(workUnit, goals);
+        if (STATUS_FAILED.equals(workUnit.status()) || STATUS_COMPLETED.equals(workUnit.status())) {
+            return createRerunGoal(workUnit, goals);
         }
         throw new IllegalStateException("工作容器没有可启动的 pending 目标: " + workUnit.workUnitId());
     }
 
-    private WorkUnitGoal createRetryGoal(WorkUnit workUnit, List<WorkUnitGoal> goals) {
+    private WorkUnitGoal createRerunGoal(WorkUnit workUnit, List<WorkUnitGoal> goals) {
         WorkUnitGoal source = retrySourceGoal(workUnit, goals)
-                .orElseThrow(() -> new IllegalStateException("工作容器没有可重试的目标: " + workUnit.workUnitId()));
+                .orElseThrow(() -> new IllegalStateException("工作容器没有可重新执行的目标: " + workUnit.workUnitId()));
         Instant now = Instant.now();
-        WorkUnitGoal retry = repository.saveGoal(new WorkUnitGoal(
+        WorkUnitGoal rerun = repository.saveGoal(new WorkUnitGoal(
                 newGoalId(),
                 workUnit.workUnitId(),
                 workUnit.threadId(),
@@ -519,7 +537,7 @@ public class DefaultWorkUnitService implements WorkUnitService {
                 now,
                 null,
                 null));
-        // 重试必须新建 pending 目标，旧 failed 目标保留为审计事实。
+        // 重新执行必须新建 pending 目标，旧终态目标保留为审计事实。
         repository.save(new WorkUnit(
                 workUnit.workUnitId(),
                 workUnit.threadId(),
@@ -527,14 +545,14 @@ public class DefaultWorkUnitService implements WorkUnitService {
                 workUnit.name(),
                 workUnit.normalizedName(),
                 STATUS_WAITING_CONFIG,
-                retry.goalId(),
+                rerun.goalId(),
                 workUnit.cwd(),
                 workUnit.sandboxMode(),
                 workUnit.removed(),
                 workUnit.removedAt(),
                 workUnit.createdAt(),
                 now));
-        return retry;
+        return rerun;
     }
 
     private Optional<WorkUnitGoal> retrySourceGoal(WorkUnit workUnit, List<WorkUnitGoal> goals) {
@@ -547,7 +565,7 @@ public class DefaultWorkUnitService implements WorkUnitService {
         }
         for (int index = goals.size() - 1; index >= 0; index--) {
             WorkUnitGoal goal = goals.get(index);
-            if (GOAL_FAILED.equals(goal.status())) {
+            if (GOAL_FAILED.equals(goal.status()) || GOAL_COMPLETED.equals(goal.status())) {
                 return Optional.of(goal);
             }
         }

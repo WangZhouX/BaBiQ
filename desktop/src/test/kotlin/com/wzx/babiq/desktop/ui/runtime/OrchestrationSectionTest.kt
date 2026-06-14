@@ -162,6 +162,29 @@ class OrchestrationSectionTest {
 	}
 
 	@Test
+	fun `completed orchestration configuration detail exposes rerun start action`() {
+		val workUnit = WorkUnitInfo(
+			workUnitId = "wu_flow",
+			threadId = "thr_1",
+			kind = "orchestration",
+			name = "html-test",
+			status = "completed",
+			currentGoalId = "goal_1",
+			cwd = "H:\\aaa",
+			sandboxMode = "FULL_ACCESS",
+			goals = listOf(WorkUnitGoalInfo("goal_1", "wu_flow", "edit page", "completed")),
+		)
+
+		val model = buildOrchestrationSectionModel(
+			OrchestrationUiState(configuringWorkUnit = workUnit),
+			modelLabel = "deepseek-v4-pro",
+		)
+
+		assertEquals("重新执行", model.startActionLabel)
+		assertEquals(null, model.config?.editableGoalId)
+	}
+
+	@Test
 	fun `orchestration runtime update keeps configuration detail open without mixing progress rows`() {
 		val workUnit = WorkUnitInfo(
 			workUnitId = "wu_flow",

@@ -1,6 +1,7 @@
 package com.wzx.babiq.server.persistence.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
@@ -57,7 +58,7 @@ public class WorkUnitGoalEntity {
     private String summary;
 
     /** 失败原因。 */
-    @TableField("error_message")
+    @TableField(value = "error_message", updateStrategy = FieldStrategy.ALWAYS)
     private String errorMessage;
 
     /** 创建时间。 */
