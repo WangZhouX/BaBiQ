@@ -1,11 +1,13 @@
 package com.wzx.babiq.server.tool.impl;
 
 import com.alibaba.cloud.ai.graph.OverAllState;
+import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.agent.Agent;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wzx.babiq.server.agent.delegation.BabiqAgentMode;
 import com.wzx.babiq.server.agent.delegation.BabiqAgentSpec;
+import com.wzx.babiq.server.agent.delegation.SubAgentRuntimeFactory;
 import com.wzx.babiq.server.agent.flow.BabiqFlowNode;
 import com.wzx.babiq.server.agent.flow.BabiqFlowSpec;
 import com.wzx.babiq.server.agent.flow.BabiqFlowTopology;
@@ -29,8 +31,10 @@ import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.IntStream;
@@ -129,8 +133,9 @@ public class FlowOrchestrationTool implements Tool {
         markWorkUnitGoalRunning(workUnitGoalId, spec.orchestrationId());
         emit(emitter, item(spec, "running", "流程已审批并开始执行", spec.nodes()));
         try {
-            Agent agent = orchestrationService.buildOfficialFlowAgent(spec, toolContext, null);
-            Optional<OverAllState> state = invoke(agent, task);
+            ToolContext flowToolContext = flowToolContext(toolContext, spec, observation, emitter, sandboxMode, cwd);
+            Agent agent = orchestrationService.buildOfficialFlowAgent(spec, flowToolContext, null);
+            Optional<OverAllState> state = invoke(agent, task, flowConfig(flowToolContext, spec, observation));
             String output = state
                     .map(value -> value.value(spec.mergeOutputKey(), value.toString()))
                     .map(Object::toString)
@@ -165,8 +170,54 @@ public class FlowOrchestrationTool implements Tool {
     ) {
     }
 
-    private Optional<OverAllState> invoke(Agent agent, String task) throws Exception {
-        return agent.invoke(task);
+    private Optional<OverAllState> invoke(Agent agent, String task, RunnableConfig config) throws Exception {
+        return agent.invoke(task, config);
+    }
+
+    private ToolContext flowToolContext(ToolContext toolContext,
+                                        BabiqFlowSpec spec,
+                                        TurnObservationContext observation,
+                                        ItemEmitter emitter,
+                                        SandboxMode sandboxMode,
+                                        String cwd) {
+        Map<String, Object> context = toolContext == null
+                ? new LinkedHashMap<>()
+                : new LinkedHashMap<>(toolContext.getContext());
+        if (observation != null) {
+            context.put(TurnObservationContext.METADATA_KEY, observation);
+        }
+        if (emitter != null) {
+            context.put(BaBiQSandboxInterceptor.CONTEXT_ITEM_EMITTER, emitter);
+        }
+        if (cwd != null) {
+            context.put(BaBiQSandboxInterceptor.CONTEXT_CWD, cwd);
+        }
+        context.put(BaBiQSandboxInterceptor.CONTEXT_SANDBOX_MODE,
+                (sandboxMode == null ? SandboxMode.READ_ONLY : sandboxMode).name());
+        ToolContext enriched = new ToolContext(context);
+        context.put(SubAgentRuntimeFactory.AGENT_CONFIG_KEY, flowConfig(enriched, spec, observation));
+        return new ToolContext(context);
+    }
+
+    private RunnableConfig flowConfig(ToolContext toolContext, BabiqFlowSpec spec, TurnObservationContext observation) {
+        Map<String, Object> context = toolContext == null ? Map.of() : toolContext.getContext();
+        Object candidate = context.get(SubAgentRuntimeFactory.AGENT_CONFIG_KEY);
+        RunnableConfig.Builder builder = candidate instanceof RunnableConfig parentConfig
+                ? RunnableConfig.builder(parentConfig)
+                : RunnableConfig.builder().threadId(observation == null ? spec.orchestrationId() : observation.threadId());
+        copyContextValueToMetadata(context, builder, TurnObservationContext.METADATA_KEY);
+        copyContextValueToMetadata(context, builder, BaBiQSandboxInterceptor.CONTEXT_CWD);
+        copyContextValueToMetadata(context, builder, BaBiQSandboxInterceptor.CONTEXT_WRITABLE_ROOTS);
+        copyContextValueToMetadata(context, builder, BaBiQSandboxInterceptor.CONTEXT_ITEM_EMITTER);
+        copyContextValueToMetadata(context, builder, BaBiQSandboxInterceptor.CONTEXT_SANDBOX_MODE);
+        return builder.build();
+    }
+
+    private void copyContextValueToMetadata(Map<String, Object> context, RunnableConfig.Builder builder, String key) {
+        Object value = context.get(key);
+        if (value != null) {
+            builder.addMetadata(key, value);
+        }
     }
 
     private BabiqFlowSpec toSpec(String task, String topology, List<FlowNodeInput> nodes, SandboxMode sandboxMode) {

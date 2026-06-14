@@ -292,6 +292,11 @@ private fun TeamConfigPanel(
 				}
 			}
 		}
+		if (detail.editableGoalId == null) {
+			detail.startActionLabel?.let { label ->
+				Button(onClick = { onStart(detail.workUnitId) }) { Text(label) }
+			}
+		}
 		Text("成员设置", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
 		members.forEach { member ->
 			TeamConfigMemberRowView(

@@ -13,6 +13,13 @@ import com.wzx.babiq.desktop.protocol.WorkUnitConfigEntry
 import com.wzx.babiq.desktop.protocol.WorkUnitConfiguration
 import com.wzx.babiq.desktop.protocol.protocolJson
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+
+private val flowStructureJson = Json {
+	ignoreUnknownKeys = true
+	encodeDefaults = false
+	explicitNulls = false
+}
 
 fun flowGraphFromWorkUnitDetail(detail: WorkUnitDetailModel): FlowGraph {
 	val savedEntries = detail.configuration?.nodes.orEmpty()
@@ -98,7 +105,7 @@ fun buildFlowConfigJson(detail: WorkUnitDetailModel, graph: FlowGraph): String =
 	)
 
 fun buildFlowStructureJson(graph: FlowGraph): String =
-	protocolJson.encodeToString(FlowStructureDto(graph.root.toDto()))
+	flowStructureJson.encodeToString(FlowStructureDto(graph.root.toDto()))
 
 fun newFlowNodeForGraph(graph: FlowGraph, inheritedModelLabel: String): FlowNode {
 	val id = graph.nextNodeId()

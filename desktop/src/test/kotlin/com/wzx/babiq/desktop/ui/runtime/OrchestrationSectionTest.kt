@@ -135,6 +135,30 @@ class OrchestrationSectionTest {
 		assertEquals("编排详情 · html-test", model.title)
 		assertEquals("返回列表", model.backActionLabel)
 		assertEquals("wu_flow", model.config?.workUnitId)
+		assertNotNull(model.startActionLabel)
+	}
+
+	@Test
+	fun `failed orchestration configuration detail exposes retry start action`() {
+		val workUnit = WorkUnitInfo(
+			workUnitId = "wu_flow",
+			threadId = "thr_1",
+			kind = "orchestration",
+			name = "html-test",
+			status = "failed",
+			currentGoalId = "goal_1",
+			cwd = "H:\\aaa",
+			sandboxMode = "FULL_ACCESS",
+			goals = listOf(WorkUnitGoalInfo("goal_1", "wu_flow", "edit page", "failed")),
+		)
+
+		val model = buildOrchestrationSectionModel(
+			OrchestrationUiState(configuringWorkUnit = workUnit),
+			modelLabel = "deepseek-v4-pro",
+		)
+
+		assertEquals("重新执行", model.startActionLabel)
+		assertEquals(null, model.config?.editableGoalId)
 	}
 
 	@Test

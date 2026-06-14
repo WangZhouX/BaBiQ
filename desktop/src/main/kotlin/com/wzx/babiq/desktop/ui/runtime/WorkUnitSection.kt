@@ -41,6 +41,7 @@ data class WorkUnitRowModel(
 	val workUnitId: String,
 	val kindLabel: String,
 	val name: String,
+	val runtimeStateLabel: String,
 	val statusLabel: String,
 	val activeGoal: String,
 	val goalCountText: String,
@@ -135,7 +136,7 @@ private fun WorkUnitRow(
 			Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
 				Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
 					Text("${row.kindLabel} · ${row.name}", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
-					Text("${row.statusLabel} · ${row.goalCountText}", style = MaterialTheme.typography.labelSmall, color = BaBiQColors.Muted)
+					Text("${row.runtimeStateLabel} · ${row.statusLabel} · ${row.goalCountText}", style = MaterialTheme.typography.labelSmall, color = BaBiQColors.Muted)
 				}
 				Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
 					TextButton(onClick = { onConfigure(row.workUnitId) }) { Text(row.detailActionLabel) }
@@ -196,6 +197,16 @@ fun WorkUnitConfigCard(
 				}
 			}
 		}
+		if (detail.editableGoalId == null && (detail.startActionLabel != null || detail.removeActionLabel != null)) {
+			Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+				detail.startActionLabel?.let { label ->
+					Button(onClick = { onStart(detail.workUnitId) }) { Text(label) }
+				}
+				detail.removeActionLabel?.let { label ->
+					TextButton(onClick = { onRemove(detail.workUnitId) }) { Text(label) }
+				}
+			}
+		}
 		Text("目标队列", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
 		if (detail.goals.isEmpty()) {
 			Text("暂无目标", style = MaterialTheme.typography.bodySmall, color = BaBiQColors.Muted)
@@ -231,6 +242,7 @@ private fun toRowModel(item: ThreadItem.WorkUnit): WorkUnitRowModel =
 		workUnitId = item.workUnitId,
 		kindLabel = kindLabel(item.kind),
 		name = item.name,
+		runtimeStateLabel = runtimeStateLabel(item.status),
 		statusLabel = statusLabel(item.status),
 		activeGoal = item.currentGoal?.takeIf { it.isNotBlank() } ?: "暂无待执行目标",
 		goalCountText = "${item.goalCount} 个目标",
@@ -252,14 +264,12 @@ private fun toGoalRowModel(goal: WorkUnitGoalInfo): WorkUnitGoalRowModel =
 	)
 
 private fun startActionLabel(info: WorkUnitInfo): String? =
-	if (
+	when {
 		info.status.equals("running", ignoreCase = true) ||
-		info.status.equals("removed", ignoreCase = true) ||
-		info.goals.none { it.status.equals("pending", ignoreCase = true) }
-	) {
-		null
-	} else {
-		"开始执行"
+			info.status.equals("removed", ignoreCase = true) -> null
+		info.goals.any { it.status.equals("pending", ignoreCase = true) } -> "开始执行"
+		info.status.equals("failed", ignoreCase = true) && info.goals.isNotEmpty() -> "重新执行"
+		else -> null
 	}
 
 private fun removeActionLabel(status: String, removed: Boolean): String? =
@@ -296,6 +306,13 @@ private fun statusLabel(status: String): String =
 		"failed" -> "失败"
 		"removed" -> "已移除"
 		else -> status
+	}
+
+private fun runtimeStateLabel(status: String): String =
+	if (status.equals("running", ignoreCase = true)) {
+		"运行中"
+	} else {
+		"空闲中"
 	}
 
 private fun goalStatusLabel(status: String): String =

@@ -150,10 +150,12 @@ class FlowStructureAdapterTest {
 		)
 
 		val graph = flowGraphFromWorkUnitDetail(detail)
-		val structure = protocolJson.decodeFromString<FlowStructureDto>(buildFlowStructureJson(graph))
+		val json = buildFlowStructureJson(graph)
+		val structure = protocolJson.decodeFromString<FlowStructureDto>(json)
 
 		assertEquals(listOf("explorer", "writer"), graph.flattenNodeIds())
 		assertNotNull(structure.root.children.first().nodeId)
+		assertFalse(json.contains("\"children\":[]"))
 	}
 
 	@Test

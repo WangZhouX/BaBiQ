@@ -78,11 +78,11 @@ public interface WorkUnitService {
     Optional<WorkUnitConfig> findConfig(String workUnitId);
 
     /**
-     * 为某个对话中的工作容器选择当前可启动的 pending 目标。
+     * 为某个对话中的工作容器选择当前可启动目标。
      *
-     * <p>桌面详情页点击“开始执行”时，turn/start 会先调用该方法确定 goalId，
-     * 再把 goalId 绑定到本轮 AgentLoop 的观测上下文中。这样后续 flow/team 工具调用
-     * 可以确定性回写同一个工作容器，而不是依赖模型自己再猜一次目标。</p>
+     * <p>桌面详情页点击“开始执行/重新执行”时，turn/start 会先调用该方法确定 goalId，
+     * 再把 goalId 绑定到本轮 AgentLoop 的观测上下文中。失败态重试会复制一条新的 pending 目标，
+     * 原 failed 目标保留为审计事实；这样后续 flow/team 工具调用可以确定性回写同一个工作容器。</p>
      */
     WorkUnitGoal selectPendingGoalForTurn(String threadId, String workUnitId);
 

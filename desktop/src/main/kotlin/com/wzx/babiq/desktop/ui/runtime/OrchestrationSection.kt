@@ -78,6 +78,7 @@ data class OrchestrationSectionModel(
 	val addNodeActionLabel: String? = null,
 	val removeActionLabel: String? = null,
 	val backActionLabel: String? = null,
+	val startActionLabel: String? = null,
 	val editModeTitle: String? = null,
 	val configConflict: WorkUnitConfigConflict? = null,
 )
@@ -199,6 +200,7 @@ fun buildOrchestrationSectionModel(
 			addNodeActionLabel = "添加节点",
 			removeActionLabel = detail.removeActionLabel,
 			backActionLabel = "返回列表",
+			startActionLabel = detail.startActionLabel,
 			editModeTitle = "编排画布",
 			configConflict = state.configConflict?.takeIf { it.workUnitId == config.workUnitId },
 		)
@@ -257,6 +259,11 @@ fun OrchestrationSection(
 				model.backActionLabel?.let { label ->
 					TextButton(onClick = onBackToList) { Text(label) }
 				}
+				model.startActionLabel?.let { label ->
+					model.config?.workUnitId?.let { workUnitId ->
+						Button(onClick = { onStartWorkUnit(workUnitId) }) { Text(label) }
+					}
+				}
 				model.removeActionLabel?.let { label ->
 					TextButton(
 						onClick = {
@@ -272,7 +279,6 @@ fun OrchestrationSection(
 				OrchestrationConfigPanel(
 					detail = config,
 					providerState = providerState,
-					onStart = onStartWorkUnit,
 					onUpdateGoal = onUpdateWorkUnitGoal,
 					onUpdateConfig = onUpdateWorkUnitConfig,
 					configConflict = model.configConflict,
@@ -294,7 +300,6 @@ fun OrchestrationSection(
 private fun OrchestrationConfigPanel(
 	detail: WorkUnitDetailModel,
 	providerState: ProviderState,
-	onStart: (String) -> Unit,
 	onUpdateGoal: (String, String, String) -> Unit,
 	onUpdateConfig: (String, String, String?) -> Unit,
 	configConflict: WorkUnitConfigConflict?,
@@ -396,9 +401,6 @@ private fun OrchestrationConfigPanel(
 					},
 				) {
 					Text("+ 串行节点")
-				}
-				detail.startActionLabel?.let { label ->
-					Button(onClick = { onStart(detail.workUnitId) }) { Text(label) }
 				}
 			}
 		}

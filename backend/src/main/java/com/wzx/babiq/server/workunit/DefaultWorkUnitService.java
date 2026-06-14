@@ -269,8 +269,8 @@ public class DefaultWorkUnitService implements WorkUnitService {
     }
 
     @Override
-    @Transactional(readOnly = true)
-    public WorkUnitGoal selectPendingGoalForTurn(String threadId, String workUnitId) {
+    @Transactional
+    public synchronized WorkUnitGoal selectPendingGoalForTurn(String threadId, String workUnitId) {
         if (threadId == null || threadId.isBlank()) {
             throw new IllegalArgumentException("threadId 不能为空");
         }
@@ -496,7 +496,62 @@ public class DefaultWorkUnitService implements WorkUnitService {
                 return goal;
             }
         }
+        if (STATUS_FAILED.equals(workUnit.status())) {
+            return createRetryGoal(workUnit, goals);
+        }
         throw new IllegalStateException("工作容器没有可启动的 pending 目标: " + workUnit.workUnitId());
+    }
+
+    private WorkUnitGoal createRetryGoal(WorkUnit workUnit, List<WorkUnitGoal> goals) {
+        WorkUnitGoal source = retrySourceGoal(workUnit, goals)
+                .orElseThrow(() -> new IllegalStateException("工作容器没有可重试的目标: " + workUnit.workUnitId()));
+        Instant now = Instant.now();
+        WorkUnitGoal retry = repository.saveGoal(new WorkUnitGoal(
+                newGoalId(),
+                workUnit.workUnitId(),
+                workUnit.threadId(),
+                source.goalText(),
+                GOAL_PENDING,
+                null,
+                null,
+                null,
+                null,
+                now,
+                null,
+                null));
+        // 重试必须新建 pending 目标，旧 failed 目标保留为审计事实。
+        repository.save(new WorkUnit(
+                workUnit.workUnitId(),
+                workUnit.threadId(),
+                workUnit.kind(),
+                workUnit.name(),
+                workUnit.normalizedName(),
+                STATUS_WAITING_CONFIG,
+                retry.goalId(),
+                workUnit.cwd(),
+                workUnit.sandboxMode(),
+                workUnit.removed(),
+                workUnit.removedAt(),
+                workUnit.createdAt(),
+                now));
+        return retry;
+    }
+
+    private Optional<WorkUnitGoal> retrySourceGoal(WorkUnit workUnit, List<WorkUnitGoal> goals) {
+        if (workUnit.currentGoalId() != null && !workUnit.currentGoalId().isBlank()) {
+            for (WorkUnitGoal goal : goals) {
+                if (workUnit.currentGoalId().equals(goal.goalId())) {
+                    return Optional.of(goal);
+                }
+            }
+        }
+        for (int index = goals.size() - 1; index >= 0; index--) {
+            WorkUnitGoal goal = goals.get(index);
+            if (GOAL_FAILED.equals(goal.status())) {
+                return Optional.of(goal);
+            }
+        }
+        return goals.isEmpty() ? Optional.empty() : Optional.of(goals.getLast());
     }
 
     private static String newWorkUnitId() {

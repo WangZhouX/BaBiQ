@@ -175,6 +175,32 @@ class WorkUnitServiceTest {
     }
 
     @Test
+    void select_pending_goal_for_turn_should_clone_failed_goal_for_retry() {
+        Thread thread = Thread.newThread("thr_wu_retry", "H:/aaa");
+        WorkUnitItem item = service.createOrAppend(
+                new WorkUnitCreateRequest("orchestration", "retry flow", "failed goal", null),
+                thread,
+                new Turn("turn_wu_retry", thread.id()),
+                thread.cwd(),
+                AgentRunPolicy.of(SandboxMode.WORKSPACE_WRITE, ApprovalPolicy.ON_REQUEST));
+        service.markGoalRunning(item.activeGoalId(), "orchestration", "orch_failed_retry");
+        service.markGoalFailed(item.activeGoalId(), "boom");
+
+        WorkUnitGoal retry = service.selectPendingGoalForTurn(thread.id(), item.workUnitId());
+
+        assertThat(retry.goalId()).isNotEqualTo(item.activeGoalId());
+        assertThat(retry.goalText()).isEqualTo("failed goal");
+        assertThat(retry.status()).isEqualTo("pending");
+        assertThat(service.listGoals(item.workUnitId())).extracting(WorkUnitGoal::status)
+                .containsExactly("failed", "pending");
+        WorkUnit workUnit = service.listVisible(thread.id()).getFirst();
+        assertThat(workUnit.status()).isEqualTo("waiting_config");
+        assertThat(workUnit.currentGoalId()).isEqualTo(retry.goalId());
+        assertThat(service.selectPendingGoalForTurn(thread.id(), item.workUnitId()).goalId())
+                .isEqualTo(retry.goalId());
+    }
+
+    @Test
     void recover_abandoned_running_should_fail_stale_container_and_goal() {
         Thread thread = Thread.newThread("thr_wu_recover", "H:/aaa");
         WorkUnitItem item = service.createOrAppend(

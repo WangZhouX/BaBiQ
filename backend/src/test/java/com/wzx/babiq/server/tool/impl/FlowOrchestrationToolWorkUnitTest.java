@@ -12,6 +12,7 @@ import com.wzx.babiq.server.sandbox.SandboxMode;
 import com.wzx.babiq.server.workunit.WorkUnitContextKeys;
 import com.wzx.babiq.server.workunit.WorkUnitService;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.ai.chat.model.ToolContext;
 
 import java.util.List;
@@ -24,7 +25,6 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.startsWith;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -57,7 +57,7 @@ class FlowOrchestrationToolWorkUnitTest {
         Agent agent = mock(Agent.class);
         when(flowService.buildOfficialFlowAgent(any(BabiqFlowSpec.class), any(ToolContext.class), isNull()))
                 .thenReturn(agent);
-        when(agent.invoke(anyString())).thenReturn(Optional.empty());
+        when(agent.invoke(anyString(), any(RunnableConfig.class))).thenReturn(Optional.empty());
         FlowOrchestrationTool tool = new FlowOrchestrationTool(
                 flowService,
                 repository,
@@ -72,24 +72,35 @@ class FlowOrchestrationToolWorkUnitTest {
     }
 
     @Test
-    void orchestrate_flow_should_not_reuse_parent_runnable_config_for_nested_flow() throws Exception {
+    void orchestrate_flow_should_pass_sandbox_metadata_to_nested_flow_config() throws Exception {
         FlowOrchestrationService flowService = mock(FlowOrchestrationService.class);
         OrchestrationRepository repository = mock(OrchestrationRepository.class);
         WorkUnitService workUnitService = mock(WorkUnitService.class);
         Agent agent = mock(Agent.class);
         when(flowService.buildOfficialFlowAgent(any(BabiqFlowSpec.class), any(ToolContext.class), isNull()))
                 .thenReturn(agent);
-        when(agent.invoke(anyString())).thenReturn(Optional.empty());
+        when(agent.invoke(anyString(), any(RunnableConfig.class))).thenReturn(Optional.empty());
         FlowOrchestrationTool tool = new FlowOrchestrationTool(
                 flowService,
                 repository,
                 new FlowApprovalService(),
                 workUnitService);
 
-        tool.orchestrateFlow("整理登录页", "sequential", List.of(), toolContextWithParentConfig("goal_flow_3"));
+        tool.orchestrateFlow("整理登录页", "sequential", List.of(), writableToolContextWithParentConfig("goal_flow_3"));
 
-        verify(agent).invoke(anyString());
-        verify(agent, never()).invoke(anyString(), any(RunnableConfig.class));
+        ArgumentCaptor<ToolContext> toolContextCaptor = ArgumentCaptor.forClass(ToolContext.class);
+        ArgumentCaptor<RunnableConfig> configCaptor = ArgumentCaptor.forClass(RunnableConfig.class);
+        verify(flowService).buildOfficialFlowAgent(any(BabiqFlowSpec.class), toolContextCaptor.capture(), isNull());
+        verify(agent).invoke(anyString(), configCaptor.capture());
+        assertThat(toolContextCaptor.getValue().getContext())
+                .containsEntry(BaBiQSandboxInterceptor.CONTEXT_CWD, "H:\\aaa")
+                .containsEntry(BaBiQSandboxInterceptor.CONTEXT_SANDBOX_MODE, SandboxMode.WORKSPACE_WRITE.name())
+                .containsKey(SubAgentRuntimeFactory.AGENT_CONFIG_KEY);
+        assertThat(configCaptor.getValue().metadata(BaBiQSandboxInterceptor.CONTEXT_CWD)).contains("H:\\aaa");
+        assertThat(configCaptor.getValue().metadata(BaBiQSandboxInterceptor.CONTEXT_SANDBOX_MODE))
+                .contains(SandboxMode.WORKSPACE_WRITE.name());
+        assertThat(configCaptor.getValue().metadata(BaBiQSandboxInterceptor.CONTEXT_WRITABLE_ROOTS))
+                .contains(List.of("H:\\aaa"));
     }
 
     @Test
@@ -100,7 +111,7 @@ class FlowOrchestrationToolWorkUnitTest {
         Agent agent = mock(Agent.class);
         when(flowService.buildOfficialFlowAgent(any(BabiqFlowSpec.class), any(ToolContext.class), isNull()))
                 .thenReturn(agent);
-        when(agent.invoke(anyString())).thenThrow(new RuntimeException("boom"));
+        when(agent.invoke(anyString(), any(RunnableConfig.class))).thenThrow(new RuntimeException("boom"));
         FlowOrchestrationTool tool = new FlowOrchestrationTool(
                 flowService,
                 repository,
@@ -125,6 +136,15 @@ class FlowOrchestrationToolWorkUnitTest {
                 WorkUnitContextKeys.GOAL_ID, goalId,
                 SubAgentRuntimeFactory.AGENT_CONFIG_KEY, RunnableConfig.builder().threadId("thr_parent").build(),
                 BaBiQSandboxInterceptor.CONTEXT_SANDBOX_MODE, SandboxMode.READ_ONLY.name()));
+    }
+
+    private ToolContext writableToolContextWithParentConfig(String goalId) {
+        return new ToolContext(Map.of(
+                WorkUnitContextKeys.GOAL_ID, goalId,
+                SubAgentRuntimeFactory.AGENT_CONFIG_KEY, RunnableConfig.builder().threadId("thr_parent").build(),
+                BaBiQSandboxInterceptor.CONTEXT_CWD, "H:\\aaa",
+                BaBiQSandboxInterceptor.CONTEXT_WRITABLE_ROOTS, List.of("H:\\aaa"),
+                BaBiQSandboxInterceptor.CONTEXT_SANDBOX_MODE, SandboxMode.WORKSPACE_WRITE.name()));
     }
 
     private ToolContext noWorkUnitContext() {
