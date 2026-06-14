@@ -53,6 +53,7 @@ data class FlowCanvasInsertPoint(
 	val id: String,
 	val anchorNodeId: String?,
 	val center: FlowPoint,
+	val target: FlowInsertTarget = anchorNodeId?.let(FlowInsertTarget::AfterNode) ?: FlowInsertTarget.Append,
 )
 
 data class FlowCanvasLayoutResult(
@@ -96,18 +97,26 @@ fun layoutFlowCanvas(
 		hasArrow = graph.nodes.isNotEmpty(),
 		insertAnchorNodeId = null,
 	)
-	insertPoints += FlowCanvasInsertPoint("insert_start", null, midpoint(startRect.bottomCenter, nodeStart))
+	val startTarget = if (graph.root.children.isEmpty()) FlowInsertTarget.Append else FlowInsertTarget.Prepend
+	insertPoints += FlowCanvasInsertPoint(
+		id = "insert_start",
+		anchorNodeId = null,
+		center = midpoint(startRect.bottomCenter, nodeStart),
+		target = startTarget,
+	)
 	edges += content.edges
 	insertPoints += content.insertPoints
 	val lastPoint = content.lastBottomCenter ?: startRect.bottomCenter
+	val endTarget = graph.root.children.lastOrNull()?.insertAfterTarget() ?: FlowInsertTarget.Append
+	val endAnchor = endTarget.anchorNodeId()
 	edges += FlowCanvasEdgeLayout(
 		id = "edge_end",
 		from = lastPoint,
 		to = endRect.topCenter,
 		hasArrow = graph.nodes.isNotEmpty(),
-		insertAnchorNodeId = graph.flattenNodeIds().lastOrNull(),
+		insertAnchorNodeId = endAnchor,
 	)
-	insertPoints += FlowCanvasInsertPoint("insert_end", graph.flattenNodeIds().lastOrNull(), midpoint(lastPoint, endRect.topCenter))
+	insertPoints += FlowCanvasInsertPoint("insert_end", endAnchor, midpoint(lastPoint, endRect.topCenter), endTarget)
 	return FlowCanvasLayoutResult(
 		size = FlowSize(width, endRect.y + endRect.height + config.padding),
 		start = FlowCanvasTerminalLayout("start", "START", startRect),
@@ -186,6 +195,7 @@ private fun layoutSequentialGroup(
 	var maxWidth = config.nodeWidth
 	var previousBottom: FlowPoint? = null
 	var previousAnchor: String? = null
+	var previousTarget: FlowInsertTarget? = null
 	var firstTop: FlowPoint? = null
 	var lastBottom: FlowPoint? = null
 	group.children.forEachIndexed { index, child ->
@@ -200,6 +210,7 @@ private fun layoutSequentialGroup(
 		val from = previousBottom
 		if (from != null && childTop != null) {
 			val anchor = previousAnchor
+			val target = previousTarget ?: FlowInsertTarget.Append
 			edges += FlowCanvasEdgeLayout(
 				id = "edge_${index}_${anchor ?: "start"}",
 				from = from,
@@ -207,10 +218,11 @@ private fun layoutSequentialGroup(
 				hasArrow = true,
 				insertAnchorNodeId = anchor,
 			)
-			inserts += FlowCanvasInsertPoint("insert_${index}_${anchor ?: "start"}", anchor, midpoint(from, childTop))
+			inserts += FlowCanvasInsertPoint("insert_${index}_${anchor ?: "start"}", anchor, midpoint(from, childTop), target)
 		}
 		previousBottom = childLayout.lastBottomCenter
-		previousAnchor = child.flattenNodeIds().lastOrNull()
+		previousTarget = child.insertAfterTarget()
+		previousAnchor = previousTarget.anchorNodeId() ?: child.flattenNodeIds().lastOrNull()
 		lastBottom = childLayout.lastBottomCenter
 		maxWidth = maxOf(maxWidth, childLayout.size.width)
 		currentY = childLayout.boundsBottom + config.verticalGap
@@ -251,15 +263,17 @@ private fun layoutParallelGroup(
 	children.forEachIndexed { index, layout ->
 		val first = layout.firstTopCenter
 		val last = layout.lastBottomCenter
+		val branchTarget = FlowInsertTarget.IntoGroup(group.groupId, group.topology)
+		val branchAnchor = layout.nodes.lastOrNull()?.nodeId
 		if (first != null) {
 			edges += FlowCanvasEdgeLayout(
 				id = "edge_${group.groupId}_fanout_$index",
 				from = top,
 				to = first,
 				hasArrow = false,
-				insertAnchorNodeId = group.flattenNodeIds().lastOrNull(),
+				insertAnchorNodeId = branchAnchor,
 			)
-			inserts += FlowCanvasInsertPoint("insert_${group.groupId}_fanout_$index", group.flattenNodeIds().lastOrNull(), midpoint(top, first))
+			inserts += FlowCanvasInsertPoint("insert_${group.groupId}_fanout_$index", branchAnchor, midpoint(top, first), branchTarget)
 		}
 		if (last != null) {
 			edges += FlowCanvasEdgeLayout(
@@ -288,6 +302,21 @@ private fun FlowEntry.flattenNodeIds(): List<String> =
 	when (this) {
 		is FlowEntry.NodeRef -> listOf(nodeId)
 		is FlowEntry.Group -> children.flatMap { it.flattenNodeIds() }
+	}
+
+private fun FlowEntry.insertAfterTarget(): FlowInsertTarget =
+	when (this) {
+		is FlowEntry.NodeRef -> FlowInsertTarget.AfterNode(nodeId)
+		is FlowEntry.Group -> FlowInsertTarget.AfterGroup(groupId)
+	}
+
+private fun FlowInsertTarget.anchorNodeId(): String? =
+	when (this) {
+		FlowInsertTarget.Append -> null
+		FlowInsertTarget.Prepend -> null
+		is FlowInsertTarget.AfterNode -> nodeId
+		is FlowInsertTarget.AfterGroup -> null
+		is FlowInsertTarget.IntoGroup -> null
 	}
 
 private fun midpoint(a: FlowPoint, b: FlowPoint): FlowPoint =

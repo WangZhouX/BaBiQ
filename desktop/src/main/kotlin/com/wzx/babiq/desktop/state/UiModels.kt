@@ -283,7 +283,6 @@ data class OrchestrationUiState(
 	fun withCurrent(item: ThreadItem.Orchestration): OrchestrationUiState =
 		copy(
 			current = item,
-			configuringWorkUnit = null,
 			dismissedOrchestrationId = dismissedOrchestrationId.takeIf { it == item.orchestrationId },
 			configDraftWorkUnitId = null,
 			configConflict = null,
@@ -407,7 +406,6 @@ data class TeamUiState(
 			?: item.members.firstOrNull()?.name
 		return copy(
 			current = item,
-			configuringWorkUnit = null,
 			dismissedTeamId = dismissedTeamId.takeIf { it == item.teamId },
 			messages = nextMessages,
 			selectedAgent = nextSelected,

@@ -3,17 +3,15 @@ package com.wzx.babiq.desktop.ui.runtime
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -46,6 +44,7 @@ import com.wzx.babiq.desktop.flowcanvas.FlowDropTarget
 import com.wzx.babiq.desktop.flowcanvas.FlowGraph
 import com.wzx.babiq.desktop.flowcanvas.FlowGraphHistory
 import com.wzx.babiq.desktop.flowcanvas.FlowInsertKind
+import com.wzx.babiq.desktop.flowcanvas.FlowInsertTarget
 import com.wzx.babiq.desktop.flowcanvas.FlowNode
 import com.wzx.babiq.desktop.flowcanvas.FlowNodeMode
 import com.wzx.babiq.desktop.flowcanvas.FlowNodeStatus
@@ -69,7 +68,9 @@ data class OrchestrationSectionModel(
 	val subtitle: String,
 	val nodes: List<OrchestrationNodeRow>,
 	val summaryPreview: String? = null,
+	val runtime: ThreadItem.Orchestration? = null,
 	val config: WorkUnitDetailModel? = null,
+	val showRuntimeCanvas: Boolean = runtime != null && config == null,
 	val configTopology: String = "sequential",
 	val configNodes: List<OrchestrationConfigNodeRow> = emptyList(),
 	val selectedNodeSettings: OrchestrationNodeSettingsModel? = null,
@@ -121,6 +122,11 @@ data class OrchestrationNodeModelOption(
 	val modelValue: String,
 )
 
+data class OrchestrationNodeModeOption(
+	val value: String,
+	val label: String,
+)
+
 data class OrchestrationAddNodeAction(
 	val label: String,
 	val mode: OrchestrationDraftAddMode,
@@ -143,6 +149,9 @@ fun applyOrchestrationGraphEdit(history: FlowGraphHistory, next: FlowGraph): Flo
 fun undoOrchestrationGraphEdit(history: FlowGraphHistory): FlowGraphHistory = history.undo()
 
 fun redoOrchestrationGraphEdit(history: FlowGraphHistory): FlowGraphHistory = history.redo()
+
+fun toolbarSerialInsertTarget(graph: FlowGraph): FlowInsertTarget =
+	graph.selectedNode?.let { FlowInsertTarget.AfterNode(it.id) } ?: FlowInsertTarget.Append
 
 fun applyOrchestrationNodeSettings(
 	graph: FlowGraph,
@@ -178,8 +187,10 @@ fun buildOrchestrationSectionModel(
 		return OrchestrationSectionModel(
 			visible = true,
 			title = "编排详情 · ${config.name}",
-			subtitle = "${statusLabel(config.status)} / ${goalCountLabel(config.goals.size)} / 等待手动启动",
+			subtitle = "${statusLabel(config.status)} / 等待手动启动",
 			nodes = emptyList(),
+			summaryPreview = null,
+			runtime = state.current,
 			config = detail,
 			configTopology = graph.root.topology.wireValue,
 			configNodes = rows,
@@ -192,6 +203,9 @@ fun buildOrchestrationSectionModel(
 			configConflict = state.configConflict?.takeIf { it.workUnitId == config.workUnitId },
 		)
 	}
+	if (!state.visible) {
+		return OrchestrationSectionModel(false, "", "", emptyList())
+	}
 	val item = state.current
 	if (item != null) {
 		return OrchestrationSectionModel(
@@ -200,6 +214,7 @@ fun buildOrchestrationSectionModel(
 			subtitle = "${topologyLabel(item.topology)} / ${statusLabel(item.status)} / ${approvalLabel(item)}",
 			nodes = item.nodes.map(::nodeRow),
 			summaryPreview = compactFlowSummary(item.summary),
+			runtime = item,
 			config = null,
 		)
 	}
@@ -266,8 +281,8 @@ fun OrchestrationSection(
 					onKeepLocalDraft = onKeepWorkUnitConfigDraft,
 				)
 			}
-			if (model.config == null && state.current != null) {
-				RuntimeFlowCanvas(item = state.current)
+			if (model.showRuntimeCanvas) model.runtime?.let { runtime ->
+				RuntimeFlowCanvas(item = runtime)
 			}
 			model.nodes.forEach { row -> OrchestrationNodeRowView(row) }
 			model.summaryPreview?.let { preview -> FlowSummaryPreview(preview) }
@@ -376,11 +391,11 @@ private fun OrchestrationConfigPanel(
 				OutlinedButton(
 					onClick = {
 						val node = newFlowNodeForGraph(graph, detail.modelLabel)
-						val next = graph.insertSerial(graph.flattenNodeIds().lastOrNull(), node)
+						val next = graph.insertSerial(toolbarSerialInsertTarget(graph), node)
 						applyGraphEdit(next)
 					},
 				) {
-					Text("+ 节点")
+					Text("+ 串行节点")
 				}
 				detail.startActionLabel?.let { label ->
 					Button(onClick = { onStart(detail.workUnitId) }) { Text(label) }
@@ -390,12 +405,12 @@ private fun OrchestrationConfigPanel(
 		CanvasFrame(
 			graph = graph,
 			onSelect = { history = history.copy(current = graph.copy(selectedNodeId = it)) },
-			onInsert = { anchor, kind ->
+			onInsert = { target, kind ->
 				val node = newFlowNodeForGraph(graph, detail.modelLabel)
 				val next = when (kind) {
-					FlowInsertKind.Serial -> graph.insertSerial(anchor, node)
-					FlowInsertKind.Parallel -> graph.insertParallel(anchor ?: graph.flattenNodeIds().lastOrNull(), node)
-					FlowInsertKind.Routing -> graph.insertRouting(anchor ?: graph.flattenNodeIds().lastOrNull(), node)
+					FlowInsertKind.Serial -> graph.insertSerial(target, node)
+					FlowInsertKind.Parallel -> graph.insertParallel(target, node)
+					FlowInsertKind.Routing -> graph.insertRouting(target, node)
 				}
 				applyGraphEdit(next)
 			},
@@ -480,12 +495,6 @@ private fun OrchestrationConfigPanel(
 				}
 			}
 		}
-		Text("目标队列", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
-		if (detail.goals.isEmpty()) {
-			Text("暂无目标", style = MaterialTheme.typography.bodySmall, color = BaBiQColors.Muted)
-		} else {
-			detail.goals.forEach { goal -> Text(goal.label, style = MaterialTheme.typography.bodySmall) }
-		}
 	}
 }
 
@@ -518,7 +527,7 @@ private fun WorkUnitConfigConflictBanner(
 private fun CanvasFrame(
 	graph: FlowGraph,
 	onSelect: (String) -> Unit,
-	onInsert: (String?, FlowInsertKind) -> Unit,
+	onInsert: (FlowInsertTarget, FlowInsertKind) -> Unit,
 	onMove: (String, FlowDropTarget) -> Unit = { _, _ -> },
 ) {
 	Box(
@@ -527,12 +536,11 @@ private fun CanvasFrame(
 			.height(360.dp)
 			.background(BaBiQColors.Background, RoundedCornerShape(10.dp))
 			.border(1.dp, BaBiQColors.Border, RoundedCornerShape(10.dp))
-			.padding(10.dp)
-			.horizontalScroll(rememberScrollState())
-			.verticalScroll(rememberScrollState()),
+			.padding(10.dp),
 	) {
 		FlowCanvas(
 			graph = graph,
+			modifier = Modifier.fillMaxSize(),
 			mode = FlowCanvasMode.Edit,
 			onSelectNode = onSelect,
 			onInsert = onInsert,
@@ -549,12 +557,11 @@ private fun RuntimeFlowCanvas(item: ThreadItem.Orchestration) {
 			.height(320.dp)
 			.background(BaBiQColors.Background, RoundedCornerShape(10.dp))
 			.border(1.dp, BaBiQColors.Border, RoundedCornerShape(10.dp))
-			.padding(10.dp)
-			.horizontalScroll(rememberScrollState())
-			.verticalScroll(rememberScrollState()),
+			.padding(10.dp),
 	) {
 		FlowCanvas(
 			graph = flowGraphFromOrchestrationItem(item),
+			modifier = Modifier.fillMaxSize(),
 			mode = FlowCanvasMode.Playback,
 		)
 	}
@@ -591,29 +598,29 @@ private fun NodeModeSelector(
 	selectedValue: String,
 	onSelect: (String) -> Unit,
 ) {
-	var expanded by remember { mutableStateOf(false) }
-	val options = listOf(
-		FlowNodeMode.ReadOnlyTool.wireValue to "只读工具",
-		FlowNodeMode.WorkspaceTool.wireValue to "工作区工具",
-	)
-	val selectedLabel = options.firstOrNull { it.first == selectedValue }?.second ?: modeLabel(selectedValue)
 	Column {
-		OutlinedButton(onClick = { expanded = true }) {
-			Text(selectedLabel, maxLines = 1, overflow = TextOverflow.Ellipsis)
-		}
-		DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-			options.forEach { option ->
-				DropdownMenuItem(
-					text = { Text(option.second) },
-					onClick = {
-						expanded = false
-						onSelect(option.first)
-					},
-				)
+		Text("工具权限", style = MaterialTheme.typography.labelSmall, color = BaBiQColors.Muted)
+		Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+			orchestrationNodeModeOptions().forEach { option ->
+				if (option.value == selectedValue) {
+					Button(onClick = { onSelect(option.value) }) {
+						Text(option.label, maxLines = 1)
+					}
+				} else {
+					OutlinedButton(onClick = { onSelect(option.value) }) {
+						Text(option.label, maxLines = 1)
+					}
+				}
 			}
 		}
 	}
 }
+
+fun orchestrationNodeModeOptions(): List<OrchestrationNodeModeOption> =
+	listOf(
+		OrchestrationNodeModeOption(FlowNodeMode.ReadOnlyTool.wireValue, "只读"),
+		OrchestrationNodeModeOption(FlowNodeMode.WorkspaceTool.wireValue, "全工具"),
+	)
 
 fun addOrchestrationDraftNode(
 	nodes: List<OrchestrationConfigNodeRow>,
@@ -641,7 +648,7 @@ fun addOrchestrationDraftNodeWithTopology(
 		title = nodeId,
 		role = "自定义节点",
 		task = "补充这个节点的任务",
-		modeLabel = modeLabel("READ_ONLY_TOOL"),
+		modeLabel = orchestrationModeLabel("READ_ONLY_TOOL"),
 		modeValue = "READ_ONLY_TOOL",
 		modelLabel = inheritedModelLabel.ifBlank { "未选择模型" },
 		selected = true,
@@ -696,7 +703,6 @@ private fun defaultAddNodeActions(): List<OrchestrationAddNodeAction> =
 	listOf(
 		OrchestrationAddNodeAction(flowInsertKindLabel(FlowInsertKind.Serial), OrchestrationDraftAddMode.Serial),
 		OrchestrationAddNodeAction(flowInsertKindLabel(FlowInsertKind.Parallel), OrchestrationDraftAddMode.Parallel),
-		OrchestrationAddNodeAction(flowInsertKindLabel(FlowInsertKind.Routing), OrchestrationDraftAddMode.Routing),
 	)
 
 private fun configRowsFromGraph(graph: FlowGraph, detail: WorkUnitDetailModel): List<OrchestrationConfigNodeRow> {
@@ -712,7 +718,7 @@ private fun FlowNode.toConfigRow(selected: Boolean): OrchestrationConfigNodeRow 
 		title = title,
 		role = role,
 		task = task,
-		modeLabel = modeLabel(mode.wireValue),
+		modeLabel = orchestrationModeLabel(mode.wireValue),
 		modeValue = mode.wireValue,
 		modelLabel = modelLabel,
 		modelValue = modelValue,
@@ -826,7 +832,7 @@ private fun nodeRow(node: ThreadItem.OrchestrationNode): OrchestrationNodeRow =
 		icon = statusIcon(node.status),
 		title = node.displayName?.takeIf { it.isNotBlank() } ?: node.name,
 		meta = listOfNotNull(
-			modeLabel(node.mode),
+			orchestrationModeLabel(node.mode),
 			node.model?.takeIf { it.isNotBlank() },
 			node.toolCallCount?.let { "工具 $it" },
 			node.tokenEstimate?.let { "token $it" },
@@ -893,10 +899,10 @@ private fun topologyLabel(topology: String): String =
 		else -> topology
 	}
 
-private fun modeLabel(mode: String): String =
+fun orchestrationModeLabel(mode: String): String =
 	when (mode.uppercase()) {
-		"READ_ONLY_TOOL" -> "只读工具"
-		"WORKSPACE_TOOL" -> "工作区工具"
+		"READ_ONLY_TOOL" -> "只读"
+		"WORKSPACE_TOOL" -> "全工具"
 		"GOAL" -> "目标"
 		"END" -> "结束"
 		else -> mode
@@ -913,8 +919,6 @@ private fun displayModelLabel(modelValue: String, modelLabel: String): String =
 		modelLabel.startsWith("继承主 Agent /") -> modelLabel
 		else -> "继承主 Agent / $modelLabel"
 	}
-
-private fun goalCountLabel(count: Int): String = "$count 个目标"
 
 private fun compactFlowSummary(summary: String?): String? {
 	val compact = summary.orEmpty()

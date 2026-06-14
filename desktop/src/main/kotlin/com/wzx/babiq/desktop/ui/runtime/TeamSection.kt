@@ -82,15 +82,32 @@ fun buildTeamSectionModel(
 	val config = state.configuringWorkUnit
 	if (config != null) {
 		val detail = workUnitDetailModel(config, modelLabel)
+		val runtimeTeam = state.current
+		val selectedAgent = runtimeTeam?.let { team ->
+			state.selectedAgent
+				?.takeIf { selected -> team.members.any { member -> member.name == selected } }
+				?: team.currentAgent
+					?.takeIf { current -> team.members.any { member -> member.name == current } }
+				?: team.members.firstOrNull()?.name
+		}
 		return TeamSectionModel(
 			visible = true,
 			title = "团队详情 · ${config.name}",
 			subtitle = "${statusLabel(config.status)} / ${config.goals.size} 个目标 / 等待手动启动",
+			selectedAgent = selectedAgent,
+			memberNames = runtimeTeam?.members?.map { it.name }.orEmpty(),
+			members = runtimeTeam?.members?.map { it.toRow() }.orEmpty(),
+			messages = state.messages.takeLast(6).map { it.toRow() },
+			directError = state.directError,
+			sendingDirect = state.sendingDirect,
 			config = detail,
 			configMembers = teamConfigMembers(detail),
 			removeActionLabel = detail.removeActionLabel,
 			backActionLabel = "返回列表",
 		)
+	}
+	if (!state.visible) {
+		return TeamSectionModel(false, "", "")
 	}
 	val team = state.current
 	if (team != null) {

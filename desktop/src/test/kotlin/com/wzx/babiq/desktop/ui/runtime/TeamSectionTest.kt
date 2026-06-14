@@ -93,6 +93,23 @@ class TeamSectionTest {
 	}
 
 	@Test
+	fun `dismissed team runtime model stays hidden`() {
+		val team = ThreadItem.Team(
+			id = "it_team_1",
+			teamId = "team_1",
+			title = "failed team",
+			status = "failed",
+			members = emptyList(),
+		)
+
+		val model = buildTeamSectionModel(
+			TeamUiState(current = team, dismissedTeamId = "team_1"),
+		)
+
+		assertFalse(model.visible)
+	}
+
+	@Test
 	fun `team configuration detail takes precedence over runtime playback and exposes back action`() {
 		val team = ThreadItem.Team(
 			id = "it_team_1",

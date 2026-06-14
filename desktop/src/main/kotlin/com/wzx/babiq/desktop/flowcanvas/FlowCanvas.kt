@@ -2,15 +2,21 @@ package com.wzx.babiq.desktop.flowcanvas
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -25,9 +31,11 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
@@ -55,6 +63,49 @@ fun flowInsertKindLabel(kind: FlowInsertKind): String =
 		FlowInsertKind.Routing -> "路由分支"
 	}
 
+internal const val FlowInsertButtonDiameterDp = 16f
+private const val FlowInsertButtonHitRadiusDp = 14f
+
+internal fun flowCanvasViewportSize(content: FlowSize, minWidth: Float, minHeight: Float): FlowSize =
+	FlowSize(
+		width = maxOf(content.width, minWidth),
+		height = maxOf(content.height, minHeight),
+	)
+
+internal fun flowCanvasCenterOffset(viewport: FlowSize, content: FlowSize): FlowPoint =
+	FlowPoint(
+		x = ((viewport.width - content.width) / 2f).coerceAtLeast(0f),
+		y = ((viewport.height - content.height) / 2f).coerceAtLeast(0f),
+	)
+
+internal enum class FlowCanvasHitTarget {
+	Background,
+	Node,
+	Terminal,
+	InsertAnchor,
+}
+
+internal fun flowCanvasScreenToLayoutPoint(
+	screenX: Float,
+	screenY: Float,
+	camera: FlowCanvasCamera,
+	centerOffset: FlowPoint,
+	density: Float,
+): FlowPoint =
+	FlowPoint(
+		x = ((screenX - camera.offsetX - centerOffset.x * density) / camera.scale) / density,
+		y = ((screenY - camera.offsetY - centerOffset.y * density) / camera.scale) / density,
+	)
+
+internal fun flowCanvasHitTarget(layout: FlowCanvasLayoutResult, point: FlowPoint): FlowCanvasHitTarget =
+	when {
+		layout.nodes.any { it.rect.contains(point) } -> FlowCanvasHitTarget.Node
+		layout.start.rect.contains(point) || layout.end.rect.contains(point) -> FlowCanvasHitTarget.Terminal
+		layout.insertPoints.any { it.center.distanceSquared(point) <= FlowInsertButtonHitRadiusDp * FlowInsertButtonHitRadiusDp } ->
+			FlowCanvasHitTarget.InsertAnchor
+		else -> FlowCanvasHitTarget.Background
+	}
+
 @Composable
 @OptIn(ExperimentalComposeUiApi::class)
 fun FlowCanvas(
@@ -64,18 +115,15 @@ fun FlowCanvas(
 	palette: FlowCanvasPalette = FlowCanvasPalette(),
 	layoutConfig: FlowCanvasLayoutConfig = FlowCanvasLayoutConfig(),
 	onSelectNode: (String) -> Unit = {},
-	onInsert: (String?, FlowInsertKind) -> Unit = { _, _ -> },
+	onInsert: (FlowInsertTarget, FlowInsertKind) -> Unit = { _, _ -> },
 	onMove: (String, FlowDropTarget) -> Unit = { _, _ -> },
 ) {
 	val layout = remember(graph, layoutConfig) { layoutFlowCanvas(graph, layoutConfig) }
 	val density = LocalDensity.current
 	var camera by remember(graph.root) { mutableStateOf(FlowCanvasCamera()) }
-	Box(
+	BoxWithConstraints(
 		modifier = modifier
-			.size(
-				width = layout.size.width.dp,
-				height = layout.size.height.dp,
-			)
+			.defaultMinSize(minWidth = layout.size.width.dp, minHeight = layout.size.height.dp)
 			.clip(RoundedCornerShape(8.dp))
 			.background(palette.background)
 			.onPointerEvent(PointerEventType.Scroll) { event ->
@@ -87,28 +135,67 @@ fun FlowCanvas(
 					scaleMultiplier = multiplier,
 				)
 				change.consume()
-			}
-			.pointerInput(Unit) {
-				detectDragGestures { change, dragAmount ->
-					camera = camera.pan(dragAmount.x, dragAmount.y)
-					change.consume()
-				}
 			},
 	) {
+		val viewportWidth = if (constraints.hasBoundedWidth && constraints.maxWidth > 0) {
+			with(density) { constraints.maxWidth.toDp().value }
+		} else {
+			layout.size.width
+		}
+		val viewportHeight = if (constraints.hasBoundedHeight && constraints.maxHeight > 0) {
+			with(density) { constraints.maxHeight.toDp().value }
+		} else {
+			layout.size.height
+		}
+		val centerOffset = flowCanvasCenterOffset(
+			viewport = flowCanvasViewportSize(layout.size, viewportWidth, viewportHeight),
+			content = layout.size,
+		)
+		Canvas(Modifier.fillMaxSize()) {
+			val scale = density.density
+			drawGrid(palette, scale)
+		}
 		Box(
 			modifier = Modifier
-				.matchParentSize()
+				.fillMaxSize()
+				.pointerInput(layout, centerOffset, density.density) {
+					awaitEachGesture {
+						val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+						val startPoint = flowCanvasScreenToLayoutPoint(
+							screenX = down.position.x,
+							screenY = down.position.y,
+							camera = camera,
+							centerOffset = centerOffset,
+							density = density.density,
+						)
+						if (flowCanvasHitTarget(layout, startPoint) != FlowCanvasHitTarget.Background) {
+							return@awaitEachGesture
+						}
+						down.consume()
+						while (true) {
+							val event = awaitPointerEvent(PointerEventPass.Initial)
+							val change = event.changes.firstOrNull { it.id == down.id } ?: break
+							if (!change.pressed) {
+								break
+							}
+							val dragAmount = change.positionChange()
+							if (dragAmount != Offset.Zero) {
+								camera = camera.pan(dragAmount.x, dragAmount.y)
+								change.consume()
+							}
+						}
+					}
+				}
 				.graphicsLayer {
 					scaleX = camera.scale
 					scaleY = camera.scale
-					translationX = camera.offsetX
-					translationY = camera.offsetY
+					translationX = camera.offsetX + centerOffset.x * density.density
+					translationY = camera.offsetY + centerOffset.y * density.density
 					transformOrigin = TransformOrigin(0f, 0f)
 				},
 		) {
-			Canvas(Modifier.matchParentSize()) {
+			Canvas(Modifier.fillMaxSize()) {
 				val scale = density.density
-				drawGrid(layout.size, palette, scale)
 				layout.edges.forEach { edge ->
 					drawLine(
 						color = palette.edge,
@@ -211,47 +298,41 @@ private fun TerminalPill(
 private fun FlowInsertButton(
 	point: FlowCanvasInsertPoint,
 	palette: FlowCanvasPalette,
-	onInsert: (String?, FlowInsertKind) -> Unit,
+	onInsert: (FlowInsertTarget, FlowInsertKind) -> Unit,
 ) {
 	var expanded by remember { mutableStateOf(false) }
 	val density = LocalDensity.current
 	Box(
 		modifier = Modifier.offset {
 			IntOffset(
-				with(density) { (point.center.x - 14f).dp.roundToPx() },
-				with(density) { (point.center.y - 14f).dp.roundToPx() },
+				with(density) { (point.center.x - FlowInsertButtonDiameterDp / 2f).dp.roundToPx() },
+				with(density) { (point.center.y - FlowInsertButtonDiameterDp / 2f).dp.roundToPx() },
 			)
 		},
 	) {
-		TextButton(
-			onClick = { expanded = true },
+		Box(
 			modifier = Modifier
-				.size(28.dp)
-				.clip(RoundedCornerShape(999.dp))
-				.background(palette.insertBackground),
+				.size(FlowInsertButtonDiameterDp.dp)
+				.clip(CircleShape)
+				.background(palette.insertBackground)
+				.clickable { expanded = true },
+			contentAlignment = Alignment.Center,
 		) {
-			Text("+", color = palette.selectedBorder, fontWeight = FontWeight.Bold)
+			Text("+", color = palette.selectedBorder, fontSize = 11.sp, fontWeight = FontWeight.Bold)
 		}
 		DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
 			DropdownMenuItem(
 				text = { Text(flowInsertKindLabel(FlowInsertKind.Serial)) },
 				onClick = {
 					expanded = false
-					onInsert(point.anchorNodeId, FlowInsertKind.Serial)
+					onInsert(point.target, FlowInsertKind.Serial)
 				},
 			)
 			DropdownMenuItem(
 				text = { Text(flowInsertKindLabel(FlowInsertKind.Parallel)) },
 				onClick = {
 					expanded = false
-					onInsert(point.anchorNodeId, FlowInsertKind.Parallel)
-				},
-			)
-			DropdownMenuItem(
-				text = { Text(flowInsertKindLabel(FlowInsertKind.Routing)) },
-				onClick = {
-					expanded = false
-					onInsert(point.anchorNodeId, FlowInsertKind.Routing)
+					onInsert(point.target, FlowInsertKind.Parallel)
 				},
 			)
 		}
@@ -259,13 +340,12 @@ private fun FlowInsertButton(
 }
 
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawGrid(
-	size: FlowSize,
 	palette: FlowCanvasPalette,
 	scale: Float,
 ) {
 	val step = 32f * scale
-	val width = size.width * scale
-	val height = size.height * scale
+	val width = size.width
+	val height = size.height
 	var x = 0f
 	while (x <= width) {
 		drawLine(palette.grid, Offset(x, 0f), Offset(x, height), strokeWidth = 1f)
@@ -303,6 +383,15 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawArrowHead(
 }
 
 private fun FlowPoint.toOffset(scale: Float): Offset = Offset(x * scale, y * scale)
+
+private fun FlowRect.contains(point: FlowPoint): Boolean =
+	point.x >= x && point.x <= x + width && point.y >= y && point.y <= y + height
+
+private fun FlowPoint.distanceSquared(other: FlowPoint): Float {
+	val dx = x - other.x
+	val dy = y - other.y
+	return dx * dx + dy * dy
+}
 
 private fun nearestDropTarget(
 	nodeId: String,

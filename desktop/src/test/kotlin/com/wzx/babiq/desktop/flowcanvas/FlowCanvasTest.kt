@@ -66,9 +66,73 @@ class FlowCanvasTest {
 	}
 
 	@Test
+	fun `node mode labels use orchestration permission language`() {
+		assertEquals("只读", flowNodeModeLabel(FlowNodeMode.ReadOnlyTool))
+		assertEquals("全工具", flowNodeModeLabel(FlowNodeMode.WorkspaceTool))
+	}
+
+	@Test
 	fun `insert menu labels are localized for orchestration canvas`() {
 		assertEquals("串行节点", flowInsertKindLabel(FlowInsertKind.Serial))
 		assertEquals("并行节点", flowInsertKindLabel(FlowInsertKind.Parallel))
-		assertEquals("路由分支", flowInsertKindLabel(FlowInsertKind.Routing))
+	}
+
+	@Test
+	fun `insert anchor stays compact and does not cover connector lines`() {
+		assertTrue(FlowInsertButtonDiameterDp <= 18f)
+	}
+
+	@Test
+	fun `canvas viewport fills frame and centers small graphs`() {
+		val content = FlowSize(width = 96f, height = 140f)
+
+		val viewport = flowCanvasViewportSize(content, minWidth = 280f, minHeight = 320f)
+		val centerOffset = flowCanvasCenterOffset(viewport, content)
+
+		assertEquals(FlowSize(width = 280f, height = 320f), viewport)
+		assertEquals(FlowPoint(x = 92f, y = 90f), centerOffset)
+	}
+
+	@Test
+	fun `canvas viewport keeps larger graph size`() {
+		val content = FlowSize(width = 360f, height = 400f)
+
+		val viewport = flowCanvasViewportSize(content, minWidth = 280f, minHeight = 320f)
+
+		assertEquals(content, viewport)
+	}
+
+	@Test
+	fun `screen position converts back to layout position with camera and centered viewport`() {
+		val camera = FlowCanvasCamera(scale = 1.5f, offsetX = 18f, offsetY = -12f)
+		val centerOffset = FlowPoint(x = 20f, y = 30f)
+
+		val point = flowCanvasScreenToLayoutPoint(
+			screenX = 18f + 20f * 2f + 90f * 1.5f * 2f,
+			screenY = -12f + 30f * 2f + 48f * 1.5f * 2f,
+			camera = camera,
+			centerOffset = centerOffset,
+			density = 2f,
+		)
+
+		assertEquals(90f, point.x, absoluteTolerance = 0.001f)
+		assertEquals(48f, point.y, absoluteTolerance = 0.001f)
+	}
+
+	@Test
+	fun `pan hit test only treats blank canvas as pannable`() {
+		val graph = FlowGraph()
+			.insertSerial(null, FlowNode("scan", "scan", "read", "scan"))
+		val layout = layoutFlowCanvas(graph)
+		val node = layout.nodes.single().rect
+
+		assertEquals(
+			FlowCanvasHitTarget.Node,
+			flowCanvasHitTarget(layout, FlowPoint(node.center.x, node.center.y)),
+		)
+		assertEquals(
+			FlowCanvasHitTarget.Background,
+			flowCanvasHitTarget(layout, FlowPoint(node.rightCenter.x + 80f, node.rightCenter.y + 80f)),
+		)
 	}
 }

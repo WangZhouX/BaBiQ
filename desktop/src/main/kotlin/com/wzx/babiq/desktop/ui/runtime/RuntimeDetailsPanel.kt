@@ -164,9 +164,26 @@ fun runtimePanelContent(tab: RuntimePanelTab): Set<RuntimePanelContent> =
 			RuntimePanelContent.Events,
 			RuntimePanelContent.EmptyState,
 		)
-		RuntimePanelTab.Orchestration -> setOf(RuntimePanelContent.WorkUnits, RuntimePanelContent.Orchestration)
-		RuntimePanelTab.Team -> setOf(RuntimePanelContent.WorkUnits, RuntimePanelContent.Team)
+		RuntimePanelTab.Orchestration -> setOf(RuntimePanelContent.WorkUnits)
+		RuntimePanelTab.Team -> setOf(RuntimePanelContent.WorkUnits)
 		RuntimePanelTab.SubAgent -> setOf(RuntimePanelContent.SubAgent)
+	}
+
+fun runtimePanelContent(state: AppState, tab: RuntimePanelTab): Set<RuntimePanelContent> =
+	when (tab) {
+		RuntimePanelTab.Orchestration ->
+			if (state.orchestrationState.configuringWorkUnit != null) {
+				setOf(RuntimePanelContent.Orchestration)
+			} else {
+				runtimePanelContent(tab)
+			}
+		RuntimePanelTab.Team ->
+			if (state.teamState.configuringWorkUnit != null) {
+				setOf(RuntimePanelContent.Team)
+			} else {
+				runtimePanelContent(tab)
+			}
+		else -> runtimePanelContent(tab)
 	}
 
 private fun AppState.workUnitRemovalDisplayName(workUnitId: String): String {
@@ -321,54 +338,62 @@ fun RuntimeDetailsPanel(
 					}
 				}
 				RuntimePanelTab.Orchestration -> {
-					WorkUnitSection(
-						state = state.workUnitState,
-						kindFilter = "orchestration",
-						onSelect = onSelectWorkUnit,
-						onConfigure = onConfigureWorkUnit,
-						onStart = onStartWorkUnit,
-						onRemove = requestWorkUnitRemoval,
-						onUpdateGoal = onUpdateWorkUnitGoal,
-					)
-					OrchestrationSection(
-						state = state.orchestrationState,
-						modelLabel = state.providerState.active.label,
-						providerState = state.providerState,
-						onStartWorkUnit = onStartWorkUnit,
-						onRemoveWorkUnit = requestWorkUnitRemoval,
-						onDismissOrchestration = requestOrchestrationDismiss,
-						onBackToList = onBackToWorkUnitList,
-						onUpdateWorkUnitGoal = onUpdateWorkUnitGoal,
-						onUpdateWorkUnitConfig = onUpdateWorkUnitConfig,
-						onMarkWorkUnitConfigDraftDirty = onMarkWorkUnitConfigDraftDirty,
-						onLoadLatestWorkUnitConfig = onLoadLatestWorkUnitConfig,
-						onKeepWorkUnitConfigDraft = onKeepWorkUnitConfigDraft,
-					)
+					val content = runtimePanelContent(state, effectiveTab)
+					if (RuntimePanelContent.WorkUnits in content) {
+						WorkUnitSection(
+							state = state.workUnitState,
+							kindFilter = "orchestration",
+							onSelect = onSelectWorkUnit,
+							onConfigure = onConfigureWorkUnit,
+							onRemove = requestWorkUnitRemoval,
+							onUpdateGoal = onUpdateWorkUnitGoal,
+						)
+					}
+					if (RuntimePanelContent.Orchestration in content) {
+						OrchestrationSection(
+							state = state.orchestrationState,
+							modelLabel = state.providerState.active.label,
+							providerState = state.providerState,
+							onStartWorkUnit = onStartWorkUnit,
+							onRemoveWorkUnit = requestWorkUnitRemoval,
+							onDismissOrchestration = requestOrchestrationDismiss,
+							onBackToList = onBackToWorkUnitList,
+							onUpdateWorkUnitGoal = onUpdateWorkUnitGoal,
+							onUpdateWorkUnitConfig = onUpdateWorkUnitConfig,
+							onMarkWorkUnitConfigDraftDirty = onMarkWorkUnitConfigDraftDirty,
+							onLoadLatestWorkUnitConfig = onLoadLatestWorkUnitConfig,
+							onKeepWorkUnitConfigDraft = onKeepWorkUnitConfigDraft,
+						)
+					}
 				}
 				RuntimePanelTab.Team -> {
-					WorkUnitSection(
-						state = state.workUnitState,
-						kindFilter = "team",
-						onSelect = onSelectWorkUnit,
-						onConfigure = onConfigureWorkUnit,
-						onStart = onStartWorkUnit,
-						onRemove = requestWorkUnitRemoval,
-						onUpdateGoal = onUpdateWorkUnitGoal,
-					)
-					TeamSection(
-						state = state.teamState,
-						modelLabel = state.providerState.active.label,
-						providerState = state.providerState,
-						onStartWorkUnit = onStartWorkUnit,
-						onRemoveWorkUnit = requestWorkUnitRemoval,
-						onDismissTeam = requestTeamDismiss,
-						onBackToList = onBackToWorkUnitList,
-						onUpdateWorkUnitGoal = onUpdateWorkUnitGoal,
-						onUpdateWorkUnitConfig = { workUnitId, configJson ->
-							onUpdateWorkUnitConfig(workUnitId, configJson, null)
-						},
-						onSendTeamMessage = onSendTeamMessage,
-					)
+					val content = runtimePanelContent(state, effectiveTab)
+					if (RuntimePanelContent.WorkUnits in content) {
+						WorkUnitSection(
+							state = state.workUnitState,
+							kindFilter = "team",
+							onSelect = onSelectWorkUnit,
+							onConfigure = onConfigureWorkUnit,
+							onRemove = requestWorkUnitRemoval,
+							onUpdateGoal = onUpdateWorkUnitGoal,
+						)
+					}
+					if (RuntimePanelContent.Team in content) {
+						TeamSection(
+							state = state.teamState,
+							modelLabel = state.providerState.active.label,
+							providerState = state.providerState,
+							onStartWorkUnit = onStartWorkUnit,
+							onRemoveWorkUnit = requestWorkUnitRemoval,
+							onDismissTeam = requestTeamDismiss,
+							onBackToList = onBackToWorkUnitList,
+							onUpdateWorkUnitGoal = onUpdateWorkUnitGoal,
+							onUpdateWorkUnitConfig = { workUnitId, configJson ->
+								onUpdateWorkUnitConfig(workUnitId, configJson, null)
+							},
+							onSendTeamMessage = onSendTeamMessage,
+						)
+					}
 				}
 				RuntimePanelTab.SubAgent -> SubAgentSection(state.subAgentState, onDismiss = onDismissSubAgent)
 			}

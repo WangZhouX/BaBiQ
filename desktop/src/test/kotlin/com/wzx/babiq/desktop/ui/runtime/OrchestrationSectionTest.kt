@@ -5,10 +5,13 @@ import com.wzx.babiq.desktop.protocol.ProviderInfo
 import com.wzx.babiq.desktop.protocol.ThreadItem
 import com.wzx.babiq.desktop.protocol.WorkUnitGoalInfo
 import com.wzx.babiq.desktop.protocol.WorkUnitInfo
+import com.wzx.babiq.desktop.flowcanvas.FlowEntry
 import com.wzx.babiq.desktop.flowcanvas.FlowGraph
 import com.wzx.babiq.desktop.flowcanvas.FlowGraphHistory
+import com.wzx.babiq.desktop.flowcanvas.FlowInsertTarget
 import com.wzx.babiq.desktop.flowcanvas.FlowNode
 import com.wzx.babiq.desktop.flowcanvas.FlowNodeStatus
+import com.wzx.babiq.desktop.flowcanvas.FlowTopology
 import com.wzx.babiq.desktop.state.OrchestrationUiState
 import com.wzx.babiq.desktop.state.ProviderSelection
 import com.wzx.babiq.desktop.state.ProviderState
@@ -85,6 +88,24 @@ class OrchestrationSectionTest {
 	}
 
 	@Test
+	fun `dismissed orchestration runtime model stays hidden`() {
+		val item = ThreadItem.Orchestration(
+			id = "it_orch_1",
+			orchestrationId = "orch_1",
+			title = "failed smoke flow",
+			topology = "sequential",
+			status = "failed",
+			nodes = emptyList(),
+		)
+
+		val model = buildOrchestrationSectionModel(
+			OrchestrationUiState(current = item, dismissedOrchestrationId = "orch_1"),
+		)
+
+		assertFalse(model.visible)
+	}
+
+	@Test
 	fun `orchestration configuration detail takes precedence over runtime playback and exposes back action`() {
 		val runtimeItem = ThreadItem.Orchestration(
 			id = "it_orch_1",
@@ -114,6 +135,47 @@ class OrchestrationSectionTest {
 		assertEquals("编排详情 · html-test", model.title)
 		assertEquals("返回列表", model.backActionLabel)
 		assertEquals("wu_flow", model.config?.workUnitId)
+	}
+
+	@Test
+	fun `orchestration runtime update keeps configuration detail open without mixing progress rows`() {
+		val workUnit = WorkUnitInfo(
+			workUnitId = "wu_flow",
+			threadId = "thr_1",
+			kind = "orchestration",
+			name = "html-test",
+			status = "waiting_config",
+			currentGoalId = "goal_1",
+			cwd = "H:\\aaa",
+			sandboxMode = "FULL_ACCESS",
+			goals = listOf(WorkUnitGoalInfo("goal_1", "wu_flow", "edit page", "pending")),
+		)
+		val runtimeItem = ThreadItem.Orchestration(
+			id = "it_orch_1",
+			orchestrationId = "orch_1",
+			title = "runtime flow",
+			topology = "sequential",
+			status = "running",
+			nodes = listOf(
+				ThreadItem.OrchestrationNode(
+					nodeId = "scan",
+					name = "scan",
+					displayName = "Scan",
+					status = "running",
+					mode = "READ_ONLY_TOOL",
+					task = "read files",
+				),
+			),
+		)
+
+		val state = OrchestrationUiState(configuringWorkUnit = workUnit).withCurrent(runtimeItem)
+		val model = buildOrchestrationSectionModel(state, modelLabel = "deepseek-v4-pro")
+
+		assertEquals("wu_flow", state.configuringWorkUnit?.workUnitId)
+		assertEquals("wu_flow", model.config?.workUnitId)
+		assertFalse(model.showRuntimeCanvas)
+		assertEquals(emptyList(), model.nodes)
+		assertEquals(null, model.summaryPreview)
 	}
 
 	@Test
@@ -222,14 +284,14 @@ class OrchestrationSectionTest {
 		)
 
 		assertEquals("parallel", model.configTopology)
-		assertEquals(listOf("串行节点", "并行节点", "路由分支"), model.addNodeActions.map { it.label })
+		assertEquals(listOf("串行节点", "并行节点"), model.addNodeActions.map { it.label })
 		assertEquals("编排详情 · parallel-flow", model.title)
-		assertEquals("待配置 / 1 个目标 / 等待手动启动", model.subtitle)
+		assertEquals("待配置 / 等待手动启动", model.subtitle)
 		assertEquals("添加节点", model.addNodeActionLabel)
 		assertEquals("编排画布", model.editModeTitle)
 		assertEquals("节点设置 · scan", model.selectedNodeSettings?.title)
 		assertEquals("继承主 Agent / deepseek-v4-pro", model.configNodes.first { it.nodeId == "scan" }.modelLabel)
-		assertEquals("只读工具", model.configNodes.first { it.nodeId == "scan" }.modeLabel)
+		assertEquals("只读", model.configNodes.first { it.nodeId == "scan" }.modeLabel)
 	}
 
 	@Test
@@ -418,6 +480,44 @@ class OrchestrationSectionTest {
 	}
 
 	@Test
+	fun `toolbar serial insert uses selected node instead of always appending`() {
+		val graph = FlowGraph()
+			.insertSerial(null, FlowNode("scan", "scan", "read", "scan files"))
+			.insertSerial("scan", FlowNode("write", "write", "write", "update file"))
+			.insertSerial("write", FlowNode("review", "review", "review", "check result"))
+			.copy(selectedNodeId = "write")
+
+		val next = graph.insertSerial(toolbarSerialInsertTarget(graph), FlowNode("node_1", "node_1", "custom", "extra task"))
+
+		assertEquals(listOf("scan", "write", "node_1", "review"), next.flattenNodeIds())
+	}
+
+	@Test
+	fun `toolbar serial insert after grouped selection goes after the group`() {
+		val graph = FlowGraph()
+			.insertSerial(null, FlowNode("scan", "scan", "read", "scan files"))
+			.insertParallel("scan", FlowNode("write", "write", "write", "update file"))
+			.insertSerial(FlowInsertTarget.AfterGroup("g_scan"), FlowNode("review", "review", "review", "check result"))
+			.copy(selectedNodeId = "write")
+
+		val next = graph.insertSerial(toolbarSerialInsertTarget(graph), FlowNode("node_1", "node_1", "custom", "extra task"))
+
+		assertEquals(listOf("scan", "write", "node_1", "review"), next.flattenNodeIds())
+		assertEquals(
+			listOf(
+				FlowEntry.Group(
+					groupId = "g_scan",
+					topology = FlowTopology.Parallel,
+					children = listOf(FlowEntry.NodeRef("scan"), FlowEntry.NodeRef("write")),
+				),
+				FlowEntry.NodeRef("node_1"),
+				FlowEntry.NodeRef("review"),
+			),
+			next.root.children,
+		)
+	}
+
+	@Test
 	fun `apply node settings updates title mode task and model`() {
 		val graph = FlowGraph()
 			.insertSerial(null, FlowNode("writer", "writer", "custom", "old task"))
@@ -437,6 +537,18 @@ class OrchestrationSectionTest {
 		assertEquals("new task", writer.task)
 		assertEquals("WORKSPACE_TOOL", writer.mode.wireValue)
 		assertEquals("provider:qwen:qwen-plus", writer.modelValue)
+	}
+
+	@Test
+	fun `orchestration node mode options expose read only and all tools`() {
+		assertEquals(
+			listOf(
+				OrchestrationNodeModeOption("READ_ONLY_TOOL", "只读"),
+				OrchestrationNodeModeOption("WORKSPACE_TOOL", "全工具"),
+			),
+			orchestrationNodeModeOptions(),
+		)
+		assertEquals("全工具", orchestrationModeLabel("WORKSPACE_TOOL"))
 	}
 
 	@Test

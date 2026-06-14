@@ -61,6 +61,14 @@ sealed interface FlowDropTarget {
 	data class IntoGroup(val groupId: String) : FlowDropTarget
 }
 
+sealed interface FlowInsertTarget {
+	data object Append : FlowInsertTarget
+	data object Prepend : FlowInsertTarget
+	data class AfterNode(val nodeId: String) : FlowInsertTarget
+	data class AfterGroup(val groupId: String) : FlowInsertTarget
+	data class IntoGroup(val groupId: String, val topology: FlowTopology) : FlowInsertTarget
+}
+
 sealed interface FlowEntry {
 	data class NodeRef(val nodeId: String) : FlowEntry
 
@@ -96,13 +104,22 @@ data class FlowGraph(
 		copy(nodes = nodes.map { if (it.id == node.id) node else it })
 
 	fun insertSerial(afterNodeId: String?, node: FlowNode): FlowGraph =
-		insertNode(afterNodeId, node, InsertMode.Serial)
+		insertNode(afterNodeId.toInsertTarget(), node, InsertMode.Serial)
 
 	fun insertParallel(anchorNodeId: String?, node: FlowNode): FlowGraph =
-		insertNode(anchorNodeId, node, InsertMode.Parallel)
+		insertNode(anchorNodeId.toInsertTarget(), node, InsertMode.Parallel)
 
 	fun insertRouting(anchorNodeId: String?, node: FlowNode): FlowGraph =
-		insertNode(anchorNodeId, node, InsertMode.Routing)
+		insertNode(anchorNodeId.toInsertTarget(), node, InsertMode.Routing)
+
+	fun insertSerial(target: FlowInsertTarget, node: FlowNode): FlowGraph =
+		insertNode(target, node, InsertMode.Serial)
+
+	fun insertParallel(target: FlowInsertTarget, node: FlowNode): FlowGraph =
+		insertNode(target, node, InsertMode.Parallel)
+
+	fun insertRouting(target: FlowInsertTarget, node: FlowNode): FlowGraph =
+		insertNode(target, node, InsertMode.Routing)
 
 	/**
 	 * 移动一个已有节点引用，不改变节点自身配置。
@@ -125,7 +142,7 @@ data class FlowGraph(
 		}
 		val withoutNode = root.removeNode(nodeId)
 		val nextRoot = when (target) {
-			is FlowDropTarget.AfterNode -> withoutNode.insertSerial(target.nodeId, nodeId)
+			is FlowDropTarget.AfterNode -> withoutNode.insertSerial(target.nodeId.toInsertTarget(), nodeId)
 			is FlowDropTarget.IntoGroup -> withoutNode.insertIntoGroup(target.groupId, nodeId) ?: return this
 		}
 		return copy(root = nextRoot, selectedNodeId = nodeId)
@@ -144,13 +161,13 @@ data class FlowGraph(
 		return copy(nodes = nextNodes, root = nextRoot, selectedNodeId = nextSelection)
 	}
 
-	private fun insertNode(afterNodeId: String?, node: FlowNode, mode: InsertMode): FlowGraph {
+	private fun insertNode(target: FlowInsertTarget, node: FlowNode, mode: InsertMode): FlowGraph {
 		require(node.id.isNotBlank()) { "node id must not be blank" }
 		require(node.id !in nodeMap) { "duplicate node id: ${node.id}" }
 		val nextRoot = when (mode) {
-			InsertMode.Serial -> root.insertSerial(afterNodeId, node.id)
-			InsertMode.Parallel -> root.insertGroup(afterNodeId, node.id, FlowTopology.Parallel)
-			InsertMode.Routing -> root.insertGroup(afterNodeId, node.id, FlowTopology.Routing)
+			InsertMode.Serial -> root.insertSerial(target, node.id)
+			InsertMode.Parallel -> root.insertGroup(target, node.id, FlowTopology.Parallel)
+			InsertMode.Routing -> root.insertGroup(target, node.id, FlowTopology.Routing)
 		}
 		return copy(nodes = nodes + node, root = nextRoot, selectedNodeId = node.id)
 	}
@@ -207,26 +224,68 @@ private enum class InsertMode {
 	Routing,
 }
 
-private fun FlowEntry.Group.insertSerial(afterNodeId: String?, nodeId: String): FlowEntry.Group {
-	if (afterNodeId == null || children.isEmpty()) {
-		return copy(children = children + FlowEntry.NodeRef(nodeId))
+private fun String?.toInsertTarget(): FlowInsertTarget =
+	if (this == null) FlowInsertTarget.Append else FlowInsertTarget.AfterNode(this)
+
+private fun FlowEntry.Group.insertSerial(target: FlowInsertTarget, nodeId: String): FlowEntry.Group =
+	when (target) {
+		FlowInsertTarget.Append -> copy(children = children + FlowEntry.NodeRef(nodeId))
+		FlowInsertTarget.Prepend -> copy(children = listOf(FlowEntry.NodeRef(nodeId)) + children)
+		is FlowInsertTarget.AfterNode -> insertSerialAfterNode(target.nodeId, nodeId)
+		is FlowInsertTarget.AfterGroup -> insertAfterGroup(target.groupId, nodeId)
+		is FlowInsertTarget.IntoGroup -> insertAfterGroup(target.groupId, nodeId)
 	}
+
+private fun FlowEntry.Group.insertSerialAfterNode(afterNodeId: String, nodeId: String): FlowEntry.Group {
 	val index = children.indexOfFirst { it.containsNode(afterNodeId) }
 	if (index < 0) {
 		return copy(children = children + FlowEntry.NodeRef(nodeId))
 	}
 	val child = children[index]
-	return if (child is FlowEntry.Group && child.topology != FlowTopology.Sequential && child.containsNode(afterNodeId)) {
-		copy(children = children.updateAt(index, child.insertSerial(afterNodeId, nodeId)))
-	} else {
-		copy(children = children.take(index + 1) + FlowEntry.NodeRef(nodeId) + children.drop(index + 1))
+	return when {
+		child is FlowEntry.Group && child.topology == FlowTopology.Sequential ->
+			copy(children = children.updateAt(index, child.insertSerialAfterNode(afterNodeId, nodeId)))
+		else ->
+			copy(children = children.take(index + 1) + FlowEntry.NodeRef(nodeId) + children.drop(index + 1))
 	}
 }
 
-private fun FlowEntry.Group.insertGroup(anchorNodeId: String?, nodeId: String, topology: FlowTopology): FlowEntry.Group {
-	if (anchorNodeId == null || children.isEmpty()) {
-		return copy(children = children + FlowEntry.NodeRef(nodeId))
+private fun FlowEntry.Group.insertGroup(target: FlowInsertTarget, nodeId: String, topology: FlowTopology): FlowEntry.Group =
+	when (target) {
+		FlowInsertTarget.Append -> copy(children = children + FlowEntry.NodeRef(nodeId))
+		FlowInsertTarget.Prepend -> prependGroup(nodeId, topology)
+		is FlowInsertTarget.AfterNode -> insertGroupAfterNode(target.nodeId, nodeId, topology)
+		is FlowInsertTarget.AfterGroup -> insertAfterGroup(target.groupId, nodeId)
+		is FlowInsertTarget.IntoGroup -> {
+			if (target.topology == topology) {
+				insertIntoGroup(target.groupId, nodeId) ?: copy(children = children + FlowEntry.NodeRef(nodeId))
+			} else {
+				insertAfterGroup(target.groupId, nodeId)
+			}
+		}
 	}
+
+private fun FlowEntry.Group.prependGroup(nodeId: String, topology: FlowTopology): FlowEntry.Group {
+	if (children.isEmpty()) {
+		return copy(children = listOf(FlowEntry.NodeRef(nodeId)))
+	}
+	val first = children.first()
+	return if (first is FlowEntry.Group && first.topology == topology) {
+		copy(children = listOf(first.copy(children = first.children + FlowEntry.NodeRef(nodeId))) + children.drop(1))
+	} else {
+		copy(
+			children = listOf(
+				FlowEntry.Group(
+					groupId = "g_${first.flattenNodeIds().firstOrNull() ?: nodeId}",
+					topology = topology,
+					children = listOf(first, FlowEntry.NodeRef(nodeId)),
+				),
+			) + children.drop(1),
+		)
+	}
+}
+
+private fun FlowEntry.Group.insertGroupAfterNode(anchorNodeId: String, nodeId: String, topology: FlowTopology): FlowEntry.Group {
 	val index = children.indexOfFirst { it.containsNode(anchorNodeId) }
 	if (index < 0) {
 		return copy(children = children + FlowEntry.NodeRef(nodeId))
@@ -234,7 +293,7 @@ private fun FlowEntry.Group.insertGroup(anchorNodeId: String?, nodeId: String, t
 	val child = children[index]
 	return when (child) {
 		is FlowEntry.Group -> {
-			if (child.topology == FlowTopology.Parallel || child.topology == FlowTopology.Routing) {
+			if (child.topology == topology) {
 				copy(children = children.updateAt(index, child.copy(children = child.children + FlowEntry.NodeRef(nodeId))))
 			} else {
 				copy(children = children.take(index + 1) + FlowEntry.NodeRef(nodeId) + children.drop(index + 1))
@@ -248,6 +307,15 @@ private fun FlowEntry.Group.insertGroup(anchorNodeId: String?, nodeId: String, t
 			)
 			copy(children = children.updateAt(index, group))
 		}
+	}
+}
+
+private fun FlowEntry.Group.insertAfterGroup(groupId: String, nodeId: String): FlowEntry.Group {
+	val index = children.indexOfFirst { child -> child is FlowEntry.Group && child.groupId == groupId }
+	return if (index < 0) {
+		copy(children = children + FlowEntry.NodeRef(nodeId))
+	} else {
+		copy(children = children.take(index + 1) + FlowEntry.NodeRef(nodeId) + children.drop(index + 1))
 	}
 }
 

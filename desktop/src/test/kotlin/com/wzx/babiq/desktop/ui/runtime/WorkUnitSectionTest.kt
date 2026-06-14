@@ -46,7 +46,7 @@ class WorkUnitSectionTest {
 		assertEquals("待配置", model.rows.first().statusLabel)
 		assertTrue(model.rows.first().removable)
 		assertEquals("配置编排", model.rows.first().detailActionLabel)
-		assertEquals("开始执行", model.rows.first().startActionLabel)
+		assertEquals(null, model.rows.first().startActionLabel)
 		assertEquals("团队", model.rows.last().kindLabel)
 		assertEquals("运行中", model.rows.last().statusLabel)
 		assertFalse(model.rows.last().removable)

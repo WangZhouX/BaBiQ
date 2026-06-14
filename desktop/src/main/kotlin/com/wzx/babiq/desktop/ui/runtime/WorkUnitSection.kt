@@ -237,7 +237,7 @@ private fun toRowModel(item: ThreadItem.WorkUnit): WorkUnitRowModel =
 		removable = !item.status.equals("running", ignoreCase = true),
 		removeBlockedLabel = if (item.status.equals("running", ignoreCase = true)) "运行中不可移除" else null,
 		detailActionLabel = detailActionLabel(item),
-		startActionLabel = startActionLabel(item),
+		startActionLabel = null,
 	)
 
 private fun editableGoal(info: WorkUnitInfo): WorkUnitGoalInfo? =
@@ -280,17 +280,6 @@ private fun detailActionLabel(item: ThreadItem.WorkUnit): String {
 	}
 	return verb + kindLabel(item.kind)
 }
-
-private fun startActionLabel(item: ThreadItem.WorkUnit): String? =
-	if (
-		item.currentGoal.isNullOrBlank() ||
-		item.status.equals("running", ignoreCase = true) ||
-		item.status.equals("removed", ignoreCase = true)
-	) {
-		null
-	} else {
-		"开始执行"
-	}
 
 private fun kindLabel(kind: String): String =
 	when (kind.lowercase()) {

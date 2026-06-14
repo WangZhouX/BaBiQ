@@ -25,6 +25,24 @@ class FlowGraphModelTest {
 	}
 
 	@Test
+	fun `serial insert from start edge prepends before first node`() {
+		val graph = FlowGraph()
+			.insertSerial(null, FlowNode("explorer", "explorer", "read", "scan files"))
+			.insertSerial("explorer", FlowNode("writer", "writer", "write", "update file"))
+			.insertSerial(FlowInsertTarget.Prepend, FlowNode("setup", "setup", "custom", "prepare"))
+
+		assertEquals(listOf("setup", "explorer", "writer"), graph.flattenNodeIds())
+		assertEquals(
+			listOf(
+				FlowEntry.NodeRef("setup"),
+				FlowEntry.NodeRef("explorer"),
+				FlowEntry.NodeRef("writer"),
+			),
+			graph.root.children,
+		)
+	}
+
+	@Test
 	fun `parallel insert wraps anchor in a one level group`() {
 		val graph = FlowGraph()
 			.insertSerial(null, FlowNode("explorer", "explorer", "read", "scan files"))
@@ -46,6 +64,55 @@ class FlowGraphModelTest {
 
 		assertEquals(FlowTopology.Routing, group.topology)
 		assertEquals(listOf("router", "writer"), graph.flattenNodeIds())
+	}
+
+	@Test
+	fun `serial insert after a routing group appends to parent sequence`() {
+		val graph = FlowGraph()
+			.insertSerial(null, FlowNode("router", "router", "route", "choose branch"))
+			.insertRouting("router", FlowNode("writer", "writer", "write", "handle selected branch"))
+			.insertSerial(FlowInsertTarget.AfterGroup("g_router"), FlowNode("review", "review", "review", "review result"))
+
+		assertEquals(
+			listOf(
+				FlowEntry.Group(
+					groupId = "g_router",
+					topology = FlowTopology.Routing,
+					children = listOf(FlowEntry.NodeRef("router"), FlowEntry.NodeRef("writer")),
+				),
+				FlowEntry.NodeRef("review"),
+			),
+			graph.root.children,
+		)
+		assertEquals(listOf("router", "writer", "review"), graph.flattenNodeIds())
+	}
+
+	@Test
+	fun `parallel branch insert is explicit and does not depend on last node`() {
+		val graph = FlowGraph()
+			.insertSerial(null, FlowNode("scan", "scan", "read", "scan"))
+			.insertParallel("scan", FlowNode("write", "write", "write", "write"))
+			.insertParallel(
+				FlowInsertTarget.IntoGroup("g_scan", FlowTopology.Parallel),
+				FlowNode("review", "review", "review", "review"),
+			)
+		val group = graph.root.children.single() as FlowEntry.Group
+
+		assertEquals(FlowTopology.Parallel, group.topology)
+		assertEquals(listOf("scan", "write", "review"), group.children.map { (it as FlowEntry.NodeRef).nodeId })
+	}
+
+	@Test
+	fun `parallel insert after an existing group does not mutate that group`() {
+		val graph = FlowGraph()
+			.insertSerial(null, FlowNode("scan", "scan", "read", "scan"))
+			.insertParallel("scan", FlowNode("write", "write", "write", "write"))
+			.insertParallel(FlowInsertTarget.AfterGroup("g_scan"), FlowNode("review", "review", "review", "review"))
+
+		val group = graph.root.children.first() as FlowEntry.Group
+		assertEquals(listOf("scan", "write"), group.children.map { (it as FlowEntry.NodeRef).nodeId })
+		assertEquals(FlowEntry.NodeRef("review"), graph.root.children.last())
+		assertEquals(listOf("scan", "write", "review"), graph.flattenNodeIds())
 	}
 
 	@Test
@@ -118,5 +185,28 @@ class FlowGraphModelTest {
 			listOf(FlowEntry.NodeRef("scan"), FlowEntry.NodeRef("review"), FlowEntry.NodeRef("write")),
 			moved.root.children,
 		)
+	}
+
+	@Test
+	fun `moveEntry after a grouped node moves after the parent group`() {
+		val graph = FlowGraph()
+			.insertSerial(null, FlowNode("scan", "scan", "read", "scan files"))
+			.insertParallel("scan", FlowNode("write", "write", "write", "update file"))
+			.insertSerial(FlowInsertTarget.AfterGroup("g_scan"), FlowNode("review", "review", "review", "check result"))
+
+		val moved = graph.moveEntry("review", FlowDropTarget.AfterNode("write"))
+
+		assertEquals(
+			listOf(
+				FlowEntry.Group(
+					groupId = "g_scan",
+					topology = FlowTopology.Parallel,
+					children = listOf(FlowEntry.NodeRef("scan"), FlowEntry.NodeRef("write")),
+				),
+				FlowEntry.NodeRef("review"),
+			),
+			moved.root.children,
+		)
+		assertEquals(listOf("scan", "write", "review"), moved.flattenNodeIds())
 	}
 }

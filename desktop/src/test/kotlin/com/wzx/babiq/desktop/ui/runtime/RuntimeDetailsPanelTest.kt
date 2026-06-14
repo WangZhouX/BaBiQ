@@ -2,6 +2,7 @@ package com.wzx.babiq.desktop.ui.runtime
 
 import com.wzx.babiq.desktop.protocol.WorkUnitGoalInfo
 import com.wzx.babiq.desktop.protocol.WorkUnitInfo
+import com.wzx.babiq.desktop.protocol.ThreadItem
 import com.wzx.babiq.desktop.protocol.RunToolCallInfo
 import com.wzx.babiq.desktop.protocol.RunTurnDetailResult
 import com.wzx.babiq.desktop.protocol.RunTurnSummaryInfo
@@ -39,9 +40,41 @@ class RuntimeDetailsPanelTest {
 		assertFalse(RuntimePanelContent.Orchestration in runContent)
 		assertFalse(RuntimePanelContent.Team in runContent)
 		assertFalse(RuntimePanelContent.SubAgent in runContent)
-		assertEquals(setOf(RuntimePanelContent.WorkUnits, RuntimePanelContent.Orchestration), runtimePanelContent(RuntimePanelTab.Orchestration))
-		assertEquals(setOf(RuntimePanelContent.WorkUnits, RuntimePanelContent.Team), runtimePanelContent(RuntimePanelTab.Team))
+		assertEquals(setOf(RuntimePanelContent.WorkUnits), runtimePanelContent(RuntimePanelTab.Orchestration))
+		assertEquals(setOf(RuntimePanelContent.WorkUnits), runtimePanelContent(RuntimePanelTab.Team))
 		assertEquals(setOf(RuntimePanelContent.SubAgent), runtimePanelContent(RuntimePanelTab.SubAgent))
+	}
+
+	@Test
+	fun `work unit tabs switch from list to detail only while configuring a container`() {
+		val runtimeOnly = AppState(
+			orchestrationState = OrchestrationUiState(
+				current = ThreadItem.Orchestration(
+					id = "it_orch",
+					orchestrationId = "orch_1",
+					title = "runtime flow",
+					topology = "sequential",
+					status = "running",
+				),
+			),
+			teamState = TeamUiState(
+				current = ThreadItem.Team(
+					id = "it_team",
+					teamId = "team_1",
+					title = "runtime team",
+					status = "running",
+				),
+			),
+		)
+		val configuring = AppState(
+			orchestrationState = OrchestrationUiState(configuringWorkUnit = workUnit(kind = "orchestration")),
+			teamState = TeamUiState(configuringWorkUnit = workUnit(kind = "team")),
+		)
+
+		assertEquals(setOf(RuntimePanelContent.WorkUnits), runtimePanelContent(runtimeOnly, RuntimePanelTab.Orchestration))
+		assertEquals(setOf(RuntimePanelContent.WorkUnits), runtimePanelContent(runtimeOnly, RuntimePanelTab.Team))
+		assertEquals(setOf(RuntimePanelContent.Orchestration), runtimePanelContent(configuring, RuntimePanelTab.Orchestration))
+		assertEquals(setOf(RuntimePanelContent.Team), runtimePanelContent(configuring, RuntimePanelTab.Team))
 	}
 
 	@Test

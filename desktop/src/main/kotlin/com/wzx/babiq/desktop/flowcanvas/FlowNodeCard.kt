@@ -105,7 +105,7 @@ fun FlowNodeCard(
 			)
 		}
 		Text(
-			text = "${node.role} / ${modeText(node.mode)}",
+			text = "${node.role} / ${flowNodeModeLabel(node.mode)}",
 			color = palette.muted,
 			fontSize = 10.sp,
 			maxLines = 1,
@@ -153,10 +153,10 @@ private fun statusText(status: FlowNodeStatus): String =
 		FlowNodeStatus.Canceled -> "STOP"
 	}
 
-private fun modeText(mode: FlowNodeMode): String =
+internal fun flowNodeModeLabel(mode: FlowNodeMode): String =
 	when (mode) {
-		FlowNodeMode.ReadOnlyTool -> "read only"
-		FlowNodeMode.WorkspaceTool -> "workspace"
-		FlowNodeMode.Goal -> "goal"
-		FlowNodeMode.End -> "end"
+		FlowNodeMode.ReadOnlyTool -> "只读"
+		FlowNodeMode.WorkspaceTool -> "全工具"
+		FlowNodeMode.Goal -> "目标"
+		FlowNodeMode.End -> "结束"
 	}
