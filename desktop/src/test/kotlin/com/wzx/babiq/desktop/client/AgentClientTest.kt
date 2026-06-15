@@ -36,6 +36,7 @@ import com.wzx.babiq.desktop.protocol.SkillListResult
 import com.wzx.babiq.desktop.protocol.ThreadItem
 import com.wzx.babiq.desktop.protocol.WorkUnitGoalUpdateResult
 import com.wzx.babiq.desktop.protocol.WorkUnitListResult
+import com.wzx.babiq.desktop.protocol.WorkUnitNameUpdateResult
 import com.wzx.babiq.desktop.protocol.WorkUnitRemoveResult
 import com.wzx.babiq.desktop.protocol.protocolJson
 import kotlin.test.Test
@@ -525,6 +526,26 @@ class AgentClientTest {
 	}
 
 	@Test
+	fun `work unit name update sends direct json rpc request`() = runTest {
+		val transport = FakeAgentTransport()
+		val client = AgentClient(transport, backgroundScope)
+		client.connect()
+
+		val result: WorkUnitNameUpdateResult = client.updateWorkUnitName(
+			threadId = "thr_1",
+			workUnitId = "wu_1",
+			name = "P8 画布烟测",
+		)
+
+		val request = transport.sent.single()
+		assertEquals("workunit/name/update", request.method)
+		assertEquals("thr_1", request.paramsText("threadId"))
+		assertEquals("wu_1", request.paramsText("workUnitId"))
+		assertEquals("P8 画布烟测", request.paramsText("name"))
+		assertEquals("P8 画布烟测", result.workUnit.name)
+	}
+
+	@Test
 	fun `work unit config update sends structure json when present`() = runTest {
 		val transport = FakeAgentTransport()
 		val client = AgentClient(transport, backgroundScope)
@@ -980,6 +1001,31 @@ class AgentClientTest {
 										put("goalId", request.paramsText("goalId"))
 										put("workUnitId", request.paramsText("workUnitId"))
 										put("goalText", request.paramsText("goalText"))
+										put("status", "pending")
+									})
+								},
+							)
+						},
+					)
+				}
+				"workunit/name/update" -> buildJsonObject {
+					put(
+						"workUnit",
+						buildJsonObject {
+							put("workUnitId", request.paramsText("workUnitId"))
+							put("threadId", request.paramsText("threadId"))
+							put("kind", "orchestration")
+							put("name", request.paramsText("name"))
+							put("status", "waiting_config")
+							put("currentGoalId", "goal_1")
+							put("removed", false)
+							put(
+								"goals",
+								buildJsonArray {
+									add(buildJsonObject {
+										put("goalId", "goal_1")
+										put("workUnitId", request.paramsText("workUnitId"))
+										put("goalText", "edit html")
 										put("status", "pending")
 									})
 								},

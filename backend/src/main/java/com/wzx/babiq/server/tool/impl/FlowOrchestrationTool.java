@@ -4,6 +4,7 @@ import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.agent.Agent;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wzx.babiq.server.agent.delegation.BabiqAgentMode;
 import com.wzx.babiq.server.agent.delegation.BabiqAgentSpec;
@@ -31,11 +32,15 @@ import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.IntStream;
 
@@ -58,6 +63,8 @@ public class FlowOrchestrationTool implements Tool {
             无法直接启动编排：当前 turn 没有绑定 WorkUnit goalId。
             请先使用 work_unit_manage 创建或复用编排工作容器，在右侧详情页完成节点、模型、权限和写入范围配置后，再显式启动该 WorkUnit。
             """;
+    /** 完成记录只做摘要展示，避免把节点完整回答塞进右侧面板。 */
+    private static final int COMPLETION_SUMMARY_TEXT_LIMIT = 240;
 
     /** 官方 FlowAgent 薄封装服务。 */
     private final FlowOrchestrationService orchestrationService;
@@ -141,14 +148,15 @@ public class FlowOrchestrationTool implements Tool {
             Agent agent = orchestrationService.buildOfficialFlowAgent(spec, flowToolContext, null);
             Optional<OverAllState> state = invoke(agent, task, flowConfig(flowToolContext, spec, observation));
             String output = state
-                    .map(value -> value.value(spec.mergeOutputKey(), value.toString()))
-                    .map(Object::toString)
+                    .map(value -> value.value(spec.mergeOutputKey()).orElse(value.toString()))
+                    .map(FlowOrchestrationTool::outputToString)
                     .orElse("流程已完成，但没有返回显式输出。");
-            repository.save(record(spec, observation, cwd, "completed", output, null),
+            String summary = compactFlowCompletionSummary(output);
+            repository.save(record(spec, observation, cwd, "completed", summary, null),
                     nodeRecords(spec, "completed", 0, 0, "节点已完成"));
-            emit(emitter, item(spec, "completed", output, spec.nodes()));
-            markWorkUnitGoalCompleted(workUnitGoalId, output);
-            return output;
+            emit(emitter, item(spec, "completed", summary, spec.nodes()));
+            markWorkUnitGoalCompleted(workUnitGoalId, summary);
+            return summary;
         } catch (Exception exception) {
             String message = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
             repository.save(record(spec, observation, cwd, "failed", null, message),
@@ -382,6 +390,87 @@ public class FlowOrchestrationTool implements Tool {
     private void markWorkUnitGoalCompleted(String goalId, String output) {
         if (workUnitService != null && goalId != null) {
             workUnitService.markGoalCompleted(goalId, output);
+        }
+    }
+
+    static String compactFlowCompletionSummary(String output) {
+        if (output == null || output.isBlank()) {
+            return output;
+        }
+        List<String> texts = extractOutputTexts(output);
+        if (texts.isEmpty()) {
+            return output;
+        }
+        return String.join("\n\n", texts);
+    }
+
+    private static String outputToString(Object output) {
+        if (output == null) {
+            return "";
+        }
+        if (output instanceof String text) {
+            return text;
+        }
+        try {
+            return JSON.writeValueAsString(output);
+        } catch (JsonProcessingException exception) {
+            return String.valueOf(output);
+        }
+    }
+
+    private static List<String> extractOutputTexts(String output) {
+        try {
+            JsonNode root = JSON.readTree(output);
+            List<String> texts = new ArrayList<>();
+            Set<String> seen = new LinkedHashSet<>();
+            addText(root.path("text"), texts, seen);
+            JsonNode data = root.path("OverAllState").path("data");
+            if (!data.isObject()) {
+                data = root.path("data");
+            }
+            if (data.isObject()) {
+                Iterator<Map.Entry<String, JsonNode>> fields = data.fields();
+                while (fields.hasNext()) {
+                    Map.Entry<String, JsonNode> field = fields.next();
+                    if (field.getKey().endsWith("_output")) {
+                        addOutputText(field.getValue(), texts, seen);
+                    }
+                }
+            }
+            return texts;
+        } catch (JsonProcessingException | IllegalArgumentException exception) {
+            return List.of();
+        }
+    }
+
+    private static void addOutputText(JsonNode node, List<String> texts, Set<String> seen) {
+        if (node == null || node.isNull() || node.isMissingNode()) {
+            return;
+        }
+        if (node.isTextual()) {
+            addText(node, texts, seen);
+            return;
+        }
+        addText(node.path("text"), texts, seen);
+        JsonNode output = node.path("output");
+        if (output.isTextual()) {
+            addText(output, texts, seen);
+        }
+    }
+
+    private static void addText(JsonNode node, List<String> texts, Set<String> seen) {
+        if (node == null || !node.isTextual()) {
+            return;
+        }
+        String text = node.asText().trim();
+        if (text.isEmpty()) {
+            return;
+        }
+        if (text.length() > COMPLETION_SUMMARY_TEXT_LIMIT) {
+            text = text.substring(0, COMPLETION_SUMMARY_TEXT_LIMIT - 3).trim() + "...";
+        }
+        if (seen.add(text)) {
+            texts.add(text);
         }
     }
 

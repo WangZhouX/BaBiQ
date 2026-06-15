@@ -166,6 +166,27 @@ class WorkUnitSectionTest {
 	}
 
 	@Test
+	fun `work unit detail exposes editable container name`() {
+		val detail = workUnitDetailModel(
+			WorkUnitInfo(
+				workUnitId = "wu_rename",
+				threadId = "thr_1",
+				kind = "orchestration",
+				name = "P6-2-smoke-test",
+				status = "waiting_config",
+				currentGoalId = "goal_1",
+				cwd = "H:\\aaa",
+				sandboxMode = "FULL_ACCESS",
+				goals = listOf(WorkUnitGoalInfo("goal_1", "wu_rename", "edit page", "pending")),
+			),
+			modelLabel = "deepseek-v4-pro",
+		)
+
+		assertEquals("P6-2-smoke-test", detail.name)
+		assertTrue(detail.title.contains("P6-2-smoke-test"))
+	}
+
+	@Test
 	fun `completed work unit detail can be restarted as a fresh run`() {
 		val detail = workUnitDetailModel(
 			WorkUnitInfo(

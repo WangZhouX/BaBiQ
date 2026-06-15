@@ -219,6 +219,7 @@ fun RuntimeDetailsPanel(
 	onStartWorkUnit: (String) -> Unit = {},
 	onRemoveWorkUnit: (String) -> Unit = {},
 	onUpdateWorkUnitGoal: (String, String, String) -> Unit = { _, _, _ -> },
+	onRenameWorkUnit: (String, String) -> Unit = { _, _ -> },
 	onUpdateWorkUnitConfig: (String, String, String?) -> Unit = { _, _, _ -> },
 	onMarkWorkUnitConfigDraftDirty: (String) -> Unit = {},
 	onLoadLatestWorkUnitConfig: (String) -> Unit = {},
@@ -359,6 +360,7 @@ fun RuntimeDetailsPanel(
 							onDismissOrchestration = requestOrchestrationDismiss,
 							onBackToList = onBackToWorkUnitList,
 							onUpdateWorkUnitGoal = onUpdateWorkUnitGoal,
+							onRenameWorkUnit = onRenameWorkUnit,
 							onUpdateWorkUnitConfig = onUpdateWorkUnitConfig,
 							onMarkWorkUnitConfigDraftDirty = onMarkWorkUnitConfigDraftDirty,
 							onLoadLatestWorkUnitConfig = onLoadLatestWorkUnitConfig,
@@ -388,6 +390,7 @@ fun RuntimeDetailsPanel(
 							onDismissTeam = requestTeamDismiss,
 							onBackToList = onBackToWorkUnitList,
 							onUpdateWorkUnitGoal = onUpdateWorkUnitGoal,
+							onRenameWorkUnit = onRenameWorkUnit,
 							onUpdateWorkUnitConfig = { workUnitId, configJson ->
 								onUpdateWorkUnitConfig(workUnitId, configJson, null)
 							},

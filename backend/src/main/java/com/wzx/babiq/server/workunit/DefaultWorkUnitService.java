@@ -227,6 +227,47 @@ public class DefaultWorkUnitService implements WorkUnitService {
 
     @Override
     @Transactional
+    public synchronized WorkUnit rename(String workUnitId, String name) {
+        if (workUnitId == null || workUnitId.isBlank()) {
+            throw new IllegalArgumentException("workUnitId must not be blank");
+        }
+        if (name == null || name.isBlank()) {
+            throw new IllegalArgumentException("WorkUnit name must not be blank");
+        }
+        WorkUnit workUnit = repository.findById(workUnitId)
+                .orElseThrow(() -> new IllegalArgumentException("WorkUnit does not exist: " + workUnitId));
+        if (workUnit.removed() || STATUS_REMOVED.equals(workUnit.status())) {
+            throw new IllegalStateException("Removed WorkUnit cannot be renamed");
+        }
+        if (STATUS_RUNNING.equals(workUnit.status())) {
+            throw new IllegalStateException("Running WorkUnit cannot be renamed");
+        }
+        String trimmedName = name.trim().replaceAll("\\s+", " ");
+        String normalizedName = normalizeName(trimmedName);
+        repository.findVisibleByName(workUnit.threadId(), workUnit.kind(), normalizedName)
+                .filter(existing -> !existing.workUnitId().equals(workUnit.workUnitId()))
+                .ifPresent(existing -> {
+                    throw new IllegalStateException("duplicate WorkUnit name: " + trimmedName);
+                });
+        Instant now = Instant.now();
+        return repository.save(new WorkUnit(
+                workUnit.workUnitId(),
+                workUnit.threadId(),
+                workUnit.kind(),
+                trimmedName,
+                normalizedName,
+                workUnit.status(),
+                workUnit.currentGoalId(),
+                workUnit.cwd(),
+                workUnit.sandboxMode(),
+                workUnit.removed(),
+                workUnit.removedAt(),
+                workUnit.createdAt(),
+                now));
+    }
+
+    @Override
+    @Transactional
     public WorkUnitConfig updateConfig(String workUnitId, String configJson, String structureJson) {
         if (workUnitId == null || workUnitId.isBlank()) {
             throw new IllegalArgumentException("工作容器 id 不能为空");

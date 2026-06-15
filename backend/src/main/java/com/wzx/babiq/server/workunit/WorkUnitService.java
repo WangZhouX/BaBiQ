@@ -71,6 +71,11 @@ public interface WorkUnitService {
      */
     WorkUnitGoal updateGoal(String goalId, String goalText);
 
+    /**
+     * 修改工作容器的显示名称，并同步用于复用/去重的 normalizedName。
+     */
+    WorkUnit rename(String workUnitId, String name);
+
     default WorkUnitConfig updateConfig(String workUnitId, String configJson) {
         return updateConfig(workUnitId, configJson, null);
     }

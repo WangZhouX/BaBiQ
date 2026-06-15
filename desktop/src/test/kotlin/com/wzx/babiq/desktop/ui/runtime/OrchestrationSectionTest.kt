@@ -300,6 +300,72 @@ class OrchestrationSectionTest {
 	}
 
 	@Test
+	fun `orchestration configuration detail exposes completed run records only`() {
+		val rawSummary = """
+			{"OverAllState":{"data":{
+			  "node_1_output":{"text":"已修改 H:\\aaa\\index.html，内容为：你好"},
+			  "node_2_output":{"text":"已创建 H:\\aaa\\111.html，内容为：大家好"}
+			}}}
+		""".trimIndent()
+		val workUnit = WorkUnitInfo(
+			workUnitId = "wu_flow",
+			threadId = "thr_1",
+			kind = "orchestration",
+			name = "p6-smoke-test",
+			status = "completed",
+			currentGoalId = "goal_done",
+			cwd = "H:\\aaa",
+			sandboxMode = "FULL_ACCESS",
+			goals = listOf(
+				WorkUnitGoalInfo(
+					goalId = "goal_failed",
+					workUnitId = "wu_flow",
+					goalText = "failed attempt",
+					status = "failed",
+					summary = "失败记录不应该出现在完成记录中",
+					completedAt = "2026-06-14T14:50:00Z",
+				),
+				WorkUnitGoalInfo(
+					goalId = "goal_team",
+					workUnitId = "wu_flow",
+					goalText = "team attempt recorded on the same container",
+					status = "completed",
+					runRefType = "team",
+					runRefId = "team_done",
+					summary = "团队协作已完成",
+					completedAt = "2026-06-14T14:51:00Z",
+				),
+				WorkUnitGoalInfo(
+					goalId = "goal_done",
+					workUnitId = "wu_flow",
+					goalText = "修改 html 并新增文件",
+					status = "completed",
+					runRefType = "orchestration",
+					runRefId = "orch_done",
+					summary = rawSummary,
+					completedAt = "2026-06-14T14:52:21Z",
+				),
+			),
+		)
+
+		val model = buildOrchestrationSectionModel(
+			OrchestrationUiState(configuringWorkUnit = workUnit),
+			modelLabel = "deepseek-v4-pro",
+		)
+
+		val records = assertNotNull(model.config?.completedRuns)
+		assertEquals(1, records.size)
+		assertEquals("goal_done", records.single().goalId)
+		assertTrue(records.single().summary.contains("index.html"))
+		assertTrue(records.single().summary.contains("111.html"))
+		assertFalse(records.single().summary.contains("OverAllState"))
+		assertFalse(records.single().summary.contains("失败记录"))
+		assertFalse(records.single().summary.contains("团队协作已完成"))
+		assertTrue(records.single().completedAtLabel?.contains("T") == false)
+		assertTrue((records.single().completedAtLabel?.length ?: 0) <= 12)
+	}
+
+	@Test
 	fun `orchestration section model preserves parallel topology from saved configuration`() {
 		val workUnit = WorkUnitInfo(
 			workUnitId = "wu_flow",

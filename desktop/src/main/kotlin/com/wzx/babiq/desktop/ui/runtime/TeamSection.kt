@@ -139,6 +139,7 @@ fun TeamSection(
 	onDismissTeam: () -> Unit = {},
 	onBackToList: () -> Unit = {},
 	onUpdateWorkUnitGoal: (String, String, String) -> Unit = { _, _, _ -> },
+	onRenameWorkUnit: (String, String) -> Unit = { _, _ -> },
 	onUpdateWorkUnitConfig: (String, String) -> Unit = { _, _ -> },
 	onSendTeamMessage: (String, String) -> Unit = { _, _ -> },
 ) {
@@ -196,6 +197,7 @@ fun TeamSection(
 					providerState = providerState,
 					onStart = onStartWorkUnit,
 					onUpdateGoal = onUpdateWorkUnitGoal,
+					onRenameWorkUnit = onRenameWorkUnit,
 					onUpdateConfig = onUpdateWorkUnitConfig,
 				)
 			}
@@ -249,6 +251,7 @@ private fun TeamConfigPanel(
 	providerState: ProviderState,
 	onStart: (String) -> Unit,
 	onUpdateGoal: (String, String, String) -> Unit,
+	onRenameWorkUnit: (String, String) -> Unit,
 	onUpdateConfig: (String, String) -> Unit,
 ) {
 	var selectedMemberId by remember(detail.workUnitId, members) {
@@ -264,12 +267,28 @@ private fun TeamConfigPanel(
 	var draftGoal by remember(detail.editableGoalId, detail.editableGoalText) {
 		mutableStateOf(detail.editableGoalText ?: "")
 	}
+	var draftWorkUnitName by remember(detail.workUnitId, detail.name) {
+		mutableStateOf(detail.name)
+	}
 	val modelOptions = nodeModelOptions(providerState, detail.modelLabel)
 	val selectedModelValue = selectedMember?.let { selectedModelValues[it.memberId] ?: it.modelValue }
 	val memberChanged = selectedMember != null &&
 		draftTask.isNotBlank() &&
 		(draftTask != selectedMember.task || selectedModelValue != selectedMember.modelValue)
 	Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+		OutlinedTextField(
+			value = draftWorkUnitName,
+			onValueChange = { draftWorkUnitName = it },
+			label = { Text("团队名称") },
+			modifier = Modifier.fillMaxWidth(),
+			singleLine = true,
+		)
+		Button(
+			onClick = { onRenameWorkUnit(detail.workUnitId, draftWorkUnitName.trim()) },
+			enabled = draftWorkUnitName.trim().isNotBlank() && draftWorkUnitName.trim() != detail.name,
+		) {
+			Text("保存名称")
+		}
 		Text("团队目标", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
 		detail.editableGoalId?.let { goalId ->
 			OutlinedTextField(

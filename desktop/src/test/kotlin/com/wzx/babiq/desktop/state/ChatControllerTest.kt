@@ -62,6 +62,7 @@ import com.wzx.babiq.desktop.protocol.WorkUnitGoalUpdateResult
 import com.wzx.babiq.desktop.protocol.WorkUnitRemoveResult
 import com.wzx.babiq.desktop.protocol.WorkUnitGoalInfo
 import com.wzx.babiq.desktop.protocol.WorkUnitInfo
+import com.wzx.babiq.desktop.protocol.WorkUnitNameUpdateResult
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -1180,6 +1181,86 @@ class ChatControllerTest {
 	}
 
 	@Test
+	fun `renameWorkUnit saves container name through backend and refreshes detail`() = runTest {
+		val workUnit = WorkUnitInfo(
+			workUnitId = "wu_1",
+			threadId = "thread-1",
+			kind = "orchestration",
+			name = "old-flow",
+			status = "waiting_config",
+			currentGoalId = "goal_1",
+			cwd = "H:\\aaa",
+			sandboxMode = "FULL_ACCESS",
+			goals = listOf(WorkUnitGoalInfo("goal_1", "wu_1", "old goal", "pending")),
+		)
+		val gateway = FakeGateway(workUnits = WorkUnitListResult(listOf(workUnit)))
+		val controller = ChatController(gateway, backgroundScope)
+		controller.connect()
+		controller.openThread("thread-1")
+		advanceUntilIdle()
+
+		controller.configureWorkUnit("wu_1")
+		advanceUntilIdle()
+		controller.renameWorkUnit("wu_1", "new-flow")
+		advanceUntilIdle()
+
+		assertTrue(gateway.calls.contains("renameWorkUnit:thread-1:wu_1:new-flow"))
+		assertEquals("new-flow", controller.state.value.workUnitState.selectedDetail?.name)
+		assertEquals("new-flow", controller.state.value.orchestrationState.configuringWorkUnit?.name)
+		assertEquals("wu_1", controller.state.value.workUnitState.selectedWorkUnitId)
+		assertTrue(controller.state.value.runtimeExpanded)
+	}
+
+	@Test
+	fun `renameWorkUnit keeps dirty orchestration draft structure`() = runTest {
+		val staleSerialConfig = """{"topology":"sequential","nodes":[{"id":"node_1","task":"old"}]}"""
+		val staleSerialStructure =
+			"""{"root":{"groupId":"g_root","topology":"SEQUENTIAL","children":[{"nodeId":"node_1"}]}}"""
+		val localParallelConfig =
+			"""{"topology":"sequential","nodes":[{"id":"node_1","task":"draft"},{"id":"node_2","task":"draft"}]}"""
+		val localParallelStructure =
+			"""{"root":{"groupId":"g_root","topology":"PARALLEL","children":[{"nodeId":"node_1"},{"nodeId":"node_2"}]}}"""
+		val staleWorkUnit = WorkUnitInfo(
+			workUnitId = "wu_1",
+			threadId = "thread-1",
+			kind = "orchestration",
+			name = "old-flow",
+			status = "waiting_config",
+			currentGoalId = "goal_1",
+			cwd = "H:\\aaa",
+			sandboxMode = "FULL_ACCESS",
+			configJson = staleSerialConfig,
+			structureJson = staleSerialStructure,
+			goals = listOf(WorkUnitGoalInfo("goal_1", "wu_1", "old goal", "pending")),
+		)
+		val localDraft = staleWorkUnit.copy(
+			configJson = localParallelConfig,
+			structureJson = localParallelStructure,
+		)
+		val gateway = FakeGateway(workUnits = WorkUnitListResult(listOf(staleWorkUnit)))
+		val controller = ChatController(
+			gateway,
+			backgroundScope,
+			initialState = AppState(
+				connectionState = ConnectionState.Connected,
+				currentThreadId = "thread-1",
+				workUnitState = WorkUnitUiState().replaceAll(listOf(staleWorkUnit)).select("wu_1"),
+				orchestrationState = OrchestrationUiState(configuringWorkUnit = localDraft)
+					.markConfigDraftDirty("wu_1"),
+			),
+		)
+
+		controller.renameWorkUnit("wu_1", "new-flow")
+		advanceUntilIdle()
+
+		val detail = controller.state.value.orchestrationState.configuringWorkUnit
+		assertEquals("new-flow", detail?.name)
+		assertEquals(localParallelConfig, detail?.configJson)
+		assertEquals(localParallelStructure, detail?.structureJson)
+		assertEquals("wu_1", controller.state.value.orchestrationState.configDraftWorkUnitId)
+	}
+
+	@Test
 	fun `agent work unit update prompts latest config conflict when local orchestration draft is dirty`() = runTest {
 		val localDraft = WorkUnitInfo(
 			workUnitId = "wu_1",
@@ -1672,6 +1753,24 @@ class ChatControllerTest {
 		override suspend fun removeRuntimeItem(itemId: String, type: String): RuntimeItemRemoveResult {
 			calls += "removeRuntimeItem:$itemId:$type"
 			return RuntimeItemRemoveResult(itemId, type, "removed", true)
+		}
+
+		override suspend fun updateWorkUnitName(
+			threadId: String,
+			workUnitId: String,
+			name: String,
+		): WorkUnitNameUpdateResult {
+			calls += "renameWorkUnit:$threadId:$workUnitId:$name"
+			val existing = workUnits.workUnits.firstOrNull { it.workUnitId == workUnitId }
+			return WorkUnitNameUpdateResult(
+				workUnit = (existing ?: WorkUnitInfo(
+					workUnitId = workUnitId,
+					threadId = threadId,
+					kind = "orchestration",
+					name = "old-flow",
+					status = "waiting_config",
+				)).copy(name = name),
+			)
 		}
 
 		override suspend fun updateWorkUnitGoal(

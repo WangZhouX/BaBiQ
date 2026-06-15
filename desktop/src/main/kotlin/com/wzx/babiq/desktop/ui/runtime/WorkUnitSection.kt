@@ -28,8 +28,19 @@ import com.wzx.babiq.desktop.protocol.FlowStructureDto
 import com.wzx.babiq.desktop.protocol.WorkUnitConfiguration
 import com.wzx.babiq.desktop.protocol.WorkUnitGoalInfo
 import com.wzx.babiq.desktop.protocol.WorkUnitInfo
+import com.wzx.babiq.desktop.protocol.protocolJson
 import com.wzx.babiq.desktop.state.WorkUnitUiState
 import com.wzx.babiq.desktop.ui.theme.BaBiQColors
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import java.time.Instant
+import java.time.LocalDateTime
+import java.time.OffsetDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 data class WorkUnitSectionModel(
 	val visible: Boolean,
@@ -53,6 +64,7 @@ data class WorkUnitRowModel(
 
 data class WorkUnitDetailModel(
 	val workUnitId: String,
+	val name: String,
 	val title: String,
 	val cwd: String,
 	val sandboxLabel: String,
@@ -67,12 +79,23 @@ data class WorkUnitDetailModel(
 	val structure: FlowStructureDto? = null,
 	val structureJson: String? = null,
 	val goals: List<WorkUnitGoalRowModel>,
+	val completedRuns: List<WorkUnitCompletedRunModel> = emptyList(),
 )
 
 data class WorkUnitGoalRowModel(
 	val goalId: String,
 	val label: String,
 )
+
+data class WorkUnitCompletedRunModel(
+	val goalId: String,
+	val title: String,
+	val summary: String,
+	val completedAt: String?,
+	val completedAtLabel: String? = completedAt,
+)
+
+private val WorkUnitCompletedTimeFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("MM-dd HH:mm")
 
 fun buildWorkUnitSectionModel(
 	state: WorkUnitUiState,
@@ -221,6 +244,7 @@ fun WorkUnitConfigCard(
 fun workUnitDetailModel(info: WorkUnitInfo, modelLabel: String): WorkUnitDetailModel =
 	WorkUnitDetailModel(
 		workUnitId = info.workUnitId,
+		name = info.name,
 		title = "${kindLabel(info.kind)} · ${info.name}",
 		cwd = info.cwd?.takeIf { it.isNotBlank() } ?: "未记录",
 		sandboxLabel = sandboxLabel(info.sandboxMode),
@@ -235,6 +259,13 @@ fun workUnitDetailModel(info: WorkUnitInfo, modelLabel: String): WorkUnitDetailM
 		structure = info.structure,
 		structureJson = info.structureJson,
 		goals = info.goals.map(::toGoalRowModel),
+		completedRuns = info.goals
+			.filter {
+				it.status.equals("completed", ignoreCase = true) &&
+					!it.summary.isNullOrBlank() &&
+					it.matchesWorkUnitRunRef(info.kind)
+			}
+			.map(::toCompletedRunModel),
 	)
 
 private fun toRowModel(item: ThreadItem.WorkUnit): WorkUnitRowModel =
@@ -262,6 +293,103 @@ private fun toGoalRowModel(goal: WorkUnitGoalInfo): WorkUnitGoalRowModel =
 		goalId = goal.goalId,
 		label = "${goalStatusLabel(goal.status)} · ${goal.goalText}",
 	)
+
+private fun toCompletedRunModel(goal: WorkUnitGoalInfo): WorkUnitCompletedRunModel =
+	WorkUnitCompletedRunModel(
+		goalId = goal.goalId,
+		title = goal.goalText.takeIf { it.isNotBlank() } ?: goal.runRefId ?: goal.goalId,
+		summary = compactCompletedRunSummary(goal.summary, goal.goalText),
+		completedAt = goal.completedAt,
+		completedAtLabel = formatWorkUnitCompletedAt(goal.completedAt),
+	)
+
+private fun compactCompletedRunSummary(summary: String?, fallback: String): String {
+	val text = summary.orEmpty().trim()
+	if (text.isBlank()) {
+		return fallback
+	}
+	val extracted = extractCompletedOutputTexts(text)
+	if (extracted.isNotEmpty()) {
+		return extracted.joinToString("\n\n")
+	}
+	return compactPlainSummary(text)
+}
+
+private fun extractCompletedOutputTexts(summary: String): List<String> {
+	val root = try {
+		protocolJson.parseToJsonElement(summary)
+	} catch (_: SerializationException) {
+		return emptyList()
+	} catch (_: IllegalArgumentException) {
+		return emptyList()
+	}
+	val texts = linkedSetOf<String>()
+	root.asObjectOrNull()?.get("text")?.asStringOrNull()?.let { texts += compactPlainSummary(it) }
+	val data = root.asObjectOrNull()
+		?.get("OverAllState")
+		?.asObjectOrNull()
+		?.get("data")
+		?.asObjectOrNull()
+		?: root.asObjectOrNull()?.get("data")?.asObjectOrNull()
+		?: return texts.toList()
+	data.entries
+		.filter { it.key.endsWith("_output") }
+		.mapNotNull { (_, value) ->
+			value.asStringOrNull()
+				?: value.asObjectOrNull()?.get("text")?.asStringOrNull()
+				?: value.asObjectOrNull()?.get("output")?.asStringOrNull()
+		}
+		.map { compactPlainSummary(it, limit = 180) }
+		.filter { it.isNotBlank() }
+		.forEach { texts += it }
+	return texts.toList()
+}
+
+private fun JsonElement.asObjectOrNull(): JsonObject? = this as? JsonObject
+
+private fun JsonElement.asStringOrNull(): String? =
+	(this as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.isNotBlank() }
+
+private fun compactPlainSummary(summary: String, limit: Int = 220): String {
+	val compact = summary
+		.lineSequence()
+		.map { it.trim() }
+		.filter { it.isNotBlank() }
+		.joinToString(" ")
+		.replace(Regex("\\s+"), " ")
+		.trim()
+	return if (compact.length <= limit) compact else compact.take(limit - 3).trimEnd() + "..."
+}
+
+private fun WorkUnitGoalInfo.matchesWorkUnitRunRef(workUnitKind: String): Boolean {
+	val expected = when (workUnitKind.lowercase()) {
+		"orchestration" -> "orchestration"
+		"team" -> "team"
+		else -> null
+	} ?: return true
+	runRefType?.takeIf { it.isNotBlank() }?.let { return it.equals(expected, ignoreCase = true) }
+	runRefId?.takeIf { it.isNotBlank() }?.let { refId ->
+		return when {
+			refId.startsWith("orch_", ignoreCase = true) -> expected == "orchestration"
+			refId.startsWith("team_", ignoreCase = true) -> expected == "team"
+			else -> true
+		}
+	}
+	return true
+}
+
+internal fun formatWorkUnitCompletedAt(value: String?): String? {
+	val text = value?.trim()?.takeIf { it.isNotBlank() } ?: return null
+	return runCatching {
+		Instant.parse(text).atZone(ZoneId.systemDefault()).format(WorkUnitCompletedTimeFormatter)
+	}.recoverCatching {
+		OffsetDateTime.parse(text).atZoneSameInstant(ZoneId.systemDefault()).format(WorkUnitCompletedTimeFormatter)
+	}.recoverCatching {
+		LocalDateTime.parse(text).format(WorkUnitCompletedTimeFormatter)
+	}.getOrElse {
+		text.take(16).replace("T", " ")
+	}
+}
 
 private fun startActionLabel(info: WorkUnitInfo): String? =
 	when {

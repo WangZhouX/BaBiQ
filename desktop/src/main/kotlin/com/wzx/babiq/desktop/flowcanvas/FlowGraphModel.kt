@@ -127,6 +127,22 @@ data class FlowGraph(
 	 * 该方法先从结构树移除引用，再按目标位置重新插入；构造完成后仍会走 init 校验，
 	 * 因而深度和唯一引用约束会继续被测试锁住。
 	 */
+	fun canParallelizeWithPrevious(nodeId: String): Boolean =
+		nodeId in nodeMap &&
+			nodeMap[nodeId]?.removable != false &&
+			root.hasAdjacentNodeRef(nodeId, ParallelSiblingDirection.Previous)
+
+	fun canParallelizeWithNext(nodeId: String): Boolean =
+		nodeId in nodeMap &&
+			nodeMap[nodeId]?.removable != false &&
+			root.hasAdjacentNodeRef(nodeId, ParallelSiblingDirection.Next)
+
+	fun parallelizeWithPrevious(nodeId: String): FlowGraph =
+		parallelizeWithSibling(nodeId, ParallelSiblingDirection.Previous)
+
+	fun parallelizeWithNext(nodeId: String): FlowGraph =
+		parallelizeWithSibling(nodeId, ParallelSiblingDirection.Next)
+
 	fun moveEntry(nodeId: String, target: FlowDropTarget): FlowGraph {
 		if (nodeId !in nodeMap || nodeMap[nodeId]?.removable == false) {
 			return this
@@ -170,6 +186,16 @@ data class FlowGraph(
 			InsertMode.Routing -> root.insertGroup(target, node.id, FlowTopology.Routing)
 		}
 		return copy(nodes = nodes + node, root = nextRoot, selectedNodeId = node.id)
+	}
+
+	private fun parallelizeWithSibling(nodeId: String, direction: ParallelSiblingDirection): FlowGraph {
+		if (nodeId !in nodeMap || nodeMap[nodeId]?.removable == false) {
+			return this
+		}
+		if (!root.hasAdjacentNodeRef(nodeId, direction)) {
+			return this
+		}
+		return copy(root = root.parallelizeAdjacent(nodeId, direction), selectedNodeId = nodeId)
 	}
 
 	private fun validate() {
@@ -222,6 +248,11 @@ private enum class InsertMode {
 	Serial,
 	Parallel,
 	Routing,
+}
+
+private enum class ParallelSiblingDirection {
+	Previous,
+	Next,
 }
 
 private fun String?.toInsertTarget(): FlowInsertTarget =
@@ -317,6 +348,56 @@ private fun FlowEntry.Group.insertAfterGroup(groupId: String, nodeId: String): F
 	} else {
 		copy(children = children.take(index + 1) + FlowEntry.NodeRef(nodeId) + children.drop(index + 1))
 	}
+}
+
+private fun FlowEntry.Group.hasAdjacentNodeRef(nodeId: String, direction: ParallelSiblingDirection): Boolean {
+	val index = children.indexOfFirst { child -> child is FlowEntry.NodeRef && child.nodeId == nodeId }
+	if (index < 0) {
+		return false
+	}
+	val siblingIndex = when (direction) {
+		ParallelSiblingDirection.Previous -> index - 1
+		ParallelSiblingDirection.Next -> index + 1
+	}
+	val sibling = children.getOrNull(siblingIndex)
+	return sibling is FlowEntry.NodeRef || sibling is FlowEntry.Group && sibling.topology == FlowTopology.Parallel
+}
+
+private fun FlowEntry.Group.parallelizeAdjacent(nodeId: String, direction: ParallelSiblingDirection): FlowEntry.Group {
+	val index = children.indexOfFirst { child -> child is FlowEntry.NodeRef && child.nodeId == nodeId }
+	if (index < 0) {
+		return this
+	}
+	val siblingIndex = when (direction) {
+		ParallelSiblingDirection.Previous -> index - 1
+		ParallelSiblingDirection.Next -> index + 1
+	}
+	val sibling = children.getOrNull(siblingIndex)
+	val start = minOf(index, siblingIndex)
+	val end = maxOf(index, siblingIndex)
+	val current = children[index] as FlowEntry.NodeRef
+	val group = when (sibling) {
+		is FlowEntry.NodeRef -> {
+			val first = children[start] as FlowEntry.NodeRef
+			val second = children[end] as FlowEntry.NodeRef
+			FlowEntry.Group(
+				groupId = "g_${first.nodeId}",
+				topology = FlowTopology.Parallel,
+				children = listOf(first, second),
+			)
+		}
+		is FlowEntry.Group -> {
+			if (sibling.topology != FlowTopology.Parallel) {
+				return this
+			}
+			when (direction) {
+				ParallelSiblingDirection.Previous -> sibling.copy(children = sibling.children + current)
+				ParallelSiblingDirection.Next -> sibling.copy(children = listOf(current) + sibling.children)
+			}
+		}
+		else -> return this
+	}
+	return copy(children = children.take(start) + group + children.drop(end + 1))
 }
 
 private fun FlowEntry.Group.removeNode(nodeId: String): FlowEntry.Group =

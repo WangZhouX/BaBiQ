@@ -61,6 +61,8 @@ import com.wzx.babiq.desktop.protocol.WorkUnitListParams
 import com.wzx.babiq.desktop.protocol.WorkUnitListResult
 import com.wzx.babiq.desktop.protocol.WorkUnitGoalUpdateParams
 import com.wzx.babiq.desktop.protocol.WorkUnitGoalUpdateResult
+import com.wzx.babiq.desktop.protocol.WorkUnitNameUpdateParams
+import com.wzx.babiq.desktop.protocol.WorkUnitNameUpdateResult
 import com.wzx.babiq.desktop.protocol.WorkUnitRemoveParams
 import com.wzx.babiq.desktop.protocol.WorkUnitRemoveResult
 import java.util.concurrent.ConcurrentHashMap
@@ -248,6 +250,13 @@ interface AgentGateway {
 		goalId: String,
 		goalText: String,
 	): WorkUnitGoalUpdateResult
+
+	/** 修改工作容器显示名称，并由后端持久化。 */
+	suspend fun updateWorkUnitName(
+		threadId: String,
+		workUnitId: String,
+		name: String,
+	): WorkUnitNameUpdateResult
 
 	/** 保存编排节点或团队成员配置快照；不会启动执行。 */
 	suspend fun updateWorkUnitConfig(
@@ -822,6 +831,24 @@ class AgentClient(
 			),
 		)
 		return protocolJson.decodeFromJsonElement(WorkUnitGoalUpdateResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `workunit/name/update`，保存编排/团队工作容器的显示名称。
+	 */
+	override suspend fun updateWorkUnitName(
+		threadId: String,
+		workUnitId: String,
+		name: String,
+	): WorkUnitNameUpdateResult {
+		val response = request(
+			method = "workunit/name/update",
+			params = protocolJson.encodeToJsonElement(
+				WorkUnitNameUpdateParams.serializer(),
+				WorkUnitNameUpdateParams(threadId, workUnitId, name),
+			),
+		)
+		return protocolJson.decodeFromJsonElement(WorkUnitNameUpdateResult.serializer(), response.requireResult())
 	}
 
 	/**

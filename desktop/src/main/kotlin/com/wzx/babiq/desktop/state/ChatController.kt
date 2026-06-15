@@ -1120,6 +1120,62 @@ class ChatController(
 		}
 	}
 
+	fun renameWorkUnit(workUnitId: String, name: String) {
+		val detail = state.value.workUnitState.details.firstOrNull { it.workUnitId == workUnitId }
+		val threadId = state.value.currentThreadId ?: detail?.threadId ?: return
+		val normalizedName = name.trim()
+		if (workUnitId.isBlank() || normalizedName.isBlank()) {
+			return
+		}
+		scope.launch(start = CoroutineStart.UNDISPATCHED) {
+			_state.update {
+				it.copy(
+					runtimeExpanded = true,
+					workUnitState = it.workUnitState.select(workUnitId).copy(loading = true, error = null),
+				)
+			}
+			try {
+				val result = gateway.updateWorkUnitName(threadId, workUnitId, normalizedName)
+				_state.update {
+					val renamedWorkUnit = it.orchestrationState.preserveDirtyConfig(result.workUnit)
+					val refreshed = it.workUnitState.details
+						.filterNot { detail -> detail.workUnitId == renamedWorkUnit.workUnitId } + renamedWorkUnit
+					val nextWorkUnitState = it.workUnitState
+						.replaceAll(refreshed)
+						.select(renamedWorkUnit.workUnitId)
+						.copy(loading = false, error = null)
+					it.copy(
+						workUnitState = nextWorkUnitState,
+						orchestrationState = it.orchestrationState.refreshConfiguration(nextWorkUnitState.selectedDetail),
+						teamState = it.teamState.refreshConfiguration(nextWorkUnitState.selectedDetail),
+						lastError = null,
+					)
+				}
+			} catch (exception: Exception) {
+				val message = exception.message ?: "保存工作容器名称失败"
+				_state.update {
+					it.copy(
+						workUnitState = it.workUnitState.copy(loading = false, error = message),
+						lastError = message,
+					)
+				}
+			}
+		}
+	}
+
+	private fun OrchestrationUiState.preserveDirtyConfig(updated: WorkUnitInfo): WorkUnitInfo {
+		val draft = configuringWorkUnit
+		return if (
+			draft != null &&
+			configDraftWorkUnitId == updated.workUnitId &&
+			updated.kind.equals("orchestration", ignoreCase = true)
+		) {
+			updated.copy(configJson = draft.configJson, structureJson = draft.structureJson)
+		} else {
+			updated
+		}
+	}
+
 	fun markWorkUnitConfigDraftDirty(workUnitId: String) {
 		if (workUnitId.isBlank()) {
 			return

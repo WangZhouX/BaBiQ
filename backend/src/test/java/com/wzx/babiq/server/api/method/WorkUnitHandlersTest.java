@@ -6,6 +6,7 @@ import com.wzx.babiq.server.api.dto.WorkUnitListResult;
 import com.wzx.babiq.server.api.dto.WorkUnitConfigUpdateResult;
 import com.wzx.babiq.server.api.dto.WorkUnitGoalUpdateResult;
 import com.wzx.babiq.server.api.dto.WorkUnitRemoveResult;
+import com.wzx.babiq.server.api.dto.WorkUnitNameUpdateResult;
 import com.wzx.babiq.server.workunit.WorkUnit;
 import com.wzx.babiq.server.workunit.WorkUnitConfig;
 import com.wzx.babiq.server.workunit.WorkUnitGoal;
@@ -75,7 +76,32 @@ class WorkUnitHandlersTest {
     }
 
     @Test
-    @DisplayName("workunit/goal/update 直接保存待执行目标并返回刷新后的容器")
+    @DisplayName("workunit/name/update 修改容器名称并返回刷新后的容器")
+    void update_name_should_delegate_to_service_and_return_refreshed_work_unit() {
+        WorkUnitService service = mock(WorkUnitService.class);
+        WorkUnit existing = sampleWorkUnit("wu_1", "orchestration", "old-flow", "waiting_config", "goal_1", false);
+        WorkUnit renamed = sampleWorkUnit("wu_1", "orchestration", "new-flow", "waiting_config", "goal_1", false);
+        WorkUnitGoal goal = sampleGoal("goal_1", "wu_1", "edit html", "pending");
+        when(service.listVisible("thr_1")).thenReturn(List.of(existing));
+        when(service.rename("wu_1", "new-flow")).thenReturn(renamed);
+        when(service.listGoals("wu_1")).thenReturn(List.of(goal));
+
+        Object result = new WorkUnitNameUpdateHandler(service)
+                .handle(objectMapper.valueToTree(Map.of(
+                        "threadId", "thr_1",
+                        "workUnitId", "wu_1",
+                        "name", "new-flow"
+                )), null);
+
+        assertThat(result).isInstanceOf(WorkUnitNameUpdateResult.class);
+        WorkUnitNameUpdateResult update = (WorkUnitNameUpdateResult) result;
+        assertThat(update.workUnit().name()).isEqualTo("new-flow");
+        assertThat(update.workUnit().goals()).hasSize(1);
+        verify(service).rename("wu_1", "new-flow");
+    }
+
+    @Test
+    @DisplayName("workunit/goal/update 鐩存帴淇濆瓨寰呮墽琛岀洰鏍囧苟杩斿洖鍒锋柊鍚庣殑瀹瑰櫒")
     void update_goal_should_delegate_to_service_and_return_refreshed_work_unit() {
         WorkUnitService service = mock(WorkUnitService.class);
         WorkUnit workUnit = sampleWorkUnit("wu_1", "orchestration", "html测试", "waiting_config", "goal_1", false);

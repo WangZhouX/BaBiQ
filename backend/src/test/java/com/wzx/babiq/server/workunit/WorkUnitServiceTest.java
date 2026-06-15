@@ -154,6 +154,49 @@ class WorkUnitServiceTest {
     }
 
     @Test
+    void rename_should_update_visible_name_and_normalized_name_without_changing_goals() {
+        Thread thread = Thread.newThread("thr_wu_rename", "H:/aaa");
+        WorkUnitItem item = service.createOrAppend(
+                new WorkUnitCreateRequest("orchestration", "old flow name", "keep goal", null),
+                thread,
+                new Turn("turn_wu_rename", thread.id()),
+                thread.cwd(),
+                AgentRunPolicy.of(SandboxMode.WORKSPACE_WRITE, ApprovalPolicy.ON_REQUEST));
+
+        WorkUnit renamed = service.rename(item.workUnitId(), "  HTML Smoke Flow  ");
+
+        assertThat(renamed.name()).isEqualTo("HTML Smoke Flow");
+        assertThat(renamed.normalizedName()).isEqualTo("html smoke flow");
+        assertThat(service.listVisible(thread.id())).extracting(WorkUnit::name)
+                .containsExactly("HTML Smoke Flow");
+        assertThat(service.listGoals(item.workUnitId())).extracting(WorkUnitGoal::goalText)
+                .containsExactly("keep goal");
+    }
+
+    @Test
+    void rename_should_reject_duplicate_name_in_same_thread_and_kind() {
+        Thread thread = Thread.newThread("thr_wu_rename_dup", "H:/aaa");
+        WorkUnitItem first = service.createOrAppend(
+                new WorkUnitCreateRequest("orchestration", "first flow", "goal 1", null),
+                thread,
+                new Turn("turn_wu_rename_dup_1", thread.id()),
+                thread.cwd(),
+                AgentRunPolicy.of(SandboxMode.WORKSPACE_WRITE, ApprovalPolicy.ON_REQUEST));
+        WorkUnitItem second = service.createOrAppend(
+                new WorkUnitCreateRequest("orchestration", "second flow", "goal 2", null),
+                thread,
+                new Turn("turn_wu_rename_dup_2", thread.id()),
+                thread.cwd(),
+                AgentRunPolicy.of(SandboxMode.WORKSPACE_WRITE, ApprovalPolicy.ON_REQUEST));
+
+        assertThatThrownBy(() -> service.rename(second.workUnitId(), " FIRST   FLOW "))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("duplicate");
+        assertThat(service.listVisible(thread.id())).extracting(WorkUnit::workUnitId)
+                .containsExactly(second.workUnitId(), first.workUnitId());
+    }
+
+    @Test
     void mark_goal_failed_should_update_goal_and_container_status() {
         Thread thread = Thread.newThread("thr_wu_6", "H:/aaa");
         WorkUnitItem item = service.createOrAppend(

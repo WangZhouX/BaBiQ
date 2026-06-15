@@ -233,6 +233,7 @@ fun OrchestrationSection(
 	onDismissOrchestration: () -> Unit = {},
 	onBackToList: () -> Unit = {},
 	onUpdateWorkUnitGoal: (String, String, String) -> Unit = { _, _, _ -> },
+	onRenameWorkUnit: (String, String) -> Unit = { _, _ -> },
 	onUpdateWorkUnitConfig: (String, String, String?) -> Unit = { _, _, _ -> },
 	onMarkWorkUnitConfigDraftDirty: (String) -> Unit = {},
 	onLoadLatestWorkUnitConfig: (String) -> Unit = {},
@@ -280,6 +281,7 @@ fun OrchestrationSection(
 					detail = config,
 					providerState = providerState,
 					onUpdateGoal = onUpdateWorkUnitGoal,
+					onRenameWorkUnit = onRenameWorkUnit,
 					onUpdateConfig = onUpdateWorkUnitConfig,
 					configConflict = model.configConflict,
 					onConfigDraftChanged = onMarkWorkUnitConfigDraftDirty,
@@ -301,6 +303,7 @@ private fun OrchestrationConfigPanel(
 	detail: WorkUnitDetailModel,
 	providerState: ProviderState,
 	onUpdateGoal: (String, String, String) -> Unit,
+	onRenameWorkUnit: (String, String) -> Unit,
 	onUpdateConfig: (String, String, String?) -> Unit,
 	configConflict: WorkUnitConfigConflict?,
 	onConfigDraftChanged: (String) -> Unit,
@@ -313,6 +316,9 @@ private fun OrchestrationConfigPanel(
 	val graph = history.current
 	var draftGoal by remember(detail.editableGoalId, detail.editableGoalText) {
 		mutableStateOf(detail.editableGoalText ?: "")
+	}
+	var draftWorkUnitName by remember(detail.workUnitId, detail.name) {
+		mutableStateOf(detail.name)
 	}
 	val selectedNode = graph.selectedNode
 	var draftTitle by remember(detail.workUnitId, selectedNode?.id, selectedNode?.title) {
@@ -346,6 +352,7 @@ private fun OrchestrationConfigPanel(
 	fun applyGraphEdit(next: FlowGraph) {
 		val nextHistory = applyOrchestrationGraphEdit(history, next)
 		history = nextHistory
+		onConfigDraftChanged(detail.workUnitId)
 		persistGraph(nextHistory.current)
 	}
 	Column(
@@ -364,12 +371,26 @@ private fun OrchestrationConfigPanel(
 					false
 				} else {
 					history = nextHistory
+					onConfigDraftChanged(detail.workUnitId)
 					persistGraph(nextHistory.current)
 					true
 				}
 		},
 		verticalArrangement = Arrangement.spacedBy(10.dp),
 	) {
+		OutlinedTextField(
+			value = draftWorkUnitName,
+			onValueChange = { draftWorkUnitName = it },
+			label = { Text("编排名称") },
+			modifier = Modifier.fillMaxWidth(),
+			singleLine = true,
+		)
+		Button(
+			onClick = { onRenameWorkUnit(detail.workUnitId, draftWorkUnitName.trim()) },
+			enabled = draftWorkUnitName.trim().isNotBlank() && draftWorkUnitName.trim() != detail.name,
+		) {
+			Text("保存名称")
+		}
 		configConflict?.let { conflict ->
 			WorkUnitConfigConflictBanner(
 				conflict = conflict,
@@ -441,6 +462,29 @@ private fun OrchestrationConfigPanel(
 						Text("删除节点")
 					}
 				}
+				Row(
+					horizontalArrangement = Arrangement.spacedBy(8.dp),
+					modifier = Modifier.fillMaxWidth(),
+				) {
+					OutlinedButton(
+						onClick = {
+							applyGraphEdit(graph.parallelizeWithPrevious(node.id))
+						},
+						enabled = graph.canParallelizeWithPrevious(node.id),
+						modifier = Modifier.weight(1f),
+					) {
+						Text("与上一节点并行")
+					}
+					OutlinedButton(
+						onClick = {
+							applyGraphEdit(graph.parallelizeWithNext(node.id))
+						},
+						enabled = graph.canParallelizeWithNext(node.id),
+						modifier = Modifier.weight(1f),
+					) {
+						Text("与下一节点并行")
+					}
+				}
 				OutlinedTextField(
 					value = draftTitle,
 					onValueChange = {
@@ -495,6 +539,37 @@ private fun OrchestrationConfigPanel(
 				) {
 					Text("保存节点")
 				}
+			}
+		}
+		CompletedRunRecords(detail.completedRuns)
+	}
+}
+
+@Composable
+private fun CompletedRunRecords(records: List<WorkUnitCompletedRunModel>) {
+	if (records.isEmpty()) {
+		return
+	}
+	Column(
+		modifier = Modifier
+			.fillMaxWidth()
+			.background(BaBiQColors.Accent.copy(alpha = 0.06f), RoundedCornerShape(8.dp))
+			.padding(10.dp),
+		verticalArrangement = Arrangement.spacedBy(8.dp),
+	) {
+		Text("已完成记录", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
+		records.forEach { record ->
+			Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+				Text(
+					record.title,
+					style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+					maxLines = 1,
+					overflow = TextOverflow.Ellipsis,
+				)
+				record.completedAtLabel?.let { completedAt ->
+					Text(completedAt, style = MaterialTheme.typography.labelSmall, color = BaBiQColors.Muted)
+				}
+				Text(record.summary, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
 			}
 		}
 	}

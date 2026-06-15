@@ -3,6 +3,8 @@ package com.wzx.babiq.desktop.flowcanvas
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class FlowGraphModelTest {
 
@@ -100,6 +102,72 @@ class FlowGraphModelTest {
 
 		assertEquals(FlowTopology.Parallel, group.topology)
 		assertEquals(listOf("scan", "write", "review"), group.children.map { (it as FlowEntry.NodeRef).nodeId })
+	}
+
+	@Test
+	fun `existing serial node can become parallel with previous node`() {
+		val graph = FlowGraph()
+			.insertSerial(null, FlowNode("edit", "edit", "write", "edit html"))
+			.insertSerial("edit", FlowNode("create", "create", "write", "create html"))
+
+		assertFalse(graph.canParallelizeWithPrevious("edit"))
+		assertTrue(graph.canParallelizeWithPrevious("create"))
+		val parallel = graph.parallelizeWithPrevious("create")
+		val group = parallel.root.children.single() as FlowEntry.Group
+
+		assertEquals(FlowTopology.Parallel, group.topology)
+		assertEquals(listOf("edit", "create"), group.children.map { (it as FlowEntry.NodeRef).nodeId })
+		assertEquals("create", parallel.selectedNodeId)
+	}
+
+	@Test
+	fun `existing serial node can become parallel with next node`() {
+		val graph = FlowGraph()
+			.insertSerial(null, FlowNode("edit", "edit", "write", "edit html"))
+			.insertSerial("edit", FlowNode("create", "create", "write", "create html"))
+
+		assertTrue(graph.canParallelizeWithNext("edit"))
+		assertFalse(graph.canParallelizeWithNext("create"))
+		val parallel = graph.parallelizeWithNext("edit")
+		val group = parallel.root.children.single() as FlowEntry.Group
+
+		assertEquals(FlowTopology.Parallel, group.topology)
+		assertEquals(listOf("edit", "create"), group.children.map { (it as FlowEntry.NodeRef).nodeId })
+		assertEquals("edit", parallel.selectedNodeId)
+	}
+
+	@Test
+	fun `existing serial node can join previous parallel group`() {
+		val graph = FlowGraph()
+			.insertSerial(null, FlowNode("edit", "edit", "write", "edit html"))
+			.insertParallel("edit", FlowNode("create", "create", "write", "create html"))
+			.insertSerial(FlowInsertTarget.AfterGroup("g_edit"), FlowNode("review", "review", "review", "review"))
+
+		assertTrue(graph.canParallelizeWithPrevious("review"))
+		val parallel = graph.parallelizeWithPrevious("review")
+		val group = parallel.root.children.single() as FlowEntry.Group
+
+		assertEquals("g_edit", group.groupId)
+		assertEquals(FlowTopology.Parallel, group.topology)
+		assertEquals(listOf("edit", "create", "review"), group.children.map { (it as FlowEntry.NodeRef).nodeId })
+		assertEquals("review", parallel.selectedNodeId)
+	}
+
+	@Test
+	fun `existing serial node can join next parallel group`() {
+		val graph = FlowGraph()
+			.insertSerial(null, FlowNode("scan", "scan", "read", "scan"))
+			.insertSerial("scan", FlowNode("edit", "edit", "write", "edit html"))
+			.insertParallel("edit", FlowNode("create", "create", "write", "create html"))
+
+		assertTrue(graph.canParallelizeWithNext("scan"))
+		val parallel = graph.parallelizeWithNext("scan")
+		val group = parallel.root.children.single() as FlowEntry.Group
+
+		assertEquals("g_edit", group.groupId)
+		assertEquals(FlowTopology.Parallel, group.topology)
+		assertEquals(listOf("scan", "edit", "create"), group.children.map { (it as FlowEntry.NodeRef).nodeId })
+		assertEquals("scan", parallel.selectedNodeId)
 	}
 
 	@Test

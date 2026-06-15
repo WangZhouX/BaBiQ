@@ -35,6 +35,37 @@ import static org.mockito.Mockito.when;
 class FlowOrchestrationToolWorkUnitTest {
 
     @Test
+    void compact_flow_completion_summary_should_extract_node_outputs_from_overall_state_json() {
+        String rawSummary = """
+                {"OverAllState":{"data":{
+                  "node_1_output":{"text":"已修改 H:\\\\aaa\\\\index.html，内容为：你好"},
+                  "node_2_output":{"text":"已创建 H:\\\\aaa\\\\111.html，内容为：大家好"}
+                }}}
+                """;
+
+        String summary = FlowOrchestrationTool.compactFlowCompletionSummary(rawSummary);
+
+        assertThat(summary)
+                .contains("index.html", "你好", "111.html", "大家好")
+                .doesNotContain("OverAllState", "node_1_output", "node_2_output");
+    }
+
+    @Test
+    void compact_flow_completion_summary_should_limit_verbose_node_outputs() {
+        String verbose = "节点执行完成。".repeat(80);
+        String rawSummary = """
+                {"OverAllState":{"data":{
+                  "node_1_output":{"text":"%s"}
+                }}}
+                """.formatted(verbose);
+
+        String summary = FlowOrchestrationTool.compactFlowCompletionSummary(rawSummary);
+
+        assertThat(summary).hasSizeLessThanOrEqualTo(260);
+        assertThat(summary).endsWith("...");
+    }
+
+    @Test
     void orchestrate_flow_should_refuse_without_work_unit_start_context() throws Exception {
         FlowOrchestrationService flowService = mock(FlowOrchestrationService.class);
         OrchestrationRepository repository = mock(OrchestrationRepository.class);

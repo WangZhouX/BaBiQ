@@ -85,6 +85,9 @@ fun BaBiQDesktopApp(config: DesktopConfig = DesktopConfig()) {
 			onUpdateWorkUnitGoal = { workUnitId, goalId, goalText ->
 				controller.updateWorkUnitGoal(workUnitId, goalId, goalText)
 			},
+			onRenameWorkUnit = { workUnitId, name ->
+				controller.renameWorkUnit(workUnitId, name)
+			},
 			onUpdateWorkUnitConfig = { workUnitId, configJson, structureJson ->
 				controller.updateWorkUnitConfig(workUnitId, configJson, structureJson)
 			},
