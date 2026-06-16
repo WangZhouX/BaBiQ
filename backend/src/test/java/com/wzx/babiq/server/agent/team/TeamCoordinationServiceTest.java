@@ -156,6 +156,40 @@ class TeamCoordinationServiceTest {
                 .doesNotContain("summary_old");
     }
 
+    @Test
+    void run_should_return_aggregated_summary_from_member_outputs_and_write_result_markdown() throws Exception {
+        CapturingTeamMemberAgentFactory memberFactory = new CapturingTeamMemberAgentFactory();
+        InMemoryTeamRepository repository = new InMemoryTeamRepository(teamRecord("team_result", "turn_result"));
+        SupervisorRoutingStrategy routingStrategy = (spec, timeline, round) -> round == 0
+                ? new SupervisorRouteDecision("writer", "先让 writer 产出结果", 0.9d)
+                : SupervisorRouteDecision.finish("writer 已完成");
+        TeamCoordinationService service = service(memberFactory, routingStrategy, repository,
+                new FixedTeamMemberObservationReader(1, 16));
+        BabiqTeamSpec spec = new BabiqTeamSpec(
+                "team_result",
+                "团队结果",
+                "验证团队结果聚合",
+                List.of(member("writer", 1)),
+                4,
+                true,
+                true,
+                SandboxMode.WORKSPACE_WRITE);
+
+        TeamExecutionResult result = service.run(spec, new ToolContext(Map.of()));
+
+        assertThat(result.status()).isEqualTo("completed");
+        assertThat(result.summary())
+                .contains("writer done")
+                .contains("result.md")
+                .isNotEqualTo("团队协作已完成");
+        assertThat(repository.artifacts)
+                .filteredOn(artifact -> artifact.artifactType().equals("RESULT"))
+                .singleElement()
+                .satisfies(artifact -> assertThat(artifact.content()).contains("writer done"));
+        assertThat(Files.readString(tempDir.resolve("team_result").resolve("result.md")))
+                .contains("writer done");
+    }
+
     private BabiqTeamMember member(String name, int order) {
         return new BabiqTeamMember(
                 "member_" + name,

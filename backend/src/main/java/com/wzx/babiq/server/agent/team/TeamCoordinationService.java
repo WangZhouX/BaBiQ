@@ -98,7 +98,7 @@ public class TeamCoordinationService {
             int round = readRound(finalState);
             captureMemberOutputs(spec, finalState, round);
             String currentAgent = finalState == null ? null : String.valueOf(finalState.value("next", "FINISH"));
-            return new TeamExecutionResult("completed", "团队协作已完成", round, currentAgent);
+            return new TeamExecutionResult("completed", aggregateResult(spec), round, currentAgent);
         } catch (Exception exception) {
             String message = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
             return new TeamExecutionResult("failed", message, 0, null);
@@ -279,6 +279,33 @@ public class TeamCoordinationService {
             }
         }
         return -1;
+    }
+
+    private String aggregateResult(BabiqTeamSpec spec) {
+        List<TeamMessageRecord> summaries = repository.listMessages(spec.teamId()).stream()
+                .filter(message -> "member_summary".equals(message.messageType()))
+                .toList();
+        String body;
+        if (summaries.isEmpty()) {
+            body = "暂无成员产出摘要。";
+        } else {
+            body = summaries.stream()
+                    .map(message -> "### " + message.fromAgent() + " / round " + message.round() + "\n"
+                            + message.content())
+                    .reduce((left, right) -> left + "\n\n" + right)
+                    .orElse("");
+        }
+        String markdown = """
+                # 团队结果：%s
+
+                目标：%s
+
+                ## 成员摘要
+
+                %s
+                """.formatted(spec.title(), spec.goal(), body).trim();
+        TeamArtifactRecord result = memoryWorkspace.writeResult(spec.teamId(), markdown);
+        return "团队结果已聚合，详情见 " + result.relativePath() + "\n\n" + body;
     }
 
     private SupervisorRouteDecision normalize(BabiqTeamSpec spec, SupervisorRouteDecision decision, int round) {
