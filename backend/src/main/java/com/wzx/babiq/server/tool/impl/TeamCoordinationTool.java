@@ -26,7 +26,10 @@ import org.springframework.stereotype.Component;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 /**
@@ -226,24 +229,41 @@ public class TeamCoordinationTool implements Tool {
 
     private List<TeamMemberRecord> memberRecords(BabiqTeamSpec spec, String status,
                                                  int toolCalls, int tokens, String summary) {
+        Map<String, TeamMemberRecord> existingByMemberId = repository.listMembers(spec.teamId()).stream()
+                .collect(Collectors.toMap(TeamMemberRecord::memberId, Function.identity(), (left, right) -> left));
         return spec.members().stream()
-                .map(member -> new TeamMemberRecord(
-                        spec.teamId(),
-                        member.memberId(),
-                        member.name(),
-                        member.displayName(),
-                        member.role(),
-                        member.mode().name(),
-                        String.join(",", member.toolNames()),
-                        status,
-                        member.order(),
-                        toolCalls,
-                        tokens,
-                        summary))
+                .map(member -> memberRecord(spec.teamId(), member, status, toolCalls, tokens, summary,
+                        existingByMemberId.get(member.memberId())))
                 .toList();
     }
 
+    private TeamMemberRecord memberRecord(String teamId,
+                                          BabiqTeamMember member,
+                                          String status,
+                                          int toolCalls,
+                                          int tokens,
+                                          String summary,
+                                          TeamMemberRecord existing) {
+        return new TeamMemberRecord(
+                teamId,
+                member.memberId(),
+                member.name(),
+                member.displayName(),
+                member.role(),
+                member.mode().name(),
+                String.join(",", member.toolNames()),
+                status,
+                member.order(),
+                existing == null ? toolCalls : existing.toolCallCount(),
+                existing == null ? tokens : existing.tokenEstimate(),
+                existing == null || existing.summary() == null || existing.summary().isBlank()
+                        ? summary
+                        : existing.summary());
+    }
+
     private TeamItem item(BabiqTeamSpec spec, String status, String summary, int round, String currentAgent) {
+        Map<String, TeamMemberRecord> existingByMemberId = repository.listMembers(spec.teamId()).stream()
+                .collect(Collectors.toMap(TeamMemberRecord::memberId, Function.identity(), (left, right) -> left));
         return new TeamItem(
                 "it_" + spec.teamId(),
                 TYPE,
@@ -257,17 +277,26 @@ public class TeamCoordinationTool implements Tool {
                 round,
                 spec.maxRounds(),
                 spec.members().stream()
-                        .map(member -> new TeamItem.MemberStatus(
-                                member.memberId(),
-                                member.name(),
-                                member.displayName(),
-                                status,
-                                member.mode().name(),
-                                member.task(),
-                                0,
-                                0,
-                                summary))
+                        .map(member -> memberStatus(member, status, summary, existingByMemberId.get(member.memberId())))
                         .toList());
+    }
+
+    private TeamItem.MemberStatus memberStatus(BabiqTeamMember member,
+                                               String status,
+                                               String summary,
+                                               TeamMemberRecord existing) {
+        return new TeamItem.MemberStatus(
+                member.memberId(),
+                member.name(),
+                member.displayName(),
+                status,
+                member.mode().name(),
+                member.task(),
+                existing == null ? 0 : existing.toolCallCount(),
+                existing == null ? 0 : existing.tokenEstimate(),
+                existing == null || existing.summary() == null || existing.summary().isBlank()
+                        ? summary
+                        : existing.summary());
     }
 
     private void emit(ItemEmitter emitter, TeamItem item) {

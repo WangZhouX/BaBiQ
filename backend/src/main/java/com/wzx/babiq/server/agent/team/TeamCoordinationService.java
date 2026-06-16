@@ -14,9 +14,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.stereotype.Service;
 
+import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * P6-3 团队协作运行服务。
@@ -37,6 +39,14 @@ public class TeamCoordinationService {
     private final TeamRepository repository;
     /** JSON 序列化器，用于审计路由决策。 */
     private final ObjectMapper objectMapper;
+    /** 团队记忆工作区，负责保存成员完整输出。 */
+    private final TeamMemoryWorkspace memoryWorkspace;
+    /** 成员摘要卡构建器。 */
+    private final TeamSummaryCardBuilder summaryCardBuilder;
+    /** 成员观测读取器，复用工具调用归属记录。 */
+    private final TeamMemberObservationReader observationReader;
+    /** 团队记忆配置。 */
+    private final TeamMemoryProperties memoryProperties;
 
     /**
      * 创建团队协作服务。
@@ -44,11 +54,19 @@ public class TeamCoordinationService {
     public TeamCoordinationService(TeamMemberAgentFactory memberAgentFactory,
                                    SupervisorRoutingStrategy routingStrategy,
                                    TeamRepository repository,
-                                   ObjectMapper objectMapper) {
+                                   ObjectMapper objectMapper,
+                                   TeamMemoryWorkspace memoryWorkspace,
+                                   TeamSummaryCardBuilder summaryCardBuilder,
+                                   TeamMemberObservationReader observationReader,
+                                   TeamMemoryProperties memoryProperties) {
         this.memberAgentFactory = memberAgentFactory;
         this.routingStrategy = routingStrategy;
         this.repository = repository;
         this.objectMapper = objectMapper;
+        this.memoryWorkspace = memoryWorkspace;
+        this.summaryCardBuilder = summaryCardBuilder;
+        this.observationReader = observationReader;
+        this.memoryProperties = memoryProperties;
     }
 
     /**
@@ -59,6 +77,7 @@ public class TeamCoordinationService {
             throw new IllegalStateException("团队必须先完成运行前整体审批并冻结");
         }
         try {
+            memoryWorkspace.initTeam(spec.teamId(), spec);
             BaseCheckpointSaver saver = new MemorySaver();
             CompileConfig compileConfig = CompileConfig.builder()
                     .saverConfig(SaverConfig.builder().register(saver).build())
@@ -67,12 +86,106 @@ public class TeamCoordinationService {
             CompiledGraph compiledGraph = graph.compile(compileConfig);
             OverAllState finalState = compiledGraph.invoke(Map.of("input", spec.goal())).orElse(null);
             int round = readRound(finalState);
+            captureMemberOutputs(spec, finalState, round);
             String currentAgent = finalState == null ? null : String.valueOf(finalState.value("next", "FINISH"));
             return new TeamExecutionResult("completed", "团队协作已完成", round, currentAgent);
         } catch (Exception exception) {
             String message = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
             return new TeamExecutionResult("failed", message, 0, null);
         }
+    }
+
+    private void captureMemberOutputs(BabiqTeamSpec spec, OverAllState finalState, int finalRound) {
+        if (finalState == null) {
+            return;
+        }
+        TeamRecord record = repository.findByTeamId(spec.teamId()).orElse(null);
+        for (BabiqTeamMember member : spec.members()) {
+            Optional<String> fullText = readOutput(finalState, member.outputKey());
+            if (fullText.isEmpty()) {
+                continue;
+            }
+            int round = outputRound(spec, member, finalRound);
+            TeamArtifactRecord artifact = memoryWorkspace.writeMemberOutput(
+                    spec.teamId(),
+                    round,
+                    member.name(),
+                    fullText.get());
+            String card = summaryCardBuilder.buildCard(
+                    member.name(),
+                    round,
+                    fullText.get(),
+                    Path.of(artifact.relativePath()),
+                    memoryProperties.memberSummaryMaxChars());
+            memoryWorkspace.appendIndexEntry(
+                    spec.teamId(),
+                    round,
+                    member.name(),
+                    oneLine(card),
+                    Path.of(artifact.relativePath()));
+            repository.saveMessage(memberSummaryMessage(spec, member, record, round, card));
+            TeamMemberObservation observation = observationReader.read(
+                    record == null ? null : record.turnId(),
+                    member.name(),
+                    fullText.get());
+            repository.updateMember(
+                    spec.teamId(),
+                    member.memberId(),
+                    "completed",
+                    observation.toolCallCount(),
+                    observation.tokenEstimate(),
+                    card);
+        }
+    }
+
+    private Optional<String> readOutput(OverAllState state, String outputKey) {
+        Object value = state.value(outputKey, null);
+        if (value == null) {
+            return Optional.empty();
+        }
+        if (value instanceof Optional<?> optional) {
+            value = optional.orElse(null);
+            if (value == null) {
+                return Optional.empty();
+            }
+        }
+        String text = String.valueOf(value);
+        return text.isBlank() ? Optional.empty() : Optional.of(text);
+    }
+
+    private int outputRound(BabiqTeamSpec spec, BabiqTeamMember member, int finalRound) {
+        return repository.listMessages(spec.teamId()).stream()
+                .filter(message -> "route".equals(message.messageType()))
+                .filter(message -> member.name().equals(message.toAgent()))
+                .mapToInt(TeamMessageRecord::round)
+                .max()
+                .orElse(Math.max(1, finalRound));
+    }
+
+    private TeamMessageRecord memberSummaryMessage(BabiqTeamSpec spec,
+                                                   BabiqTeamMember member,
+                                                   TeamRecord record,
+                                                   int round,
+                                                   String card) {
+        return new TeamMessageRecord(
+                spec.teamId(),
+                "msg_" + spec.teamId() + "_" + round + "_" + member.name() + "_summary",
+                record == null ? null : record.threadId(),
+                record == null ? null : record.turnId(),
+                member.name(),
+                "supervisor",
+                "member_summary",
+                card,
+                null,
+                round);
+    }
+
+    private String oneLine(String text) {
+        String normalized = text == null ? "" : text.replaceAll("\\s+", " ").trim();
+        if (normalized.length() <= 120) {
+            return normalized;
+        }
+        return normalized.substring(0, 120) + "...";
     }
 
     /**
