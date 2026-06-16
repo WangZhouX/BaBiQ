@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -118,6 +119,43 @@ class TeamCoordinationServiceTest {
                 });
     }
 
+    @Test
+    void run_should_pass_member_summary_timeline_to_supervisor_with_budget_truncation() {
+        CapturingTeamMemberAgentFactory memberFactory = new CapturingTeamMemberAgentFactory();
+        InMemoryTeamRepository repository = new InMemoryTeamRepository(teamRecord("team_timeline", "turn_timeline"));
+        repository.saveMessage(message("team_timeline", "route_old", "supervisor", "writer", "route", "先让 writer 执行", 1));
+        repository.saveMessage(message("team_timeline", "summary_old", "writer", "supervisor",
+                "member_summary", "旧成员摘要 ".repeat(200), 1));
+        repository.saveMessage(message("team_timeline", "summary_recent", "reviewer", "supervisor",
+                "member_summary", "最近复核摘要", 2));
+        repository.saveMessage(message("team_timeline", "direct_recent", "user", "reviewer",
+                "direct_user", "请重点检查路径", 2));
+        AtomicReference<List<TeamMessageRecord>> seenTimeline = new AtomicReference<>();
+        SupervisorRoutingStrategy routingStrategy = (spec, timeline, round) -> {
+            seenTimeline.set(timeline);
+            return SupervisorRouteDecision.finish("已有足够信息");
+        };
+        TeamCoordinationService service = service(memberFactory, routingStrategy, repository,
+                new FixedTeamMemberObservationReader(0, 0), 80);
+        BabiqTeamSpec spec = new BabiqTeamSpec(
+                "team_timeline",
+                "团队时间线",
+                "验证 supervisor 时间线",
+                List.of(member("writer", 1), member("reviewer", 2)),
+                4,
+                true,
+                true,
+                SandboxMode.READ_ONLY);
+
+        TeamExecutionResult result = service.run(spec, new ToolContext(Map.of()));
+
+        assertThat(result.status()).isEqualTo("completed");
+        assertThat(seenTimeline.get()).isNotNull();
+        assertThat(seenTimeline.get()).extracting(TeamMessageRecord::messageId)
+                .contains("route_old", "summary_recent", "direct_recent")
+                .doesNotContain("summary_old");
+    }
+
     private BabiqTeamMember member(String name, int order) {
         return new BabiqTeamMember(
                 "member_" + name,
@@ -137,7 +175,15 @@ class TeamCoordinationServiceTest {
                                             SupervisorRoutingStrategy routingStrategy,
                                             InMemoryTeamRepository repository,
                                             TeamMemberObservationReader observationReader) {
-        TeamMemoryProperties properties = new TeamMemoryProperties(true, tempDir, 3000, 2000, 600, 12);
+        return service(memberFactory, routingStrategy, repository, observationReader, 3000);
+    }
+
+    private TeamCoordinationService service(TeamMemberAgentFactory memberFactory,
+                                            SupervisorRoutingStrategy routingStrategy,
+                                            InMemoryTeamRepository repository,
+                                            TeamMemberObservationReader observationReader,
+                                            int supervisorBudgetTokens) {
+        TeamMemoryProperties properties = new TeamMemoryProperties(true, tempDir, supervisorBudgetTokens, 2000, 600, 12);
         TeamMemoryWorkspace workspace = new TeamMemoryWorkspace(
                 properties,
                 new ApproximateContextTokenEstimator(),
@@ -153,7 +199,19 @@ class TeamCoordinationServiceTest {
                 new TeamDiscussionDigest(request -> new com.wzx.babiq.server.context.compaction.ContextCompactionStrategyResult(
                         "压缩后的团队概要"),
                         new ApproximateContextTokenEstimator()),
-                properties);
+                properties,
+                new ApproximateContextTokenEstimator());
+    }
+
+    private TeamMessageRecord message(String teamId,
+                                      String messageId,
+                                      String from,
+                                      String to,
+                                      String type,
+                                      String content,
+                                      int round) {
+        return new TeamMessageRecord(teamId, messageId, "thread_" + teamId, "turn_" + teamId,
+                from, to, type, content, null, round);
     }
 
     private TeamRecord teamRecord(String teamId, String turnId) {

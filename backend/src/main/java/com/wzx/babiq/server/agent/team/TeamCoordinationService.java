@@ -11,10 +11,12 @@ import com.alibaba.cloud.ai.graph.checkpoint.BaseCheckpointSaver;
 import com.alibaba.cloud.ai.graph.checkpoint.config.SaverConfig;
 import com.alibaba.cloud.ai.graph.checkpoint.savers.MemorySaver;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wzx.babiq.server.context.ContextTokenEstimator;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.stereotype.Service;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -49,6 +51,8 @@ public class TeamCoordinationService {
     private final TeamDiscussionDigest discussionDigest;
     /** 团队记忆配置。 */
     private final TeamMemoryProperties memoryProperties;
+    /** token 粗估器，用于裁剪 supervisor 摘要时间线。 */
+    private final ContextTokenEstimator tokenEstimator;
 
     /**
      * 创建团队协作服务。
@@ -61,7 +65,8 @@ public class TeamCoordinationService {
                                    TeamSummaryCardBuilder summaryCardBuilder,
                                    TeamMemberObservationReader observationReader,
                                    TeamDiscussionDigest discussionDigest,
-                                   TeamMemoryProperties memoryProperties) {
+                                   TeamMemoryProperties memoryProperties,
+                                   ContextTokenEstimator tokenEstimator) {
         this.memberAgentFactory = memberAgentFactory;
         this.routingStrategy = routingStrategy;
         this.repository = repository;
@@ -71,6 +76,7 @@ public class TeamCoordinationService {
         this.observationReader = observationReader;
         this.discussionDigest = discussionDigest;
         this.memoryProperties = memoryProperties;
+        this.tokenEstimator = tokenEstimator;
     }
 
     /**
@@ -237,11 +243,42 @@ public class TeamCoordinationService {
 
     private SupervisorRouteDecision decide(BabiqTeamSpec spec, int round) {
         try {
-            SupervisorRouteDecision decision = routingStrategy.decide(spec, repository.listMessages(spec.teamId()), round);
+            SupervisorRouteDecision decision = routingStrategy.decide(spec, supervisorTimeline(spec), round);
             return decision == null ? fallback(spec, round) : decision;
         } catch (RuntimeException exception) {
             return fallback(spec, round);
         }
+    }
+
+    private List<TeamMessageRecord> supervisorTimeline(BabiqTeamSpec spec) {
+        List<TeamMessageRecord> timeline = new ArrayList<>(repository.listMessages(spec.teamId()));
+        int budget = memoryProperties.supervisorContextBudgetTokens();
+        if (budget <= 0) {
+            return timeline;
+        }
+        while (tokenEstimate(timeline) > budget) {
+            int index = firstMemberSummaryIndex(timeline);
+            if (index < 0) {
+                break;
+            }
+            timeline.remove(index);
+        }
+        return List.copyOf(timeline);
+    }
+
+    private int tokenEstimate(List<TeamMessageRecord> timeline) {
+        return timeline.stream()
+                .mapToInt(message -> tokenEstimator.estimate(message.content()))
+                .sum();
+    }
+
+    private int firstMemberSummaryIndex(List<TeamMessageRecord> timeline) {
+        for (int index = 0; index < timeline.size(); index++) {
+            if ("member_summary".equals(timeline.get(index).messageType())) {
+                return index;
+            }
+        }
+        return -1;
     }
 
     private SupervisorRouteDecision normalize(BabiqTeamSpec spec, SupervisorRouteDecision decision, int round) {
