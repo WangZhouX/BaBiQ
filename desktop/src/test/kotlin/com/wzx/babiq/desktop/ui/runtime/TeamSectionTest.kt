@@ -93,6 +93,35 @@ class TeamSectionTest {
 	}
 
 	@Test
+	fun `team section model exposes multi team switcher`() {
+		val oldTeam = ThreadItem.Team(
+			id = "it_team_old",
+			teamId = "team_old",
+			title = "旧团队",
+			status = "completed",
+			members = emptyList(),
+		)
+		val activeTeam = ThreadItem.Team(
+			id = "it_team_active",
+			teamId = "team_active",
+			title = "当前团队",
+			status = "running",
+			members = emptyList(),
+		)
+
+		val model = buildTeamSectionModel(
+			TeamUiState()
+				.withTeamList(listOf(oldTeam, activeTeam))
+				.selectTeam("team_active"),
+		)
+
+		assertEquals(listOf("team_old", "team_active"), model.teams.map { it.teamId })
+		assertEquals("team_active", model.selectedTeamId)
+		assertFalse(model.teams.first { it.teamId == "team_old" }.selected)
+		assertTrue(model.teams.first { it.teamId == "team_active" }.selected)
+	}
+
+	@Test
 	fun `dismissed team runtime model stays hidden`() {
 		val team = ThreadItem.Team(
 			id = "it_team_1",

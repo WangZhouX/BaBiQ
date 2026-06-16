@@ -122,12 +122,6 @@ fun runtimePanelTabs(state: AppState, selectedTab: RuntimePanelTab): List<Runtim
 			selected = resolved == RuntimePanelTab.Orchestration,
 		),
 		RuntimePanelTabItem(
-			RuntimePanelTab.Team,
-			"团队",
-			visible = true,
-			selected = resolved == RuntimePanelTab.Team,
-		),
-		RuntimePanelTabItem(
 			RuntimePanelTab.SubAgent,
 			"子代理",
 			visible = state.subAgentState.visible,
@@ -139,7 +133,7 @@ fun runtimePanelTabs(state: AppState, selectedTab: RuntimePanelTab): List<Runtim
 fun resolveRuntimePanelTab(state: AppState, requested: RuntimePanelTab): RuntimePanelTab =
 	when (requested) {
 		RuntimePanelTab.Orchestration -> RuntimePanelTab.Orchestration
-		RuntimePanelTab.Team -> RuntimePanelTab.Team
+		RuntimePanelTab.Team -> RuntimePanelTab.Run
 		RuntimePanelTab.SubAgent -> requested.takeIf { state.subAgentState.visible } ?: RuntimePanelTab.Run
 		RuntimePanelTab.Run -> RuntimePanelTab.Run
 	}
@@ -147,7 +141,6 @@ fun resolveRuntimePanelTab(state: AppState, requested: RuntimePanelTab): Runtime
 fun preferredRuntimePanelTab(state: AppState, current: RuntimePanelTab): RuntimePanelTab =
 	when {
 		state.orchestrationState.configuringWorkUnit != null -> RuntimePanelTab.Orchestration
-		state.teamState.configuringWorkUnit != null -> RuntimePanelTab.Team
 		else -> resolveRuntimePanelTab(state, current)
 	}
 
@@ -165,7 +158,7 @@ fun runtimePanelContent(tab: RuntimePanelTab): Set<RuntimePanelContent> =
 			RuntimePanelContent.EmptyState,
 		)
 		RuntimePanelTab.Orchestration -> setOf(RuntimePanelContent.WorkUnits)
-		RuntimePanelTab.Team -> setOf(RuntimePanelContent.WorkUnits)
+		RuntimePanelTab.Team -> emptySet()
 		RuntimePanelTab.SubAgent -> setOf(RuntimePanelContent.SubAgent)
 	}
 
@@ -225,6 +218,7 @@ fun RuntimeDetailsPanel(
 	onLoadLatestWorkUnitConfig: (String) -> Unit = {},
 	onKeepWorkUnitConfigDraft: (String) -> Unit = {},
 	onSendTeamMessage: (String, String) -> Unit = { _, _ -> },
+	onSelectTeam: (String) -> Unit = {},
 	onSelectRunTurn: (String) -> Unit,
 	onSelectObservabilityRange: (String) -> Unit,
 ) {
@@ -298,6 +292,22 @@ fun RuntimeDetailsPanel(
 				onSelectTab = { selectedTab = it },
 				onClose = onClose,
 			)
+			TeamSection(
+				state = state.teamState,
+				modelLabel = state.providerState.active.label,
+				providerState = state.providerState,
+				onStartWorkUnit = onStartWorkUnit,
+				onRemoveWorkUnit = requestWorkUnitRemoval,
+				onDismissTeam = requestTeamDismiss,
+				onBackToList = onBackToWorkUnitList,
+				onUpdateWorkUnitGoal = onUpdateWorkUnitGoal,
+				onRenameWorkUnit = onRenameWorkUnit,
+				onUpdateWorkUnitConfig = { workUnitId, configJson ->
+					onUpdateWorkUnitConfig(workUnitId, configJson, null)
+				},
+				onSendTeamMessage = onSendTeamMessage,
+				onSelectTeam = onSelectTeam,
+			)
 			when (effectiveTab) {
 				RuntimePanelTab.Run -> {
 					PlanSection(state.planState)
@@ -368,36 +378,7 @@ fun RuntimeDetailsPanel(
 						)
 					}
 				}
-				RuntimePanelTab.Team -> {
-					val content = runtimePanelContent(state, effectiveTab)
-					if (RuntimePanelContent.WorkUnits in content) {
-						WorkUnitSection(
-							state = state.workUnitState,
-							kindFilter = "team",
-							onSelect = onSelectWorkUnit,
-							onConfigure = onConfigureWorkUnit,
-							onRemove = requestWorkUnitRemoval,
-							onUpdateGoal = onUpdateWorkUnitGoal,
-						)
-					}
-					if (RuntimePanelContent.Team in content) {
-						TeamSection(
-							state = state.teamState,
-							modelLabel = state.providerState.active.label,
-							providerState = state.providerState,
-							onStartWorkUnit = onStartWorkUnit,
-							onRemoveWorkUnit = requestWorkUnitRemoval,
-							onDismissTeam = requestTeamDismiss,
-							onBackToList = onBackToWorkUnitList,
-							onUpdateWorkUnitGoal = onUpdateWorkUnitGoal,
-							onRenameWorkUnit = onRenameWorkUnit,
-							onUpdateWorkUnitConfig = { workUnitId, configJson ->
-								onUpdateWorkUnitConfig(workUnitId, configJson, null)
-							},
-							onSendTeamMessage = onSendTeamMessage,
-						)
-					}
-				}
+				RuntimePanelTab.Team -> Unit
 				RuntimePanelTab.SubAgent -> SubAgentSection(state.subAgentState, onDismiss = onDismissSubAgent)
 			}
 		}

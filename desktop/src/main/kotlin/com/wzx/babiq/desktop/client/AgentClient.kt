@@ -51,6 +51,8 @@ import com.wzx.babiq.desktop.protocol.SkillGetResult
 import com.wzx.babiq.desktop.protocol.SkillListResult
 import com.wzx.babiq.desktop.protocol.TeamMessageSendParams
 import com.wzx.babiq.desktop.protocol.TeamMessageSendResult
+import com.wzx.babiq.desktop.protocol.TeamGetResult
+import com.wzx.babiq.desktop.protocol.TeamListResult
 import com.wzx.babiq.desktop.protocol.protocolJson
 import com.wzx.babiq.desktop.protocol.ThreadArchiveResult
 import com.wzx.babiq.desktop.protocol.ThreadListResult
@@ -237,6 +239,12 @@ interface AgentGateway {
 
 	/** 读取当前会话中仍可见的编排/团队工作容器。 */
 	suspend fun listWorkUnits(threadId: String): WorkUnitListResult
+
+	/** 读取当前会话的团队运行列表，供右侧团队面板切换多团队。 */
+	suspend fun listTeams(threadId: String): TeamListResult
+
+	/** 读取单个团队的成员和时间线详情。 */
+	suspend fun getTeam(teamId: String): TeamGetResult
 
 	/** 手动移除一个已完成或空闲的工作容器；运行中的容器由后端拒绝移除。 */
 	suspend fun removeWorkUnit(workUnitId: String): WorkUnitRemoveResult
@@ -790,6 +798,22 @@ class AgentClient(
 			),
 		)
 		return protocolJson.decodeFromJsonElement(WorkUnitListResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `team/list`，读取当前会话下的团队运行摘要。
+	 */
+	override suspend fun listTeams(threadId: String): TeamListResult {
+		val response = request("team/list", buildJsonObject { put("threadId", threadId) })
+		return protocolJson.decodeFromJsonElement(TeamListResult.serializer(), response.requireResult())
+	}
+
+	/**
+	 * 调用后端 `team/get`，读取某个团队的成员状态和消息时间线。
+	 */
+	override suspend fun getTeam(teamId: String): TeamGetResult {
+		val response = request("team/get", buildJsonObject { put("teamId", teamId) })
+		return protocolJson.decodeFromJsonElement(TeamGetResult.serializer(), response.requireResult())
 	}
 
 	/**

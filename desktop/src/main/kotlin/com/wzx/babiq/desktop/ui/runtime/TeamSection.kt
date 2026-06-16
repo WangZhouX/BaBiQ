@@ -42,6 +42,8 @@ data class TeamSectionModel(
 	val title: String,
 	val subtitle: String,
 	val selectedAgent: String? = null,
+	val selectedTeamId: String? = null,
+	val teams: List<TeamSwitchRow> = emptyList(),
 	val memberNames: List<String> = emptyList(),
 	val members: List<TeamMemberRow> = emptyList(),
 	val messages: List<TeamMessageRow> = emptyList(),
@@ -51,6 +53,13 @@ data class TeamSectionModel(
 	val configMembers: List<TeamConfigMemberRow> = emptyList(),
 	val removeActionLabel: String? = null,
 	val backActionLabel: String? = null,
+)
+
+data class TeamSwitchRow(
+	val teamId: String,
+	val title: String,
+	val status: String,
+	val selected: Boolean,
 )
 
 data class TeamMemberRow(
@@ -95,6 +104,8 @@ fun buildTeamSectionModel(
 			title = "团队详情 · ${config.name}",
 			subtitle = "${statusLabel(config.status)} / ${config.goals.size} 个目标 / 等待手动启动",
 			selectedAgent = selectedAgent,
+			selectedTeamId = state.selectedTeamId,
+			teams = state.teamSwitchRows(),
 			memberNames = runtimeTeam?.members?.map { it.name }.orEmpty(),
 			members = runtimeTeam?.members?.map { it.toRow() }.orEmpty(),
 			messages = state.messages.takeLast(6).map { it.toRow() },
@@ -117,6 +128,8 @@ fun buildTeamSectionModel(
 			title = "团队协作 · ${team.title}",
 			subtitle = buildSubtitle(team),
 			selectedAgent = selectedAgent,
+			selectedTeamId = state.selectedTeamId ?: team.teamId,
+			teams = state.teamSwitchRows(),
 			memberNames = team.members.map { it.name },
 			members = team.members.map { it.toRow() },
 			messages = state.messages.takeLast(6).map { it.toRow() },
@@ -138,6 +151,7 @@ fun TeamSection(
 	onRemoveWorkUnit: (String) -> Unit = {},
 	onDismissTeam: () -> Unit = {},
 	onBackToList: () -> Unit = {},
+	onSelectTeam: (String) -> Unit = {},
 	onUpdateWorkUnitGoal: (String, String, String) -> Unit = { _, _, _ -> },
 	onRenameWorkUnit: (String, String) -> Unit = { _, _ -> },
 	onUpdateWorkUnitConfig: (String, String) -> Unit = { _, _ -> },
@@ -200,6 +214,23 @@ fun TeamSection(
 					onRenameWorkUnit = onRenameWorkUnit,
 					onUpdateConfig = onUpdateWorkUnitConfig,
 				)
+			}
+			if (model.teams.size > 1) {
+				Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+					model.teams.forEach { team ->
+						FilterChip(
+							selected = team.selected,
+							onClick = { onSelectTeam(team.teamId) },
+							label = {
+								Text(
+									"${team.title} / ${team.status}",
+									maxLines = 1,
+									overflow = TextOverflow.Ellipsis,
+								)
+							},
+						)
+					}
+				}
 			}
 			model.members.forEach { TeamMemberRowView(it) }
 			if (model.messages.isNotEmpty()) {
@@ -432,7 +463,17 @@ private fun buildSubtitle(team: ThreadItem.Team): String =
 		team.round?.let { round -> team.maxRounds?.let { max -> "第 $round/$max 轮" } ?: "第 $round 轮" },
 		team.currentAgent?.let { "当前 $it" },
 		if (team.approved == true && team.frozen == true) "已审批并冻结" else null,
-	).joinToString(" / ")
+		).joinToString(" / ")
+
+private fun TeamUiState.teamSwitchRows(): List<TeamSwitchRow> =
+	teams.map { team ->
+		TeamSwitchRow(
+			teamId = team.teamId,
+			title = team.title,
+			status = statusLabel(team.status),
+			selected = team.teamId == (selectedTeamId ?: current?.teamId),
+		)
+	}
 
 private fun ThreadItem.TeamMember.toRow(): TeamMemberRow =
 	TeamMemberRow(

@@ -522,6 +522,7 @@ class ChatController(
 			}
 			loadContextStatus(loaded.thread.threadId)
 			loadWorkUnits(loaded.thread.threadId)
+			loadTeams(loaded.thread.threadId)
 			loadMemoryStatus(loadAudit = false)
 			if (state.value.runtimeExpanded) {
 				loadRunRecords(loaded.thread.threadId)
@@ -1488,6 +1489,32 @@ class ChatController(
 		}
 	}
 
+	/**
+	 * 刷新当前会话的团队运行摘要列表。
+	 *
+	 * 这个动作只影响右侧团队面板，不会把 team/teamMessage 写入主聊天消息列表。
+	 */
+	fun refreshTeams() {
+		val threadId = state.value.currentThreadId ?: return
+		scope.launch(start = CoroutineStart.UNDISPATCHED) {
+			loadTeams(threadId)
+		}
+	}
+
+	/**
+	 * 选择右侧团队面板中的某个团队，并按需读取成员和消息详情。
+	 */
+	fun selectTeam(teamId: String) {
+		val normalizedTeamId = teamId.trim()
+		if (normalizedTeamId.isBlank()) {
+			return
+		}
+		_state.update { it.copy(teamState = it.teamState.selectTeam(normalizedTeamId)) }
+		scope.launch(start = CoroutineStart.UNDISPATCHED) {
+			loadTeamDetail(normalizedTeamId)
+		}
+	}
+
 	private fun ThreadItem.shouldRefreshWorkUnits(): Boolean =
 		when (this) {
 			is ThreadItem.WorkUnit -> true
@@ -1664,6 +1691,50 @@ class ChatController(
 			_state.update {
 				it.copy(
 					workUnitState = it.workUnitState.copy(loading = false, error = exception.message ?: "读取工作容器失败"),
+					lastError = exception.message,
+				)
+			}
+		}
+	}
+
+	private suspend fun loadTeams(threadId: String) {
+		try {
+			val result = gateway.listTeams(threadId)
+			val teamItems = result.teams.map { it.toThreadItem() }
+			_state.update {
+				if (it.currentThreadId == threadId) {
+					it.copy(teamState = it.teamState.withTeamList(teamItems))
+				} else {
+					it
+				}
+			}
+		} catch (exception: Exception) {
+			_state.update {
+				it.copy(lastError = exception.message ?: "读取团队列表失败")
+			}
+		}
+	}
+
+	private suspend fun loadTeamDetail(teamId: String) {
+		try {
+			val result = gateway.getTeam(teamId)
+			_state.update {
+				if (it.teamState.teams.any { team -> team.teamId == teamId } || it.teamState.current?.teamId == teamId) {
+					it.copy(
+						teamState = it.teamState.withTeamDetail(
+							result.toThreadTeam(),
+							result.toThreadMessages(),
+						),
+						lastError = null,
+					)
+				} else {
+					it
+				}
+			}
+		} catch (exception: Exception) {
+			_state.update {
+				it.copy(
+					teamState = it.teamState.copy(directError = exception.message ?: "读取团队详情失败"),
 					lastError = exception.message,
 				)
 			}

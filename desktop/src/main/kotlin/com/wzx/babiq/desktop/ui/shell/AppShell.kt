@@ -93,6 +93,7 @@ fun AppShell(
 	onKeepWorkUnitConfigDraft: (String) -> Unit,
 	onBackToWorkUnitList: () -> Unit,
 	onSendTeamMessage: (String, String) -> Unit,
+	onSelectTeam: (String) -> Unit,
 	onSelectRunTurn: (String) -> Unit,
 	onSelectObservabilityRange: (String) -> Unit,
 ) {
@@ -188,6 +189,7 @@ fun AppShell(
 				onKeepWorkUnitConfigDraft = onKeepWorkUnitConfigDraft,
 				onBackToWorkUnitList = onBackToWorkUnitList,
 				onSendTeamMessage = onSendTeamMessage,
+				onSelectTeam = onSelectTeam,
 				onSelectRunTurn = onSelectRunTurn,
 				onSelectObservabilityRange = onSelectObservabilityRange,
 			)
