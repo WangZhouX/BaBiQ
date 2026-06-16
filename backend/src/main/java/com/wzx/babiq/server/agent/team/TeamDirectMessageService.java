@@ -4,7 +4,10 @@ import com.wzx.babiq.server.conversation.items.TeamMessageItem;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.List;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 用户直发 teammate 消息服务。
@@ -18,6 +21,8 @@ public class TeamDirectMessageService {
 
     /** 团队协作持久化端口。 */
     private final TeamRepository repository;
+    /** 已被运行循环消费的直接消息 id。 */
+    private final Set<String> consumedMessageIds = ConcurrentHashMap.newKeySet();
 
     /**
      * 创建直发消息服务。
@@ -61,5 +66,16 @@ public class TeamDirectMessageService {
                 content == null ? "" : content,
                 Math.max(team.currentRound(), 0),
                 Instant.now().toString());
+    }
+
+    /**
+     * 取出发给某成员且尚未注入过的用户消息。
+     */
+    public List<TeamMessageRecord> drainForMember(String teamId, String memberName) {
+        return repository.listMessages(teamId).stream()
+                .filter(message -> "direct_user".equals(message.messageType()))
+                .filter(message -> memberName != null && memberName.equals(message.toAgent()))
+                .filter(message -> consumedMessageIds.add(message.messageId()))
+                .toList();
     }
 }
