@@ -122,6 +122,16 @@ public class SQLiteTeamRepository implements TeamRepository {
     }
 
     @Override
+    public List<TeamRecord> listByThreadId(String threadId) {
+        return teamMapper.selectList(Wrappers.<TeamEntity>lambdaQuery()
+                        .eq(TeamEntity::getThreadId, threadId)
+                        .orderByDesc(TeamEntity::getUpdatedAt))
+                .stream()
+                .map(this::toRecord)
+                .toList();
+    }
+
+    @Override
     public List<TeamMemberRecord> listMembers(String teamId) {
         return memberMapper.selectList(Wrappers.<TeamMemberEntity>lambdaQuery()
                         .eq(TeamMemberEntity::getTeamId, teamId)

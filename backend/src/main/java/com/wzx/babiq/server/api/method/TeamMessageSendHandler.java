@@ -36,9 +36,16 @@ public class TeamMessageSendHandler implements JsonRpcMethodHandler {
     @Override
     public Object handle(JsonNode params, WebSocketSession session) {
         String teamId = ContextStatusHandler.requiredText(params, "teamId");
-        String toAgent = ContextStatusHandler.requiredText(params, "toAgent");
+        String toAgent = optionalText(params, "toAgent", "leader");
         String content = ContextStatusHandler.requiredText(params, "content");
         TeamMessageItem item = service.send(teamId, toAgent, content);
         return new TeamMessageSendResult(item);
+    }
+
+    private static String optionalText(JsonNode params, String fieldName, String defaultValue) {
+        if (params == null || !params.hasNonNull(fieldName) || params.get(fieldName).asText().isBlank()) {
+            return defaultValue;
+        }
+        return params.get(fieldName).asText();
     }
 }

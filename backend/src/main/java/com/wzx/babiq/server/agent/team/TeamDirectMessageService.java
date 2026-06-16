@@ -37,10 +37,11 @@ public class TeamDirectMessageService {
     public TeamMessageItem send(String teamId, String toAgent, String content) {
         TeamRecord team = repository.findByTeamId(teamId)
                 .orElseThrow(() -> new IllegalArgumentException("团队不存在: " + teamId));
-        boolean memberExists = repository.listMembers(teamId).stream()
-                .anyMatch(member -> member.name().equals(toAgent) || member.memberId().equals(toAgent));
+        String targetAgent = toAgent == null || toAgent.isBlank() ? "leader" : toAgent;
+        boolean memberExists = "leader".equals(targetAgent) || repository.listMembers(teamId).stream()
+                .anyMatch(member -> member.name().equals(targetAgent) || member.memberId().equals(targetAgent));
         if (!memberExists) {
-            throw new IllegalArgumentException("团队成员不存在: " + toAgent);
+            throw new IllegalArgumentException("团队成员不存在: " + targetAgent);
         }
         String messageId = "msg_team_" + UUID.randomUUID().toString().replace("-", "").substring(0, 10);
         TeamMessageRecord record = new TeamMessageRecord(
@@ -49,7 +50,7 @@ public class TeamDirectMessageService {
                 team.threadId(),
                 team.turnId(),
                 "user",
-                toAgent,
+                targetAgent,
                 "direct_user",
                 content == null ? "" : content,
                 null,
@@ -61,7 +62,7 @@ public class TeamDirectMessageService {
                 messageId,
                 teamId,
                 "user",
-                toAgent,
+                targetAgent,
                 "direct_user",
                 content == null ? "" : content,
                 Math.max(team.currentRound(), 0),

@@ -44,4 +44,31 @@ class TeamMessageSendHandlerTest {
         assertThat(response.item().toAgent()).isEqualTo("explorer");
         verify(service).send("team_1", "explorer", "请重点看 README");
     }
+
+    @Test
+    void handler_should_default_missing_to_agent_to_leader() throws Exception {
+        TeamDirectMessageService service = mock(TeamDirectMessageService.class);
+        TeamMessageSendHandler handler = new TeamMessageSendHandler(new ObjectMapper(), service);
+        TeamMessageItem item = new TeamMessageItem(
+                "it_msg_leader",
+                "teamMessage",
+                "msg_leader",
+                "team_1",
+                "user",
+                "leader",
+                "direct_user",
+                "Please continue from the latest member summary",
+                3,
+                "2026-06-01T10:01:00Z");
+        when(service.send("team_1", "leader", "Please continue from the latest member summary")).thenReturn(item);
+
+        Object result = handler.handle(new ObjectMapper().readTree("""
+                {"teamId":"team_1","content":"Please continue from the latest member summary"}
+                """), null);
+
+        assertThat(result).isInstanceOf(TeamMessageSendResult.class);
+        TeamMessageSendResult response = (TeamMessageSendResult) result;
+        assertThat(response.item().toAgent()).isEqualTo("leader");
+        verify(service).send("team_1", "leader", "Please continue from the latest member summary");
+    }
 }

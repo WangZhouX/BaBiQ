@@ -38,6 +38,13 @@ public interface TeamRepository {
     Optional<TeamRecord> findByTeamId(String teamId);
 
     /**
+     * 按会话查询团队运行记录，用于右侧团队面板列表。
+     */
+    default List<TeamRecord> listByThreadId(String threadId) {
+        return List.of();
+    }
+
+    /**
      * 按团队 id 查询成员列表。
      */
     List<TeamMemberRecord> listMembers(String teamId);

@@ -47,6 +47,38 @@ class TeamDirectMessageServiceTest {
         assertThat(secondDrain).isEmpty();
     }
 
+    @Test
+    void send_should_allow_leader_target_without_member_record() {
+        CapturingTeamRepository repository = new CapturingTeamRepository();
+        repository.record = new TeamRecord(
+                "team_leader",
+                "thread_leader",
+                "turn_leader",
+                "Leader direct",
+                "Route next work",
+                "running",
+                "H:\\aaa",
+                "READ_ONLY",
+                true,
+                true,
+                4,
+                2,
+                "leader",
+                null,
+                null);
+        TeamDirectMessageService service = new TeamDirectMessageService(repository);
+
+        service.send("team_leader", "leader", "Please decide the next member");
+
+        assertThat(repository.messages)
+                .singleElement()
+                .satisfies(message -> {
+                    assertThat(message.toAgent()).isEqualTo("leader");
+                    assertThat(message.messageType()).isEqualTo("direct_user");
+                    assertThat(message.round()).isEqualTo(2);
+                });
+    }
+
     private static final class CapturingTeamRepository implements TeamRepository {
         private TeamRecord record;
         private final List<TeamMemberRecord> members = new ArrayList<>();
