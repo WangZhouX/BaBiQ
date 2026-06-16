@@ -28,6 +28,11 @@ public interface TeamRepository {
     void saveMessage(TeamMessageRecord message);
 
     /**
+     * 追加一条团队记忆产物记录。
+     */
+    void saveArtifact(TeamArtifactRecord artifact);
+
+    /**
      * 按团队 id 查询整体记录。
      */
     Optional<TeamRecord> findByTeamId(String teamId);
@@ -41,4 +46,9 @@ public interface TeamRepository {
      * 按团队 id 查询消息时间线。
      */
     List<TeamMessageRecord> listMessages(String teamId);
+
+    /**
+     * 按团队 id 查询团队记忆产物。
+     */
+    List<TeamArtifactRecord> listArtifacts(String teamId);
 }

@@ -113,6 +113,10 @@ class TeamCoordinationServiceTest {
         }
 
         @Override
+        public void saveArtifact(TeamArtifactRecord artifact) {
+        }
+
+        @Override
         public Optional<TeamRecord> findByTeamId(String teamId) {
             return Optional.empty();
         }
@@ -127,6 +131,11 @@ class TeamCoordinationServiceTest {
             return messages.stream()
                     .filter(message -> message.teamId().equals(teamId))
                     .toList();
+        }
+
+        @Override
+        public List<TeamArtifactRecord> listArtifacts(String teamId) {
+            return List.of();
         }
     }
 }

@@ -2,6 +2,7 @@ package com.wzx.babiq.server.persistence;
 
 import com.wzx.babiq.server.agent.team.TeamMemberRecord;
 import com.wzx.babiq.server.agent.team.TeamMessageRecord;
+import com.wzx.babiq.server.agent.team.TeamArtifactRecord;
 import com.wzx.babiq.server.agent.team.TeamRecord;
 import com.wzx.babiq.server.agent.team.TeamRepository;
 import org.junit.jupiter.api.Test;
@@ -11,6 +12,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -79,11 +81,24 @@ class TeamRepositoryTest {
                 "请先查看当前目录",
                 "{\"next\":\"explorer\",\"reason\":\"需要目录信息\",\"confidence\":0.8}",
                 1));
+        repository.saveArtifact(new TeamArtifactRecord(
+                "team_repo",
+                "teamart_repo_1",
+                "MEMBER_OUTPUT",
+                "rounds/r1-explorer.md",
+                "0".repeat(64),
+                42,
+                1,
+                "explorer",
+                "目录已读取",
+                Instant.parse("2026-06-14T00:00:00Z"),
+                Instant.parse("2026-06-14T00:00:00Z")));
         repository.updateMember("team_repo", "member_explorer", "completed", 3, 256, "目录已读取");
 
         Optional<TeamRecord> team = repository.findByTeamId("team_repo");
         List<TeamMemberRecord> members = repository.listMembers("team_repo");
         List<TeamMessageRecord> messages = repository.listMessages("team_repo");
+        List<TeamArtifactRecord> artifacts = repository.listArtifacts("team_repo");
 
         assertThat(team).isPresent();
         assertThat(team.get().currentAgent()).isEqualTo("explorer");
@@ -93,5 +108,9 @@ class TeamRepositoryTest {
         assertThat(messages).hasSize(1);
         assertThat(messages.getFirst().messageType()).isEqualTo("route");
         assertThat(messages.getFirst().content()).contains("目录");
+        assertThat(artifacts).hasSize(1);
+        assertThat(artifacts.getFirst().artifactType()).isEqualTo("MEMBER_OUTPUT");
+        assertThat(artifacts.getFirst().relativePath()).isEqualTo("rounds/r1-explorer.md");
+        assertThat(artifacts.getFirst().content()).contains("目录");
     }
 }
