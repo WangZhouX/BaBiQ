@@ -291,6 +291,32 @@ class WorkUnitServiceTest {
     }
 
     @Test
+    void ensure_pending_goal_for_reuse_should_prepare_completed_goal_for_editing() {
+        Thread thread = Thread.newThread("thr_wu_prepare", "H:/aaa");
+        WorkUnitItem item = service.createOrAppend(
+                new WorkUnitCreateRequest("orchestration", "reusable flow", "old smoke target", null),
+                thread,
+                new Turn("turn_wu_prepare", thread.id()),
+                thread.cwd(),
+                AgentRunPolicy.of(SandboxMode.WORKSPACE_WRITE, ApprovalPolicy.ON_REQUEST));
+        service.markGoalRunning(item.activeGoalId(), "orchestration", "orch_prepare");
+        service.markGoalCompleted(item.activeGoalId(), "smoke completed");
+
+        WorkUnitGoal prepared = service.ensurePendingGoalForReuse(thread.id(), item.workUnitId());
+
+        assertThat(prepared.goalId()).isNotEqualTo(item.activeGoalId());
+        assertThat(prepared.goalText()).isEqualTo("old smoke target");
+        assertThat(prepared.status()).isEqualTo("pending");
+        assertThat(service.listGoals(item.workUnitId())).extracting(WorkUnitGoal::status)
+                .containsExactly("completed", "pending");
+        WorkUnit workUnit = service.listVisible(thread.id()).getFirst();
+        assertThat(workUnit.status()).isEqualTo("waiting_config");
+        assertThat(workUnit.currentGoalId()).isEqualTo(prepared.goalId());
+        assertThat(service.ensurePendingGoalForReuse(thread.id(), item.workUnitId()).goalId())
+                .isEqualTo(prepared.goalId());
+    }
+
+    @Test
     void recover_abandoned_running_should_fail_stale_container_and_goal() {
         Thread thread = Thread.newThread("thr_wu_recover", "H:/aaa");
         WorkUnitItem item = service.createOrAppend(

@@ -185,6 +185,42 @@ class OrchestrationSectionTest {
 	}
 
 	@Test
+	fun `completed orchestration detail can edit prepared reusable goal`() {
+		val workUnit = WorkUnitInfo(
+			workUnitId = "wu_flow",
+			threadId = "thr_1",
+			kind = "orchestration",
+			name = "html-test",
+			status = "waiting_config",
+			currentGoalId = "goal_next",
+			cwd = "H:\\aaa",
+			sandboxMode = "FULL_ACCESS",
+			goals = listOf(
+				WorkUnitGoalInfo(
+					goalId = "goal_done",
+					workUnitId = "wu_flow",
+					goalText = "old target",
+					status = "completed",
+					runRefType = "orchestration",
+					runRefId = "orch_done",
+					summary = "previous run completed",
+				),
+				WorkUnitGoalInfo("goal_next", "wu_flow", "old target", "pending"),
+			),
+		)
+
+		val model = buildOrchestrationSectionModel(
+			OrchestrationUiState(configuringWorkUnit = workUnit),
+			modelLabel = "deepseek-v4-pro",
+		)
+
+		assertEquals("goal_next", model.config?.editableGoalId)
+		assertEquals("old target", model.config?.editableGoalText)
+		assertNotNull(model.startActionLabel)
+		assertEquals(1, model.config?.completedRuns?.size)
+	}
+
+	@Test
 	fun `orchestration runtime update keeps configuration detail open without mixing progress rows`() {
 		val workUnit = WorkUnitInfo(
 			workUnitId = "wu_flow",
@@ -358,11 +394,69 @@ class OrchestrationSectionTest {
 		assertEquals("goal_done", records.single().goalId)
 		assertTrue(records.single().summary.contains("index.html"))
 		assertTrue(records.single().summary.contains("111.html"))
+		assertTrue(records.single().detail.contains("index.html"))
+		assertTrue(records.single().detail.contains("111.html"))
 		assertFalse(records.single().summary.contains("OverAllState"))
 		assertFalse(records.single().summary.contains("失败记录"))
 		assertFalse(records.single().summary.contains("团队协作已完成"))
 		assertTrue(records.single().completedAtLabel?.contains("T") == false)
 		assertTrue((records.single().completedAtLabel?.length ?: 0) <= 12)
+	}
+
+	@Test
+	fun `orchestration completed run records are sorted newest first`() {
+		val workUnit = WorkUnitInfo(
+			workUnitId = "wu_flow",
+			threadId = "thr_1",
+			kind = "orchestration",
+			name = "p6-smoke-test",
+			status = "completed",
+			currentGoalId = "goal_latest",
+			cwd = "H:\\aaa",
+			sandboxMode = "FULL_ACCESS",
+			goals = listOf(
+				WorkUnitGoalInfo(
+					goalId = "goal_old",
+					workUnitId = "wu_flow",
+					goalText = "old run",
+					status = "completed",
+					runRefType = "orchestration",
+					runRefId = "orch_old",
+					summary = "old summary",
+					completedAt = "2026-06-14T17:04:00Z",
+				),
+				WorkUnitGoalInfo(
+					goalId = "goal_middle",
+					workUnitId = "wu_flow",
+					goalText = "middle run",
+					status = "completed",
+					runRefType = "orchestration",
+					runRefId = "orch_middle",
+					summary = "middle summary",
+					completedAt = "2026-06-14T22:52:00Z",
+				),
+				WorkUnitGoalInfo(
+					goalId = "goal_latest",
+					workUnitId = "wu_flow",
+					goalText = "latest run",
+					status = "completed",
+					runRefType = "orchestration",
+					runRefId = "orch_latest",
+					summary = "latest summary",
+					completedAt = "2026-06-15T21:42:00Z",
+				),
+			),
+		)
+
+		val model = buildOrchestrationSectionModel(
+			OrchestrationUiState(configuringWorkUnit = workUnit),
+			modelLabel = "deepseek-v4-pro",
+		)
+
+		assertEquals(
+			listOf("goal_latest", "goal_middle", "goal_old"),
+			model.config?.completedRuns?.map { it.goalId },
+		)
 	}
 
 	@Test

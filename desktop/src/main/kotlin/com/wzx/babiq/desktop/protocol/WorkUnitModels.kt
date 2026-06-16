@@ -23,6 +23,12 @@ data class WorkUnitGoalUpdateParams(
 )
 
 @Serializable
+data class WorkUnitGoalPrepareParams(
+	val threadId: String,
+	val workUnitId: String,
+)
+
+@Serializable
 data class WorkUnitNameUpdateParams(
 	val threadId: String,
 	val workUnitId: String,

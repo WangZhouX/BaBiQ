@@ -1066,6 +1066,38 @@ class ChatController(
 			return
 		}
 		_state.update { it.withWorkUnitConfiguration(workUnitId) }
+		val info = state.value.workUnitInfoFor(workUnitId)
+		if (info?.status.equals("running", ignoreCase = true)) {
+			return
+		}
+		val threadId = state.value.currentThreadId ?: info?.threadId ?: return
+		scope.launch(start = CoroutineStart.UNDISPATCHED) {
+			try {
+				val result = gateway.prepareWorkUnitGoal(threadId, workUnitId)
+				_state.update {
+					val refreshed = it.workUnitState.details
+						.filterNot { detail -> detail.workUnitId == result.workUnit.workUnitId } + result.workUnit
+					val nextWorkUnitState = it.workUnitState
+						.replaceAll(refreshed)
+						.select(result.workUnit.workUnitId)
+						.copy(loading = false, error = null)
+					it.copy(
+						workUnitState = nextWorkUnitState,
+						orchestrationState = it.orchestrationState.refreshConfiguration(nextWorkUnitState.selectedDetail),
+						teamState = it.teamState.refreshConfiguration(nextWorkUnitState.selectedDetail),
+						lastError = null,
+					)
+				}
+			} catch (exception: Exception) {
+				val message = exception.message ?: "准备工作容器目标失败"
+				_state.update {
+					it.copy(
+						workUnitState = it.workUnitState.copy(loading = false, error = message),
+						lastError = message,
+					)
+				}
+			}
+		}
 	}
 
 	fun clearWorkUnitConfiguration() {
@@ -1444,9 +1476,9 @@ class ChatController(
 	fun applyEvent(event: AgentEvent) {
 		_state.update { ChatReducer.reduce(it, event) }
 		val workUnitThreadId = when (val server = (event as? AgentEvent.Server)?.event) {
-			is ServerEvent.ItemAdded -> server.threadId.takeIf { server.item is ThreadItem.WorkUnit }
-			is ServerEvent.ItemUpdated -> server.threadId.takeIf { server.item is ThreadItem.WorkUnit }
-			is ServerEvent.ItemCompleted -> server.threadId.takeIf { server.item is ThreadItem.WorkUnit }
+			is ServerEvent.ItemAdded -> server.threadId.takeIf { server.item.shouldRefreshWorkUnits() }
+			is ServerEvent.ItemUpdated -> server.threadId.takeIf { server.item.shouldRefreshWorkUnits() }
+			is ServerEvent.ItemCompleted -> server.threadId.takeIf { server.item.shouldRefreshWorkUnits() }
 			else -> null
 		}
 		if (workUnitThreadId != null && workUnitThreadId == state.value.currentThreadId) {
@@ -1455,6 +1487,19 @@ class ChatController(
 			}
 		}
 	}
+
+	private fun ThreadItem.shouldRefreshWorkUnits(): Boolean =
+		when (this) {
+			is ThreadItem.WorkUnit -> true
+			is ThreadItem.Orchestration -> status.isTerminalRuntimeStatus()
+			is ThreadItem.Team -> status.isTerminalRuntimeStatus()
+			else -> false
+		}
+
+	private fun String.isTerminalRuntimeStatus(): Boolean =
+		equals("completed", ignoreCase = true) ||
+			equals("failed", ignoreCase = true) ||
+			equals("canceled", ignoreCase = true)
 
 	private suspend fun connectOnce() {
 		// 一次连接尝试只做五件事：建立 WebSocket、订阅事件、读取设置、读取 Provider 列表、读取权限策略。

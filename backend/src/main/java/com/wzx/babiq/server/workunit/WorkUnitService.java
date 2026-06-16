@@ -94,6 +94,14 @@ public interface WorkUnitService {
     WorkUnitGoal selectPendingGoalForTurn(String threadId, String workUnitId);
 
     /**
+     * 为可复用的工作容器准备下一轮可编辑目标。
+     *
+     * <p>如果已有 pending 目标就复用；如果只有 completed/failed 审计目标，则复制一条新的 pending 目标，
+     * 旧目标继续作为完成记录保留。</p>
+     */
+    WorkUnitGoal ensurePendingGoalForReuse(String threadId, String workUnitId);
+
+    /**
      * 标记目标完成，并把容器恢复到可复用的完成状态。
      */
     void markGoalCompleted(String goalId, String summary);

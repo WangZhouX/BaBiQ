@@ -526,6 +526,26 @@ class AgentClientTest {
 	}
 
 	@Test
+	fun `work unit goal prepare sends reusable target json rpc request`() = runTest {
+		val transport = FakeAgentTransport()
+		val client = AgentClient(transport, backgroundScope)
+		client.connect()
+
+		val result: WorkUnitGoalUpdateResult = client.prepareWorkUnitGoal(
+			threadId = "thr_1",
+			workUnitId = "wu_1",
+		)
+
+		val request = transport.sent.single()
+		assertEquals("workunit/goal/prepare", request.method)
+		assertEquals("thr_1", request.paramsText("threadId"))
+		assertEquals("wu_1", request.paramsText("workUnitId"))
+		assertEquals("goal_next", result.updatedGoal.goalId)
+		assertEquals("pending", result.updatedGoal.status)
+		assertEquals("goal_next", result.workUnit.currentGoalId)
+	}
+
+	@Test
 	fun `work unit name update sends direct json rpc request`() = runTest {
 		val transport = FakeAgentTransport()
 		val client = AgentClient(transport, backgroundScope)
@@ -1001,6 +1021,46 @@ class AgentClientTest {
 										put("goalId", request.paramsText("goalId"))
 										put("workUnitId", request.paramsText("workUnitId"))
 										put("goalText", request.paramsText("goalText"))
+										put("status", "pending")
+									})
+								},
+							)
+						},
+					)
+				}
+				"workunit/goal/prepare" -> buildJsonObject {
+					put(
+						"updatedGoal",
+						buildJsonObject {
+							put("goalId", "goal_next")
+							put("workUnitId", request.paramsText("workUnitId"))
+							put("goalText", "old target")
+							put("status", "pending")
+						},
+					)
+					put(
+						"workUnit",
+						buildJsonObject {
+							put("workUnitId", request.paramsText("workUnitId"))
+							put("threadId", request.paramsText("threadId"))
+							put("kind", "orchestration")
+							put("name", "login-flow")
+							put("status", "waiting_config")
+							put("currentGoalId", "goal_next")
+							put("removed", false)
+							put(
+								"goals",
+								buildJsonArray {
+									add(buildJsonObject {
+										put("goalId", "goal_done")
+										put("workUnitId", request.paramsText("workUnitId"))
+										put("goalText", "old target")
+										put("status", "completed")
+									})
+									add(buildJsonObject {
+										put("goalId", "goal_next")
+										put("workUnitId", request.paramsText("workUnitId"))
+										put("goalText", "old target")
 										put("status", "pending")
 									})
 								},

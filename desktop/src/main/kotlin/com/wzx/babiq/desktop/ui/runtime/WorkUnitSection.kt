@@ -91,6 +91,7 @@ data class WorkUnitCompletedRunModel(
 	val goalId: String,
 	val title: String,
 	val summary: String,
+	val detail: String,
 	val completedAt: String?,
 	val completedAtLabel: String? = completedAt,
 )
@@ -265,6 +266,7 @@ fun workUnitDetailModel(info: WorkUnitInfo, modelLabel: String): WorkUnitDetailM
 					!it.summary.isNullOrBlank() &&
 					it.matchesWorkUnitRunRef(info.kind)
 			}
+			.sortedByDescending(::completedRunSortKey)
 			.map(::toCompletedRunModel),
 	)
 
@@ -299,23 +301,39 @@ private fun toCompletedRunModel(goal: WorkUnitGoalInfo): WorkUnitCompletedRunMod
 		goalId = goal.goalId,
 		title = goal.goalText.takeIf { it.isNotBlank() } ?: goal.runRefId ?: goal.goalId,
 		summary = compactCompletedRunSummary(goal.summary, goal.goalText),
+		detail = completedRunDetail(goal.summary, goal.goalText),
 		completedAt = goal.completedAt,
 		completedAtLabel = formatWorkUnitCompletedAt(goal.completedAt),
 	)
+
+private fun completedRunSortKey(goal: WorkUnitGoalInfo): String =
+	goal.completedAt ?: goal.startedAt ?: goal.createdAt ?: ""
 
 private fun compactCompletedRunSummary(summary: String?, fallback: String): String {
 	val text = summary.orEmpty().trim()
 	if (text.isBlank()) {
 		return fallback
 	}
-	val extracted = extractCompletedOutputTexts(text)
+	val extracted = extractCompletedOutputTexts(text, limit = 180)
 	if (extracted.isNotEmpty()) {
 		return extracted.joinToString("\n\n")
 	}
 	return compactPlainSummary(text)
 }
 
-private fun extractCompletedOutputTexts(summary: String): List<String> {
+private fun completedRunDetail(summary: String?, fallback: String): String {
+	val text = summary.orEmpty().trim()
+	if (text.isBlank()) {
+		return fallback
+	}
+	val extracted = extractCompletedOutputTexts(text, limit = 720)
+	if (extracted.isNotEmpty()) {
+		return extracted.joinToString("\n\n")
+	}
+	return compactPlainSummary(text, limit = 1200)
+}
+
+private fun extractCompletedOutputTexts(summary: String, limit: Int): List<String> {
 	val root = try {
 		protocolJson.parseToJsonElement(summary)
 	} catch (_: SerializationException) {
@@ -339,7 +357,7 @@ private fun extractCompletedOutputTexts(summary: String): List<String> {
 				?: value.asObjectOrNull()?.get("text")?.asStringOrNull()
 				?: value.asObjectOrNull()?.get("output")?.asStringOrNull()
 		}
-		.map { compactPlainSummary(it, limit = 180) }
+		.map { compactPlainSummary(it, limit = limit) }
 		.filter { it.isNotBlank() }
 		.forEach { texts += it }
 	return texts.toList()

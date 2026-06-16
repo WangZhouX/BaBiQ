@@ -1143,6 +1143,108 @@ class ChatControllerTest {
 	}
 
 	@Test
+	fun `configureWorkUnit prepares reusable pending goal for completed orchestration`() = runTest {
+		val completed = WorkUnitInfo(
+			workUnitId = "wu_1",
+			threadId = "thread-1",
+			kind = "orchestration",
+			name = "html-test",
+			status = "completed",
+			currentGoalId = "goal_done",
+			cwd = "H:\\aaa",
+			sandboxMode = "FULL_ACCESS",
+			goals = listOf(
+				WorkUnitGoalInfo(
+					goalId = "goal_done",
+					workUnitId = "wu_1",
+					goalText = "old target",
+					status = "completed",
+					runRefType = "orchestration",
+					runRefId = "orch_done",
+					summary = "done",
+				),
+			),
+		)
+		val gateway = FakeGateway(workUnits = WorkUnitListResult(listOf(completed)))
+		val controller = ChatController(gateway, backgroundScope)
+		controller.connect()
+		controller.openThread("thread-1")
+		advanceUntilIdle()
+
+		controller.configureWorkUnit("wu_1")
+		advanceUntilIdle()
+
+		assertTrue(gateway.calls.contains("prepareWorkUnitGoal:thread-1:wu_1"))
+		assertEquals("goal_next", controller.state.value.orchestrationState.configuringWorkUnit?.currentGoalId)
+		assertEquals("pending", controller.state.value.orchestrationState.configuringWorkUnit?.goals?.last()?.status)
+		assertEquals("wu_1", controller.state.value.workUnitState.selectedWorkUnitId)
+		assertTrue(controller.state.value.runtimeExpanded)
+	}
+
+	@Test
+	fun `completed orchestration event refreshes work unit details`() = runTest {
+		val stale = WorkUnitInfo(
+			workUnitId = "wu_1",
+			threadId = "thread-1",
+			kind = "orchestration",
+			name = "html-test",
+			status = "running",
+			currentGoalId = "goal_1",
+			cwd = "H:\\aaa",
+			sandboxMode = "FULL_ACCESS",
+			goals = listOf(WorkUnitGoalInfo("goal_1", "wu_1", "old target", "running")),
+		)
+		val refreshed = stale.copy(
+			status = "waiting_config",
+			currentGoalId = "goal_next",
+			goals = listOf(
+				WorkUnitGoalInfo(
+					goalId = "goal_1",
+					workUnitId = "wu_1",
+					goalText = "old target",
+					status = "completed",
+					runRefType = "orchestration",
+					runRefId = "orch_1",
+					summary = "node output: created 111.html",
+				),
+				WorkUnitGoalInfo("goal_next", "wu_1", "old target", "pending"),
+			),
+		)
+		val gateway = FakeGateway(workUnits = WorkUnitListResult(listOf(refreshed)))
+		val controller = ChatController(
+			gateway,
+			backgroundScope,
+			initialState = AppState(
+				connectionState = ConnectionState.Connected,
+				currentThreadId = "thread-1",
+				workUnitState = WorkUnitUiState().replaceAll(listOf(stale)).select("wu_1"),
+				orchestrationState = OrchestrationUiState(configuringWorkUnit = stale),
+			),
+		)
+
+		controller.applyEvent(
+			AgentEvent.Server(
+				ServerEvent.ItemCompleted(
+					"thread-1",
+					"turn-1",
+					ThreadItem.Orchestration(
+						id = "it_orch_1",
+						orchestrationId = "orch_1",
+						title = "html-test",
+						topology = "sequential",
+						status = "completed",
+					),
+				),
+			),
+		)
+		advanceUntilIdle()
+
+		assertTrue(gateway.calls.contains("listWorkUnits:thread-1"))
+		assertEquals("goal_next", controller.state.value.workUnitState.selectedDetail?.currentGoalId)
+		assertEquals("pending", controller.state.value.orchestrationState.configuringWorkUnit?.goals?.last()?.status)
+	}
+
+	@Test
 	fun `updateWorkUnitGoal saves pending goal through backend and refreshes detail`() = runTest {
 		val workUnit = WorkUnitInfo(
 			workUnitId = "wu_1",
@@ -1798,6 +1900,36 @@ class ChatControllerTest {
 					cwd = "H:\\aaa",
 					sandboxMode = "FULL_ACCESS",
 					goals = listOf(updatedGoal),
+				),
+			)
+		}
+
+		override suspend fun prepareWorkUnitGoal(
+			threadId: String,
+			workUnitId: String,
+		): WorkUnitGoalUpdateResult {
+			calls += "prepareWorkUnitGoal:$threadId:$workUnitId"
+			val existing = workUnits.workUnits.firstOrNull { it.workUnitId == workUnitId }
+			val source = existing?.goals?.lastOrNull { it.status.equals("completed", ignoreCase = true) || it.status.equals("failed", ignoreCase = true) }
+				?: existing?.goals?.lastOrNull()
+			val preparedGoal = WorkUnitGoalInfo(
+				goalId = "goal_next",
+				workUnitId = workUnitId,
+				goalText = source?.goalText ?: "old target",
+				status = "pending",
+			)
+			return WorkUnitGoalUpdateResult(
+				updatedGoal = preparedGoal,
+				workUnit = (existing ?: WorkUnitInfo(
+					workUnitId = workUnitId,
+					threadId = threadId,
+					kind = "orchestration",
+					name = "html-test",
+					status = "waiting_config",
+				)).copy(
+					status = "waiting_config",
+					currentGoalId = preparedGoal.goalId,
+					goals = (existing?.goals.orEmpty().filterNot { it.status.equals("pending", ignoreCase = true) } + preparedGoal),
 				),
 			)
 		}

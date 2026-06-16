@@ -127,7 +127,33 @@ class WorkUnitHandlersTest {
     }
 
     @Test
-    @DisplayName("workunit/config/update 保存配置快照并返回刷新后的容器")
+    @DisplayName("workunit/goal/prepare creates an editable pending goal for a reusable container")
+    void prepare_goal_should_delegate_to_service_and_return_refreshed_work_unit() {
+        WorkUnitService service = mock(WorkUnitService.class);
+        WorkUnit refreshed = sampleWorkUnit("wu_1", "orchestration", "html-flow", "waiting_config", "goal_next", false);
+        WorkUnitGoal completed = sampleGoal("goal_done", "wu_1", "old target", "completed");
+        WorkUnitGoal prepared = sampleGoal("goal_next", "wu_1", "old target", "pending");
+        when(service.ensurePendingGoalForReuse("thr_1", "wu_1")).thenReturn(prepared);
+        when(service.listVisible("thr_1")).thenReturn(List.of(refreshed));
+        when(service.listGoals("wu_1")).thenReturn(List.of(completed, prepared));
+
+        Object result = new WorkUnitGoalPrepareHandler(service)
+                .handle(objectMapper.valueToTree(Map.of(
+                        "threadId", "thr_1",
+                        "workUnitId", "wu_1"
+                )), null);
+
+        assertThat(result).isInstanceOf(WorkUnitGoalUpdateResult.class);
+        WorkUnitGoalUpdateResult update = (WorkUnitGoalUpdateResult) result;
+        assertThat(update.updatedGoal().goalId()).isEqualTo("goal_next");
+        assertThat(update.workUnit().currentGoalId()).isEqualTo("goal_next");
+        assertThat(update.workUnit().goals()).extracting(goal -> goal.status())
+                .containsExactly("completed", "pending");
+        verify(service).ensurePendingGoalForReuse("thr_1", "wu_1");
+    }
+
+    @Test
+    @DisplayName("workunit/config/update persists configuration snapshot and returns refreshed container")
     void update_config_should_persist_configuration_snapshot() {
         WorkUnitService service = mock(WorkUnitService.class);
         WorkUnit workUnit = sampleWorkUnit("wu_1", "orchestration", "html测试", "waiting_config", "goal_1", false);

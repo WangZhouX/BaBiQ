@@ -59,6 +59,7 @@ import com.wzx.babiq.desktop.protocol.WorkUnitConfigUpdateParams
 import com.wzx.babiq.desktop.protocol.WorkUnitConfigUpdateResult
 import com.wzx.babiq.desktop.protocol.WorkUnitListParams
 import com.wzx.babiq.desktop.protocol.WorkUnitListResult
+import com.wzx.babiq.desktop.protocol.WorkUnitGoalPrepareParams
 import com.wzx.babiq.desktop.protocol.WorkUnitGoalUpdateParams
 import com.wzx.babiq.desktop.protocol.WorkUnitGoalUpdateResult
 import com.wzx.babiq.desktop.protocol.WorkUnitNameUpdateParams
@@ -249,6 +250,11 @@ interface AgentGateway {
 		workUnitId: String,
 		goalId: String,
 		goalText: String,
+	): WorkUnitGoalUpdateResult
+
+	suspend fun prepareWorkUnitGoal(
+		threadId: String,
+		workUnitId: String,
 	): WorkUnitGoalUpdateResult
 
 	/** 修改工作容器显示名称，并由后端持久化。 */
@@ -828,6 +834,20 @@ class AgentClient(
 			params = protocolJson.encodeToJsonElement(
 				WorkUnitGoalUpdateParams.serializer(),
 				WorkUnitGoalUpdateParams(threadId, workUnitId, goalId, goalText),
+			),
+		)
+		return protocolJson.decodeFromJsonElement(WorkUnitGoalUpdateResult.serializer(), response.requireResult())
+	}
+
+	override suspend fun prepareWorkUnitGoal(
+		threadId: String,
+		workUnitId: String,
+	): WorkUnitGoalUpdateResult {
+		val response = request(
+			method = "workunit/goal/prepare",
+			params = protocolJson.encodeToJsonElement(
+				WorkUnitGoalPrepareParams.serializer(),
+				WorkUnitGoalPrepareParams(threadId, workUnitId),
 			),
 		)
 		return protocolJson.decodeFromJsonElement(WorkUnitGoalUpdateResult.serializer(), response.requireResult())

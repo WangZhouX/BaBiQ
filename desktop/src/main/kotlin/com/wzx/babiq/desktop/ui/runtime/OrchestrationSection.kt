@@ -547,33 +547,53 @@ private fun OrchestrationConfigPanel(
 
 @Composable
 private fun CompletedRunRecords(records: List<WorkUnitCompletedRunModel>) {
-	if (records.isEmpty()) {
-		return
-	}
-	Column(
-		modifier = Modifier
-			.fillMaxWidth()
-			.background(BaBiQColors.Accent.copy(alpha = 0.06f), RoundedCornerShape(8.dp))
-			.padding(10.dp),
-		verticalArrangement = Arrangement.spacedBy(8.dp),
-	) {
-		Text("已完成记录", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
-		records.forEach { record ->
-			Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-				Text(
-					record.title,
-					style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
-					maxLines = 1,
-					overflow = TextOverflow.Ellipsis,
-				)
-				record.completedAtLabel?.let { completedAt ->
-					Text(completedAt, style = MaterialTheme.typography.labelSmall, color = BaBiQColors.Muted)
-				}
-				Text(record.summary, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
-			}
-		}
-	}
+    if (records.isEmpty()) {
+        return
+    }
+    var expandedRunId by remember(records.map { it.goalId }) { mutableStateOf<String?>(null) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(BaBiQColors.Accent.copy(alpha = 0.06f), RoundedCornerShape(8.dp))
+            .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text("\u5DF2\u5B8C\u6210\u8BB0\u5F55", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
+        records.forEach { record ->
+            val expanded = expandedRunId == record.goalId
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        record.title,
+                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = { expandedRunId = if (expanded) null else record.goalId }) {
+                        Text(if (expanded) "\u6536\u8D77" else "\u8BE6\u60C5")
+                    }
+                }
+                record.completedAtLabel?.let { completedAt ->
+                    Text(completedAt, style = MaterialTheme.typography.labelSmall, color = BaBiQColors.Muted)
+                }
+                Text(record.summary, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                if (expanded) {
+                    Text(
+                        record.detail,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = BaBiQColors.Muted,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(BaBiQColors.Background, RoundedCornerShape(6.dp))
+                            .padding(8.dp),
+                    )
+                }
+            }
+        }
+    }
 }
+
 
 @Composable
 private fun WorkUnitConfigConflictBanner(

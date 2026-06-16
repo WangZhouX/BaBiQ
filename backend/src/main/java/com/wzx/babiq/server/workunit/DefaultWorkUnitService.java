@@ -352,6 +352,29 @@ public class DefaultWorkUnitService implements WorkUnitService {
 
     @Override
     @Transactional
+    public synchronized WorkUnitGoal ensurePendingGoalForReuse(String threadId, String workUnitId) {
+        if (threadId == null || threadId.isBlank()) {
+            throw new IllegalArgumentException("threadId must not be blank");
+        }
+        if (workUnitId == null || workUnitId.isBlank()) {
+            throw new IllegalArgumentException("workUnitId must not be blank");
+        }
+        WorkUnit workUnit = repository.findById(workUnitId)
+                .orElseThrow(() -> new IllegalArgumentException("WorkUnit does not exist: " + workUnitId));
+        if (!threadId.equals(workUnit.threadId())) {
+            throw new IllegalArgumentException("WorkUnit does not belong to thread: " + threadId);
+        }
+        if (workUnit.removed() || STATUS_REMOVED.equals(workUnit.status())) {
+            throw new IllegalStateException("Removed WorkUnit cannot be prepared");
+        }
+        if (STATUS_RUNNING.equals(workUnit.status())) {
+            throw new IllegalStateException("Running WorkUnit cannot be reconfigured");
+        }
+        return selectPendingGoal(workUnit);
+    }
+
+    @Override
+    @Transactional
     public void markGoalCompleted(String goalId, String summary) {
         WorkUnitGoal goal = repository.findGoalById(goalId)
                 .orElseThrow(() -> new IllegalArgumentException("工作目标不存在: " + goalId));
