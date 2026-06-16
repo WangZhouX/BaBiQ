@@ -45,6 +45,8 @@ public class TeamCoordinationService {
     private final TeamSummaryCardBuilder summaryCardBuilder;
     /** 成员观测读取器，复用工具调用归属记录。 */
     private final TeamMemberObservationReader observationReader;
+    /** 团队滚动讨论概要。 */
+    private final TeamDiscussionDigest discussionDigest;
     /** 团队记忆配置。 */
     private final TeamMemoryProperties memoryProperties;
 
@@ -58,6 +60,7 @@ public class TeamCoordinationService {
                                    TeamMemoryWorkspace memoryWorkspace,
                                    TeamSummaryCardBuilder summaryCardBuilder,
                                    TeamMemberObservationReader observationReader,
+                                   TeamDiscussionDigest discussionDigest,
                                    TeamMemoryProperties memoryProperties) {
         this.memberAgentFactory = memberAgentFactory;
         this.routingStrategy = routingStrategy;
@@ -66,6 +69,7 @@ public class TeamCoordinationService {
         this.memoryWorkspace = memoryWorkspace;
         this.summaryCardBuilder = summaryCardBuilder;
         this.observationReader = observationReader;
+        this.discussionDigest = discussionDigest;
         this.memoryProperties = memoryProperties;
     }
 
@@ -124,6 +128,10 @@ public class TeamCoordinationService {
                     oneLine(card),
                     Path.of(artifact.relativePath()));
             repository.saveMessage(memberSummaryMessage(spec, member, record, round, card));
+            memoryWorkspace.writeDigest(spec.teamId(), discussionDigest.roll(
+                    memoryWorkspace.readDigest(spec.teamId()),
+                    card,
+                    memoryProperties.discussionDigestBudgetTokens()));
             TeamMemberObservation observation = observationReader.read(
                     record == null ? null : record.turnId(),
                     member.name(),

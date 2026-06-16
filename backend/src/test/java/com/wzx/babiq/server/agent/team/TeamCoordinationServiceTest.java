@@ -150,6 +150,9 @@ class TeamCoordinationServiceTest {
                 workspace,
                 new TeamSummaryCardBuilder(new ApproximateContextTokenEstimator()),
                 observationReader,
+                new TeamDiscussionDigest(request -> new com.wzx.babiq.server.context.compaction.ContextCompactionStrategyResult(
+                        "压缩后的团队概要"),
+                        new ApproximateContextTokenEstimator()),
                 properties);
     }
 

@@ -97,6 +97,20 @@ public class TeamMemoryWorkspace {
     }
 
     /**
+     * 读取当前滚动讨论概要。
+     */
+    public String readDigest(String teamId) {
+        return readOrEmpty(teamDir(teamId).resolve("digest.md"));
+    }
+
+    /**
+     * 读取当前团队索引。
+     */
+    public String readIndex(String teamId) {
+        return readOrEmpty(teamDir(teamId).resolve("team.md"));
+    }
+
+    /**
      * 返回某团队的磁盘目录。
      */
     public Path teamDir(String teamId) {
