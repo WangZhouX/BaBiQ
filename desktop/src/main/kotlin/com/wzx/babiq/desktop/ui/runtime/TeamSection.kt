@@ -92,13 +92,7 @@ fun buildTeamSectionModel(
 	if (config != null) {
 		val detail = workUnitDetailModel(config, modelLabel)
 		val runtimeTeam = state.current
-		val selectedAgent = runtimeTeam?.let { team ->
-			state.selectedAgent
-				?.takeIf { selected -> team.members.any { member -> member.name == selected } }
-				?: team.currentAgent
-					?.takeIf { current -> team.members.any { member -> member.name == current } }
-				?: team.members.firstOrNull()?.name
-		}
+		val selectedAgent = runtimeTeam?.selectedTarget(state.selectedAgent)
 		return TeamSectionModel(
 			visible = true,
 			title = "团队详情 · ${config.name}",
@@ -106,7 +100,7 @@ fun buildTeamSectionModel(
 			selectedAgent = selectedAgent,
 			selectedTeamId = state.selectedTeamId,
 			teams = state.teamSwitchRows(),
-			memberNames = runtimeTeam?.members?.map { it.name }.orEmpty(),
+			memberNames = runtimeTeam?.targetAgentNames().orEmpty(),
 			members = runtimeTeam?.members?.map { it.toRow() }.orEmpty(),
 			messages = state.messages.takeLast(6).map { it.toRow() },
 			directError = state.directError,
@@ -122,7 +116,7 @@ fun buildTeamSectionModel(
 	}
 	val team = state.current
 	if (team != null) {
-		val selectedAgent = state.selectedAgent ?: team.currentAgent ?: team.members.firstOrNull()?.name
+		val selectedAgent = team.selectedTarget(state.selectedAgent)
 		return TeamSectionModel(
 			visible = true,
 			title = "团队协作 · ${team.title}",
@@ -130,7 +124,7 @@ fun buildTeamSectionModel(
 			selectedAgent = selectedAgent,
 			selectedTeamId = state.selectedTeamId ?: team.teamId,
 			teams = state.teamSwitchRows(),
-			memberNames = team.members.map { it.name },
+			memberNames = team.targetAgentNames(),
 			members = team.members.map { it.toRow() },
 			messages = state.messages.takeLast(6).map { it.toRow() },
 			directError = state.directError,
@@ -474,6 +468,14 @@ private fun TeamUiState.teamSwitchRows(): List<TeamSwitchRow> =
 			selected = team.teamId == (selectedTeamId ?: current?.teamId),
 		)
 	}
+
+private fun ThreadItem.Team.targetAgentNames(): List<String> =
+	listOf("leader") + members.map { it.name }.filterNot { it == "leader" }
+
+private fun ThreadItem.Team.selectedTarget(selectedAgent: String?): String =
+	selectedAgent
+		?.takeIf { it in targetAgentNames() }
+		?: "leader"
 
 private fun ThreadItem.TeamMember.toRow(): TeamMemberRow =
 	TeamMemberRow(

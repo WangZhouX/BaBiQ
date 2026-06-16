@@ -509,7 +509,7 @@ data class TeamUiState(
 
 	/** 更新右侧直发目标成员。 */
 	fun selectAgent(agentName: String): TeamUiState =
-		if (memberNames.contains(agentName)) copy(selectedAgent = agentName) else this
+		if (agentName == "leader" || memberNames.contains(agentName)) copy(selectedAgent = agentName) else this
 
 	fun clearConfiguration(): TeamUiState =
 		copy(configuringWorkUnit = null)
@@ -543,10 +543,8 @@ data class TeamUiState(
 			selectedAgent
 		} else {
 			selectedAgent
-				?.takeIf { selected -> team.members.any { member -> member.name == selected } }
-				?: team.currentAgent
-					?.takeIf { current -> team.members.any { member -> member.name == current } }
-				?: team.members.firstOrNull()?.name
+				?.takeIf { selected -> selected == "leader" || team.members.any { member -> member.name == selected } }
+				?: "leader"
 		}
 }
 

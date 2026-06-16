@@ -63,8 +63,8 @@ class TeamSectionTest {
 		assertTrue(model.visible)
 		assertEquals("团队协作 · review team", model.title)
 		assertEquals("运行中 / 第 2/5 轮 / 当前 explorer / 已审批并冻结", model.subtitle)
-		assertEquals("explorer", model.selectedAgent)
-		assertEquals(listOf("explorer", "writer"), model.memberNames)
+		assertEquals("leader", model.selectedAgent)
+		assertEquals(listOf("leader", "explorer", "writer"), model.memberNames)
 		assertEquals(2, model.members.size)
 		assertEquals("explorer", model.members.first().title)
 		assertEquals("运行中 · 只读工具 · 3 工具 · 512 token", model.members.first().meta)
@@ -119,6 +119,33 @@ class TeamSectionTest {
 		assertEquals("team_active", model.selectedTeamId)
 		assertFalse(model.teams.first { it.teamId == "team_old" }.selected)
 		assertTrue(model.teams.first { it.teamId == "team_active" }.selected)
+	}
+
+	@Test
+	fun `team composer defaults to leader and can preserve selected member`() {
+		val team = ThreadItem.Team(
+			id = "it_team_1",
+			teamId = "team_1",
+			title = "review team",
+			status = "running",
+			currentAgent = "writer",
+			members = listOf(
+				ThreadItem.TeamMember(
+					memberId = "member_writer",
+					name = "writer",
+					displayName = "Writer",
+					status = "running",
+					mode = "WORKSPACE_TOOL",
+				),
+			),
+		)
+
+		val defaultModel = buildTeamSectionModel(TeamUiState().withTeam(team))
+		val memberModel = buildTeamSectionModel(TeamUiState().withTeam(team).selectAgent("writer"))
+
+		assertEquals("leader", defaultModel.selectedAgent)
+		assertEquals(listOf("leader", "writer"), defaultModel.memberNames)
+		assertEquals("writer", memberModel.selectedAgent)
 	}
 
 	@Test
