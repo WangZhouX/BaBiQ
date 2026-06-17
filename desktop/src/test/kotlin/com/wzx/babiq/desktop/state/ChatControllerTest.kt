@@ -49,6 +49,11 @@ import com.wzx.babiq.desktop.protocol.ServerEvent
 import com.wzx.babiq.desktop.protocol.SettingsUpdateParams
 import com.wzx.babiq.desktop.protocol.SkillListResult
 import com.wzx.babiq.desktop.protocol.SkillGetResult
+import com.wzx.babiq.desktop.protocol.TeamGetResult
+import com.wzx.babiq.desktop.protocol.TeamInfo
+import com.wzx.babiq.desktop.protocol.TeamListResult
+import com.wzx.babiq.desktop.protocol.TeamMemberInfo
+import com.wzx.babiq.desktop.protocol.TeamMessageInfo
 import com.wzx.babiq.desktop.protocol.TeamMessageSendResult
 import com.wzx.babiq.desktop.protocol.ThreadArchiveResult
 import com.wzx.babiq.desktop.protocol.ThreadItem
@@ -335,7 +340,7 @@ class ChatControllerTest {
 		controller.openThread("thr_history")
 
 		assertEquals(
-			listOf("loadThread:thr_history", "getContextStatus:thr_history", "listWorkUnits:thr_history", "getMemoryStatus"),
+			listOf("loadThread:thr_history", "getContextStatus:thr_history", "listWorkUnits:thr_history", "listTeams:thr_history", "getMemoryStatus"),
 			gateway.calls,
 		)
 		assertEquals("thr_history", controller.state.value.currentThreadId)
@@ -937,6 +942,76 @@ class ChatControllerTest {
 	}
 
 	@Test
+	fun `openThread refreshes team list and keeps main conversation clean`() = runTest {
+		val gateway = FakeGateway(
+			loadedThread = ThreadLoadResult(
+				thread = ThreadMetaInfo("thread-1", "历史会话", "E:\\BaBiQ", "active"),
+				items = listOf(
+					ThreadItem.UserMessage("it_user", text = "查看团队"),
+					ThreadItem.TeamMessage(
+						id = "it_msg_old",
+						messageId = "msg_old",
+						teamId = "team_old",
+						fromAgent = "leader",
+						toAgent = "writer",
+						messageType = "member_summary",
+						content = "历史团队消息",
+					),
+				),
+			),
+			teams = TeamListResult(
+				teams = listOf(
+					sampleTeamInfo("team_old", "旧团队", "completed"),
+					sampleTeamInfo("team_new", "新团队", "running"),
+				),
+			),
+		)
+		val controller = ChatController(gateway, backgroundScope)
+		controller.connect()
+
+		controller.openThread("thread-1")
+		advanceUntilIdle()
+
+		assertTrue(gateway.calls.contains("listTeams:thread-1"))
+		assertEquals(listOf("team_old", "team_new"), controller.state.value.teamState.teams.map { it.teamId })
+		assertEquals("team_new", controller.state.value.teamState.selectedTeamId)
+		assertEquals("新团队", controller.state.value.teamState.current?.title)
+		assertEquals(1, controller.state.value.messages.size)
+		assertIs<ChatMessage.User>(controller.state.value.messages.single())
+	}
+
+	@Test
+	fun `selectTeam loads details and switches timeline by team id`() = runTest {
+		val gateway = FakeGateway(
+			teams = TeamListResult(
+				teams = listOf(
+					sampleTeamInfo("team_old", "旧团队", "completed"),
+					sampleTeamInfo("team_new", "新团队", "running"),
+				),
+			),
+			teamDetails = mapOf(
+				"team_old" to sampleTeamGetResult("team_old", "旧团队", "旧团队详情消息"),
+				"team_new" to sampleTeamGetResult("team_new", "新团队", "新团队详情消息"),
+			),
+		)
+		val controller = ChatController(
+			gateway,
+			backgroundScope,
+			initialState = AppState(connectionState = ConnectionState.Connected, currentThreadId = "thread-1"),
+		)
+
+		controller.refreshTeams()
+		advanceUntilIdle()
+		controller.selectTeam("team_old")
+		advanceUntilIdle()
+
+		assertEquals(listOf("listTeams:thread-1", "getTeam:team_old"), gateway.calls)
+		assertEquals("team_old", controller.state.value.teamState.selectedTeamId)
+		assertEquals("旧团队", controller.state.value.teamState.current?.title)
+		assertEquals(listOf("旧团队详情消息"), controller.state.value.teamState.messages.map { it.content })
+	}
+
+	@Test
 	fun `startWorkUnit sends explicit main agent instruction for pending orchestration goal`() = runTest {
 		val gateway = FakeGateway()
 		val controller = ChatController(gateway, backgroundScope)
@@ -1518,6 +1593,8 @@ class ChatControllerTest {
 		),
 		private val memorySearchResult: MemorySearchResult = MemorySearchResult("LEXICAL"),
 		private val workUnits: WorkUnitListResult = WorkUnitListResult(emptyList()),
+		private val teams: TeamListResult = TeamListResult(emptyList()),
+		private val teamDetails: Map<String, TeamGetResult> = emptyMap(),
 		private val runTurnDelayMillis: Long = 0,
 		private val runTurnDelayMillisByTurn: Map<String, Long> = emptyMap(),
 	) : AgentGateway {
@@ -1841,6 +1918,16 @@ class ChatControllerTest {
 			return workUnits
 		}
 
+		override suspend fun listTeams(threadId: String): TeamListResult {
+			calls += "listTeams:$threadId"
+			return teams
+		}
+
+		override suspend fun getTeam(teamId: String): TeamGetResult {
+			calls += "getTeam:$teamId"
+			return teamDetails[teamId] ?: sampleTeamGetResult(teamId, teamId, "$teamId 详情")
+		}
+
 		override suspend fun removeWorkUnit(workUnitId: String): WorkUnitRemoveResult {
 			calls += "removeWorkUnit:$workUnitId"
 			return WorkUnitRemoveResult(
@@ -2058,5 +2145,68 @@ class ChatControllerTest {
 			description = "执行 Shell 命令",
 			exposureMode = exposureMode,
 			enabled = true,
+		)
+
+	private fun sampleTeamInfo(
+		teamId: String,
+		title: String,
+		status: String,
+	): TeamInfo =
+		TeamInfo(
+			teamId = teamId,
+			threadId = "thread-1",
+			turnId = "turn-1",
+			title = title,
+			goal = "完成团队任务",
+			status = status,
+			cwd = "E:\\BaBiQ",
+			sandboxMode = "WORKSPACE_WRITE",
+			approved = true,
+			frozen = true,
+			maxRounds = 5,
+			currentRound = 1,
+			currentAgent = "writer",
+			summary = "$title 摘要",
+			errorMessage = null,
+			memberCount = 1,
+		)
+
+	private fun sampleTeamGetResult(
+		teamId: String,
+		title: String,
+		message: String,
+	): TeamGetResult =
+		TeamGetResult(
+			team = sampleTeamInfo(teamId, title, "running"),
+			members = listOf(
+				TeamMemberInfo(
+					teamId = teamId,
+					memberId = "member_writer",
+					name = "writer",
+					displayName = "Writer",
+					role = "实现",
+					mode = "WORKSPACE_TOOL",
+					toolNames = "write_file",
+					status = "completed",
+					memberOrder = 1,
+					toolCallCount = 2,
+					tokenEstimate = 200,
+					summary = "已完成",
+				),
+			),
+			messages = listOf(
+				TeamMessageInfo(
+					teamId = teamId,
+					messageId = "msg_$teamId",
+					threadId = "thread-1",
+					turnId = "turn-1",
+					fromAgent = "writer",
+					toAgent = "leader",
+					messageType = "member_summary",
+					content = message,
+					routeDecisionJson = null,
+					round = 1,
+				),
+			),
 		)
 }

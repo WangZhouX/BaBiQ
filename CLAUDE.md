@@ -270,7 +270,7 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
   - `docs/superpowers/plans/p6-master.md`：三层累进路线（委派 → flow 编排 → 实时 team）+ 8 帧 Figma 原型（页 `35:2`）+ UI 模型「对话始终是主体 + 右侧面板（可展开详情分屏），不另开全屏、不隐藏对话」。全程薄封装 SAA 官方多 Agent 构件、不自研子 Agent 引擎。
   - P6-0 机制 spike 已完成（`p6-0-mechanism-spike/`）：四机制对比 + HITL 嵌套中断先验，结论=只读委派用 `AgentTool`、写类/审批用 `asNode + StateGraph + 共享 MemorySaver + addHumanFeedback`。
   - P6-2 flow 编排已完成自动化验收（`p6-2-flow-orchestration/`）：薄封装官方 `SequentialAgent / ParallelAgent / LlmRoutingAgent`，新增 `orchestrate_flow`、`orchestration` 协议 item、V14 编排持久化和桌面右侧编排面板；写用 approve-once（运行前整体批准 + 沙箱，4 条安全语义：沙箱硬边界 / 弹窗列清范围 / 批准后 flow 冻结 / 危险不可逆操作由沙箱禁止）；运行中逐工具审批 + 并发中断留 P6-2b；真实模型人工烟测尚未执行。
-  - P6-3 团队协作已完成自动化验收（`p6-3-team-collaboration/`）：用 graph-core supervisor 模式（`StateGraph + 自定义 SupervisorNode + ReactAgent.asNode` 自搭）做 Leader 中枢协调；**注意 `SupervisorAgent` 类不在锁定的 1.1.2.3 jar（文档 v1.1.2.2 有，以本地 jar 为准）**；teammate 点对点真并发 swarm 留 P6-3b。
+  - P6-3 团队协作已完成 P6-3a 真协调补做与自动化验收（`p6-3-team-collaboration/` + `p6-3a-team-real-coordination/`）：T0 spike 已锁定 Path A（BaBiQ 自驱逐轮循环 + 成员官方 `ReactAgent` 经 `AgentTool` 调用）；团队记忆工作区、成员产出摘要卡、滚动讨论概要、supervisor 可见成员产出、结果聚合、轮次间喊话、结构冻结但目标可改、`team/list` / `team/get` / `team/message/send` 和桌面右侧可开合团队面板已实现；团队不是独立 nav tab/页面，团队 chatter 不进入主对话 messages。**注意 `SupervisorAgent` 类不在锁定的 1.1.2.3 jar（文档 v1.1.2.2 有，以本地 jar 为准）**；teammate 点对点真并发 swarm 留 P6-3b；P6-3a 真实模型 + UI 人工烟测尚未执行，需要在可操作桌面和真实 Provider 环境复验。
   - P6-4 slash 命名工作容器已完成自动化验收（`p6-4-slash-work-unit-commands/`）：桌面 `/编排`、`/团队` 解析为 `executionIntent`，后端确定性创建/复用 WorkUnit 并追加目标；slash 本身不自动执行，显式启动后才关联 goalId 并回写 flow/team 目标状态；右侧工作容器列表支持手动移除。
   - P6-4 自然语言 WorkUnit 入口修订已完成（2026-06-11）：用户明确要求“使用编排 / flow / 团队 / team / 多 Agent 协作”时，主 Agent 必须先调用 `work_unit_manage` 创建/复用 WorkUnit 并提示右侧详情页配置；`orchestrate_flow` / `coordinate_team` 缺少 WorkUnit goalId 时拒绝裸跑，显式启动后的嵌套 flow/team 不再复用父 ReAct checkpoint 配置。
 - P7 Claude Provider 多认证模式已完成自动化验收：
@@ -288,7 +288,7 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
   - 后端仍保持受限结构树 `BabiqFlowStructure`、V20 `structure_json` 持久化和递归官方 FlowAgent 编译；WorkUnit 配置和运行 `orchestration` item 均可携带结构快照。
   - 已验证：后端 P8 定向套件 64 tests / 0 failures；`cd backend; .\mvnw.cmd clean verify` 通过；桌面 P8 定向套件通过；`cd desktop; .\gradlew.bat test --rerun-tasks` 通过且 13 个任务真执行。
   - `plan.md` §5 的真实模型嵌套运行、人工 UI 操作、旧数据桌面回归、窄分屏视觉复核和对话式真实模型链路尚未执行；不得声明 P8 全量验收通过。
-- **下一步**：优先做 **P8 真实模型 + UI 人工烟测**（结构编辑、审批弹窗、运行回放、失败态、窄分屏降级、对话式配置编辑），并补做 **P7 真实 Anthropic 人工烟测**；通过后再进入 P6-2b 运行中审批/中断恢复或 P8 后续增强。
+- **下一步**：优先做 **P6-3a 真实模型 + UI 人工烟测**（多成员协作真跑、supervisor 可见成员产出、结果聚合回主 Agent、轮次间喊话、失败态、团队面板多团队切换 + 自带 composer、可改目标、主对话不被团队 chatter 污染），并继续补做 **P8 真实模型 + UI 人工烟测** 和 **P7 真实 Anthropic 人工烟测**；通过后再进入 P6-2b 运行中审批/中断恢复、P6-3b 点对点 swarm 或 P8 后续增强。
 
 如果仓库状态已发生变化，不要盲信本检查点；必须重新核对代码、文档、测试和 `git status`。
 
@@ -327,12 +327,12 @@ BaBiQ 是一个本地 Codex-like AI Agent 学习项目。
 
 **下一阶段边界：**
 
-- P2-1、P2-2、P2-3、P2-4、P2-5、P2-6 已完成；用户已暂时验收 P2，P3-1 最小上下文底座、P3-2 当前窗口管理运行时、P3-3 短期记忆/上下文压缩、P3-3a 鲁棒性补强、P3-4 长期记忆异步流水线、P3-5 按需能力装配、P3-5a Lucene 能力搜索替换、P3-6 官方 SkillRegistry 薄封装、P4 Plan/Todo 可视化、P5 ReasoningItem 接通、P6-1 只读子 Agent 委派已全量闭环（代码 + 自动化 + 真实烟测），P6-2 flow 编排、P6-3 团队协作、P6-4 slash 命名工作容器已完成自动化验收，P7 Claude 官方 Provider 双认证已完成自动化验收，P8 画布编排编辑器补做后已完成代码实现和自动化验证，人工烟测未执行；P6-0 spike 完成。
+- P2-1、P2-2、P2-3、P2-4、P2-5、P2-6 已完成；用户已暂时验收 P2，P3-1 最小上下文底座、P3-2 当前窗口管理运行时、P3-3 短期记忆/上下文压缩、P3-3a 鲁棒性补强、P3-4 长期记忆异步流水线、P3-5 按需能力装配、P3-5a Lucene 能力搜索替换、P3-6 官方 SkillRegistry 薄封装、P4 Plan/Todo 可视化、P5 ReasoningItem 接通、P6-1 只读子 Agent 委派已全量闭环（代码 + 自动化 + 真实烟测），P6-2 flow 编排、P6-3/P6-3a 团队真协调、P6-4 slash 命名工作容器已完成自动化验收，P7 Claude 官方 Provider 双认证已完成自动化验收，P8 画布编排编辑器补做后已完成代码实现和自动化验证，P6-3a/P7/P8 人工烟测未执行；P6-0 spike 完成。
 - P2-6 已完成 MCP Client 最小接入；后续如要扩展远程 MCP、OAuth、插件市场、MCP server 开发或复杂沙箱编排，必须进入新阶段计划，不得混入 P2 收口。
 - P7 范围限定为 Anthropic Claude 官方 API Key / 官方 `ant` CLI OAuth 双模式接入；GPT/OpenAI OAuth、订阅额度复用或自实现 Anthropic OAuth client 明确不做，后续若要扩展必须新建阶段 plan。
 - P8 范围限定为受限结构树画布编辑、递归官方 FlowAgent 编译、WorkUnit 配置结构持久化和桌面右侧详情画布；自由 DAG、LoopAgent、运行中编辑、逐节点审批、节点坐标持久化、minimap、团队画布化和 capability 节点搜索均不在本阶段。
 - P3 当前限定为 Codex 级当前窗口管理、短期记忆/上下文压缩、长期记忆平台；Multi-Agent、真 OS 沙箱、A2A、多模态仍属于后续阶段，不能混入 P3。
-- P3-1 已完成最小底座；P3-2 已完成真实 Agent 前置接入、快照持久化和 UI 指示；P3-3 已完成短期压缩、summary 替换 active window 和 `ContextCompactionItem` 事件；P3-3a 已补齐压缩审计、事务安装、乐观锁和恢复服务；P3-4 已完成长期记忆异步提取、secret redaction、Phase 2 归并和 summary read path 注入；P3-5 已完成按需工具/Skill/MCP 能力装配、`tool_search`、长期记忆检索增强和桌面控制；P3-5a 已把能力搜索底层替换为 Spring AI Community Lucene/BM25 并移除自实现 fallback；P3-6 已把本地 Skill 层改为薄封装官方 `FileSystemSkillRegistry`，并迁移到 `.agents/skills` 用户/项目目录；P4 已完成计划/Todo 可视化的协议、工具、prompt 和桌面运行面板接入；P5 已接通真实 reasoning_content 到 ReasoningItem 和桌面思考过程折叠块；P6-1 已接通只读 `explorer` 子 Agent 委派、运行记录归属和桌面子 Agent 面板；P6-2 已接通 flow 编排工具、官方 flow agent 薄封装、编排持久化和桌面编排面板；P6-3 已接通团队协作 supervisor；P6-4 已接通 slash 命名 WorkUnit、目标队列、右侧容器列表和显式启动 goalId 归属；P7 已接通 Claude Provider 双认证、OAuth CLI 登录状态协议、桌面预设/复制和动态 Bearer 注入；P8 补做后已接通结构化 flow 画布、结构 JSON 持久化、递归 FlowAgent 编译、缩放/平移、节点拖拽、undo/redo、Routing 插入、失败态回放和对话式配置编辑；P8 人工烟测仍待执行。后续专项增强必须先写详细 plan 并由用户确认。
+- P3-1 已完成最小底座；P3-2 已完成真实 Agent 前置接入、快照持久化和 UI 指示；P3-3 已完成短期压缩、summary 替换 active window 和 `ContextCompactionItem` 事件；P3-3a 已补齐压缩审计、事务安装、乐观锁和恢复服务；P3-4 已完成长期记忆异步提取、secret redaction、Phase 2 归并和 summary read path 注入；P3-5 已完成按需工具/Skill/MCP 能力装配、`tool_search`、长期记忆检索增强和桌面控制；P3-5a 已把能力搜索底层替换为 Spring AI Community Lucene/BM25 并移除自实现 fallback；P3-6 已把本地 Skill 层改为薄封装官方 `FileSystemSkillRegistry`，并迁移到 `.agents/skills` 用户/项目目录；P4 已完成计划/Todo 可视化的协议、工具、prompt 和桌面运行面板接入；P5 已接通真实 reasoning_content 到 ReasoningItem 和桌面思考过程折叠块；P6-1 已接通只读 `explorer` 子 Agent 委派、运行记录归属和桌面子 Agent 面板；P6-2 已接通 flow 编排工具、官方 flow agent 薄封装、编排持久化和桌面编排面板；P6-3a 已接通团队真协调（自驱逐轮循环、团队记忆、成员摘要、滚动讨论、结果聚合、轮次间喊话）和右侧可开合团队面板（多团队切换、成员/时间线、自带 composer 默认 Leader、目标可改）；P6-4 已接通 slash 命名 WorkUnit、目标队列、右侧容器列表和显式启动 goalId 归属；P7 已接通 Claude Provider 双认证、OAuth CLI 登录状态协议、桌面预设/复制和动态 Bearer 注入；P8 补做后已接通结构化 flow 画布、结构 JSON 持久化、递归 FlowAgent 编译、缩放/平移、节点拖拽、undo/redo、Routing 插入、失败态回放和对话式配置编辑；P6-3a/P7/P8 人工烟测仍待执行。后续专项增强必须先写详细 plan 并由用户确认。
 - P2 范围内 SQLite 使用 MyBatis-Plus 和 Java 常见分层，但 Agent 核心不得直接依赖 Mapper；必须通过 repository/adapter 或 application service 隔离。
 - 后续任何新增业务表或业务字段都必须同步 SQL 中文注释、`bq_schema_comments` 元数据和覆盖测试。
 

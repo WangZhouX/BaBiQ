@@ -563,6 +563,83 @@ class ChatReducerTest {
 	}
 
 	@Test
+	fun `team history restores multiple teams without polluting main chat`() {
+		val teamA = ThreadItem.Team(id = "it_team_a", teamId = "team_a", title = "A 团队", status = "completed")
+		val teamB = ThreadItem.Team(id = "it_team_b", teamId = "team_b", title = "B 团队", status = "running")
+		val messageA = ThreadItem.TeamMessage(
+			id = "it_msg_a",
+			messageId = "msg_a",
+			teamId = "team_a",
+			fromAgent = "leader",
+			toAgent = "writer",
+			messageType = "member_summary",
+			content = "A 团队完成了文件检查",
+		)
+		val messageB = messageA.copy(
+			id = "it_msg_b",
+			messageId = "msg_b",
+			teamId = "team_b",
+			content = "B 团队正在修改文件",
+		)
+		val items = listOf(ThreadItem.UserMessage("it_user", text = "查看团队"), teamA, messageA, teamB, messageB)
+
+		val messages = ChatReducer.messagesFromItems(items)
+		val state = ChatReducer.teamStateFromItems(items)
+
+		assertEquals(1, messages.size)
+		assertIs<ChatMessage.User>(messages.single())
+		assertEquals(listOf("team_a", "team_b"), state.teams.map { it.teamId })
+		assertEquals("team_b", state.selectedTeamId)
+		assertEquals("team_b", state.current?.teamId)
+		assertEquals(listOf("msg_b"), state.messages.map { it.messageId })
+	}
+
+	@Test
+	fun `team state switches selected team without cross team messages`() {
+		val teamA = ThreadItem.Team(id = "it_team_a", teamId = "team_a", title = "A 团队", status = "completed")
+		val teamB = ThreadItem.Team(id = "it_team_b", teamId = "team_b", title = "B 团队", status = "running")
+		val messageA = ThreadItem.TeamMessage(
+			id = "it_msg_a",
+			messageId = "msg_a",
+			teamId = "team_a",
+			fromAgent = "leader",
+			toAgent = "writer",
+			messageType = "member_summary",
+			content = "A 团队完成",
+		)
+		val messageB = messageA.copy(
+			id = "it_msg_b",
+			messageId = "msg_b",
+			teamId = "team_b",
+			content = "B 团队完成",
+		)
+
+		val state = TeamUiState()
+			.withTeamList(listOf(teamA, teamB))
+			.withMessage(messageA)
+			.withMessage(messageB)
+			.selectTeam("team_a")
+
+		assertEquals("team_a", state.selectedTeamId)
+		assertEquals("team_a", state.current?.teamId)
+		assertEquals(listOf("msg_a"), state.messages.map { it.messageId })
+	}
+
+	@Test
+	fun `team panel can collapse and expand while keeping selected team`() {
+		val team = ThreadItem.Team(id = "it_team", teamId = "team_1", title = "团队", status = "running")
+		val state = TeamUiState().withTeam(team)
+
+		val collapsed = state.closePanel()
+		val expanded = collapsed.openPanel()
+
+		assertFalse(collapsed.panelExpanded)
+		assertEquals("team_1", collapsed.selectedTeamId)
+		assertTrue(expanded.panelExpanded)
+		assertEquals("team_1", expanded.selectedTeamId)
+	}
+
+	@Test
 	fun `work unit item updates runtime state without adding chat message`() {
 		val item = ThreadItem.WorkUnit(
 			id = "it_workunit_1",

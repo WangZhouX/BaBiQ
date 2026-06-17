@@ -3,11 +3,14 @@ package com.wzx.babiq.server.persistence.service;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.wzx.babiq.server.agent.team.TeamMemberRecord;
 import com.wzx.babiq.server.agent.team.TeamMessageRecord;
+import com.wzx.babiq.server.agent.team.TeamArtifactRecord;
 import com.wzx.babiq.server.agent.team.TeamRecord;
 import com.wzx.babiq.server.agent.team.TeamRepository;
+import com.wzx.babiq.server.persistence.entity.TeamArtifactEntity;
 import com.wzx.babiq.server.persistence.entity.TeamEntity;
 import com.wzx.babiq.server.persistence.entity.TeamMemberEntity;
 import com.wzx.babiq.server.persistence.entity.TeamMessageEntity;
+import com.wzx.babiq.server.persistence.mapper.TeamArtifactMapper;
 import com.wzx.babiq.server.persistence.mapper.TeamMapper;
 import com.wzx.babiq.server.persistence.mapper.TeamMemberMapper;
 import com.wzx.babiq.server.persistence.mapper.TeamMessageMapper;
@@ -33,16 +36,20 @@ public class SQLiteTeamRepository implements TeamRepository {
     private final TeamMemberMapper memberMapper;
     /** 团队消息表 mapper。 */
     private final TeamMessageMapper messageMapper;
+    /** 团队记忆产物表 mapper。 */
+    private final TeamArtifactMapper artifactMapper;
 
     /**
      * 创建 SQLite 团队仓储。
      */
     public SQLiteTeamRepository(TeamMapper teamMapper,
                                 TeamMemberMapper memberMapper,
-                                TeamMessageMapper messageMapper) {
+                                TeamMessageMapper messageMapper,
+                                TeamArtifactMapper artifactMapper) {
         this.teamMapper = teamMapper;
         this.memberMapper = memberMapper;
         this.messageMapper = messageMapper;
+        this.artifactMapper = artifactMapper;
     }
 
     @Override
@@ -100,8 +107,28 @@ public class SQLiteTeamRepository implements TeamRepository {
     }
 
     @Override
+    public void saveArtifact(TeamArtifactRecord artifact) {
+        TeamArtifactEntity existing = artifactMapper.selectOne(Wrappers.<TeamArtifactEntity>lambdaQuery()
+                .eq(TeamArtifactEntity::getArtifactId, artifact.artifactId()));
+        if (existing != null) {
+            return;
+        }
+        artifactMapper.insert(toEntity(artifact));
+    }
+
+    @Override
     public Optional<TeamRecord> findByTeamId(String teamId) {
         return Optional.ofNullable(findEntity(teamId)).map(this::toRecord);
+    }
+
+    @Override
+    public List<TeamRecord> listByThreadId(String threadId) {
+        return teamMapper.selectList(Wrappers.<TeamEntity>lambdaQuery()
+                        .eq(TeamEntity::getThreadId, threadId)
+                        .orderByDesc(TeamEntity::getUpdatedAt))
+                .stream()
+                .map(this::toRecord)
+                .toList();
     }
 
     @Override
@@ -120,6 +147,16 @@ public class SQLiteTeamRepository implements TeamRepository {
                         .eq(TeamMessageEntity::getTeamId, teamId)
                         .orderByAsc(TeamMessageEntity::getRound)
                         .orderByAsc(TeamMessageEntity::getCreatedAt))
+                .stream()
+                .map(this::toRecord)
+                .toList();
+    }
+
+    @Override
+    public List<TeamArtifactRecord> listArtifacts(String teamId) {
+        return artifactMapper.selectList(Wrappers.<TeamArtifactEntity>lambdaQuery()
+                        .eq(TeamArtifactEntity::getTeamId, teamId)
+                        .orderByAsc(TeamArtifactEntity::getCreatedAt))
                 .stream()
                 .map(this::toRecord)
                 .toList();
@@ -182,6 +219,22 @@ public class SQLiteTeamRepository implements TeamRepository {
         return entity;
     }
 
+    private TeamArtifactEntity toEntity(TeamArtifactRecord record) {
+        TeamArtifactEntity entity = new TeamArtifactEntity();
+        entity.setTeamId(record.teamId());
+        entity.setArtifactId(record.artifactId());
+        entity.setArtifactType(record.artifactType());
+        entity.setRelativePath(record.relativePath());
+        entity.setSha256(record.sha256());
+        entity.setTokenEstimate(record.tokenEstimate());
+        entity.setRound(record.round());
+        entity.setMemberName(record.memberName());
+        entity.setContent(record.content());
+        entity.setCreatedAt(PersistenceTime.write(record.createdAt()));
+        entity.setUpdatedAt(PersistenceTime.write(record.updatedAt()));
+        return entity;
+    }
+
     private TeamRecord toRecord(TeamEntity entity) {
         return new TeamRecord(
                 entity.getTeamId(),
@@ -229,5 +282,20 @@ public class SQLiteTeamRepository implements TeamRepository {
                 entity.getContent(),
                 entity.getRouteDecisionJson(),
                 entity.getRound() == null ? 0 : entity.getRound());
+    }
+
+    private TeamArtifactRecord toRecord(TeamArtifactEntity entity) {
+        return new TeamArtifactRecord(
+                entity.getTeamId(),
+                entity.getArtifactId(),
+                entity.getArtifactType(),
+                entity.getRelativePath(),
+                entity.getSha256(),
+                entity.getTokenEstimate() == null ? 0 : entity.getTokenEstimate(),
+                entity.getRound() == null ? 0 : entity.getRound(),
+                entity.getMemberName(),
+                entity.getContent(),
+                PersistenceTime.read(entity.getCreatedAt()),
+                PersistenceTime.read(entity.getUpdatedAt()));
     }
 }

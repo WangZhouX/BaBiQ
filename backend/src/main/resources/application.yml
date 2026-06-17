@@ -83,6 +83,13 @@ babiq:
       phase2-min-interval-millis: 3600000
       phase2-max-candidates: 256
       read-budget-tokens: 2500
+  team:
+    enabled: true
+    root-dir: ${user.home}/.babiq/teams
+    supervisor-context-budget-tokens: 3000
+    discussion-digest-budget-tokens: 2000
+    member-summary-max-chars: 600
+    max-rounds-ceiling: 12
   ws:
     path: /ws/agent
     allowed-origins: "*"

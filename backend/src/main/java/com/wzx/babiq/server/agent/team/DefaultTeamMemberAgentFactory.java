@@ -49,17 +49,18 @@ public class DefaultTeamMemberAgentFactory implements TeamMemberAgentFactory {
                              BaseCheckpointSaver sharedSaver,
                              CompileConfig compileConfig) {
         TurnObservationContext observation = readObservation(toolContext);
-        SubAgentDelegationContext delegation = SubAgentDelegationContext.started(
-                "it_team_" + member.memberId(),
-                "dlg_team_" + member.memberId(),
-                BuiltInSubAgents.MAIN_AGENT_NAME,
-                member.name(),
-                member.mode(),
-                null,
-                observation);
-        ToolContext childContext = SubAgentRuntimeFactory.withDelegationContext(
+        ToolContext childContext = existingDelegation(toolContext)
+                ? toolContext
+                : SubAgentRuntimeFactory.withDelegationContext(
                 toolContext,
-                delegation,
+                SubAgentDelegationContext.started(
+                        "it_team_" + member.memberId(),
+                        "dlg_team_" + member.memberId(),
+                        BuiltInSubAgents.MAIN_AGENT_NAME,
+                        member.name(),
+                        member.mode(),
+                        null,
+                        observation),
                 readSandboxMode(toolContext));
         return runtimeFactory.buildChildAgentForTeam(
                 member.toAgentSpec(teamGoal),
@@ -67,6 +68,12 @@ public class DefaultTeamMemberAgentFactory implements TeamMemberAgentFactory {
                 member.outputKey(),
                 sharedSaver,
                 compileConfig);
+    }
+
+    private boolean existingDelegation(ToolContext toolContext) {
+        return toolContext != null
+                && toolContext.getContext().get(SubAgentDelegationContext.METADATA_KEY)
+                instanceof SubAgentDelegationContext;
     }
 
     private TurnObservationContext readObservation(ToolContext toolContext) {

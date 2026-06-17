@@ -371,17 +371,25 @@ data class OrchestrationUiState(
  */
 data class TeamUiState(
 	val current: ThreadItem.Team? = null,
+	val teams: List<ThreadItem.Team> = emptyList(),
+	val selectedTeamId: String? = null,
 	val configuringWorkUnit: WorkUnitInfo? = null,
 	val dismissedTeamId: String? = null,
 	val messages: List<ThreadItem.TeamMessage> = emptyList(),
+	val messagesByTeam: Map<String, List<ThreadItem.TeamMessage>> = emptyMap(),
 	val selectedAgent: String? = null,
 	val directDraft: String = "",
 	val sendingDirect: Boolean = false,
 	val directError: String? = null,
+	val panelExpanded: Boolean = true,
 ) {
 	/** 是否有可展示的团队协作轨迹。 */
 	val visible: Boolean
-		get() = (current != null && current.teamId != dismissedTeamId) || configuringWorkUnit != null
+		get() = panelExpanded && (
+			(current != null && current.teamId != dismissedTeamId) ||
+				configuringWorkUnit != null ||
+				teams.any { it.teamId != dismissedTeamId }
+			)
 
 	/** 团队是否已进入终态；终态仍保留给用户复盘，不自动隐藏。 */
 	val terminal: Boolean
@@ -398,18 +406,71 @@ data class TeamUiState(
 	 * selectedAgent 如果仍属于新团队就保留，否则回退到当前成员或第一个成员。
 	 */
 	fun withTeam(item: ThreadItem.Team): TeamUiState {
-		val nextMessages = messages.filter { it.teamId == item.teamId }
-		val nextSelected = selectedAgent
-			?.takeIf { selected -> item.members.any { member -> member.name == selected } }
-			?: item.currentAgent
-				?.takeIf { current -> item.members.any { member -> member.name == current } }
-			?: item.members.firstOrNull()?.name
+		val nextTeams = teams.upsertTeam(item)
+		val indexedMessages = indexExistingMessages()
+		val nextMessagesByTeam = indexedMessages + (item.teamId to indexedMessages[item.teamId].orEmpty())
+		val nextMessages = nextMessagesByTeam[item.teamId].orEmpty()
+		val nextSelected = selectedAgentFor(item)
 		return copy(
 			current = item,
+			teams = nextTeams,
+			selectedTeamId = item.teamId,
 			dismissedTeamId = dismissedTeamId.takeIf { it == item.teamId },
 			messages = nextMessages,
+			messagesByTeam = nextMessagesByTeam,
 			selectedAgent = nextSelected,
 			directError = null,
+			panelExpanded = true,
+		)
+	}
+
+	/**
+	 * 合并 team/list 或历史恢复中的团队列表。
+	 *
+	 * 列表只改变可切换团队集合；当前选中团队会优先保留，缺失时回退到最新团队。
+	 */
+	fun withTeamList(items: List<ThreadItem.Team>): TeamUiState {
+		val nextTeams = items.fold(teams) { acc, team -> acc.upsertTeam(team) }
+		val nextSelectedTeamId = selectedTeamId
+			?.takeIf { id -> current != null && nextTeams.any { it.teamId == id } }
+			?: current?.teamId?.takeIf { id -> nextTeams.any { it.teamId == id } }
+			?: nextTeams.lastOrNull()?.teamId
+		val nextCurrent = nextSelectedTeamId?.let { id -> nextTeams.firstOrNull { it.teamId == id } }
+		return copy(
+			teams = nextTeams,
+			selectedTeamId = nextSelectedTeamId,
+			current = nextCurrent,
+			messages = nextSelectedTeamId?.let { indexExistingMessages()[it].orEmpty() }.orEmpty(),
+			selectedAgent = selectedAgentFor(nextCurrent),
+			panelExpanded = panelExpanded || nextTeams.isNotEmpty(),
+		)
+	}
+
+	/** 切换右侧选中的团队详情。 */
+	fun selectTeam(teamId: String): TeamUiState {
+		val nextCurrent = teams.firstOrNull { it.teamId == teamId } ?: return this
+		val indexedMessages = indexExistingMessages()
+		return copy(
+			current = nextCurrent,
+			selectedTeamId = teamId,
+			messages = indexedMessages[teamId].orEmpty(),
+			messagesByTeam = indexedMessages,
+			selectedAgent = selectedAgentFor(nextCurrent),
+			directError = null,
+			panelExpanded = true,
+		)
+	}
+
+	/** 使用 team/get 返回的完整详情替换当前选中团队。 */
+	fun withTeamDetail(
+		item: ThreadItem.Team,
+		detailMessages: List<ThreadItem.TeamMessage>,
+	): TeamUiState {
+		val next = withTeam(item)
+		val nextMessagesByTeam = next.indexExistingMessages() + (item.teamId to detailMessages)
+		return next.copy(
+			messagesByTeam = nextMessagesByTeam,
+			messages = detailMessages,
 		)
 	}
 
@@ -429,23 +490,67 @@ data class TeamUiState(
 	 * 只接收当前 teamId 的消息；如果消息比 team item 更早到达，也先缓存，等 team item 到来时再按 teamId 过滤。
 	 */
 	fun withMessage(item: ThreadItem.TeamMessage): TeamUiState {
-		val nextMessages = (messages.filterNot { it.messageId == item.messageId } + item)
-			.filter { current == null || it.teamId == current.teamId }
+		val indexedMessages = indexExistingMessages()
+		val nextTeamMessages = (indexedMessages[item.teamId].orEmpty().filterNot { it.messageId == item.messageId } + item)
+		val nextMessagesByTeam = indexedMessages + (item.teamId to nextTeamMessages)
+		val activeTeamId = selectedTeamId ?: current?.teamId ?: item.teamId
+		val nextMessages = nextMessagesByTeam[activeTeamId].orEmpty()
 		val nextSelected = selectedAgent
 			?: item.toAgent.takeIf { target -> target != "all" && target != "supervisor" }
 			?: current?.members?.firstOrNull()?.name
-		return copy(messages = nextMessages, selectedAgent = nextSelected, directError = null)
+		return copy(
+			selectedTeamId = activeTeamId,
+			messages = nextMessages,
+			messagesByTeam = nextMessagesByTeam,
+			selectedAgent = nextSelected,
+			directError = null,
+		)
 	}
 
 	/** 更新右侧直发目标成员。 */
 	fun selectAgent(agentName: String): TeamUiState =
-		if (memberNames.contains(agentName)) copy(selectedAgent = agentName) else this
+		if (agentName == "leader" || memberNames.contains(agentName)) copy(selectedAgent = agentName) else this
 
 	fun clearConfiguration(): TeamUiState =
 		copy(configuringWorkUnit = null)
 
 	fun dismissCurrent(): TeamUiState =
-		copy(dismissedTeamId = current?.teamId)
+		copy(
+			dismissedTeamId = current?.teamId,
+			teams = teams.filterNot { it.teamId == current?.teamId },
+			messages = emptyList(),
+			current = null,
+			selectedTeamId = null,
+		)
+
+	/** 展开右侧团队面板。 */
+	fun openPanel(): TeamUiState = copy(panelExpanded = true)
+
+	/** 收起右侧团队面板，但保留选中团队和已加载消息。 */
+	fun closePanel(): TeamUiState = copy(panelExpanded = false)
+
+	private fun indexExistingMessages(): Map<String, List<ThreadItem.TeamMessage>> {
+		val indexed = if (messagesByTeam.isNotEmpty()) {
+			messagesByTeam
+		} else {
+			messages.groupBy { it.teamId }
+		}
+		return indexed
+	}
+
+	private fun selectedAgentFor(team: ThreadItem.Team?): String? =
+		if (team == null) {
+			selectedAgent
+		} else {
+			selectedAgent
+				?.takeIf { selected -> selected == "leader" || team.members.any { member -> member.name == selected } }
+				?: "leader"
+		}
+}
+
+private fun List<ThreadItem.Team>.upsertTeam(item: ThreadItem.Team): List<ThreadItem.Team> {
+	val withoutOld = filterNot { it.teamId == item.teamId }
+	return withoutOld + item
 }
 
 /**

@@ -360,6 +360,40 @@ class WorkUnitServiceTest {
     }
 
     @Test
+    void frozen_team_config_should_keep_structure_but_allow_goal_update_and_append() {
+        Thread thread = Thread.newThread("thr_wu_team_goal_mutable", "H:/aaa");
+        WorkUnitItem item = service.createOrAppend(
+                new WorkUnitCreateRequest("team", "review-team", "old team goal", null),
+                thread,
+                new Turn("turn_wu_team_goal_mutable", thread.id()),
+                thread.cwd(),
+                AgentRunPolicy.of(SandboxMode.WORKSPACE_WRITE, ApprovalPolicy.ON_REQUEST));
+        String frozenTeamConfig = """
+                {"approved":true,"frozen":true,"members":[{"name":"writer","tools":["write_file"],"writeScopes":["H:/aaa"]}]}
+                """.trim();
+        service.updateConfig(item.workUnitId(), frozenTeamConfig, null);
+
+        WorkUnitGoal updated = service.updateGoal(item.activeGoalId(), "new reusable team goal");
+        service.markGoalCompleted(updated.goalId(), "first team run completed");
+        WorkUnitItem appended = service.createOrAppend(
+                new WorkUnitCreateRequest("team", "review-team", "second team goal", null),
+                thread,
+                new Turn("turn_wu_team_goal_mutable_2", thread.id()),
+                thread.cwd(),
+                AgentRunPolicy.of(SandboxMode.WORKSPACE_WRITE, ApprovalPolicy.ON_REQUEST));
+
+        assertThat(updated.goalText()).isEqualTo("new reusable team goal");
+        assertThat(appended.workUnitId()).isEqualTo(item.workUnitId());
+        assertThat(appended.activeGoal()).isEqualTo("second team goal");
+        assertThat(service.findConfig(item.workUnitId()))
+                .get()
+                .extracting(WorkUnitConfig::configJson)
+                .isEqualTo(frozenTeamConfig);
+        assertThat(service.listGoals(item.workUnitId())).extracting(WorkUnitGoal::goalText)
+                .containsExactly("new reusable team goal", "second team goal");
+    }
+
+    @Test
     void work_unit_config_should_roundtrip_independently_from_goals() {
         Thread thread = Thread.newThread("thr_wu_config", "H:/aaa");
         WorkUnitItem item = service.createOrAppend(

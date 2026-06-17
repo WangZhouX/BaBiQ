@@ -61,15 +61,17 @@ object ChatReducer {
 	/**
 	 * 从历史 item 中恢复最近一次团队协作状态。
 	 *
-	 * 只保留最新 teamId 对应的 teamMessage，避免打开历史会话时多个团队运行的消息交织在一起。
+	 * 恢复同一会话里的多个团队运行摘要，并默认选中最近团队。
+	 * teamMessage 仍按 teamId 分桶，避免打开历史会话时多个团队运行的消息交织在一起。
 	 */
-	fun teamStateFromItems(items: List<ThreadItem>): TeamUiState {
-		val latestTeam = items.filterIsInstance<ThreadItem.Team>().lastOrNull()
-			?: return TeamUiState()
-		val messages = items.filterIsInstance<ThreadItem.TeamMessage>()
-			.filter { it.teamId == latestTeam.teamId }
-		return TeamUiState().withTeam(latestTeam).copy(messages = messages)
-	}
+	fun teamStateFromItems(items: List<ThreadItem>): TeamUiState =
+		items.fold(TeamUiState()) { state, item ->
+			when (item) {
+				is ThreadItem.Team -> state.withTeam(item)
+				is ThreadItem.TeamMessage -> state.withMessage(item)
+				else -> state
+			}
+		}
 
 	fun workUnitStateFromItems(items: List<ThreadItem>): WorkUnitUiState =
 		items.filterIsInstance<ThreadItem.WorkUnit>()
