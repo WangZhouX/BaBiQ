@@ -79,6 +79,13 @@ public class TeamEntity {
     @TableField("error_message")
     private String errorMessage;
 
+    /** 用户已移除的团队运行记录仍保留审计数据，但不再显示到团队面板。 */
+    private Integer removed;
+
+    /** 用户移除团队运行记录的时间，ISO-8601 文本。 */
+    @TableField("removed_at")
+    private String removedAt;
+
     /** 创建时间，ISO-8601 文本。 */
     @TableField("created_at")
     private String createdAt;

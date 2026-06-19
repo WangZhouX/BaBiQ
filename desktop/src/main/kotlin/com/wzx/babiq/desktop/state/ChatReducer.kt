@@ -2,6 +2,8 @@ package com.wzx.babiq.desktop.state
 
 import com.wzx.babiq.desktop.protocol.ServerEvent
 import com.wzx.babiq.desktop.protocol.ThreadItem
+import com.wzx.babiq.desktop.protocol.WorkUnitGoalInfo
+import com.wzx.babiq.desktop.protocol.WorkUnitInfo
 
 /**
  * Reducer 是“事件 -> 新状态”的纯函数集合。
@@ -218,21 +220,7 @@ object ChatReducer {
 				),
 			)
 
-			is ThreadItem.WorkUnit -> copy(
-				workUnitState = workUnitState.withItem(item),
-				orchestrationState = orchestrationState.withAgentConfigUpdate(item),
-				runtimeExpanded = runtimeExpanded || (!item.removed && !item.status.equals("removed", ignoreCase = true)),
-				runtimeEvents = runtimeEvents + RuntimeEvent(
-					id = item.id,
-					title = "WorkUnit:${item.name}",
-					detail = listOfNotNull(
-						item.kind,
-						"状态 ${item.status}",
-						item.currentGoal?.let { "目标 $it" },
-						"目标数 ${item.goalCount}",
-					).joinToString("\n"),
-				),
-			)
+			is ThreadItem.WorkUnit -> withWorkUnitItem(item)
 
 			is ThreadItem.Orchestration -> copy(
 				orchestrationState = orchestrationState.withCurrent(item),
@@ -384,6 +372,68 @@ object ChatReducer {
 
 	private fun ThreadItem.AgentDelegation.isTerminalDelegation(): Boolean =
 		status.lowercase() in setOf("completed", "failed", "canceled")
+
+	private fun AppState.withWorkUnitItem(item: ThreadItem.WorkUnit): AppState {
+		val active = !item.removed && !item.status.equals("removed", ignoreCase = true)
+		val nextState = copy(
+			workUnitState = workUnitState.withItem(item),
+			orchestrationState = orchestrationState.withAgentConfigUpdate(item),
+			runtimeExpanded = runtimeExpanded || active,
+			runtimeEvents = runtimeEvents + RuntimeEvent(
+				id = item.id,
+				title = "WorkUnit:${item.name}",
+				detail = listOfNotNull(
+					item.kind,
+					"状态 ${item.status}",
+					item.currentGoal?.let { "目标 $it" },
+					"目标数 ${item.goalCount}",
+				).joinToString("\n"),
+			),
+		)
+
+		if (!active || !item.kind.equals("team", ignoreCase = true)) {
+			return nextState
+		}
+
+		return nextState.copy(
+			workUnitState = nextState.workUnitState.select(item.workUnitId),
+			orchestrationState = nextState.orchestrationState.clearConfiguration(),
+			teamState = nextState.teamState.withConfiguration(
+				item.toWorkUnitInfo(
+					threadId = nextState.currentThreadId.orEmpty(),
+					cwd = nextState.workspace.cwd,
+					sandboxMode = nextState.workspace.permissionMode,
+				),
+			),
+		)
+	}
+
+	private fun ThreadItem.WorkUnit.toWorkUnitInfo(
+		threadId: String,
+		cwd: String,
+		sandboxMode: String?,
+	): WorkUnitInfo =
+		WorkUnitInfo(
+			workUnitId = workUnitId,
+			threadId = threadId,
+			kind = kind,
+			name = name,
+			status = status,
+			currentGoalId = currentGoalId,
+			cwd = cwd,
+			sandboxMode = sandboxMode,
+			removed = removed,
+			goals = listOfNotNull(
+				currentGoal?.takeIf { it.isNotBlank() }?.let { goalText ->
+					WorkUnitGoalInfo(
+						goalId = currentGoalId ?: "goal_$workUnitId",
+						workUnitId = workUnitId,
+						goalText = goalText,
+						status = "pending",
+					)
+				},
+			),
+		)
 
 	/**
 	 * 最新计划全部完成后主动隐藏，避免右侧面板长期停在已经结束的 TODO 上。

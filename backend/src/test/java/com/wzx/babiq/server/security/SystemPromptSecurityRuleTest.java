@@ -77,6 +77,8 @@ class SystemPromptSecurityRuleTest {
         assertThat(SystemPromptSecurityRule.PROMPT)
                 .contains("read_config")
                 .contains("update_config")
+                .contains("团队成员")
+                .contains("编排或团队")
                 .contains("增删改节点")
                 .contains("整体写回");
     }

@@ -11,6 +11,7 @@ import com.wzx.babiq.desktop.state.OrchestrationUiState
 import com.wzx.babiq.desktop.state.RunRecordState
 import com.wzx.babiq.desktop.state.SubAgentUiState
 import com.wzx.babiq.desktop.state.TeamUiState
+import com.wzx.babiq.desktop.state.WorkUnitUiState
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -19,7 +20,7 @@ import kotlin.test.assertTrue
 class RuntimeDetailsPanelTest {
 
 	@Test
-	fun `runtime tabs expose orchestration but never add team navigation tab`() {
+	fun `runtime tabs expose team tab while configuring a team work unit`() {
 		val state = AppState(
 			orchestrationState = OrchestrationUiState(configuringWorkUnit = workUnit(kind = "orchestration")),
 			teamState = TeamUiState(configuringWorkUnit = workUnit(kind = "team")),
@@ -27,11 +28,39 @@ class RuntimeDetailsPanelTest {
 
 		val tabs = runtimePanelTabs(state, RuntimePanelTab.Run)
 
-		assertEquals(listOf(RuntimePanelTab.Run, RuntimePanelTab.Orchestration), tabs.map { it.tab })
+		assertEquals(listOf(RuntimePanelTab.Run, RuntimePanelTab.Orchestration, RuntimePanelTab.Team), tabs.map { it.tab })
 		assertTrue(tabs.first { it.tab == RuntimePanelTab.Run }.visible)
 		assertTrue(tabs.first { it.tab == RuntimePanelTab.Orchestration }.visible)
-		assertFalse(tabs.any { it.tab == RuntimePanelTab.Team })
+		assertTrue(tabs.first { it.tab == RuntimePanelTab.Team }.visible)
 		assertEquals(RuntimePanelTab.Orchestration, preferredRuntimePanelTab(state, RuntimePanelTab.Run))
+	}
+
+	@Test
+	fun `team tab is restored from team work unit list after restart`() {
+		val state = AppState(
+			workUnitState = WorkUnitUiState(
+				items = listOf(
+					ThreadItem.WorkUnit(
+						id = "it_wu_team",
+						workUnitId = "wu_team",
+						kind = "team",
+						name = "bbq团队",
+						status = "waiting_config",
+						currentGoalId = "goal_1",
+						currentGoal = "待定团队任务",
+						goalCount = 1,
+					),
+				),
+			),
+			teamState = TeamUiState(),
+		)
+
+		assertEquals(
+			listOf(RuntimePanelTab.Run, RuntimePanelTab.Orchestration, RuntimePanelTab.Team),
+			runtimePanelTabs(state, RuntimePanelTab.Run).map { it.tab },
+		)
+		assertEquals(RuntimePanelTab.Team, resolveRuntimePanelTab(state, RuntimePanelTab.Team))
+		assertEquals(setOf(RuntimePanelContent.WorkUnits), runtimePanelContent(state, RuntimePanelTab.Team))
 	}
 
 	@Test
@@ -43,6 +72,7 @@ class RuntimeDetailsPanelTest {
 		assertFalse(RuntimePanelContent.Team in runContent)
 		assertFalse(RuntimePanelContent.SubAgent in runContent)
 		assertEquals(setOf(RuntimePanelContent.WorkUnits), runtimePanelContent(RuntimePanelTab.Orchestration))
+		assertEquals(setOf(RuntimePanelContent.Team), runtimePanelContent(RuntimePanelTab.Team))
 		assertEquals(setOf(RuntimePanelContent.SubAgent), runtimePanelContent(RuntimePanelTab.SubAgent))
 	}
 
@@ -74,20 +104,26 @@ class RuntimeDetailsPanelTest {
 
 		assertEquals(setOf(RuntimePanelContent.WorkUnits), runtimePanelContent(runtimeOnly, RuntimePanelTab.Orchestration))
 		assertEquals(setOf(RuntimePanelContent.Orchestration), runtimePanelContent(configuring, RuntimePanelTab.Orchestration))
+		assertEquals(setOf(RuntimePanelContent.Team), runtimePanelContent(runtimeOnly, RuntimePanelTab.Team))
+		assertEquals(setOf(RuntimePanelContent.Team), runtimePanelContent(configuring, RuntimePanelTab.Team))
 	}
 
 	@Test
-	fun `team tab requests fall back to run tab without active runtime state`() {
+	fun `team tab requests resolve only when team state exists`() {
 		assertEquals(RuntimePanelTab.Orchestration, resolveRuntimePanelTab(AppState(), RuntimePanelTab.Orchestration))
 		assertEquals(RuntimePanelTab.Run, resolveRuntimePanelTab(AppState(), RuntimePanelTab.Team))
+		assertEquals(
+			RuntimePanelTab.Team,
+			resolveRuntimePanelTab(AppState(teamState = TeamUiState(configuringWorkUnit = workUnit(kind = "team"))), RuntimePanelTab.Team),
+		)
 	}
 
 	@Test
-	fun `sub agent tab only appears when visible and team never appears as tab`() {
+	fun `team tab appears for team configuration and sub agent tab only appears when visible`() {
 		val teamState = AppState(teamState = TeamUiState(configuringWorkUnit = workUnit(kind = "team")))
 		val subAgentState = AppState(subAgentState = SubAgentUiState())
 
-		assertEquals(listOf(RuntimePanelTab.Run, RuntimePanelTab.Orchestration), runtimePanelTabs(teamState, RuntimePanelTab.Run).map { it.tab })
+		assertEquals(listOf(RuntimePanelTab.Run, RuntimePanelTab.Orchestration, RuntimePanelTab.Team), runtimePanelTabs(teamState, RuntimePanelTab.Run).map { it.tab })
 		assertEquals(listOf(RuntimePanelTab.Run, RuntimePanelTab.Orchestration), runtimePanelTabs(subAgentState, RuntimePanelTab.Run).map { it.tab })
 	}
 

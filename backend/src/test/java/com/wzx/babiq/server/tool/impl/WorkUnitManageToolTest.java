@@ -210,10 +210,53 @@ class WorkUnitManageToolTest {
     }
 
     @Test
-    void update_config_should_return_readable_error_for_wrong_kind_without_persisting() {
+    void read_config_should_return_current_team_member_config() {
         WorkUnitService service = mock(WorkUnitService.class);
         WorkUnit workUnit = workUnit("wu_team", "team", "review-team", "waiting_config", "goal_1");
+        String configJson = "{\"members\":[{\"id\":\"writer\",\"name\":\"writer\",\"task\":\"Edit files\",\"mode\":\"WORKSPACE_TOOL\"}]}";
         when(service.listVisible("thr_manage")).thenReturn(List.of(workUnit));
+        when(service.findConfig("wu_team")).thenReturn(java.util.Optional.of(
+                new WorkUnitConfig("wu_team", configJson, null, Instant.now(), Instant.now())));
+
+        WorkUnitManageTool tool = new WorkUnitManageTool(service);
+        ToolResult result = tool.manage(
+                "read_config",
+                "team",
+                "review-team",
+                null,
+                null,
+                null,
+                null,
+                null,
+                toolContext(null));
+
+        assertThat(result.ok()).isTrue();
+        assertThat(result.output())
+                .contains("wu_team", "kind=team", "members", "writer", "WORKSPACE_TOOL");
+        verify(service).findConfig("wu_team");
+    }
+
+    @Test
+    void update_config_should_persist_team_member_config_and_emit_refreshed_item() throws Exception {
+        WorkUnitService service = mock(WorkUnitService.class);
+        ItemEmitter emitter = mock(ItemEmitter.class);
+        WorkUnit workUnit = workUnit("wu_team", "team", "review-team", "waiting_config", "goal_1");
+        WorkUnitItem refreshedItem = new WorkUnitItem(
+                "it_workunit_team",
+                "workUnit",
+                "wu_team",
+                "team",
+                "review-team",
+                "waiting_config",
+                "goal_1",
+                "review goal",
+                1,
+                null);
+        String configJson = "{\"members\":[{\"id\":\"writer\",\"name\":\"writer\",\"task\":\"Edit files\",\"mode\":\"WORKSPACE_TOOL\"}]}";
+        when(service.listVisible("thr_manage")).thenReturn(List.of(workUnit));
+        when(service.updateConfig("wu_team", configJson, null)).thenReturn(
+                new WorkUnitConfig("wu_team", configJson, null, Instant.now(), Instant.now()));
+        when(service.itemFor(workUnit)).thenReturn(refreshedItem);
 
         WorkUnitManageTool tool = new WorkUnitManageTool(service);
         ToolResult result = tool.manage(
@@ -223,13 +266,14 @@ class WorkUnitManageToolTest {
                 null,
                 null,
                 null,
-                "{\"nodes\":[]}",
+                configJson,
                 null,
-                toolContext(null));
+                toolContext(emitter));
 
-        assertThat(result.ok()).isFalse();
-        assertThat(result.error()).contains("orchestration", "read_config", "update_config");
-        verify(service, never()).updateConfig(anyString(), anyString(), any());
+        assertThat(result.ok()).isTrue();
+        assertThat(result.output()).contains("wu_team", "configuration updated");
+        verify(service).updateConfig("wu_team", configJson, null);
+        verify(emitter).emitItemUpdated(refreshedItem);
     }
 
     @Test

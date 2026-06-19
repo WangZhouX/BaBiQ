@@ -40,6 +40,7 @@ import com.wzx.babiq.desktop.state.MemoryUiState
 import com.wzx.babiq.desktop.state.ObservabilityState
 import com.wzx.babiq.desktop.state.RunRecordState
 import com.wzx.babiq.desktop.state.RunTurnListItem
+import com.wzx.babiq.desktop.state.TeamUiState
 import com.wzx.babiq.desktop.ui.theme.BaBiQColors
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -122,6 +123,12 @@ fun runtimePanelTabs(state: AppState, selectedTab: RuntimePanelTab): List<Runtim
 			selected = resolved == RuntimePanelTab.Orchestration,
 		),
 		RuntimePanelTabItem(
+			RuntimePanelTab.Team,
+			"团队",
+			visible = state.teamState.hasTeamPanelContent() || state.hasTeamWorkUnits(),
+			selected = resolved == RuntimePanelTab.Team,
+		).takeIf { it.visible },
+		RuntimePanelTabItem(
 			RuntimePanelTab.SubAgent,
 			"子代理",
 			visible = state.subAgentState.visible,
@@ -133,7 +140,7 @@ fun runtimePanelTabs(state: AppState, selectedTab: RuntimePanelTab): List<Runtim
 fun resolveRuntimePanelTab(state: AppState, requested: RuntimePanelTab): RuntimePanelTab =
 	when (requested) {
 		RuntimePanelTab.Orchestration -> RuntimePanelTab.Orchestration
-		RuntimePanelTab.Team -> RuntimePanelTab.Run
+		RuntimePanelTab.Team -> requested.takeIf { state.teamState.hasTeamPanelContent() || state.hasTeamWorkUnits() } ?: RuntimePanelTab.Run
 		RuntimePanelTab.SubAgent -> requested.takeIf { state.subAgentState.visible } ?: RuntimePanelTab.Run
 		RuntimePanelTab.Run -> RuntimePanelTab.Run
 	}
@@ -141,6 +148,7 @@ fun resolveRuntimePanelTab(state: AppState, requested: RuntimePanelTab): Runtime
 fun preferredRuntimePanelTab(state: AppState, current: RuntimePanelTab): RuntimePanelTab =
 	when {
 		state.orchestrationState.configuringWorkUnit != null -> RuntimePanelTab.Orchestration
+		state.teamState.configuringWorkUnit != null -> RuntimePanelTab.Team
 		else -> resolveRuntimePanelTab(state, current)
 	}
 
@@ -158,7 +166,7 @@ fun runtimePanelContent(tab: RuntimePanelTab): Set<RuntimePanelContent> =
 			RuntimePanelContent.EmptyState,
 		)
 		RuntimePanelTab.Orchestration -> setOf(RuntimePanelContent.WorkUnits)
-		RuntimePanelTab.Team -> emptySet()
+		RuntimePanelTab.Team -> setOf(RuntimePanelContent.Team)
 		RuntimePanelTab.SubAgent -> setOf(RuntimePanelContent.SubAgent)
 	}
 
@@ -171,12 +179,24 @@ fun runtimePanelContent(state: AppState, tab: RuntimePanelTab): Set<RuntimePanel
 				runtimePanelContent(tab)
 			}
 		RuntimePanelTab.Team ->
-			if (state.teamState.configuringWorkUnit != null) {
+			if (state.teamState.hasTeamPanelContent()) {
 				setOf(RuntimePanelContent.Team)
+			} else if (state.hasTeamWorkUnits()) {
+				setOf(RuntimePanelContent.WorkUnits)
 			} else {
-				runtimePanelContent(tab)
+				emptySet()
 			}
 		else -> runtimePanelContent(tab)
+	}
+
+private fun TeamUiState.hasTeamPanelContent(): Boolean =
+	configuringWorkUnit != null || visible
+
+private fun AppState.hasTeamWorkUnits(): Boolean =
+	workUnitState.items.any { item ->
+		!item.removed &&
+			!item.status.equals("removed", ignoreCase = true) &&
+			item.kind.equals("team", ignoreCase = true)
 	}
 
 private fun AppState.workUnitRemovalDisplayName(workUnitId: String): String {
@@ -292,22 +312,6 @@ fun RuntimeDetailsPanel(
 				onSelectTab = { selectedTab = it },
 				onClose = onClose,
 			)
-			TeamSection(
-				state = state.teamState,
-				modelLabel = state.providerState.active.label,
-				providerState = state.providerState,
-				onStartWorkUnit = onStartWorkUnit,
-				onRemoveWorkUnit = requestWorkUnitRemoval,
-				onDismissTeam = requestTeamDismiss,
-				onBackToList = onBackToWorkUnitList,
-				onUpdateWorkUnitGoal = onUpdateWorkUnitGoal,
-				onRenameWorkUnit = onRenameWorkUnit,
-				onUpdateWorkUnitConfig = { workUnitId, configJson ->
-					onUpdateWorkUnitConfig(workUnitId, configJson, null)
-				},
-				onSendTeamMessage = onSendTeamMessage,
-				onSelectTeam = onSelectTeam,
-			)
 			when (effectiveTab) {
 				RuntimePanelTab.Run -> {
 					PlanSection(state.planState)
@@ -378,7 +382,37 @@ fun RuntimeDetailsPanel(
 						)
 					}
 				}
-				RuntimePanelTab.Team -> Unit
+				RuntimePanelTab.Team -> {
+					val content = runtimePanelContent(state, effectiveTab)
+					if (RuntimePanelContent.WorkUnits in content) {
+						WorkUnitSection(
+							state = state.workUnitState,
+							kindFilter = "team",
+							onSelect = onSelectWorkUnit,
+							onConfigure = onConfigureWorkUnit,
+							onRemove = requestWorkUnitRemoval,
+							onUpdateGoal = onUpdateWorkUnitGoal,
+						)
+					}
+					if (RuntimePanelContent.Team in content) {
+						TeamSection(
+							state = state.teamState,
+							modelLabel = state.providerState.active.label,
+							providerState = state.providerState,
+							onStartWorkUnit = onStartWorkUnit,
+							onRemoveWorkUnit = requestWorkUnitRemoval,
+							onDismissTeam = requestTeamDismiss,
+							onBackToList = onBackToWorkUnitList,
+							onUpdateWorkUnitGoal = onUpdateWorkUnitGoal,
+							onRenameWorkUnit = onRenameWorkUnit,
+							onUpdateWorkUnitConfig = { workUnitId, configJson ->
+								onUpdateWorkUnitConfig(workUnitId, configJson, null)
+							},
+							onSendTeamMessage = onSendTeamMessage,
+							onSelectTeam = onSelectTeam,
+						)
+					}
+				}
 				RuntimePanelTab.SubAgent -> SubAgentSection(state.subAgentState, onDismiss = onDismissSubAgent)
 			}
 		}

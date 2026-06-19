@@ -59,6 +59,8 @@ data class WorkUnitConfigEntry(
 	val task: String? = null,
 	val model: String? = null,
 	val mode: String? = null,
+	val toolNames: List<String> = emptyList(),
+	val writeScopes: List<String> = emptyList(),
 )
 
 @Serializable

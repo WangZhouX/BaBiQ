@@ -665,6 +665,42 @@ class ChatReducerTest {
 	}
 
 	@Test
+	fun `team work unit item opens team configuration instead of stale runtime team`() {
+		val staleTeam = ThreadItem.Team(
+			id = "it_team_old",
+			teamId = "team_old",
+			title = "old runtime team",
+			status = "completed",
+		)
+		val item = ThreadItem.WorkUnit(
+			id = "it_workunit_team",
+			workUnitId = "wu_team",
+			kind = "team",
+			name = "team-default",
+			status = "waiting_config",
+			currentGoalId = "goal_team",
+			currentGoal = "pending team task",
+			goalCount = 1,
+			removed = false,
+		)
+
+		val next = ChatReducer.reduce(
+			AppState.empty().copy(
+				currentThreadId = "thread-1",
+				teamState = TeamUiState().withTeam(staleTeam),
+			),
+			AgentEvent.Server(ServerEvent.ItemAdded("thread-1", "turn-1", item)),
+		)
+
+		assertEquals("wu_team", next.workUnitState.selectedWorkUnitId)
+		assertEquals("wu_team", next.teamState.configuringWorkUnit?.workUnitId)
+		assertEquals("team-default", next.teamState.configuringWorkUnit?.name)
+		assertEquals("team", next.teamState.configuringWorkUnit?.kind)
+		assertEquals("pending team task", next.teamState.configuringWorkUnit?.goals?.single()?.goalText)
+		assertEquals(null, next.orchestrationState.configuringWorkUnit)
+	}
+
+	@Test
 	fun `removed work unit item disappears from runtime state`() {
 		val existing = ThreadItem.WorkUnit(
 			id = "it_workunit_1",

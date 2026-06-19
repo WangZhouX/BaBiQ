@@ -6,10 +6,12 @@ import com.wzx.babiq.server.agent.team.TeamMessageRecord;
 import com.wzx.babiq.server.agent.team.TeamArtifactRecord;
 import com.wzx.babiq.server.agent.team.TeamRecord;
 import com.wzx.babiq.server.agent.team.TeamRepository;
+import com.wzx.babiq.server.persistence.entity.ItemEntity;
 import com.wzx.babiq.server.persistence.entity.TeamArtifactEntity;
 import com.wzx.babiq.server.persistence.entity.TeamEntity;
 import com.wzx.babiq.server.persistence.entity.TeamMemberEntity;
 import com.wzx.babiq.server.persistence.entity.TeamMessageEntity;
+import com.wzx.babiq.server.persistence.mapper.ItemMapper;
 import com.wzx.babiq.server.persistence.mapper.TeamArtifactMapper;
 import com.wzx.babiq.server.persistence.mapper.TeamMapper;
 import com.wzx.babiq.server.persistence.mapper.TeamMemberMapper;
@@ -38,6 +40,8 @@ public class SQLiteTeamRepository implements TeamRepository {
     private final TeamMessageMapper messageMapper;
     /** 团队记忆产物表 mapper。 */
     private final TeamArtifactMapper artifactMapper;
+    /** 聊天流 item mapper，用于识别用户已隐藏的团队运行卡片。 */
+    private final ItemMapper itemMapper;
 
     /**
      * 创建 SQLite 团队仓储。
@@ -45,11 +49,13 @@ public class SQLiteTeamRepository implements TeamRepository {
     public SQLiteTeamRepository(TeamMapper teamMapper,
                                 TeamMemberMapper memberMapper,
                                 TeamMessageMapper messageMapper,
-                                TeamArtifactMapper artifactMapper) {
+                                TeamArtifactMapper artifactMapper,
+                                ItemMapper itemMapper) {
         this.teamMapper = teamMapper;
         this.memberMapper = memberMapper;
         this.messageMapper = messageMapper;
         this.artifactMapper = artifactMapper;
+        this.itemMapper = itemMapper;
     }
 
     @Override
@@ -60,6 +66,8 @@ public class SQLiteTeamRepository implements TeamRepository {
         TeamEntity entity = toEntity(record);
         entity.setCreatedAt(existing == null ? now : existing.getCreatedAt());
         entity.setUpdatedAt(now);
+        entity.setRemoved(existing == null ? 0 : existing.getRemoved());
+        entity.setRemovedAt(existing == null ? null : existing.getRemovedAt());
         if (existing == null) {
             teamMapper.insert(entity);
         } else {
@@ -125,10 +133,35 @@ public class SQLiteTeamRepository implements TeamRepository {
     public List<TeamRecord> listByThreadId(String threadId) {
         return teamMapper.selectList(Wrappers.<TeamEntity>lambdaQuery()
                         .eq(TeamEntity::getThreadId, threadId)
+                        .eq(TeamEntity::getRemoved, 0)
                         .orderByDesc(TeamEntity::getUpdatedAt))
                 .stream()
+                .filter(team -> !isRuntimeItemRemoved(threadId, team.getTeamId()))
                 .map(this::toRecord)
                 .toList();
+    }
+
+    private boolean isRuntimeItemRemoved(String threadId, String teamId) {
+        ItemEntity item = itemMapper.selectOne(Wrappers.<ItemEntity>lambdaQuery()
+                .eq(ItemEntity::getThreadId, threadId)
+                .eq(ItemEntity::getType, "team")
+                .eq(ItemEntity::getItemId, "it_" + teamId)
+                .last("LIMIT 1"));
+        return item != null && "removed".equalsIgnoreCase(item.getStatus());
+    }
+
+    @Override
+    @Transactional
+    public void markRemoved(String teamId, Instant removedAt) {
+        TeamEntity entity = findEntity(teamId);
+        if (entity == null) {
+            return;
+        }
+        Instant timestamp = removedAt == null ? Instant.now() : removedAt;
+        entity.setRemoved(1);
+        entity.setRemovedAt(PersistenceTime.write(timestamp));
+        entity.setUpdatedAt(PersistenceTime.write(timestamp));
+        teamMapper.updateById(entity);
     }
 
     @Override

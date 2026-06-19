@@ -9,6 +9,7 @@ import com.wzx.babiq.server.api.dto.ThreadListResult;
 import com.wzx.babiq.server.api.dto.ThreadLoadResult;
 import com.wzx.babiq.server.api.dto.ThreadMetaDto;
 import com.wzx.babiq.server.api.dto.ThreadSummaryDto;
+import com.wzx.babiq.server.agent.team.TeamRepository;
 import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
 import com.wzx.babiq.server.api.error.JsonRpcException;
 import com.wzx.babiq.server.conversation.repository.ConversationRepository;
@@ -17,6 +18,7 @@ import com.wzx.babiq.server.persistence.entity.ThreadEntity;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -40,6 +42,8 @@ public class ConversationApplicationService {
     private final ConversationRepository repository;
     /** 运行期会话注册表，用来判断当前 thread 是否仍有非终态 turn。 */
     private final ConversationService conversationService;
+    /** 团队运行仓储，用来把团队卡片移除同步到团队记录层。 */
+    private final TeamRepository teamRepository;
     /** 协议 item payload 解析器，负责把数据库中的 JSON 字符串还原成 JsonNode。 */
     private final ObjectMapper objectMapper;
 
@@ -49,9 +53,15 @@ public class ConversationApplicationService {
      * @param repository 对话持久化仓库
      * @param conversationService 运行期会话服务
      */
-    @Autowired
     public ConversationApplicationService(ConversationRepository repository, ConversationService conversationService) {
-        this(repository, conversationService, new ObjectMapper());
+        this(repository, conversationService, null, new ObjectMapper());
+    }
+
+    @Autowired
+    public ConversationApplicationService(ConversationRepository repository,
+                                          ConversationService conversationService,
+                                          TeamRepository teamRepository) {
+        this(repository, conversationService, teamRepository, new ObjectMapper());
     }
 
     /**
@@ -65,8 +75,17 @@ public class ConversationApplicationService {
             ConversationRepository repository,
             ConversationService conversationService,
             ObjectMapper objectMapper) {
+        this(repository, conversationService, null, objectMapper);
+    }
+
+    ConversationApplicationService(
+            ConversationRepository repository,
+            ConversationService conversationService,
+            TeamRepository teamRepository,
+            ObjectMapper objectMapper) {
         this.repository = repository;
         this.conversationService = conversationService;
+        this.teamRepository = teamRepository;
         this.objectMapper = objectMapper;
     }
 
@@ -138,8 +157,8 @@ public class ConversationApplicationService {
     /**
      * 持久化隐藏右侧运行详情里的运行态 item。
      *
-     * <p>不删除 payload 和审计表，只把 bq_items.status 标记为 removed。后续 thread/load 会过滤
-     * removed 状态，因此重启或重新打开会话后不会再次显示这张运行卡片。</p>
+     * <p>不删除 payload 和审计表，只把 bq_items.status 标记为 removed。团队 item 会同步标记
+     * bq_teams.removed，避免 team/list 在重启或重新打开会话后再次显示已移除团队。</p>
      *
      * @param itemId 协议 item id
      * @param type 调用方声明的协议类型，用于避免误删普通聊天消息
@@ -161,10 +180,28 @@ public class ConversationApplicationService {
             throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS,
                     "运行记录类型不匹配: " + existing.type());
         }
-        ItemRecord removed = repository.markItemRemoved(normalizedItemId, java.time.Instant.now())
+        Instant removedAt = Instant.now();
+        ItemRecord removed = repository.markItemRemoved(normalizedItemId, removedAt)
                 .orElseThrow(() -> new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS,
                         "运行记录 item 不存在: " + normalizedItemId));
+        if ("team".equals(normalizedType)) {
+            markTeamRecordRemoved(removed, removedAt);
+        }
         return new RuntimeItemRemoveResult(removed.itemId(), removed.type(), removed.status(), true);
+    }
+
+    private void markTeamRecordRemoved(ItemRecord record, Instant removedAt) {
+        if (teamRepository == null) {
+            return;
+        }
+        try {
+            String teamId = objectMapper.readTree(record.payloadJson()).path("teamId").asText("");
+            if (!teamId.isBlank()) {
+                teamRepository.markRemoved(teamId, removedAt);
+            }
+        } catch (JsonProcessingException ignored) {
+            // 运行 item 已经隐藏；旧 payload 损坏时不阻断用户移除操作。
+        }
     }
 
     private ThreadSummaryDto toSummary(ThreadEntity entity) {

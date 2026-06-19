@@ -5,6 +5,12 @@ import com.wzx.babiq.server.agent.team.TeamMessageRecord;
 import com.wzx.babiq.server.agent.team.TeamArtifactRecord;
 import com.wzx.babiq.server.agent.team.TeamRecord;
 import com.wzx.babiq.server.agent.team.TeamRepository;
+import com.wzx.babiq.server.conversation.ConversationApplicationService;
+import com.wzx.babiq.server.conversation.ConversationEventRecorder;
+import com.wzx.babiq.server.conversation.ConversationService;
+import com.wzx.babiq.server.conversation.Thread;
+import com.wzx.babiq.server.conversation.Turn;
+import com.wzx.babiq.server.conversation.items.TeamItem;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -38,6 +44,15 @@ class TeamRepositoryTest {
 
     @Autowired
     private TeamRepository repository;
+
+    @Autowired
+    private ConversationService conversationService;
+
+    @Autowired
+    private ConversationEventRecorder recorder;
+
+    @Autowired
+    private ConversationApplicationService applicationService;
 
     @Test
     void repository_should_persist_team_members_and_timeline_messages() {
@@ -112,5 +127,89 @@ class TeamRepositoryTest {
         assertThat(artifacts.getFirst().artifactType()).isEqualTo("MEMBER_OUTPUT");
         assertThat(artifacts.getFirst().relativePath()).isEqualTo("rounds/r1-explorer.md");
         assertThat(artifacts.getFirst().content()).contains("目录");
+    }
+
+    @Test
+    void list_by_thread_should_skip_team_when_runtime_item_was_removed() {
+        Thread thread = conversationService.createThread("H:\\aaa");
+        Turn turn = conversationService.startTurn(thread.id(), "run teams", "deepseek", "deepseek-v4-pro",
+                "H:\\aaa", "DANGER_FULL_ACCESS", "ON_REQUEST");
+        repository.save(new TeamRecord(
+                        "team_visible",
+                        thread.id(),
+                        turn.id(),
+                        "可见团队",
+                        "继续展示",
+                        "completed",
+                        "H:\\aaa",
+                        "WORKSPACE_WRITE",
+                        true,
+                        true,
+                        5,
+                        1,
+                        null,
+                        "done",
+                        null),
+                List.of());
+        repository.save(new TeamRecord(
+                        "team_hidden",
+                        thread.id(),
+                        turn.id(),
+                        "已移除团队",
+                        "不再展示",
+                        "failed",
+                        "H:\\aaa",
+                        "WORKSPACE_WRITE",
+                        true,
+                        true,
+                        5,
+                        1,
+                        null,
+                        null,
+                        "removed by user"),
+                List.of());
+        recorder.recordItemAdded(thread.id(), turn.id(), new TeamItem(
+                "it_team_visible", "team", "team_visible", "可见团队", "completed", "done",
+                true, true, null, 1, 5, List.of()));
+        recorder.recordItemAdded(thread.id(), turn.id(), new TeamItem(
+                "it_team_hidden", "team", "team_hidden", "已移除团队", "failed", "removed by user",
+                true, true, null, 1, 5, List.of()));
+        applicationService.removeRuntimeItem("it_team_hidden", "team");
+
+        List<TeamRecord> teams = repository.listByThreadId(thread.id());
+
+        assertThat(teams).extracting(TeamRecord::teamId)
+                .contains("team_visible")
+                .doesNotContain("team_hidden");
+    }
+
+    @Test
+    void list_by_thread_should_skip_team_when_team_record_was_removed() {
+        Thread thread = conversationService.createThread("H:\\aaa");
+        Turn turn = conversationService.startTurn(thread.id(), "run teams", "deepseek", "deepseek-v4-pro",
+                "H:\\aaa", "DANGER_FULL_ACCESS", "ON_REQUEST");
+        repository.save(new TeamRecord(
+                        "team_record_hidden",
+                        thread.id(),
+                        turn.id(),
+                        "Hidden team record",
+                        "Should not reappear after restart",
+                        "failed",
+                        "H:\\aaa",
+                        "WORKSPACE_WRITE",
+                        true,
+                        true,
+                        5,
+                        1,
+                        null,
+                        null,
+                        "removed by user"),
+                List.of());
+
+        repository.markRemoved("team_record_hidden", Instant.parse("2026-06-17T00:00:00Z"));
+
+        assertThat(repository.listByThreadId(thread.id()))
+                .extracting(TeamRecord::teamId)
+                .doesNotContain("team_record_hidden");
     }
 }

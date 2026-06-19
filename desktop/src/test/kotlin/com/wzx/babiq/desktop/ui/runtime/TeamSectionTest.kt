@@ -3,10 +3,14 @@ package com.wzx.babiq.desktop.ui.runtime
 import com.wzx.babiq.desktop.protocol.ThreadItem
 import com.wzx.babiq.desktop.protocol.WorkUnitGoalInfo
 import com.wzx.babiq.desktop.protocol.WorkUnitInfo
+import com.wzx.babiq.desktop.protocol.WorkUnitConfiguration
+import com.wzx.babiq.desktop.protocol.protocolJson
 import com.wzx.babiq.desktop.state.TeamUiState
+import kotlinx.serialization.decodeFromString
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class TeamSectionTest {
@@ -236,6 +240,162 @@ class TeamSectionTest {
 		assertEquals("provider:qwen:qwen-plus", model.configMembers.first { it.memberId == "frontend" }.modelValue)
 		assertEquals("移除", model.removeActionLabel)
 		assertEquals("返回列表", model.backActionLabel)
+	}
+
+	@Test
+	fun `team config members separate identity role and tool permission labels`() {
+		val workUnit = WorkUnitInfo(
+			workUnitId = "wu_team",
+			threadId = "thr_1",
+			kind = "team",
+			name = "team-default",
+			status = "waiting_config",
+			currentGoalId = "goal_1",
+			cwd = "H:\\aaa",
+			goals = listOf(WorkUnitGoalInfo("goal_1", "wu_team", "review login page", "pending")),
+			configJson = null,
+		)
+
+		val members = buildTeamSectionModel(
+			TeamUiState(configuringWorkUnit = workUnit),
+			modelLabel = "deepseek-v4-pro",
+		).configMembers
+
+		val frontend = members.first { it.memberId == "frontend" }
+		assertEquals("成员：frontend", frontend.memberLabel)
+		assertEquals("角色：实现", frontend.roleLabel)
+		assertEquals("工具权限：工作区工具", frontend.permissionLabel)
+		assertEquals("角色：实现 · 工具权限：工作区工具", frontend.listMeta)
+		assertEquals("成员详情 · frontend", frontend.detailTitle)
+		assertEquals("详情配置", frontend.detailActionLabel)
+		assertEquals("删除成员", frontend.removeActionLabel)
+		assertFalse(frontend.listMeta.contains(frontend.task))
+		assertFalse(frontend.role.contains("工具"))
+
+		val tester = members.first { it.memberId == "tester" }
+		assertEquals("角色：验证", tester.roleLabel)
+		assertEquals("工具权限：只读工具", tester.permissionLabel)
+		assertFalse(tester.role.contains("工具"))
+	}
+
+	@Test
+	fun `team config add member updates local draft and selects new member before backend refresh`() {
+		val workUnit = WorkUnitInfo(
+			workUnitId = "wu_team",
+			threadId = "thr_1",
+			kind = "team",
+			name = "review-team",
+			status = "waiting_config",
+			currentGoalId = "goal_1",
+			cwd = "H:\\aaa",
+			goals = listOf(WorkUnitGoalInfo("goal_1", "wu_team", "review login page", "pending")),
+			configJson = """
+				{
+				  "members": [
+				    {"id": "writer", "name": "writer", "role": "writer", "task": "write patch", "model": "inherit", "mode": "WORKSPACE_TOOL"}
+				  ]
+				}
+			""".trimIndent(),
+		)
+		val detail = workUnitDetailModel(workUnit, "deepseek-v4-pro")
+		val members = buildTeamSectionModel(TeamUiState(configuringWorkUnit = workUnit), modelLabel = "deepseek-v4-pro").configMembers
+
+		val draft = addTeamConfigMemberDraft(TeamConfigMembersDraft(members, "writer"), detail)
+
+		assertEquals(listOf("writer", "member_2"), draft.members.map { it.memberId })
+		assertEquals("member_2", draft.selectedMemberId)
+		assertEquals("member_2", draft.detailMemberId)
+		assertEquals("成员详情 · member_2", draft.members.last().detailTitle)
+	}
+
+	@Test
+	fun `team config draft switches between member list and member detail page`() {
+		val workUnit = WorkUnitInfo(
+			workUnitId = "wu_team",
+			threadId = "thr_1",
+			kind = "team",
+			name = "review-team",
+			status = "waiting_config",
+			currentGoalId = "goal_1",
+			cwd = "H:\\aaa",
+			goals = listOf(WorkUnitGoalInfo("goal_1", "wu_team", "review login page", "pending")),
+			configJson = """
+				{
+				  "members": [
+				    {"id": "writer", "name": "writer", "role": "writer", "task": "write patch", "model": "inherit", "mode": "WORKSPACE_TOOL"},
+				    {"id": "reviewer", "name": "reviewer", "role": "reviewer", "task": "review patch", "model": "inherit", "mode": "READ_ONLY_TOOL"}
+				  ]
+				}
+			""".trimIndent(),
+		)
+		val members = buildTeamSectionModel(TeamUiState(configuringWorkUnit = workUnit), modelLabel = "deepseek-v4-pro").configMembers
+		val listDraft = TeamConfigMembersDraft(members, selectedMemberId = "writer")
+
+		assertNull(listDraft.detailMemberId)
+
+		val detailDraft = openTeamConfigMemberDetail(listDraft, "reviewer")
+		assertEquals("reviewer", detailDraft.selectedMemberId)
+		assertEquals("reviewer", detailDraft.detailMemberId)
+
+		val backToList = closeTeamConfigMemberDetail(detailDraft)
+		assertEquals("reviewer", backToList.selectedMemberId)
+		assertNull(backToList.detailMemberId)
+
+		val removed = removeTeamConfigMemberDraft(detailDraft, "reviewer")
+		assertEquals(listOf("writer"), removed.members.map { it.memberId })
+		assertEquals("writer", removed.selectedMemberId)
+		assertNull(removed.detailMemberId)
+	}
+
+	@Test
+	fun `team config helpers add update and remove members`() {
+		val workUnit = WorkUnitInfo(
+			workUnitId = "wu_team",
+			threadId = "thr_1",
+			kind = "team",
+			name = "review-team",
+			status = "waiting_config",
+			currentGoalId = "goal_1",
+			cwd = "H:\\aaa",
+			goals = listOf(WorkUnitGoalInfo("goal_1", "wu_team", "review login page", "pending")),
+			configJson = """
+				{
+				  "members": [
+				    {"id": "writer", "name": "writer", "role": "writer", "task": "write patch", "model": "inherit", "mode": "WORKSPACE_TOOL"}
+				  ]
+				}
+			""".trimIndent(),
+		)
+		val detail = workUnitDetailModel(workUnit, "deepseek-v4-pro")
+		val members = buildTeamSectionModel(TeamUiState(configuringWorkUnit = workUnit), modelLabel = "deepseek-v4-pro").configMembers
+
+		val added = addTeamConfigMember(members, detail)
+
+		assertEquals(listOf("writer", "member_2"), added.map { it.memberId })
+		val updated = updateTeamConfigMember(
+			members = added,
+			memberId = "member_2",
+			title = "reviewer",
+			role = "reviewer",
+			task = "review result",
+			modelValue = "provider:qwen:qwen-plus",
+			mode = "WORKSPACE_TOOL",
+			inheritedModel = "deepseek-v4-pro",
+		)
+		val updatedConfig = protocolJson.decodeFromString<WorkUnitConfiguration>(buildTeamConfigJson(detail, updated))
+		val reviewer = updatedConfig.members.first { it.id == "member_2" }
+		assertEquals("reviewer", reviewer.name)
+		assertEquals("reviewer", reviewer.role)
+		assertEquals("review result", reviewer.task)
+		assertEquals("provider:qwen:qwen-plus", reviewer.model)
+		assertEquals("WORKSPACE_TOOL", reviewer.mode)
+		assertTrue("write_file" in reviewer.toolNames)
+		assertTrue("apply_patch" in reviewer.toolNames)
+		assertEquals(listOf("H:\\aaa"), reviewer.writeScopes)
+
+		val removed = removeTeamConfigMember(updated, "writer")
+		val removedConfig = protocolJson.decodeFromString<WorkUnitConfiguration>(buildTeamConfigJson(detail, removed))
+		assertEquals(listOf("member_2"), removedConfig.members.map { it.id })
 	}
 
 	@Test

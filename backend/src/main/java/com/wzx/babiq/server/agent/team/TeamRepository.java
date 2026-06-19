@@ -1,5 +1,6 @@
 package com.wzx.babiq.server.agent.team;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
@@ -42,6 +43,12 @@ public interface TeamRepository {
      */
     default List<TeamRecord> listByThreadId(String threadId) {
         return List.of();
+    }
+
+    /**
+     * 持久化隐藏团队运行记录；保留审计数据，但不再从团队面板列表返回。
+     */
+    default void markRemoved(String teamId, Instant removedAt) {
     }
 
     /**

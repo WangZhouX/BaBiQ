@@ -26,7 +26,7 @@ class TeamModelsTest {
 
 		val item = info.toThreadItem()
 
-		assertEquals("it_team_team_1", item.id)
+		assertEquals("it_team_1", item.id)
 		assertEquals("team_1", item.teamId)
 		assertEquals("review team", item.title)
 		assertEquals("running", item.status)
@@ -102,5 +102,42 @@ class TeamModelsTest {
 		assertEquals("route", message.messageType)
 		assertEquals("write the file", message.content)
 		assertEquals(1, message.round)
+	}
+
+	@Test
+	fun `team detail accepts timeline messages without thread ids`() {
+		val detail = protocolJson.decodeFromString(
+			TeamGetResult.serializer(),
+			"""
+			{
+			  "team": {
+			    "teamId": "team_1",
+			    "threadId": "thread_1",
+			    "turnId": "turn_1",
+			    "title": "review team",
+			    "status": "completed"
+			  },
+			  "messages": [
+			    {
+			      "teamId": "team_1",
+			      "messageId": "msg_route",
+			      "threadId": null,
+			      "turnId": null,
+			      "fromAgent": "supervisor",
+			      "toAgent": "leader",
+			      "messageType": "route",
+			      "content": "next step",
+			      "round": 1
+			    }
+			  ]
+			}
+			""".trimIndent(),
+		)
+
+		val message = detail.toThreadMessages().single()
+
+		assertEquals("msg_route", message.messageId)
+		assertEquals("leader", message.toAgent)
+		assertEquals("next step", message.content)
 	}
 }

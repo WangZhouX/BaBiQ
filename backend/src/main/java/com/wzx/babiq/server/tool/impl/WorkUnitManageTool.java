@@ -78,11 +78,12 @@ public class WorkUnitManageTool implements Tool {
             description = """
                     管理 BaBiQ 命名工作容器：创建/复用编排或团队、追加目标、修改待配置目标、关联待启动目标、二次确认后移除已结束容器。
                     对已有编排 WorkUnit 增删改节点、修改节点任务、模型、模式或拓扑时，必须先 read_config 读取当前草稿，再用 update_config 整体写回完整 configJson/structureJson。
-                    update_config 只修改草稿配置，不会启动编排，也不会改变 goal 队列。
+                    对已有团队 WorkUnit 增删改成员、修改成员任务、模型或工具模式时，也必须先 read_config 读取当前草稿，再用 update_config 整体写回完整 configJson。
+                    update_config 只修改草稿配置，不会启动编排或团队，也不会改变 goal 队列。
                     """,
             resultConverter = DefaultToolCallResultConverter.class)
     public ToolResult manage(
-            @ToolParam(description = "动作：append_goal/create/update_goal/start/remove/read_config/update_config。增删改编排节点请先 read_config 再整体 update_config。")
+            @ToolParam(description = "动作：append_goal/create/update_goal/start/remove/read_config/update_config。增删改编排节点或团队成员请先 read_config 再整体 update_config。")
             String action,
             @ToolParam(description = "容器类型：orchestration/flow/编排 或 team/团队", required = false)
             String kind,
@@ -180,15 +181,11 @@ public class WorkUnitManageTool implements Tool {
         if (workUnit == null) {
             return ToolResult.failure("Cannot find WorkUnit for read_config.");
         }
-        if (!KIND_ORCHESTRATION.equals(workUnit.kind())) {
-            return ToolResult.failure("read_config/update_config currently supports orchestration WorkUnits only: "
-                    + workUnit.kind() + " / " + workUnit.workUnitId());
-        }
         Optional<WorkUnitConfig> config = service.findConfig(workUnit.workUnitId());
-        String configJson = config.map(WorkUnitConfig::configJson).orElse("{\"nodes\":[]}");
+        String configJson = config.map(WorkUnitConfig::configJson).orElse(defaultConfigJson(workUnit.kind()));
         String structureJson = config.map(WorkUnitConfig::structureJson).orElse(null);
         String validation = config
-                .map(value -> WorkUnitFlowConfigValidator.validationSummary(value.configJson(), value.structureJson()))
+                .map(value -> validationSummary(workUnit.kind(), value))
                 .orElse("validation=empty");
         List<String> emptyTaskNodes = config
                 .map(value -> WorkUnitFlowConfigValidator.emptyTaskNodeIds(value.configJson()))
@@ -217,10 +214,6 @@ public class WorkUnitManageTool implements Tool {
                 .orElse(null);
         if (workUnit == null) {
             return ToolResult.failure("Cannot find WorkUnit for update_config.");
-        }
-        if (!KIND_ORCHESTRATION.equals(workUnit.kind())) {
-            return ToolResult.failure("read_config/update_config currently supports orchestration WorkUnits only: "
-                    + workUnit.kind() + " / " + workUnit.workUnitId());
         }
         if (isBlank(configJson)) {
             return ToolResult.failure("update_config requires full configJson.");
@@ -321,6 +314,17 @@ public class WorkUnitManageTool implements Tool {
         } catch (IOException exception) {
             throw new IllegalStateException("更新工作容器 item 失败", exception);
         }
+    }
+
+    private static String defaultConfigJson(String kind) {
+        return KIND_TEAM.equals(kind) ? "{\"members\":[]}" : "{\"nodes\":[]}";
+    }
+
+    private static String validationSummary(String kind, WorkUnitConfig config) {
+        if (KIND_TEAM.equals(kind)) {
+            return "validation=team-config";
+        }
+        return WorkUnitFlowConfigValidator.validationSummary(config.configJson(), config.structureJson());
     }
 
     private static String normalizeAction(String action) {

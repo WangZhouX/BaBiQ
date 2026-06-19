@@ -50,7 +50,7 @@ data class TeamInfo(
 ) {
 	fun toThreadItem(members: List<ThreadItem.TeamMember> = emptyList()): ThreadItem.Team =
 		ThreadItem.Team(
-			id = "it_team_$teamId",
+			id = "it_$teamId",
 			teamId = teamId,
 			title = title,
 			status = status,
@@ -103,8 +103,8 @@ data class TeamMemberInfo(
 data class TeamMessageInfo(
 	val teamId: String,
 	val messageId: String,
-	val threadId: String,
-	val turnId: String,
+	val threadId: String? = null,
+	val turnId: String? = null,
 	val fromAgent: String,
 	val toAgent: String,
 	val messageType: String,
