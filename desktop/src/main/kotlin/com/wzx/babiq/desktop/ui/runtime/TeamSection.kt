@@ -45,9 +45,14 @@ data class TeamSectionModel(
 	val selectedAgent: String? = null,
 	val selectedTeamId: String? = null,
 	val teams: List<TeamSwitchRow> = emptyList(),
+	val teamSwitchSectionTitle: String? = null,
 	val memberNames: List<String> = emptyList(),
+	val memberSectionTitle: String? = null,
 	val members: List<TeamMemberRow> = emptyList(),
+	val timelineSectionTitle: String? = null,
 	val messages: List<TeamMessageRow> = emptyList(),
+	val composerTargetLabel: String = "对话对象：Leader",
+	val composerPlaceholder: String = "和这个团队（默认 Leader）说…",
 	val directError: String? = null,
 	val sendingDirect: Boolean = false,
 	val config: WorkUnitDetailModel? = null,
@@ -91,6 +96,7 @@ data class TeamConfigMemberRow(
 	val detailTitle: String = "成员详情 · $title",
 	val detailActionLabel: String = "详情配置",
 	val removeActionLabel: String = "删除成员",
+	val taskPreview: String = task,
 	val selected: Boolean,
 )
 
@@ -108,21 +114,28 @@ fun buildTeamSectionModel(
 	if (config != null) {
 		val detail = workUnitDetailModel(config, modelLabel)
 		val runtimeTeam = state.current
-		val selectedAgent = runtimeTeam?.selectedTarget(state.selectedAgent)
+		val configMembers = teamConfigMembers(detail)
+		val teamTargets = mergedTeamTargets(runtimeTeam, configMembers)
+		val selectedAgent = state.selectedAgent?.takeIf { it in teamTargets } ?: "leader"
 		return TeamSectionModel(
 			visible = true,
 			title = "团队详情 · ${config.name}",
 			subtitle = "${statusLabel(config.status)} / ${config.goals.size} 个目标 / 等待手动启动",
-			selectedAgent = selectedAgent,
-			selectedTeamId = state.selectedTeamId,
+			selectedAgent = null,
+			selectedTeamId = state.selectedTeamId ?: teamIdForWorkUnit(config.workUnitId),
 			teams = state.teamSwitchRows(),
-			memberNames = runtimeTeam?.targetAgentNames().orEmpty(),
+			teamSwitchSectionTitle = if (state.teamSwitchRows().isNotEmpty()) "团队切换" else null,
+			memberNames = emptyList(),
+			memberSectionTitle = "成员（${configMembers.size}）",
 			members = runtimeTeam?.members?.map { it.toRow() }.orEmpty(),
-			messages = state.messages.takeLast(6).map { it.toRow() },
+			timelineSectionTitle = null,
+			messages = emptyList(),
+			composerTargetLabel = composerTargetLabel(selectedAgent),
+			composerPlaceholder = "和这个团队（默认 Leader）说…",
 			directError = state.directError,
 			sendingDirect = state.sendingDirect,
 			config = detail,
-			configMembers = teamConfigMembers(detail),
+			configMembers = configMembers,
 			removeActionLabel = detail.removeActionLabel,
 			backActionLabel = "返回列表",
 		)
@@ -140,9 +153,14 @@ fun buildTeamSectionModel(
 			selectedAgent = selectedAgent,
 			selectedTeamId = state.selectedTeamId ?: team.teamId,
 			teams = state.teamSwitchRows(),
+			teamSwitchSectionTitle = if (state.teamSwitchRows().isNotEmpty()) "团队切换" else null,
 			memberNames = team.targetAgentNames(),
+			memberSectionTitle = "成员（${team.members.size}）",
 			members = team.members.map { it.toRow() },
-			messages = state.messages.takeLast(6).map { it.toRow() },
+			timelineSectionTitle = "团队对话",
+			messages = state.messages.map { it.toRow() },
+			composerTargetLabel = composerTargetLabel(selectedAgent),
+			composerPlaceholder = "和这个团队（默认 Leader）说…",
 			directError = state.directError,
 			sendingDirect = state.sendingDirect,
 			config = null,
@@ -214,18 +232,10 @@ fun TeamSection(
 					}
 				}
 			}
-			model.config?.let { config ->
-				TeamConfigPanel(
-					detail = config,
-					members = model.configMembers,
-					providerState = providerState,
-					onStart = onStartWorkUnit,
-					onUpdateGoal = onUpdateWorkUnitGoal,
-					onRenameWorkUnit = onRenameWorkUnit,
-					onUpdateConfig = onUpdateWorkUnitConfig,
-				)
-			}
-			if (model.teams.size > 1) {
+			if (model.teams.isNotEmpty()) {
+				model.teamSwitchSectionTitle?.let {
+					Text(it, style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
+				}
 				Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
 					model.teams.forEach { team ->
 						FilterChip(
@@ -242,12 +252,31 @@ fun TeamSection(
 					}
 				}
 			}
-			model.members.forEach { TeamMemberRowView(it) }
+			model.config?.let { config ->
+				TeamConfigPanel(
+					detail = config,
+					members = model.configMembers,
+					providerState = providerState,
+					onStart = onStartWorkUnit,
+					onUpdateGoal = onUpdateWorkUnitGoal,
+					onRenameWorkUnit = onRenameWorkUnit,
+					onUpdateConfig = onUpdateWorkUnitConfig,
+				)
+			}
+			if (model.config == null) {
+				model.memberSectionTitle?.let {
+					Text(it, style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
+				}
+				model.members.forEach { TeamMemberRowView(it) }
+			}
+			model.timelineSectionTitle?.let {
+				Text(it, style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
+			}
 			if (model.messages.isNotEmpty()) {
-				Text("团队消息", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
 				model.messages.forEach { TeamMessageRowView(it) }
 			}
 			if (model.memberNames.isNotEmpty()) {
+				Text(model.composerTargetLabel, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
 				Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
 					model.memberNames.forEach { name ->
 						FilterChip(
@@ -263,7 +292,7 @@ fun TeamSection(
 					modifier = Modifier.fillMaxWidth(),
 					minLines = 2,
 					maxLines = 4,
-					label = { Text("给队友补充消息") },
+					label = { Text(model.composerPlaceholder) },
 				)
 				Button(
 					onClick = {
@@ -612,6 +641,7 @@ private fun TeamConfigMemberRowView(
 			}
 		}
 		Text(row.listMeta, style = MaterialTheme.typography.labelSmall, color = BaBiQColors.Muted)
+		Text(row.taskPreview, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
 	}
 }
 
@@ -653,8 +683,9 @@ private fun buildSubtitle(team: ThreadItem.Team): String =
 		if (team.approved == true && team.frozen == true) "已审批并冻结" else null,
 		).joinToString(" / ")
 
-private fun TeamUiState.teamSwitchRows(): List<TeamSwitchRow> =
-	teams.map { team ->
+private fun TeamUiState.teamSwitchRows(): List<TeamSwitchRow> {
+	val switchTeams = if (teams.isNotEmpty()) teams else current?.let { listOf(it) }.orEmpty()
+	return switchTeams.map { team ->
 		TeamSwitchRow(
 			teamId = team.teamId,
 			title = team.title,
@@ -662,14 +693,37 @@ private fun TeamUiState.teamSwitchRows(): List<TeamSwitchRow> =
 			selected = team.teamId == (selectedTeamId ?: current?.teamId),
 		)
 	}
+}
+
+private fun teamIdForWorkUnit(workUnitId: String): String =
+	"team_" + workUnitId.removePrefix("wu_")
 
 private fun ThreadItem.Team.targetAgentNames(): List<String> =
 	listOf("leader") + members.map { it.name }.filterNot { it == "leader" }
+
+private fun List<TeamConfigMemberRow>.targetAgentNames(): List<String> {
+	val configured = map { it.title }.filter { it.isNotBlank() && it != "leader" }
+	return listOf("leader") + configured.distinct()
+}
+
+private fun mergedTeamTargets(
+	runtimeTeam: ThreadItem.Team?,
+	configMembers: List<TeamConfigMemberRow>,
+): List<String> {
+	val runtimeTargets = runtimeTeam?.targetAgentNames().orEmpty()
+	val configTargets = configMembers.targetAgentNames()
+	return (listOf("leader") + runtimeTargets.filterNot { it == "leader" } + configTargets.filterNot { it == "leader" }).distinct()
+}
 
 private fun ThreadItem.Team.selectedTarget(selectedAgent: String?): String =
 	selectedAgent
 		?.takeIf { it in targetAgentNames() }
 		?: "leader"
+
+private fun composerTargetLabel(selectedAgent: String?): String {
+	val target = selectedAgent?.takeIf { it.isNotBlank() } ?: "leader"
+	return "对话对象：" + if (target == "leader") "Leader" else target
+}
 
 private fun ThreadItem.TeamMember.toRow(): TeamMemberRow =
 	TeamMemberRow(

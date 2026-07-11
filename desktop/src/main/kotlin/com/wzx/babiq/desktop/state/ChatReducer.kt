@@ -125,9 +125,9 @@ object ChatReducer {
 				lastError = null,
 			)
 
-			is ServerEvent.ItemAdded -> state.withItem(event.item)
-			is ServerEvent.ItemUpdated -> state.withItem(event.item)
-			is ServerEvent.ItemCompleted -> state.withItem(event.item)
+			is ServerEvent.ItemAdded -> state.withThreadForItemEvent(event.threadId).withItem(event.item)
+			is ServerEvent.ItemUpdated -> state.withThreadForItemEvent(event.threadId).withItem(event.item)
+			is ServerEvent.ItemCompleted -> state.withThreadForItemEvent(event.threadId).withItem(event.item)
 			// 审批请求会把 turn 暂停在 WaitingApproval，直到用户点 approve/deny/edit。
 			is ServerEvent.ApprovalRequested -> state.copy(
 				turnState = TurnState.WaitingApproval,
@@ -168,6 +168,9 @@ object ChatReducer {
 	/**
 	 * 将后端 ThreadItem 合并到聊天列表和运行详情。
 	 */
+	private fun AppState.withThreadForItemEvent(threadId: String): AppState =
+		if (currentThreadId == null) copy(currentThreadId = threadId) else this
+
 	private fun AppState.withItem(item: ThreadItem): AppState =
 		when (item) {
 			// P1-3B 后端只在 turn 结束后发 turnSummary，所以主区运行反馈条不会在 idle/running 时凭空出现。

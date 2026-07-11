@@ -60,6 +60,8 @@ data class WorkUnitRowModel(
 	val removeBlockedLabel: String? = null,
 	val detailActionLabel: String,
 	val startActionLabel: String?,
+	val teamConversationActionLabel: String? = null,
+	val teamConversationTargetId: String? = null,
 )
 
 data class WorkUnitDetailModel(
@@ -122,6 +124,7 @@ fun WorkUnitSection(
 	onStart: (String) -> Unit = {},
 	onRemove: (String) -> Unit = {},
 	onUpdateGoal: (String, String, String) -> Unit = { _, _, _ -> },
+	onTeamConversation: (String) -> Unit = {},
 ) {
 	val model = buildWorkUnitSectionModel(state, kindFilter)
 	if (!model.visible) {
@@ -138,7 +141,14 @@ fun WorkUnitSection(
 			Text(error, style = MaterialTheme.typography.labelSmall, color = BaBiQColors.Danger)
 		}
 		model.rows.forEach { row ->
-			WorkUnitRow(row = row, onSelect = onSelect, onConfigure = onConfigure, onStart = onStart, onRemove = onRemove)
+			WorkUnitRow(
+				row = row,
+				onSelect = onSelect,
+				onConfigure = onConfigure,
+				onStart = onStart,
+				onRemove = onRemove,
+				onTeamConversation = onTeamConversation,
+			)
 		}
 	}
 }
@@ -150,6 +160,7 @@ private fun WorkUnitRow(
 	onConfigure: (String) -> Unit,
 	onStart: (String) -> Unit,
 	onRemove: (String) -> Unit,
+	onTeamConversation: (String) -> Unit,
 ) {
 	Card(
 		shape = RoundedCornerShape(8.dp),
@@ -163,6 +174,11 @@ private fun WorkUnitRow(
 					Text("${row.runtimeStateLabel} · ${row.statusLabel} · ${row.goalCountText}", style = MaterialTheme.typography.labelSmall, color = BaBiQColors.Muted)
 				}
 				Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+					row.teamConversationTargetId?.let { teamId ->
+						TextButton(onClick = { onTeamConversation(teamId) }) {
+							Text(row.teamConversationActionLabel ?: "团队协作")
+						}
+					}
 					TextButton(onClick = { onConfigure(row.workUnitId) }) { Text(row.detailActionLabel) }
 					row.startActionLabel?.let { label ->
 						TextButton(onClick = { onStart(row.workUnitId) }) { Text(label) }
@@ -283,7 +299,12 @@ private fun toRowModel(item: ThreadItem.WorkUnit): WorkUnitRowModel =
 		removeBlockedLabel = if (item.status.equals("running", ignoreCase = true)) "运行中不可移除" else null,
 		detailActionLabel = detailActionLabel(item),
 		startActionLabel = null,
+		teamConversationActionLabel = if (item.kind.equals("team", ignoreCase = true)) "团队协作" else null,
+		teamConversationTargetId = if (item.kind.equals("team", ignoreCase = true)) teamIdForWorkUnit(item.workUnitId) else null,
 	)
+
+private fun teamIdForWorkUnit(workUnitId: String): String =
+	"team_" + workUnitId.removePrefix("wu_")
 
 private fun editableGoal(info: WorkUnitInfo): WorkUnitGoalInfo? =
 	info.goals.firstOrNull { goal ->

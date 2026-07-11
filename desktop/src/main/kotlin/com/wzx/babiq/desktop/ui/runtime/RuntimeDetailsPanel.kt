@@ -392,6 +392,7 @@ fun RuntimeDetailsPanel(
 							onConfigure = onConfigureWorkUnit,
 							onRemove = requestWorkUnitRemoval,
 							onUpdateGoal = onUpdateWorkUnitGoal,
+							onTeamConversation = onSelectTeam,
 						)
 					}
 					if (RuntimePanelContent.Team in content) {
@@ -460,7 +461,7 @@ private fun runtimePanelTitle(tab: RuntimePanelTab): String =
 	when (tab) {
 		RuntimePanelTab.Run -> "运行详情"
 		RuntimePanelTab.Orchestration -> "编排详情"
-		RuntimePanelTab.Team -> "团队详情"
+		RuntimePanelTab.Team -> "团队"
 		RuntimePanelTab.SubAgent -> "子代理详情"
 	}
 

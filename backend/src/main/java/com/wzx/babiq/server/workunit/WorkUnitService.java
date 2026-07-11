@@ -51,6 +51,11 @@ public interface WorkUnitService {
     void requireGoalKind(String goalId, String expectedKind);
 
     /**
+     * 按 WorkUnit goal id 查询对应的团队 id。
+     */
+    Optional<String> teamIdForGoal(String goalId);
+
+    /**
      * 把持久化工作容器转换为协议 item，供工具和 JSON-RPC handler 推送给桌面端。
      *
      * @param workUnit 工作容器

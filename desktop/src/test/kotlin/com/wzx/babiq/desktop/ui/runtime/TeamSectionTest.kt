@@ -69,6 +69,11 @@ class TeamSectionTest {
 		assertEquals("运行中 / 第 2/5 轮 / 当前 explorer / 已审批并冻结", model.subtitle)
 		assertEquals("leader", model.selectedAgent)
 		assertEquals(listOf("leader", "explorer", "writer"), model.memberNames)
+		assertEquals("团队切换", model.teamSwitchSectionTitle)
+		assertEquals("成员（2）", model.memberSectionTitle)
+		assertEquals("团队对话", model.timelineSectionTitle)
+		assertEquals("对话对象：Leader", model.composerTargetLabel)
+		assertEquals("和这个团队（默认 Leader）说…", model.composerPlaceholder)
 		assertEquals(2, model.members.size)
 		assertEquals("explorer", model.members.first().title)
 		assertEquals("运行中 · 只读工具 · 3 工具 · 512 token", model.members.first().meta)
@@ -224,7 +229,19 @@ class TeamSectionTest {
 			""".trimIndent(),
 		)
 
-		val model = buildTeamSectionModel(TeamUiState(configuringWorkUnit = workUnit), modelLabel = "deepseek-v4-pro")
+		val teamSummary = ThreadItem.Team(
+			id = "it_team_summary",
+			teamId = "team_team",
+			title = "review-team",
+			status = "pending",
+			summary = "team/list 只返回摘要，不含完整成员",
+			members = emptyList(),
+		)
+
+		val model = buildTeamSectionModel(
+			TeamUiState(current = teamSummary, configuringWorkUnit = workUnit),
+			modelLabel = "deepseek-v4-pro",
+		)
 
 		assertTrue(model.visible)
 		assertEquals("团队详情 · review-team", model.title)
@@ -235,6 +252,12 @@ class TeamSectionTest {
 		assertEquals("deepseek-v4-pro", model.config?.modelLabel)
 		assertEquals("goal_1", model.config?.editableGoalId)
 		assertEquals("review login page", model.config?.editableGoalText)
+		assertNull(model.selectedAgent)
+		assertEquals(emptyList(), model.memberNames)
+		assertEquals("团队切换", model.teamSwitchSectionTitle)
+		assertEquals("成员（2）", model.memberSectionTitle)
+		assertNull(model.timelineSectionTitle)
+		assertEquals(emptyList(), model.messages)
 		assertEquals(listOf("leader", "frontend"), model.configMembers.map { it.memberId })
 		assertEquals("检查 Compose UI", model.configMembers.first { it.memberId == "frontend" }.task)
 		assertEquals("provider:qwen:qwen-plus", model.configMembers.first { it.memberId == "frontend" }.modelValue)
@@ -269,6 +292,7 @@ class TeamSectionTest {
 		assertEquals("成员详情 · frontend", frontend.detailTitle)
 		assertEquals("详情配置", frontend.detailActionLabel)
 		assertEquals("删除成员", frontend.removeActionLabel)
+		assertEquals(frontend.task, frontend.taskPreview)
 		assertFalse(frontend.listMeta.contains(frontend.task))
 		assertFalse(frontend.role.contains("工具"))
 

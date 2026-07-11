@@ -14,13 +14,12 @@ import org.springframework.ai.chat.model.ToolContext;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.startsWith;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
@@ -50,6 +49,7 @@ class TeamCoordinationToolWorkUnitTest {
         TeamCoordinationService coordinationService = mock(TeamCoordinationService.class);
         TeamRepository repository = mock(TeamRepository.class);
         WorkUnitService workUnitService = mock(WorkUnitService.class);
+        when(workUnitService.teamIdForGoal("goal_team_1")).thenReturn(Optional.of("team_from_workunit"));
         when(coordinationService.run(any(BabiqTeamSpec.class), any(ToolContext.class)))
                 .thenReturn(new TeamExecutionResult("completed", "团队已完成", 1, "explorer"));
         TeamCoordinationTool tool = new TeamCoordinationTool(
@@ -61,7 +61,7 @@ class TeamCoordinationToolWorkUnitTest {
         String output = tool.coordinateTeam("梳理登录页", List.of(), 2, toolContext("goal_team_1"));
 
         assertThat(output).isEqualTo("团队已完成");
-        verify(workUnitService).markGoalRunning(eq("goal_team_1"), eq("team"), startsWith("team_"));
+        verify(workUnitService).markGoalRunning("goal_team_1", "team", "team_from_workunit");
         verify(workUnitService).markGoalCompleted("goal_team_1", "团队已完成");
     }
 
@@ -91,6 +91,7 @@ class TeamCoordinationToolWorkUnitTest {
         TeamCoordinationService coordinationService = mock(TeamCoordinationService.class);
         TeamRepository repository = mock(TeamRepository.class);
         WorkUnitService workUnitService = mock(WorkUnitService.class);
+        when(workUnitService.teamIdForGoal("goal_team_2")).thenReturn(Optional.of("team_failed_from_workunit"));
         when(coordinationService.run(any(BabiqTeamSpec.class), any(ToolContext.class)))
                 .thenReturn(new TeamExecutionResult("failed", "成员执行失败", 1, "writer"));
         TeamCoordinationTool tool = new TeamCoordinationTool(
@@ -102,7 +103,7 @@ class TeamCoordinationToolWorkUnitTest {
         String output = tool.coordinateTeam("梳理登录页", List.of(), 2, toolContext("goal_team_2"));
 
         assertThat(output).isEqualTo("成员执行失败");
-        verify(workUnitService).markGoalRunning(eq("goal_team_2"), eq("team"), startsWith("team_"));
+        verify(workUnitService).markGoalRunning("goal_team_2", "team", "team_failed_from_workunit");
         verify(workUnitService).markGoalFailed("goal_team_2", "成员执行失败");
     }
 

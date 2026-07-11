@@ -1071,6 +1071,7 @@ class ChatController(
 		if (info?.status.equals("running", ignoreCase = true)) {
 			return
 		}
+		val shouldRefreshTeams = info?.kind.equals("team", ignoreCase = true)
 		val threadId = state.value.currentThreadId ?: info?.threadId ?: return
 		scope.launch(start = CoroutineStart.UNDISPATCHED) {
 			try {
@@ -1088,6 +1089,15 @@ class ChatController(
 						teamState = it.teamState.refreshConfiguration(nextWorkUnitState.selectedDetail),
 						lastError = null,
 					)
+				}
+				if (shouldRefreshTeams) {
+					loadTeams(
+						threadId = threadId,
+						preferredTeamId = teamIdForWorkUnit(result.workUnit.workUnitId),
+						loadDetail = true,
+					)
+				} else {
+					refreshTeamsIfNeeded(threadId, listOf(result.workUnit))
 				}
 			} catch (exception: Exception) {
 				val message = exception.message ?: "准备工作容器目标失败"
@@ -1424,7 +1434,7 @@ class ChatController(
 	 * 由后端把消息写入团队时间线，再把返回的 teamMessage item 合并到右侧面板。
 	 */
 	fun sendTeamMessage(toAgent: String, content: String) {
-		val teamId = state.value.teamState.current?.teamId
+		val teamId = state.value.teamState.activeTeamIdForDirectMessage()
 		val trimmed = content.trim()
 		if (teamId.isNullOrBlank() || trimmed.isEmpty()) {
 			return
@@ -1436,7 +1446,11 @@ class ChatController(
 			try {
 				val result = gateway.sendTeamMessage(teamId, toAgent, trimmed)
 				_state.update {
-					it.copy(teamState = it.teamState.withMessage(result.item).copy(sendingDirect = false, directDraft = ""))
+					val nextTeamState = it.teamState
+						.copy(selectedTeamId = teamId)
+						.withMessage(result.item)
+						.copy(sendingDirect = false, directDraft = "")
+					it.copy(teamState = nextTeamState)
 				}
 			} catch (exception: Exception) {
 				_state.update {
@@ -1457,6 +1471,14 @@ class ChatController(
 	 *
 	 * UI 只传 turnId，Controller 负责调用后端并更新 selectedDetail，保持 Composable 仍然是纯展示层。
 	 */
+	private fun TeamUiState.activeTeamIdForDirectMessage(): String? =
+		configuringWorkUnit?.workUnitId?.let { workUnitId -> teamIdForWorkUnit(workUnitId) }
+			?: current?.teamId
+			?: selectedTeamId
+
+	private fun teamIdForWorkUnit(workUnitId: String): String =
+		"team_" + workUnitId.removePrefix("wu_")
+
 	fun selectRunTurn(turnId: String) {
 		scope.launch(start = CoroutineStart.UNDISPATCHED) {
 			loadRunTurnDetail(turnId)
@@ -1475,6 +1497,8 @@ class ChatController(
 	}
 
 	fun applyEvent(event: AgentEvent) {
+		val currentThreadBeforeReduce = state.value.currentThreadId
+		val currentTurnBeforeReduce = state.value.currentTurnId
 		_state.update { ChatReducer.reduce(it, event) }
 		val workUnitThreadId = when (val server = (event as? AgentEvent.Server)?.event) {
 			is ServerEvent.ItemAdded -> server.threadId.takeIf { server.item.shouldRefreshWorkUnits() }
@@ -1482,7 +1506,16 @@ class ChatController(
 			is ServerEvent.ItemCompleted -> server.threadId.takeIf { server.item.shouldRefreshWorkUnits() }
 			else -> null
 		}
-		if (workUnitThreadId != null && workUnitThreadId == state.value.currentThreadId) {
+		val shouldRefreshFromEvent = when ((event as? AgentEvent.Server)?.event) {
+			is ServerEvent.ItemCompleted -> true
+			else -> currentTurnBeforeReduce != null
+		}
+		if (
+			workUnitThreadId != null &&
+			workUnitThreadId == state.value.currentThreadId &&
+			currentThreadBeforeReduce == workUnitThreadId &&
+			shouldRefreshFromEvent
+		) {
 			scope.launch(start = CoroutineStart.UNDISPATCHED) {
 				loadWorkUnits(workUnitThreadId)
 			}
@@ -1509,7 +1542,12 @@ class ChatController(
 		if (normalizedTeamId.isBlank()) {
 			return
 		}
-		_state.update { it.copy(teamState = it.teamState.selectTeam(normalizedTeamId)) }
+		_state.update {
+			it.copy(
+				runtimeExpanded = true,
+				teamState = it.teamState.openConversation(normalizedTeamId),
+			)
+		}
 		scope.launch(start = CoroutineStart.UNDISPATCHED) {
 			loadTeamDetail(normalizedTeamId)
 		}
@@ -1675,25 +1713,39 @@ class ChatController(
 		}
 		try {
 			val result = gateway.listWorkUnits(threadId)
-			_state.update {
-				if (it.currentThreadId == threadId) {
-					val nextWorkUnitState = it.workUnitState.replaceAll(result.workUnits)
-					it.copy(
+				_state.update {
+					if (it.currentThreadId == threadId) {
+						val nextWorkUnitState = it.workUnitState.replaceAll(result.workUnits)
+						it.copy(
 						workUnitState = nextWorkUnitState,
 						orchestrationState = it.orchestrationState.refreshConfiguration(nextWorkUnitState.selectedDetail),
 						teamState = it.teamState.refreshConfiguration(nextWorkUnitState.selectedDetail),
 					)
 				} else {
 					it
+					}
 				}
-			}
-		} catch (exception: Exception) {
-			_state.update {
-				it.copy(
+				refreshTeamsIfNeeded(threadId, result.workUnits)
+			} catch (exception: Exception) {
+				_state.update {
+					it.copy(
 					workUnitState = it.workUnitState.copy(loading = false, error = exception.message ?: "读取工作容器失败"),
 					lastError = exception.message,
 				)
 			}
+		}
+	}
+
+	private suspend fun loadTeams(threadId: String, preferredTeamId: String?, loadDetail: Boolean) {
+		loadTeams(threadId)
+		if (!loadDetail) {
+			return
+		}
+		val detailTeamId = preferredTeamId
+			?.takeIf { teamId -> state.value.teamState.teams.any { it.teamId == teamId } }
+			?: state.value.teamState.selectedTeamId?.takeIf { teamId -> state.value.teamState.teams.any { it.teamId == teamId } }
+		if (detailTeamId != null) {
+			loadTeamDetail(detailTeamId)
 		}
 	}
 
@@ -1715,11 +1767,22 @@ class ChatController(
 		}
 	}
 
+	private suspend fun refreshTeamsIfNeeded(threadId: String, workUnits: List<WorkUnitInfo>) {
+		if (workUnits.any { it.kind.equals("team", ignoreCase = true) }) {
+			loadTeams(threadId)
+		}
+	}
+
 	private suspend fun loadTeamDetail(teamId: String) {
 		try {
 			val result = gateway.getTeam(teamId)
 			_state.update {
-				if (it.teamState.teams.any { team -> team.teamId == teamId } || it.teamState.current?.teamId == teamId) {
+				val shouldApply =
+					it.teamState.teams.any { team -> team.teamId == teamId } ||
+						it.teamState.current?.teamId == teamId ||
+						it.teamState.selectedTeamId == teamId ||
+						it.currentThreadId == result.team.threadId
+				if (shouldApply) {
 					it.copy(
 						teamState = it.teamState.withTeamDetail(
 							result.toThreadTeam(),

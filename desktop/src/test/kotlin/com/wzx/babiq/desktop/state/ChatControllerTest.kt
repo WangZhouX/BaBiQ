@@ -1012,6 +1012,50 @@ class ChatControllerTest {
 	}
 
 	@Test
+	fun `selectTeam opens conversation detail even when team list has not been hydrated`() = runTest {
+		val workUnit = WorkUnitInfo(
+			workUnitId = "wu_team",
+			threadId = "thread-1",
+			kind = "team",
+			name = "review-team",
+			status = "waiting_config",
+			currentGoalId = "goal_1",
+			cwd = "H:\\aaa",
+			sandboxMode = "WORKSPACE_WRITE",
+			goals = listOf(WorkUnitGoalInfo("goal_1", "wu_team", "review page", "pending")),
+		)
+		val gateway = FakeGateway(
+			teamDetails = mapOf(
+				"team_team" to sampleTeamGetResult("team_team", "review-team", "协作窗口历史消息"),
+			),
+		)
+		val controller = ChatController(
+			gateway,
+			backgroundScope,
+			initialState = AppState(
+				connectionState = ConnectionState.Connected,
+				currentThreadId = "thread-1",
+				teamState = TeamUiState(configuringWorkUnit = workUnit),
+				workUnitState = WorkUnitUiState(
+					details = listOf(workUnit),
+					selectedWorkUnitId = workUnit.workUnitId,
+				),
+			),
+		)
+
+		controller.selectTeam("team_team")
+		advanceUntilIdle()
+
+		assertEquals(listOf("getTeam:team_team"), gateway.calls)
+		assertNull(controller.state.value.teamState.configuringWorkUnit)
+		assertEquals("team_team", controller.state.value.teamState.selectedTeamId)
+		assertEquals("review-team", controller.state.value.teamState.current?.title)
+		assertEquals(listOf("协作窗口历史消息"), controller.state.value.teamState.messages.map { it.content })
+		assertTrue(controller.state.value.runtimeExpanded)
+		assertFalse(controller.state.value.messages.any { it is ChatMessage.User })
+	}
+
+	@Test
 	fun `startWorkUnit sends explicit main agent instruction for pending orchestration goal`() = runTest {
 		val gateway = FakeGateway()
 		val controller = ChatController(gateway, backgroundScope)
@@ -1114,7 +1158,40 @@ class ChatControllerTest {
 
 	@Test
 	fun `configureWorkUnit opens team detail panel without editing composer or starting turn`() = runTest {
-		val gateway = FakeGateway()
+		val workUnit = WorkUnitInfo(
+			workUnitId = "wu_team",
+			threadId = "thread-1",
+			kind = "team",
+			name = "review-team",
+			status = "waiting_config",
+			currentGoalId = "goal_team_1",
+			cwd = "H:\\aaa",
+			sandboxMode = "WORKSPACE_WRITE",
+			goals = listOf(WorkUnitGoalInfo("goal_team_1", "wu_team", "review login page", "pending")),
+		)
+		val gateway = FakeGateway(
+			workUnits = WorkUnitListResult(listOf(workUnit)),
+			teams = TeamListResult(
+				listOf(
+					TeamInfo(
+						teamId = "team_team",
+						threadId = "thread-1",
+						turnId = "turn-team",
+						title = "review-team",
+						goal = "review login page",
+						status = "pending",
+						memberCount = 1,
+					),
+				),
+			),
+			teamDetails = mapOf(
+				"team_team" to sampleTeamGetResult(
+					teamId = "team_team",
+					title = "review-team",
+					message = "writer has already checked the team board",
+				),
+			),
+		)
 		val controller = ChatController(gateway, backgroundScope)
 		controller.connect()
 		val item = ThreadItem.WorkUnit(
@@ -1137,7 +1214,14 @@ class ChatControllerTest {
 
 		assertEquals("", controller.state.value.draft)
 		assertFalse(gateway.calls.any { it.startsWith("startTurn:") })
+		assertTrue(gateway.calls.contains("listTeams:thread-1"), gateway.calls.toString())
+		assertTrue(gateway.calls.contains("getTeam:team_team"), gateway.calls.toString())
 		assertEquals("wu_team", controller.state.value.workUnitState.selectedWorkUnitId)
+		assertEquals(listOf("team_team"), controller.state.value.teamState.teams.map { it.teamId })
+		assertEquals(
+			"writer has already checked the team board",
+			controller.state.value.teamState.messages.single().content,
+		)
 		assertFalse(controller.state.value.orchestrationState.visible)
 		assertTrue(controller.state.value.teamState.visible)
 		assertTrue(controller.state.value.runtimeExpanded)
@@ -1558,6 +1642,43 @@ class ChatControllerTest {
 			listOf("getRecoveryStatus", "listRunTurns:thr_history", "getRunTurn:turn-1", "getObservabilitySnapshot:7d:E:\\BaBiQ"),
 			gateway.calls,
 		)
+	}
+
+	@Test
+	fun `team message from configuration detail uses deterministic team channel instead of main chat`() = runTest {
+		val workUnit = WorkUnitInfo(
+			workUnitId = "wu_team_chat",
+			threadId = "thread-1",
+			kind = "team",
+			name = "chat-ready-team",
+			status = "waiting_config",
+			currentGoalId = "goal_1",
+			cwd = "H:\\aaa",
+			sandboxMode = "WORKSPACE_WRITE",
+			goals = listOf(WorkUnitGoalInfo("goal_1", "wu_team_chat", "talk before execution", "pending")),
+		)
+		val gateway = FakeGateway()
+		val controller = ChatController(
+			gateway,
+			backgroundScope,
+			initialState = AppState(
+				connectionState = ConnectionState.Connected,
+				currentThreadId = "thread-1",
+				teamState = TeamUiState(configuringWorkUnit = workUnit),
+				workUnitState = WorkUnitUiState(
+					details = listOf(workUnit),
+					selectedWorkUnitId = workUnit.workUnitId,
+				),
+			),
+		)
+
+		controller.sendTeamMessage("leader", "please split this task")
+		advanceUntilIdle()
+
+		assertEquals(listOf("sendTeamMessage:team_team_chat:leader:please split this task"), gateway.calls)
+		assertFalse(controller.state.value.messages.any { it is ChatMessage.User })
+		assertEquals("please split this task", controller.state.value.teamState.messages.single().content)
+		assertEquals("team_team_chat", controller.state.value.teamState.selectedTeamId)
 	}
 
 	private inner class FakeGateway(

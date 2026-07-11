@@ -53,8 +53,11 @@ class WorkUnitSectionTest {
 		assertEquals("运行中", model.rows.last().statusLabel)
 		assertFalse(model.rows.last().removable)
 		assertEquals("运行中不可移除", model.rows.last().removeBlockedLabel)
+		assertEquals("团队协作", model.rows.last().teamConversationActionLabel)
+		assertEquals("team_2", model.rows.last().teamConversationTargetId)
 		assertEquals("查看团队", model.rows.last().detailActionLabel)
 		assertEquals(null, model.rows.last().startActionLabel)
+		assertEquals(null, model.rows.first().teamConversationActionLabel)
 	}
 
 	@Test

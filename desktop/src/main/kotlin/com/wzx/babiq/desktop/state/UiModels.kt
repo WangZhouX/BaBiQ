@@ -461,6 +461,27 @@ data class TeamUiState(
 		)
 	}
 
+	/**
+	 * 打开团队对话视图。
+	 *
+	 * WorkUnit 列表里只有容器 id 推导出的 teamId，团队列表可能还没刷新完成；
+	 * 这里允许先进入“待加载的对话”，随后 team/get 会把完整成员和消息补齐。
+	 */
+	fun openConversation(teamId: String): TeamUiState {
+		val nextCurrent = teams.firstOrNull { it.teamId == teamId } ?: current?.takeIf { it.teamId == teamId }
+		val indexedMessages = indexExistingMessages()
+		return copy(
+			current = nextCurrent,
+			selectedTeamId = teamId,
+			configuringWorkUnit = null,
+			messages = indexedMessages[teamId].orEmpty(),
+			messagesByTeam = indexedMessages,
+			selectedAgent = selectedAgentFor(nextCurrent),
+			directError = null,
+			panelExpanded = true,
+		)
+	}
+
 	/** 使用 team/get 返回的完整详情替换当前选中团队。 */
 	fun withTeamDetail(
 		item: ThreadItem.Team,

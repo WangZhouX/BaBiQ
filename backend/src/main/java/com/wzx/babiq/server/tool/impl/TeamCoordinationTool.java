@@ -120,7 +120,7 @@ public class TeamCoordinationTool implements Tool {
         ItemEmitter emitter = emitter(toolContext);
         SandboxMode sandboxMode = sandboxMode(toolContext);
         String cwd = cwd(toolContext);
-        BabiqTeamSpec spec = approvalService.approveOnce(toSpec(goal, members, maxRounds, sandboxMode), sandboxMode);
+        BabiqTeamSpec spec = approvalService.approveOnce(toSpec(workUnitGoalId, goal, members, maxRounds, sandboxMode), sandboxMode);
         if (cwd != null) {
             approvalService.validateWriteScopes(spec, Path.of(cwd));
         }
@@ -156,13 +156,23 @@ public class TeamCoordinationTool implements Tool {
     ) {
     }
 
-    private BabiqTeamSpec toSpec(String goal, List<TeamMemberInput> members, Integer maxRounds, SandboxMode sandboxMode) {
-        String id = "team_" + UUID.randomUUID().toString().replace("-", "").substring(0, 10);
+    private BabiqTeamSpec toSpec(String workUnitGoalId,
+                                 String goal,
+                                 List<TeamMemberInput> members,
+                                 Integer maxRounds,
+                                 SandboxMode sandboxMode) {
+        String id = workUnitService == null || workUnitGoalId == null
+                ? newTeamId()
+                : workUnitService.teamIdForGoal(workUnitGoalId).orElseGet(this::newTeamId);
         List<BabiqTeamMember> teamMembers = members == null || members.isEmpty()
                 ? List.of(defaultMember(goal))
                 : IntStream.range(0, members.size()).mapToObj(index -> toMember(members.get(index), index + 1)).toList();
         return new BabiqTeamSpec(id, blankToDefault(goal, "团队协作"), blankToDefault(goal, "团队协作"),
                 teamMembers, maxRounds == null ? 4 : maxRounds, false, false, sandboxMode);
+    }
+
+    private String newTeamId() {
+        return "team_" + UUID.randomUUID().toString().replace("-", "").substring(0, 10);
     }
 
     private BabiqTeamMember defaultMember(String goal) {

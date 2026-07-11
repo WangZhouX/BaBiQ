@@ -1,6 +1,8 @@
 package com.wzx.babiq.server.workunit;
 
 import com.wzx.babiq.server.agent.AgentRunPolicy;
+import com.wzx.babiq.server.agent.team.TeamMemberRecord;
+import com.wzx.babiq.server.agent.team.TeamRepository;
 import com.wzx.babiq.server.approval.ApprovalPolicy;
 import com.wzx.babiq.server.conversation.Thread;
 import com.wzx.babiq.server.conversation.Turn;
@@ -12,6 +14,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
+import java.time.Instant;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
@@ -38,6 +41,12 @@ class WorkUnitServiceTest {
 
     @Autowired
     private WorkUnitService service;
+
+    @Autowired
+    private WorkUnitRepository repository;
+
+    @Autowired
+    private TeamRepository teamRepository;
 
     @Test
     void create_or_append_should_create_container_and_goal_without_starting_execution() {
@@ -84,6 +93,124 @@ class WorkUnitServiceTest {
         assertThat(second.activeGoalId()).isNotEqualTo(first.activeGoalId());
         assertThat(second.activeGoal()).isEqualTo("继续检查技能页");
         assertThat(second.goalCount()).isEqualTo(2);
+    }
+
+    @Test
+    void team_container_should_create_persistent_chat_space_with_leader_before_execution() {
+        Thread thread = Thread.newThread("thr_wu_team_chat", "H:/aaa");
+        Turn turn = new Turn("turn_wu_team_chat", thread.id());
+
+        WorkUnitItem item = service.createOrAppend(
+                new WorkUnitCreateRequest("team", "chat-ready-team", "talk before execution", null),
+                thread,
+                turn,
+                thread.cwd(),
+                AgentRunPolicy.of(SandboxMode.WORKSPACE_WRITE, ApprovalPolicy.ON_REQUEST));
+
+        String teamId = service.teamIdForGoal(item.activeGoalId()).orElseThrow();
+        assertThat(teamId).isEqualTo("team_" + item.workUnitId().replaceFirst("^wu_", ""));
+        assertThat(teamRepository.findByTeamId(teamId))
+                .get()
+                .satisfies(team -> {
+                    assertThat(team.threadId()).isEqualTo(thread.id());
+                    assertThat(team.title()).isEqualTo("chat-ready-team");
+                    assertThat(team.goal()).isEqualTo("talk before execution");
+                    assertThat(team.status()).isEqualTo("pending");
+                    assertThat(team.currentAgent()).isEqualTo("leader");
+                });
+        assertThat(teamRepository.listMembers(teamId))
+                .extracting(TeamMemberRecord::name)
+                .containsExactly("leader");
+        assertThat(teamRepository.listByThreadId(thread.id()))
+                .extracting(team -> team.teamId())
+                .contains(teamId);
+    }
+
+    @Test
+    void team_config_update_should_sync_members_to_persistent_chat_space() {
+        Thread thread = Thread.newThread("thr_wu_team_config_chat", "H:/aaa");
+        Turn turn = new Turn("turn_wu_team_config_chat", thread.id());
+        WorkUnitItem item = service.createOrAppend(
+                new WorkUnitCreateRequest("team", "chat-config-team", "talk with configured members", null),
+                thread,
+                turn,
+                thread.cwd(),
+                AgentRunPolicy.of(SandboxMode.WORKSPACE_WRITE, ApprovalPolicy.ON_REQUEST));
+
+        service.updateConfig(item.workUnitId(), """
+                {
+                  "members": [
+                    {"id":"leader","name":"leader","role":"router","task":"route user requests","mode":"WORKSPACE_TOOL","toolNames":["read_file","write_file"]},
+                    {"id":"frontend","name":"frontend","role":"implement","task":"update UI","mode":"WORKSPACE_TOOL","toolNames":["read_file","write_file"]},
+                    {"id":"tester","name":"tester","role":"verify","task":"run checks","mode":"READ_ONLY_TOOL","toolNames":["read_file","grep"]}
+                  ]
+                }
+                """, null);
+
+        String teamId = service.teamIdForGoal(item.activeGoalId()).orElseThrow();
+        assertThat(teamRepository.findByTeamId(teamId)).isPresent();
+        assertThat(teamRepository.listMembers(teamId))
+                .extracting(TeamMemberRecord::name)
+                .containsExactly("leader", "frontend", "tester");
+        assertThat(teamRepository.listMembers(teamId))
+                .filteredOn(member -> "frontend".equals(member.name()))
+                .singleElement()
+                .satisfies(member -> {
+                    assertThat(member.mode()).isEqualTo("WORKSPACE_TOOL");
+                    assertThat(member.toolNames()).contains("write_file");
+                });
+    }
+
+    @Test
+    void list_visible_should_repair_legacy_team_container_without_team_record() {
+        String workUnitId = "wu_legacy_team_chat";
+        String goalId = "goal_legacy_team_chat";
+        Instant now = Instant.now();
+        repository.save(new WorkUnit(
+                workUnitId,
+                "thr_wu_legacy_team_chat",
+                "team",
+                "legacy-team",
+                "legacy-team",
+                "waiting_config",
+                goalId,
+                "H:/aaa",
+                "WORKSPACE_WRITE",
+                false,
+                null,
+                now,
+                now));
+        repository.saveGoal(new WorkUnitGoal(
+                goalId,
+                workUnitId,
+                "thr_wu_legacy_team_chat",
+                "legacy team goal",
+                "pending",
+                null,
+                null,
+                null,
+                null,
+                now,
+                null,
+                null));
+        repository.saveConfig(new WorkUnitConfig(
+                workUnitId,
+                """
+                {"members":[
+                  {"id":"leader","name":"leader","role":"router","task":"route"},
+                  {"id":"writer","name":"writer","role":"writer","task":"write files","mode":"WORKSPACE_TOOL"}
+                ]}
+                """,
+                null,
+                now,
+                now));
+
+        service.listVisible("thr_wu_legacy_team_chat");
+
+        assertThat(teamRepository.findByTeamId("team_legacy_team_chat")).isPresent();
+        assertThat(teamRepository.listMembers("team_legacy_team_chat"))
+                .extracting(TeamMemberRecord::name)
+                .containsExactly("leader", "writer");
     }
 
     @Test
