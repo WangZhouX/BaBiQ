@@ -1,0 +1,12 @@
+plugins { kotlin("jvm"); kotlin("plugin.serialization") }
+dependencies {
+    implementation(project(":application-action-core"))
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
+    implementation("io.ktor:ktor-client-core:3.5.0")
+    implementation("io.ktor:ktor-client-cio:3.5.0")
+    implementation("io.ktor:ktor-client-websockets:3.5.0")
+    testImplementation(kotlin("test"))
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
+}
+kotlin { jvmToolchain(21) }

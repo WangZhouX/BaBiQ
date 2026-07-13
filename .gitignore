@@ -79,3 +79,10 @@ backend/src/main/resources/application-secret.properties
 .claude/
 .codex/
 
+### Gradle / Business Desktop ###
+business-desktop/build/
+business-desktop/.gradle/
+business-desktop/.kotlin/
+business-desktop/**/build/
+business-desktop/gradle.properties.local
+
