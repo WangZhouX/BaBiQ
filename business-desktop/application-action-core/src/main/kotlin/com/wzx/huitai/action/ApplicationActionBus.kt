@@ -36,6 +36,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.time.Duration
 import java.util.UUID
 
 /** 应用动作在 JSON 安全边界上的执行结果。 */
@@ -388,19 +389,21 @@ class ApplicationActionBus internal constructor(
     /** 原子取得跨进程唯一 claim，并将 attempt 审计和版本更新一起持久化。 */
     private suspend fun claimReconciliation(unknown: ActionExecutionRecord): ReconciliationClaimResult {
         val now = clock.now()
+        val takeover = unknown.reconciliationClaim?.let { !now.isBefore(it.expiresAt) } == true
         return executionStore.claimReconciliation(
             ReconciliationClaimRequest(
                 executionId = unknown.command.executionId,
                 expectedVersion = unknown.recordVersion,
                 claimToken = UUID.randomUUID().toString(),
                 ownerId = "desktop-process",
-                claimedAt = now,
+                now = now,
+                leaseDuration = RECONCILIATION_CLAIM_LEASE,
                 audit = auditDraft(
                     unknown.command.executionId,
                     ActionExecutionState.OUTCOME_UNKNOWN,
                     ActionExecutionState.OUTCOME_UNKNOWN,
                     "reconciliation_attempt",
-                    emptyPayload(),
+                    buildJsonObject { if (takeover) put("takeover", true) },
                     null,
                     now,
                 ),
@@ -974,6 +977,7 @@ class ApplicationActionBus internal constructor(
 
     private companion object {
         const val CANCELLATION_HANDOFF_TIMEOUT_MILLIS = 5_000L
+        val RECONCILIATION_CLAIM_LEASE: Duration = Duration.ofSeconds(60)
     }
 }
 

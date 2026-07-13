@@ -508,6 +508,7 @@ internal class BusFixture(
     val lockScope: ActionExecutionLockScope = StripedActionExecutionLockScope(),
     val store: BusExecutionStore = BusExecutionStore(),
     val audit: BusAuditPort = BusAuditPort(),
+    val clock: BusClock = BusClock(),
 ) {
     val identity = ActionIdentityScope(
         desktopInstanceId = "secret-desktop",
@@ -568,7 +569,6 @@ internal class BusFixture(
     }
     val confirmation = BusConfirmationPort()
     val approval = BusApprovalPort()
-    val clock = BusClock()
     val bus: ApplicationActionBus
         get() = ApplicationActionBus(
             registry = registry,
@@ -922,8 +922,10 @@ internal class BusExecutionStore : ActionExecutionStore {
         if (current.isFinalTerminal) {
             return com.wzx.huitai.action.port.ReconciliationClaimResult.ExistingFinal(current)
         }
-        current.reconciliationClaim?.let {
-            return com.wzx.huitai.action.port.ReconciliationClaimResult.ExistingClaim(current)
+        current.reconciliationClaim?.let { existingClaim ->
+            if (request.now.isBefore(existingClaim.expiresAt)) {
+                return com.wzx.huitai.action.port.ReconciliationClaimResult.ExistingClaim(current)
+            }
         }
         if (!current.needsReconciliation || current.recordVersion != request.expectedVersion) {
             return com.wzx.huitai.action.port.ReconciliationClaimResult.Conflict(
@@ -934,12 +936,13 @@ internal class BusExecutionStore : ActionExecutionStore {
             ActionError(ActionErrorCode.EXECUTION_CONFLICT, "claim audit rolled back"),
         )
         val claimed = current.copy(
-            updatedAt = request.claimedAt,
+            updatedAt = request.now,
             recordVersion = current.recordVersion + 1,
             reconciliationClaim = com.wzx.huitai.action.port.ReconciliationClaim(
                 request.claimToken,
                 request.ownerId,
-                request.claimedAt,
+                request.now,
+                request.expiresAt,
             ),
         )
         record = claimed
@@ -1021,6 +1024,10 @@ private fun ActionCommand.fingerprintForStore(): String {
 internal class BusClock : ActionClock {
     private var seconds = 0L
     override fun now(): Instant = Instant.parse("2026-07-14T00:00:00Z").plusSeconds(seconds++)
+
+    fun advanceTo(instant: Instant) {
+        seconds = java.time.Duration.between(Instant.parse("2026-07-14T00:00:00Z"), instant).seconds
+    }
 }
 
 internal fun busDescriptor(

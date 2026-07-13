@@ -17,6 +17,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.time.Duration
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -459,7 +460,8 @@ class ActionPortContractTest {
                     expectedVersion = unknown.recordVersion,
                     claimToken = "secret-claim-token-1",
                     ownerId = "secret-owner-1",
-                    claimedAt = NOW.plusSeconds(3),
+                    now = NOW.plusSeconds(3),
+                    leaseDuration = Duration.ofSeconds(60),
                     audit = claimAudit.copy(type = "reconciliation_attempt"),
                 ),
             ),
@@ -471,7 +473,8 @@ class ActionPortContractTest {
                     expectedVersion = unknown.recordVersion,
                     claimToken = "secret-claim-token-2",
                     ownerId = "secret-owner-2",
-                    claimedAt = NOW.plusSeconds(4),
+                    now = NOW.plusSeconds(4),
+                    leaseDuration = Duration.ofSeconds(60),
                     audit = claimAudit.copy(type = "reconciliation_attempt"),
                 ),
             ),
@@ -483,6 +486,140 @@ class ActionPortContractTest {
         assertEquals(1, store.auditEvents.count { it.type == "reconciliation_attempt" })
         assertFalse("secret-claim-token" in claimed.toString())
         assertFalse("secret-owner" in claimed.reconciliationClaim.toString())
+    }
+
+    @Test
+    fun `reconciliation claim lease requires positive duration and redacts ownership metadata`() {
+        val claim = ReconciliationClaim(
+            claimToken = "secret-claim-token",
+            ownerId = "secret-owner",
+            claimedAt = NOW,
+            expiresAt = NOW.plusSeconds(60),
+        )
+        val request = ReconciliationClaimRequest(
+            executionId = "execution-1",
+            expectedVersion = 1,
+            claimToken = "secret-claim-token",
+            ownerId = "secret-owner",
+            now = NOW,
+            leaseDuration = Duration.ofSeconds(60),
+            audit = auditDraft(ActionExecutionState.OUTCOME_UNKNOWN, ActionExecutionState.OUTCOME_UNKNOWN)
+                .copy(type = "reconciliation_attempt"),
+        )
+
+        assertEquals(NOW.plusSeconds(60), claim.expiresAt)
+        assertEquals(NOW.plusSeconds(60), request.expiresAt)
+        assertFalse("secret-claim-token" in claim.toString())
+        assertFalse("secret-owner" in claim.toString())
+        assertFalse(NOW.toString() in claim.toString())
+        assertFailsWith<IllegalArgumentException> {
+            claim.copy(expiresAt = NOW.minusSeconds(1))
+        }
+        listOf(Duration.ZERO, Duration.ofSeconds(-1)).forEach { invalidDuration ->
+            assertFailsWith<IllegalArgumentException> {
+                request.copy(leaseDuration = invalidDuration)
+            }
+        }
+    }
+
+    @Test
+    fun `expired reconciliation claim takeover is atomic and stale owner cannot mutate`() = runTest {
+        val store = FakeExecutionStore()
+        val firstOwner = claimUnknown(store)
+        val takeoverAudit = auditDraft(
+            ActionExecutionState.OUTCOME_UNKNOWN,
+            ActionExecutionState.OUTCOME_UNKNOWN,
+        ).copy(
+            type = "reconciliation_attempt",
+            redactedPayload = buildJsonObject { put("takeover", true) },
+            occurredAt = firstOwner.reconciliationClaim!!.expiresAt,
+        )
+
+        val secondOwner = assertIs<ReconciliationClaimResult.Claimed>(
+            store.claimReconciliation(
+                ReconciliationClaimRequest(
+                    executionId = firstOwner.command.executionId,
+                    expectedVersion = firstOwner.recordVersion,
+                    claimToken = "second-claim-token",
+                    ownerId = "second-owner",
+                    now = firstOwner.reconciliationClaim.expiresAt,
+                    leaseDuration = Duration.ofSeconds(60),
+                    audit = takeoverAudit,
+                ),
+            ),
+        ).record
+
+        assertEquals(firstOwner.recordVersion + 1, secondOwner.recordVersion)
+        assertEquals("second-claim-token", secondOwner.reconciliationClaim?.claimToken)
+        assertEquals(firstOwner.reconciliationClaim.expiresAt, secondOwner.reconciliationClaim?.claimedAt)
+        assertEquals(firstOwner.reconciliationClaim.expiresAt.plusSeconds(60), secondOwner.reconciliationClaim?.expiresAt)
+        assertEquals(2, store.auditEvents.count { it.type == "reconciliation_attempt" })
+        assertTrue(store.auditEvents.last().redactedPayload.toString().contains("\"takeover\":true"))
+
+        assertIs<ReconciliationReleaseResult.Conflict>(
+            store.releaseReconciliation(
+                releaseRequest(firstOwner, firstOwner.reconciliationClaim.claimToken),
+            ),
+        )
+        assertIs<ReconciliationUpdateResult.Conflict>(
+            store.updateReconciliation(
+                ReconciliationExecutionUpdate(
+                    executionId = firstOwner.command.executionId,
+                    expectedVersion = firstOwner.recordVersion,
+                    claimToken = firstOwner.reconciliationClaim.claimToken,
+                    result = failure(),
+                    completedAt = firstOwner.reconciliationClaim.expiresAt.plusSeconds(1),
+                    audit = auditDraft(ActionExecutionState.OUTCOME_UNKNOWN, ActionExecutionState.FAILED),
+                ),
+            ),
+        )
+
+        val finalized = assertIs<ReconciliationUpdateResult.Updated>(
+            store.updateReconciliation(
+                ReconciliationExecutionUpdate(
+                    executionId = secondOwner.command.executionId,
+                    expectedVersion = secondOwner.recordVersion,
+                    claimToken = secondOwner.reconciliationClaim!!.claimToken,
+                    result = failure(),
+                    completedAt = secondOwner.reconciliationClaim.claimedAt.plusSeconds(1),
+                    audit = auditDraft(ActionExecutionState.OUTCOME_UNKNOWN, ActionExecutionState.FAILED),
+                ),
+            ),
+        ).record
+        assertEquals(ActionExecutionState.FAILED, finalized.state)
+        assertNull(finalized.reconciliationClaim)
+    }
+
+    @Test
+    fun `expired reconciliation takeover audit failure rolls back claim version events and sequence`() = runTest {
+        val store = FakeExecutionStore()
+        val firstOwner = claimUnknown(store)
+        val eventsBefore = store.auditEvents.toList()
+        val sequenceBefore = store.auditSequence
+        store.failNextAudit = true
+
+        val result = store.claimReconciliation(
+            ReconciliationClaimRequest(
+                executionId = firstOwner.command.executionId,
+                expectedVersion = firstOwner.recordVersion,
+                claimToken = "second-claim-token",
+                ownerId = "second-owner",
+                now = firstOwner.reconciliationClaim!!.expiresAt,
+                leaseDuration = Duration.ofSeconds(60),
+                audit = auditDraft(
+                    ActionExecutionState.OUTCOME_UNKNOWN,
+                    ActionExecutionState.OUTCOME_UNKNOWN,
+                ).copy(
+                    type = "reconciliation_attempt",
+                    redactedPayload = buildJsonObject { put("takeover", true) },
+                ),
+            ),
+        )
+
+        assertIs<ReconciliationClaimResult.Conflict>(result)
+        assertEquals(firstOwner, store.find(firstOwner.command.executionId))
+        assertEquals(eventsBefore, store.auditEvents)
+        assertEquals(sequenceBefore, store.auditSequence)
     }
 
     @Test
@@ -536,7 +673,8 @@ class ActionPortContractTest {
                     expectedVersion = unknown.recordVersion,
                     claimToken = "secret-claim-token",
                     ownerId = "secret-owner",
-                    claimedAt = NOW.plusSeconds(3),
+                    now = NOW.plusSeconds(3),
+                    leaseDuration = Duration.ofSeconds(60),
                     audit = auditDraft(
                         ActionExecutionState.OUTCOME_UNKNOWN,
                         ActionExecutionState.OUTCOME_UNKNOWN,
@@ -1077,7 +1215,11 @@ class ActionPortContractTest {
         ): ReconciliationClaimResult {
             val existing = records.getValue(request.executionId)
             if (existing.isFinalTerminal) return ReconciliationClaimResult.ExistingFinal(existing)
-            existing.reconciliationClaim?.let { return ReconciliationClaimResult.ExistingClaim(existing) }
+            existing.reconciliationClaim?.let { existingClaim ->
+                if (request.now.isBefore(existingClaim.expiresAt)) {
+                    return ReconciliationClaimResult.ExistingClaim(existing)
+                }
+            }
             if (!existing.needsReconciliation || existing.recordVersion != request.expectedVersion) {
                 return ReconciliationClaimResult.Conflict(
                     com.wzx.huitai.action.model.ActionError(
@@ -1097,12 +1239,13 @@ class ActionPortContractTest {
                 )
             }
             val claimed = existing.copy(
-                updatedAt = request.claimedAt,
+                updatedAt = request.now,
                 recordVersion = existing.recordVersion + 1,
                 reconciliationClaim = ReconciliationClaim(
                     request.claimToken,
                     request.ownerId,
-                    request.claimedAt,
+                    request.now,
+                    request.expiresAt,
                 ),
             )
             records[request.executionId] = claimed

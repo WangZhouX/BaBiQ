@@ -5,6 +5,7 @@ import com.wzx.huitai.action.model.ActionError
 import com.wzx.huitai.action.model.ActionExecutionState
 import com.wzx.huitai.action.model.ActionResult
 import kotlinx.serialization.json.JsonElement
+import java.time.Duration
 import java.time.Instant
 
 /**
@@ -125,20 +126,24 @@ data class ActionExecutionRecord(
  * @param claimToken 单次 claim 的不可猜测标识，仅后续 release/final mutation 使用。
  * @param ownerId 发起本次对账的本地 owner 标识，用于审计归属，不作为授权主体。
  * @param claimedAt claim 与 attempt 审计原子提交的时间。
+ * @param expiresAt claim 租约到期时间；到期后新 owner 可在调用时原子接管。
  */
 data class ReconciliationClaim(
     val claimToken: String,
     val ownerId: String,
     val claimedAt: Instant,
+    val expiresAt: Instant,
 ) {
     init {
         require(claimToken.isNotBlank()) { "对账 claim token 不能为空" }
         require(ownerId.isNotBlank()) { "对账 owner 不能为空" }
+        require(!expiresAt.isBefore(claimedAt)) { "对账 claim 到期时间不能早于取得时间" }
     }
 
-    /** 日志只表明 claim 存在，不暴露 token、owner 或业务时间。 */
+    /** 日志只表明 claim 存在，不暴露 token、owner 或租约业务时间。 */
     override fun toString(): String =
-        "ReconciliationClaim(claimToken=[REDACTED], ownerId=[REDACTED], claimedAt=[REDACTED])"
+        "ReconciliationClaim(claimToken=[REDACTED], ownerId=[REDACTED], " +
+            "claimedAt=[REDACTED], expiresAt=[REDACTED])"
 }
 
 /**
@@ -252,7 +257,8 @@ data class ReconciliationExecutionUpdate(
  * @param expectedVersion 期望的未 claim 记录版本。
  * @param claimToken 本次 claim token。
  * @param ownerId 本次对账 owner。
- * @param claimedAt claim 时间。
+ * @param now 本次 claim 原子判断使用的当前时间，同时作为新 claim 的 claimedAt。
+ * @param leaseDuration 有界租约时长，必须为正数。
  * @param audit 与 claim 原子提交的 reconciliation_attempt 审计。
  */
 data class ReconciliationClaimRequest(
@@ -260,11 +266,15 @@ data class ReconciliationClaimRequest(
     val expectedVersion: Long,
     val claimToken: String,
     val ownerId: String,
-    val claimedAt: Instant,
+    val now: Instant,
+    val leaseDuration: Duration,
     val audit: ActionAuditDraft,
 ) {
+    val expiresAt: Instant = now.plus(leaseDuration)
+
     init {
-        ReconciliationClaim(claimToken, ownerId, claimedAt)
+        require(!leaseDuration.isZero && !leaseDuration.isNegative) { "对账 claim 租约必须为正时长" }
+        ReconciliationClaim(claimToken, ownerId, now, expiresAt)
         require(audit.executionId == executionId) { "claim 审计 executionId 必须一致" }
         require(audit.fromState == ActionExecutionState.OUTCOME_UNKNOWN) { "claim 审计必须源自 OUTCOME_UNKNOWN" }
         require(audit.toState == ActionExecutionState.OUTCOME_UNKNOWN) { "claim 不能改变执行状态" }
@@ -274,7 +284,8 @@ data class ReconciliationClaimRequest(
     /** 日志隐藏 claim token、owner 和审计载荷。 */
     override fun toString(): String =
         "ReconciliationClaimRequest(executionId=$executionId, expectedVersion=$expectedVersion, " +
-            "claimToken=[REDACTED], ownerId=[REDACTED], claimedAt=[REDACTED], audit=[REDACTED])"
+            "claimToken=[REDACTED], ownerId=[REDACTED], now=[REDACTED], " +
+            "leaseDuration=[REDACTED], audit=[REDACTED])"
 }
 
 /**

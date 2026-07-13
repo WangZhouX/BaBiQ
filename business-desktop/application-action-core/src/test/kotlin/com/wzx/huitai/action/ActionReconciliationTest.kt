@@ -12,11 +12,15 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.yield
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import java.time.Duration
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class ActionReconciliationTest {
     @Test
@@ -332,6 +336,79 @@ class ActionReconciliationTest {
         assertEquals(1, first.action.reconcileCount + second.action.reconcileCount)
         first.action.reconcileRelease!!.complete(Unit)
         owner.await()
+    }
+
+    @Test
+    fun `隔离进程在租约到期后懒接管并只对账一次`() = runTest {
+        val sharedClock = BusClock()
+        val first = BusFixture(
+            risk = ActionRiskLevel.REVERSIBLE_WRITE,
+            reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
+            lockScope = StripedActionExecutionLockScope(4),
+            clock = sharedClock,
+        )
+        val second = BusFixture(
+            risk = ActionRiskLevel.REVERSIBLE_WRITE,
+            reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
+            lockScope = StripedActionExecutionLockScope(4),
+            store = first.store,
+            audit = first.audit,
+            clock = sharedClock,
+        )
+        val unknown: ActionResult<JsonElement> = ActionResult.OutcomeUnknown(
+            executionId = "execution-1",
+            error = ActionError(ActionErrorCode.OUTCOME_UNKNOWN, "远程响应丢失"),
+            remoteReference = "remote-original",
+            reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
+        )
+        first.store.installExistingTerminal(first.command(), result = unknown)
+        sharedClock.advanceTo(first.store.record!!.updatedAt.plusSeconds(1))
+        val claimNow = sharedClock.now()
+        val oldOwner = assertIs<com.wzx.huitai.action.port.ReconciliationClaimResult.Claimed>(
+            first.store.claimReconciliation(
+                com.wzx.huitai.action.port.ReconciliationClaimRequest(
+                    executionId = "execution-1",
+                    expectedVersion = first.store.record!!.recordVersion,
+                    claimToken = "crashed-owner-token",
+                    ownerId = "crashed-owner",
+                    now = claimNow,
+                    leaseDuration = Duration.ofSeconds(60),
+                    audit = com.wzx.huitai.action.port.ActionAuditDraft(
+                        executionId = "execution-1",
+                        fromState = ActionExecutionState.OUTCOME_UNKNOWN,
+                        toState = ActionExecutionState.OUTCOME_UNKNOWN,
+                        type = "reconciliation_attempt",
+                        redactedPayload = buildJsonObject { },
+                        actorId = null,
+                        occurredAt = claimNow,
+                    ),
+                ),
+            ),
+        ).record
+
+        val activeLease = second.bus.execute(second.command(), second.context)
+
+        assertIs<ActionBusResult.InProgress>(activeLease)
+        assertEquals(0, second.action.reconcileCount)
+        assertEquals(oldOwner, first.store.record)
+
+        sharedClock.advanceTo(oldOwner.reconciliationClaim!!.expiresAt)
+        second.action.reconciliationResult = ReconciliationResult.Succeeded(
+            remoteReference = "remote-confirmed",
+            executionId = "execution-1",
+        )
+
+        val recovered = second.bus.execute(second.command(), second.context)
+
+        assertIs<ActionBusResult.SuccessWithoutOutput>(recovered)
+        assertEquals(1, second.action.reconcileCount)
+        assertEquals(ActionExecutionState.SUCCEEDED, first.store.record?.state)
+        assertNull(first.store.record?.reconciliationClaim)
+        assertEquals(2, first.audit.events.count { it.type == "reconciliation_attempt" })
+        assertTrue(
+            first.audit.events.last { it.type == "reconciliation_attempt" }
+                .redactedPayload.toString().contains("\"takeover\":true"),
+        )
     }
 
     @Test
