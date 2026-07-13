@@ -33,6 +33,27 @@ data class ActionAuditEvent(
             "occurredAt=$occurredAt)"
 }
 
+/**
+ * 等待持久化边界分配 sequence 的审计草稿。
+ *
+ * @param executionId 动作执行标识。
+ * @param fromState 迁移前状态。
+ * @param toState 迁移后状态。
+ * @param type 事件类型。
+ * @param redactedPayload 已脱敏载荷。
+ * @param actorId 操作者标识，由持久化适配器安全保存。
+ * @param occurredAt 业务事件发生时间。
+ */
+data class ActionAuditDraft(
+    val executionId: String,
+    val fromState: ActionExecutionState?,
+    val toState: ActionExecutionState,
+    val type: String,
+    val redactedPayload: JsonObject,
+    val actorId: String?,
+    val occurredAt: Instant,
+)
+
 /** 仅允许追加动作审计事件。 */
 fun interface ActionAuditPort {
     /** 追加一个不可变事件，不提供修改或删除能力。 */

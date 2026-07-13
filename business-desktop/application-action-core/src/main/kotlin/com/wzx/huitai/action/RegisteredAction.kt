@@ -44,18 +44,11 @@ sealed interface ActionInvocationResult {
  * @param inputCodec 与动作输入类型配对的 JSON codec。
  * @param outputCodec 与动作输出类型配对的 JSON codec。
  */
-class RegisteredAction<I : Any, O : Any> internal constructor(
+class RegisteredAction<I : Any, O : Any>(
     val action: ApplicationAction<I, O>,
     val inputCodec: ActionInputCodec<I>,
     val outputCodec: ActionOutputCodec<O>,
-    private val invocationOverride: ((ActionInvocationResult) -> ActionInvocationResult)?,
 ) {
-    /** 生产装配使用的公开构造，不暴露模块内部测试 seam。 */
-    constructor(
-        action: ApplicationAction<I, O>,
-        inputCodec: ActionInputCodec<I>,
-        outputCodec: ActionOutputCodec<O>,
-    ) : this(action, inputCodec, outputCodec, null)
     val descriptor: ActionDescriptor
         get() = action.descriptor
 
@@ -63,7 +56,7 @@ class RegisteredAction<I : Any, O : Any> internal constructor(
     suspend fun invokePreview(input: JsonObject, context: ActionContext): ActionInvocationResult =
         invokeWithDecodedInput(input) { decoded ->
             ActionInvocationResult.Previewed(action.preview(decoded, context))
-        }.let { invocationOverride?.invoke(it) ?: it }
+        }
 
     /** 解码后执行动作。 */
     suspend fun invokeExecute(input: JsonObject, context: ActionContext): ActionInvocationResult =
@@ -108,7 +101,7 @@ class RegisteredAction<I : Any, O : Any> internal constructor(
                 terminalState = ActionExecutionState.SUCCEEDED,
                 error = ActionError(ActionErrorCode.PROTOCOL_ERROR, "动作输出编码失败"),
                 remoteReference = result.remoteReference,
-            ).let { invocationOverride?.invoke(it) ?: it }
+            )
         }
         else -> ActionInvocationResult.Executed(
             when (result) {

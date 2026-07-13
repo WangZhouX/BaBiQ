@@ -126,6 +126,10 @@ data class ExecutionSuccessFact(
         require(kind == OUTPUT_ENCODING_FAILED) { "不支持的成功事实类型" }
     }
 
+    /** 日志保留事实类型并隐藏远程引用。 */
+    override fun toString(): String =
+        "ExecutionSuccessFact(kind=$kind, remoteReference=[REDACTED])"
+
     companion object {
         const val OUTPUT_ENCODING_FAILED = "OUTPUT_ENCODING_FAILED"
     }
@@ -167,6 +171,12 @@ data class TerminalExecutionUpdate(
     init {
         validateExecutionState(executionId, terminalState, result, completedAt, successFact)
     }
+
+
+    /** 日志隐藏精确结果、成功事实和完成时间中的业务关联。 */
+    override fun toString(): String =
+        "TerminalExecutionUpdate(executionId=$executionId, expectedVersion=$expectedVersion, " +
+            "terminalState=$terminalState, result=[REDACTED], successFact=[REDACTED], completedAt=$completedAt)"
 }
 
 /**
@@ -218,6 +228,40 @@ data class ExecutionStateUpdate(
     }
 }
 
+/**
+ * 原子提交执行状态和同一迁移审计的乐观命令。
+ *
+ * @param executionId 动作执行标识。
+ * @param expectedVersion 期望的当前记录版本。
+ * @param state 目标状态。
+ * @param result 普通终态结果，非终态必须为空。
+ * @param successFact 输出不可用的成功事实。
+ * @param updatedAt 状态更新时间。
+ * @param startedAt 首次进入执行状态的时间。
+ * @param completedAt 进入终态的时间。
+ * @param audit 与状态变更原子提交的审计草稿。
+ */
+data class ExecutionTransition(
+    val executionId: String,
+    val expectedVersion: Long,
+    val state: ActionExecutionState,
+    val result: ActionResult<JsonElement>? = null,
+    val successFact: ExecutionSuccessFact? = null,
+    val updatedAt: Instant,
+    val startedAt: Instant? = null,
+    val completedAt: Instant? = null,
+    val audit: ActionAuditDraft,
+) {
+    init {
+        require(audit.executionId == executionId) { "迁移审计 executionId 必须一致" }
+        require(audit.toState == state) { "迁移审计目标状态必须一致" }
+        validateExecutionState(executionId, state, result, completedAt, successFact)
+        require(startedAt == null || state == ActionExecutionState.EXECUTING) {
+            "startedAt 只能在 EXECUTING 状态写入"
+        }
+    }
+}
+
 /** 原子创建执行记录的结果。 */
 sealed interface ExecutionCreateResult {
     data class Created(val record: ActionExecutionRecord) : ExecutionCreateResult
@@ -239,6 +283,13 @@ sealed interface ExecutionStateUpdateResult {
     data class Conflict(val error: ActionError) : ExecutionStateUpdateResult
 }
 
+/** 原子状态与审计迁移结果。 */
+sealed interface ExecutionTransitionResult {
+    data class Updated(val record: ActionExecutionRecord) : ExecutionTransitionResult
+    data class ExistingTerminal(val record: ActionExecutionRecord) : ExecutionTransitionResult
+    data class Conflict(val error: ActionError) : ExecutionTransitionResult
+}
+
 /** 结果不确定记录的对账更新结果。 */
 sealed interface ReconciliationUpdateResult {
     data class Updated(val record: ActionExecutionRecord) : ReconciliationUpdateResult
@@ -254,11 +305,14 @@ interface ActionExecutionStore {
     /** 原子比较并创建运行记录。 */
     suspend fun compareAndCreate(record: ActionExecutionRecord): ExecutionCreateResult
 
-    /** 以版本保护推进一个不携带结果的非终态。 */
-    suspend fun updateState(update: ExecutionStateUpdate): ExecutionStateUpdateResult
+    /** 原子创建首条执行记录并追加由适配器分配 sequence 的首个审计。 */
+    suspend fun compareAndCreate(
+        record: ActionExecutionRecord,
+        audit: ActionAuditDraft,
+    ): ExecutionCreateResult
 
-    /** 以版本保护写入首个结构化终态。 */
-    suspend fun updateTerminal(update: TerminalExecutionUpdate): TerminalUpdateResult
+    /** 原子提交乐观状态变化和同一迁移审计。 */
+    suspend fun transition(update: ExecutionTransition): ExecutionTransitionResult
 
     /** 仅将当前 OUTCOME_UNKNOWN 记录原子收束为成功或失败。 */
     suspend fun updateReconciliation(

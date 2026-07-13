@@ -8,12 +8,14 @@ import com.wzx.huitai.action.model.ActionRiskLevel
 import com.wzx.huitai.action.port.ConfirmationDecision
 import com.wzx.huitai.action.port.ApprovalDecision
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertFailsWith
 
 class ApplicationActionBusWriteTest {
     @Test
@@ -256,6 +258,42 @@ class ApplicationActionBusWriteTest {
         assertEquals(1, fixture.approval.requests)
         assertEquals(0, fixture.action.executeCount)
         assertEquals(false, fixture.audit.events.any { it.type in setOf("approval_approved", "approval_denied", "approval_expired") })
+    }
+
+    @Test
+    fun `confirmation exception and cancellation terminate before propagation`() = runTest {
+        listOf<Throwable>(IllegalStateException("secret-confirm"), CancellationException("cancel-confirm"))
+            .forEach { failure ->
+                val fixture = BusFixture(ActionRiskLevel.REVERSIBLE_WRITE)
+                fixture.confirmation.failure = failure
+
+                if (failure is CancellationException) {
+                    assertFailsWith<CancellationException> { fixture.bus.execute(fixture.command(), fixture.context) }
+                    assertEquals(ActionExecutionState.CANCELED, fixture.store.record?.state)
+                } else {
+                    assertIs<ActionBusResult.Rejected>(fixture.bus.execute(fixture.command(), fixture.context))
+                    assertEquals(ActionExecutionState.FAILED, fixture.store.record?.state)
+                }
+                assertEquals(0, fixture.action.executeCount)
+            }
+    }
+
+    @Test
+    fun `approval exception and cancellation terminate before propagation`() = runTest {
+        listOf<Throwable>(IllegalStateException("secret-approve"), CancellationException("cancel-approve"))
+            .forEach { failure ->
+                val fixture = BusFixture(ActionRiskLevel.HIGH_RISK)
+                fixture.approval.failure = failure
+
+                if (failure is CancellationException) {
+                    assertFailsWith<CancellationException> { fixture.bus.execute(fixture.command(), fixture.context) }
+                    assertEquals(ActionExecutionState.CANCELED, fixture.store.record?.state)
+                } else {
+                    assertIs<ActionBusResult.Rejected>(fixture.bus.execute(fixture.command(), fixture.context))
+                    assertEquals(ActionExecutionState.FAILED, fixture.store.record?.state)
+                }
+                assertEquals(0, fixture.action.executeCount)
+            }
     }
 
     private fun assertFailedAt(

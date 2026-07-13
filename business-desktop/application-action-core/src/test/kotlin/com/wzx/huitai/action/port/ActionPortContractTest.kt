@@ -280,6 +280,25 @@ class ActionPortContractTest {
     }
 
     @Test
+    fun `output unavailable success fact redacts remote reference in logs`() {
+        val fact = ExecutionSuccessFact(
+            ExecutionSuccessFact.OUTPUT_ENCODING_FAILED,
+            "secret-remote-reference",
+        )
+        val update = TerminalExecutionUpdate(
+            executionId = "execution-1",
+            expectedVersion = 1,
+            terminalState = ActionExecutionState.SUCCEEDED,
+            result = null,
+            completedAt = NOW,
+            successFact = fact,
+        )
+
+        assertFalse("secret-remote-reference" in fact.toString())
+        assertFalse("secret-remote-reference" in update.toString())
+    }
+
+    @Test
     fun `outcome unknown blocks replay and can be reconciled exactly once`() = runTest {
         val store = FakeExecutionStore()
         val running = runningRecord(command())
@@ -637,7 +656,36 @@ class ActionPortContractTest {
             }
         }
 
-        override suspend fun updateState(update: ExecutionStateUpdate): ExecutionStateUpdateResult {
+        override suspend fun compareAndCreate(
+            record: ActionExecutionRecord,
+            audit: ActionAuditDraft,
+        ): ExecutionCreateResult = compareAndCreate(record)
+
+        override suspend fun transition(update: ExecutionTransition): ExecutionTransitionResult {
+            val existing = records.getValue(update.executionId)
+            if (existing.isTerminal) return ExecutionTransitionResult.ExistingTerminal(existing)
+            if (existing.recordVersion != update.expectedVersion) {
+                return ExecutionTransitionResult.Conflict(
+                    com.wzx.huitai.action.model.ActionError(
+                        ActionErrorCode.EXECUTION_CONFLICT,
+                        "transition conflict",
+                    ),
+                )
+            }
+            val updated = existing.copy(
+                state = update.state,
+                result = update.result,
+                successFact = update.successFact,
+                startedAt = update.startedAt ?: existing.startedAt,
+                completedAt = update.completedAt,
+                updatedAt = update.updatedAt,
+                recordVersion = existing.recordVersion + 1,
+            )
+            records[update.executionId] = updated
+            return ExecutionTransitionResult.Updated(updated)
+        }
+
+        suspend fun updateState(update: ExecutionStateUpdate): ExecutionStateUpdateResult {
             val existing = records.getValue(update.executionId)
             if (existing.isTerminal || existing.recordVersion != update.expectedVersion) {
                 return ExecutionStateUpdateResult.Conflict(
@@ -657,7 +705,7 @@ class ActionPortContractTest {
             return ExecutionStateUpdateResult.Updated(updated)
         }
 
-        override suspend fun updateTerminal(update: TerminalExecutionUpdate): TerminalUpdateResult {
+        suspend fun updateTerminal(update: TerminalExecutionUpdate): TerminalUpdateResult {
             val existing = records.getValue(update.executionId)
             if (existing.isTerminal) return TerminalUpdateResult.ExistingTerminal(existing)
             if (existing.recordVersion != update.expectedVersion) {
