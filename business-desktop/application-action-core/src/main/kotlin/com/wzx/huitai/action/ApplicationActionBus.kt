@@ -21,25 +21,30 @@ import com.wzx.huitai.action.port.ExecutionFingerprint
 import com.wzx.huitai.action.port.ExecutionTransition
 import com.wzx.huitai.action.port.ExecutionTransitionResult
 import com.wzx.huitai.action.port.ExecutionSuccessFact
+import com.wzx.huitai.action.port.ReconciliationExecutionUpdate
+import com.wzx.huitai.action.port.ReconciliationAuditAppend
+import com.wzx.huitai.action.port.ReconciliationAuditAppendResult
+import com.wzx.huitai.action.port.ReconciliationUpdateResult
 import com.wzx.huitai.action.port.RiskEvaluation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-import java.nio.charset.StandardCharsets
-import java.security.MessageDigest
 
 /** 应用动作在 JSON 安全边界上的执行结果。 */
 sealed interface ActionBusResult {
     data class Completed(val result: ActionResult<JsonElement>) : ActionBusResult
     data class Rejected(val error: ActionError) : ActionBusResult
+
+    /** 相同 execution 已由另一调用持有，调用方只能观察现状，不能把它伪装成终态。 */
+    data class InProgress(
+        val executionId: String,
+        val state: ActionExecutionState,
+    ) : ActionBusResult
 
     /** 动作已成功落终态，但输出无法编码到展示边界。 */
     data class OutputEncodingFailed(
@@ -47,11 +52,6 @@ sealed interface ActionBusResult {
         val terminalState: ActionExecutionState,
         val error: ActionError,
     ) : ActionBusResult
-}
-
-private sealed interface InitialRecordResult {
-    data class Created(val record: ActionExecutionRecord) : InitialRecordResult
-    data class Rejected(val result: ActionBusResult) : InitialRecordResult
 }
 
 private sealed interface PreviewAttempt {
@@ -78,6 +78,15 @@ internal interface RegisteredActionInvoker {
         input: JsonObject,
         context: ActionContext,
     ): ActionInvocationResult
+
+    /** 只调用动作对账入口，绝不回退 execute。 */
+    suspend fun reconcile(
+        registered: RegisteredAction<*, *>,
+        input: JsonObject,
+        context: ActionContext,
+        remoteReference: String?,
+        executionId: String,
+    ): ActionInvocationResult
 }
 
 private object DirectRegisteredActionInvoker : RegisteredActionInvoker {
@@ -92,6 +101,14 @@ private object DirectRegisteredActionInvoker : RegisteredActionInvoker {
         input: JsonObject,
         context: ActionContext,
     ): ActionInvocationResult = registered.invokeExecute(input, context)
+
+    override suspend fun reconcile(
+        registered: RegisteredAction<*, *>,
+        input: JsonObject,
+        context: ActionContext,
+        remoteReference: String?,
+        executionId: String,
+    ): ActionInvocationResult = registered.invokeReconcile(input, context, remoteReference, executionId)
 }
 
 /** 用户点击和 Agent 调用共用的应用动作编排入口。 */
@@ -105,6 +122,8 @@ class ApplicationActionBus internal constructor(
     private val contextValidator: ActionExecutionContextValidator,
     private val actionInvoker: RegisteredActionInvoker,
 ) {
+    private val executionCoordinator = ActionExecutionCoordinator(executionStore, clock)
+
     /** 生产装配使用的公开构造，只启用直接动作调用实现。 */
     constructor(
         registry: ActionRegistry,
@@ -130,13 +149,19 @@ class ApplicationActionBus internal constructor(
 
     /** 解析、校验并按有效风险执行一个动作命令。 */
     suspend fun execute(command: ActionCommand, context: ActionContext): ActionBusResult {
+        val validating = when (val start = executionCoordinator.begin(command)) {
+            is ActionExecutionStart.New -> start.record
+            is ActionExecutionStart.ExistingRunning -> return ActionBusResult.InProgress(
+                executionId = start.record.command.executionId,
+                state = start.record.state,
+            )
+            is ActionExecutionStart.ExistingTerminal -> return existingTerminal(start.record)
+            is ActionExecutionStart.NeedsReconciliation -> return reconcileSerialized(start.record, context)
+            is ActionExecutionStart.Conflict -> return ActionBusResult.Rejected(start.error)
+        }
         val registered = when (val resolution = registry.resolve(command.actionId)) {
             is ActionResolution.Found -> resolution.action
-            is ActionResolution.NotFound -> return ActionBusResult.Rejected(resolution.error)
-        }
-        val validating = when (val initial = createValidatingRecord(command, command.origin.name.lowercase())) {
-            is InitialRecordResult.Created -> initial.record
-            is InitialRecordResult.Rejected -> return initial.result
+            is ActionResolution.NotFound -> return persistFailure(validating, resolution.error)
         }
         contextValidator.validate(registered.descriptor, command, context)?.let {
             return persistFailure(validating, it)
@@ -171,6 +196,213 @@ class ApplicationActionBus internal constructor(
                 validating,
             )
         }
+    }
+
+    /** 等待同 execution 的已有对账后重新读取事实，确保远程 reconcile 最多一个在途。 */
+    private suspend fun reconcileSerialized(
+        observed: ActionExecutionRecord,
+        context: ActionContext,
+    ): ActionBusResult = executionCoordinator.serialized(observed.command.executionId) {
+        val current = executionStore.find(observed.command.executionId)
+            ?: return@serialized conflict("对账执行记录不存在")
+        when {
+            current.fingerprint != observed.fingerprint -> conflict("对账执行指纹冲突")
+            current.needsReconciliation -> reconcile(current, context)
+            current.isFinalTerminal -> existingTerminal(current)
+            else -> ActionBusResult.InProgress(current.command.executionId, current.state)
+        }
+    }
+
+    /** 按持久化未知结果携带的策略执行一次有界对账。 */
+    private suspend fun reconcile(
+        unknown: ActionExecutionRecord,
+        context: ActionContext,
+    ): ActionBusResult {
+        val stored = unknown.result as? ActionResult.OutcomeUnknown
+            ?: return protocolError("结果未知记录缺少 OutcomeUnknown 事实")
+        return when (stored.reconciliationPolicy) {
+            com.wzx.huitai.action.model.ReconciliationPolicy.MANUAL -> existingTerminal(unknown)
+            com.wzx.huitai.action.model.ReconciliationPolicy.NONE -> protocolError("结果未知动作未配置对账策略")
+            com.wzx.huitai.action.model.ReconciliationPolicy.QUERY_REMOTE -> reconcileRemotely(
+                unknown,
+                stored,
+                context,
+            )
+        }
+    }
+
+    private suspend fun reconcileRemotely(
+        unknown: ActionExecutionRecord,
+        stored: ActionResult.OutcomeUnknown,
+        context: ActionContext,
+    ): ActionBusResult {
+        when (val attempt = appendReconciliationAudit(unknown, "reconciliation_attempt")) {
+            is ReconciliationAuditAppendResult.Appended -> Unit
+            is ReconciliationAuditAppendResult.ExistingFinal -> return existingTerminal(attempt.record)
+            is ReconciliationAuditAppendResult.Conflict -> return ActionBusResult.Rejected(attempt.error)
+        }
+        val registered = when (val resolution = registry.resolve(unknown.command.actionId)) {
+            is ActionResolution.Found -> resolution.action
+            is ActionResolution.NotFound -> return ActionBusResult.Rejected(resolution.error)
+        }
+        val invocation = try {
+            actionInvoker.reconcile(
+                registered,
+                unknown.command.input,
+                context,
+                stored.remoteReference,
+                unknown.command.executionId,
+            )
+        } catch (cancellation: CancellationException) {
+            appendReconciliationResultBestEffort(unknown, "canceled")
+            throw cancellation
+        } catch (_: Exception) {
+            when (val result = appendReconciliationAudit(unknown, "reconciliation_result", "error")) {
+                is ReconciliationAuditAppendResult.Conflict -> return ActionBusResult.Rejected(result.error)
+                is ReconciliationAuditAppendResult.ExistingFinal -> return existingTerminal(result.record)
+                is ReconciliationAuditAppendResult.Appended -> Unit
+            }
+            return existingTerminal(unknown)
+        }
+        val reconciled = when (invocation) {
+            is ActionInvocationResult.Reconciled -> {
+                if (invocation.executionId != unknown.command.executionId) {
+                    return reconciliationDiagnostic(
+                        unknown,
+                        outcome = "protocol_error",
+                        result = protocolError("对账结果 executionId 不匹配"),
+                    )
+                }
+                invocation.result
+            }
+            is ActionInvocationResult.Failure -> return reconciliationDiagnostic(
+                unknown,
+                outcome = "validation_error",
+                result = existingTerminal(unknown),
+            )
+            else -> return reconciliationDiagnostic(
+                unknown,
+                outcome = "protocol_error",
+                result = protocolError("对账返回了非法结果类型"),
+            )
+        }
+        val result: ActionResult<JsonElement> = when (reconciled) {
+            is ReconciliationResult.Succeeded -> ActionResult.Success(
+                executionId = unknown.command.executionId,
+                output = emptyPayload(),
+                remoteReference = reconciled.remoteReference ?: stored.remoteReference,
+            )
+            is ReconciliationResult.Failed -> ActionResult.Failure(
+                executionId = unknown.command.executionId,
+                error = reconciled.error,
+                remoteReference = stored.remoteReference,
+            )
+            ReconciliationResult.Unsupported,
+            ReconciliationResult.Pending,
+            ReconciliationResult.NotFound,
+            is ReconciliationResult.Error,
+            -> {
+                val outcome = when (reconciled) {
+                    ReconciliationResult.Unsupported -> "unsupported"
+                    ReconciliationResult.Pending -> "pending"
+                    ReconciliationResult.NotFound -> "not_found"
+                    is ReconciliationResult.Error -> "error"
+                    is ReconciliationResult.Succeeded,
+                    is ReconciliationResult.Failed,
+                    -> error("确认结果已在前置分支处理")
+                }
+                return when (val appended = appendReconciliationAudit(
+                    unknown,
+                    "reconciliation_result",
+                    outcome,
+                )) {
+                    is ReconciliationAuditAppendResult.Appended -> existingTerminal(unknown)
+                    is ReconciliationAuditAppendResult.ExistingFinal -> existingTerminal(appended.record)
+                    is ReconciliationAuditAppendResult.Conflict -> ActionBusResult.Rejected(appended.error)
+                }
+            }
+        }
+        val completedAt = clock.now()
+        val terminalState = result.terminalState() ?: return protocolError("对账结果不是最终态")
+        val update = try {
+            ReconciliationExecutionUpdate(
+                executionId = unknown.command.executionId,
+                expectedVersion = unknown.recordVersion,
+                result = result,
+                completedAt = completedAt,
+                audit = auditDraft(
+                    executionId = unknown.command.executionId,
+                    fromState = ActionExecutionState.OUTCOME_UNKNOWN,
+                    toState = terminalState,
+                    type = "reconciliation_result",
+                    payload = buildJsonObject { put("confirmed", true) },
+                    actorId = null,
+                    occurredAt = completedAt,
+                ),
+            )
+        } catch (_: IllegalArgumentException) {
+            return protocolError("对账结果关联错误")
+        }
+        return when (val updated = executionStore.updateReconciliation(update)) {
+            is ReconciliationUpdateResult.Updated -> existingTerminal(updated.record)
+            is ReconciliationUpdateResult.ExistingFinal -> existingTerminal(updated.record)
+            is ReconciliationUpdateResult.Conflict -> ActionBusResult.Rejected(updated.error)
+        }
+    }
+
+    /** 同版本未知记录上的审计追加由 store 原子校验，payload 只含稳定枚举。 */
+    private suspend fun appendReconciliationAudit(
+        unknown: ActionExecutionRecord,
+        type: String,
+        outcome: String? = null,
+    ): ReconciliationAuditAppendResult {
+        val now = clock.now()
+        return executionStore.appendReconciliationAudit(
+            ReconciliationAuditAppend(
+                executionId = unknown.command.executionId,
+                expectedVersion = unknown.recordVersion,
+                audit = auditDraft(
+                    executionId = unknown.command.executionId,
+                    fromState = ActionExecutionState.OUTCOME_UNKNOWN,
+                    toState = ActionExecutionState.OUTCOME_UNKNOWN,
+                    type = type,
+                    payload = buildJsonObject { outcome?.let { put("outcome", it) } },
+                    actorId = null,
+                    occurredAt = now,
+                ),
+            ),
+        )
+    }
+
+    /** 真实取消以取消本身为主异常，审计故障不能覆盖取消语义。 */
+    private suspend fun appendReconciliationResultBestEffort(
+        unknown: ActionExecutionRecord,
+        outcome: String,
+    ) {
+        try {
+            withContext(NonCancellable) {
+                withTimeout(CANCELLATION_HANDOFF_TIMEOUT_MILLIS) {
+                    appendReconciliationAudit(unknown, "reconciliation_result", outcome)
+                }
+            }
+        } catch (_: Throwable) {
+            // 调用方继续传播原 CancellationException，审计失败不伪装成业务结果。
+        }
+    }
+
+    /** 在返回本地诊断前补齐对应的结果审计，审计冲突必须显式暴露。 */
+    private suspend fun reconciliationDiagnostic(
+        unknown: ActionExecutionRecord,
+        outcome: String,
+        result: ActionBusResult,
+    ): ActionBusResult = when (val appended = appendReconciliationAudit(
+        unknown,
+        "reconciliation_result",
+        outcome,
+    )) {
+        is ReconciliationAuditAppendResult.Appended -> result
+        is ReconciliationAuditAppendResult.ExistingFinal -> existingTerminal(appended.record)
+        is ReconciliationAuditAppendResult.Conflict -> ActionBusResult.Rejected(appended.error)
     }
 
     private suspend fun executeReversible(
@@ -646,41 +878,6 @@ class ApplicationActionBus internal constructor(
         return persistFailure(current, error)
     }
 
-    private suspend fun createValidatingRecord(
-        command: ActionCommand,
-        eventType: String,
-    ): InitialRecordResult {
-        val now = clock.now()
-        val record = ActionExecutionRecord(
-            command = command,
-            fingerprint = fingerprint(command),
-            state = ActionExecutionState.VALIDATING,
-            result = null,
-            createdAt = now,
-            updatedAt = now,
-            recordVersion = 1,
-        )
-        return when (val created = executionStore.compareAndCreate(
-            record,
-            auditDraft(
-                command.executionId,
-                ActionExecutionState.RECEIVED,
-                ActionExecutionState.VALIDATING,
-                eventType,
-                emptyPayload(),
-                null,
-                now,
-            ),
-        )) {
-            is ExecutionCreateResult.Created -> InitialRecordResult.Created(created.record)
-            is ExecutionCreateResult.Conflict -> InitialRecordResult.Rejected(ActionBusResult.Rejected(created.error))
-            is ExecutionCreateResult.ExistingRunning -> InitialRecordResult.Rejected(conflict("动作已在执行"))
-            is ExecutionCreateResult.ExistingTerminal -> InitialRecordResult.Rejected(
-                existingTerminal(created.record),
-            )
-        }
-    }
-
     private suspend fun advanceState(
         current: ActionExecutionRecord,
         state: ActionExecutionState,
@@ -716,14 +913,6 @@ class ApplicationActionBus internal constructor(
                 ActionBusResult.Rejected(updated.error),
             )
         }
-    }
-
-    /** 基于稳定规范 JSON 和动作标识生成 SHA-256 指纹。 */
-    private fun fingerprint(command: ActionCommand): ExecutionFingerprint {
-        val canonical = command.input.canonicalJson()
-        val bytes = MessageDigest.getInstance("SHA-256")
-            .digest("${command.actionId}\n$canonical".toByteArray(StandardCharsets.UTF_8))
-        return ExecutionFingerprint(command.actionId, bytes.joinToString("") { "%02x".format(it) })
     }
 
     private companion object {
@@ -789,13 +978,4 @@ private fun ActionResult<JsonElement>.executionId(): String = when (this) {
     is ActionResult.Canceled -> executionId
     is ActionResult.Expired -> executionId
     is ActionResult.OutcomeUnknown -> executionId
-}
-
-private fun JsonElement.canonicalJson(): String = when (this) {
-    JsonNull -> "null"
-    is JsonPrimitive -> toString()
-    is JsonArray -> joinToString(prefix = "[", postfix = "]") { it.canonicalJson() }
-    is JsonObject -> entries.sortedBy { it.key }.joinToString(prefix = "{", postfix = "}") {
-        "${JsonPrimitive(it.key)}:${it.value.canonicalJson()}"
-    }
 }

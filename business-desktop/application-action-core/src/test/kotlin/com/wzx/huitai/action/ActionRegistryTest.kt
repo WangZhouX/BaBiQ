@@ -113,7 +113,7 @@ class ActionRegistryTest {
         listOf(
             registered.invokePreview(invalidInput, context),
             registered.invokeExecute(invalidInput, context),
-            registered.invokeReconcile(invalidInput, context, "remote-secret"),
+            registered.invokeReconcile(invalidInput, context, "remote-secret", "execution-invalid"),
         ).forEach { invocation ->
             val failure = assertIs<ActionInvocationResult.Failure>(invocation)
             assertEquals(ActionErrorCode.VALIDATION_FAILED, failure.error.code)
@@ -135,8 +135,9 @@ class ActionRegistryTest {
         assertEquals(buildJsonObject { put("value", 7); put("secret", "secret-output") }, success.output)
         assertEquals(buildJsonObject { put("value", 7); put("secret", "redacted-output") }, success.redactedOutput)
         val reconciled = assertIs<ActionInvocationResult.Reconciled>(
-            registered.invokeReconcile(input, context(), "remote-1"),
+            registered.invokeReconcile(input, context(), "remote-1", "execution-7"),
         )
+        assertEquals("execution-7", reconciled.executionId)
         assertIs<ReconciliationResult.Unsupported>(reconciled.result)
         assertEquals(1, action.previewCount)
         assertEquals(1, action.executeCount)

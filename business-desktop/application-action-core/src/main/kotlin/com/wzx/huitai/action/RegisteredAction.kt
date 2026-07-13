@@ -14,7 +14,10 @@ import kotlinx.coroutines.CancellationException
 sealed interface ActionInvocationResult {
     data class Previewed(val preview: ActionPreview) : ActionInvocationResult
     data class Executed(val result: ActionResult<JsonElement>) : ActionInvocationResult
-    data class Reconciled(val result: ReconciliationResult) : ActionInvocationResult
+    data class Reconciled(
+        val executionId: String,
+        val result: ReconciliationResult,
+    ) : ActionInvocationResult
     data class Failure(val error: ActionError) : ActionInvocationResult
 
     /**
@@ -69,8 +72,9 @@ class RegisteredAction<I : Any, O : Any>(
         input: JsonObject,
         context: ActionContext,
         remoteReference: String?,
+        executionId: String,
     ): ActionInvocationResult = invokeWithDecodedInput(input) { decoded ->
-        ActionInvocationResult.Reconciled(action.reconcile(decoded, context, remoteReference))
+        ActionInvocationResult.Reconciled(executionId, action.reconcile(decoded, context, remoteReference))
     }
 
     private fun decode(input: JsonObject): ActionInputDecodeResult<I> = try {

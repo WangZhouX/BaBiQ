@@ -34,6 +34,16 @@ class ActionPortContractTest {
 
         assertEquals(1, createMethods.size)
         assertTrue(createMethods.single().parameterTypes.contains(ActionAuditDraft::class.java))
+        val reconciliationMethods = ActionExecutionStore::class.java.methods
+            .filter { it.name in setOf("updateReconciliation", "appendReconciliationAudit") }
+        assertEquals(2, reconciliationMethods.size)
+        assertTrue(
+            reconciliationMethods.all { method ->
+                method.parameterTypes
+                    .first { it != kotlin.coroutines.Continuation::class.java }
+                    .declaredFields.any { it.type == ActionAuditDraft::class.java }
+            },
+        )
         listOf(
             "com.wzx.huitai.action.port.ExecutionStateUpdate",
             "com.wzx.huitai.action.port.ExecutionStateUpdateResult",
@@ -295,6 +305,7 @@ class ActionPortContractTest {
                 expectedVersion = 1,
                 result = canceled(),
                 completedAt = NOW,
+                audit = auditDraft(ActionExecutionState.OUTCOME_UNKNOWN, ActionExecutionState.CANCELED),
             )
         }
         assertFailsWith<IllegalArgumentException> {
@@ -303,6 +314,7 @@ class ActionPortContractTest {
                 expectedVersion = 1,
                 result = success("other-execution"),
                 completedAt = NOW,
+                audit = auditDraft(ActionExecutionState.OUTCOME_UNKNOWN, ActionExecutionState.SUCCEEDED),
             )
         }
     }
@@ -361,6 +373,7 @@ class ActionPortContractTest {
                     expectedVersion = unknown.recordVersion,
                     result = reconciledResult,
                     completedAt = NOW.plusSeconds(3),
+                    audit = auditDraft(ActionExecutionState.OUTCOME_UNKNOWN, ActionExecutionState.SUCCEEDED),
                 ),
             ),
         ).record
@@ -378,10 +391,52 @@ class ActionPortContractTest {
                     expectedVersion = unknown.recordVersion,
                     result = failure(),
                     completedAt = NOW.plusSeconds(4),
+                    audit = auditDraft(ActionExecutionState.OUTCOME_UNKNOWN, ActionExecutionState.FAILED),
                 ),
             ),
         )
         assertEquals(reconciled, repeated.record)
+    }
+
+    @Test
+    fun `final reconciliation audit failure rolls back state version provenance events and sequence`() = runTest {
+        val store = FakeExecutionStore()
+        val running = runningRecord(command())
+        store.compareAndCreate(running, auditDraft())
+        val unknown = assertIs<ExecutionTransitionResult.Updated>(
+            store.transition(
+                ExecutionTransition(
+                    executionId = running.command.executionId,
+                    expectedVersion = running.recordVersion,
+                    state = ActionExecutionState.OUTCOME_UNKNOWN,
+                    result = outcomeUnknown(),
+                    updatedAt = NOW.plusSeconds(2),
+                    completedAt = NOW.plusSeconds(2),
+                    audit = auditDraft(ActionExecutionState.EXECUTING, ActionExecutionState.OUTCOME_UNKNOWN),
+                ),
+            ),
+        ).record
+        val eventsBefore = store.auditEvents.toList()
+        val sequenceBefore = store.auditSequence
+        store.failNextAudit = true
+
+        val result = store.updateReconciliation(
+            ReconciliationExecutionUpdate(
+                executionId = unknown.command.executionId,
+                expectedVersion = unknown.recordVersion,
+                result = success(),
+                completedAt = NOW.plusSeconds(3),
+                audit = auditDraft(ActionExecutionState.OUTCOME_UNKNOWN, ActionExecutionState.SUCCEEDED),
+            ),
+        )
+
+        assertIs<ReconciliationUpdateResult.Conflict>(result)
+        assertEquals(unknown, store.find(unknown.command.executionId))
+        assertEquals(ActionExecutionState.OUTCOME_UNKNOWN, store.find(unknown.command.executionId)?.state)
+        assertEquals(unknown.recordVersion, store.find(unknown.command.executionId)?.recordVersion)
+        assertNull(store.find(unknown.command.executionId)?.reconciliation)
+        assertEquals(eventsBefore, store.auditEvents)
+        assertEquals(sequenceBefore, store.auditSequence)
     }
 
     @Test
@@ -409,6 +464,7 @@ class ActionPortContractTest {
                     expectedVersion = unknown.recordVersion + 1,
                     result = success(),
                     completedAt = NOW.plusSeconds(3),
+                    audit = auditDraft(ActionExecutionState.OUTCOME_UNKNOWN, ActionExecutionState.SUCCEEDED),
                 ),
             ),
         )
@@ -422,6 +478,7 @@ class ActionPortContractTest {
                     expectedVersion = running.recordVersion,
                     result = failure(),
                     completedAt = NOW.plusSeconds(2),
+                    audit = auditDraft(ActionExecutionState.OUTCOME_UNKNOWN, ActionExecutionState.FAILED),
                 ),
             ),
         )
@@ -448,6 +505,7 @@ class ActionPortContractTest {
                     expectedVersion = final.recordVersion,
                     result = success(),
                     completedAt = NOW.plusSeconds(3),
+                    audit = auditDraft(ActionExecutionState.OUTCOME_UNKNOWN, ActionExecutionState.SUCCEEDED),
                 ),
             ),
         )
@@ -716,6 +774,9 @@ class ActionPortContractTest {
         private val records = mutableMapOf<String, ActionExecutionRecord>()
         val auditEvents = mutableListOf<ActionAuditEvent>()
         private var nextAuditSequence = 0L
+        var failNextAudit = false
+        val auditSequence: Long
+            get() = nextAuditSequence
 
         override suspend fun find(executionId: String): ActionExecutionRecord? = records[executionId]
 
@@ -769,10 +830,14 @@ class ActionPortContractTest {
             return ExecutionTransitionResult.Updated(updated)
         }
 
-        private fun appendAudit(draft: ActionAuditDraft) {
-            auditEvents += ActionAuditEvent(
+        private fun prepareAudit(draft: ActionAuditDraft): ActionAuditEvent {
+            if (failNextAudit) {
+                failNextAudit = false
+                error("audit insertion failed")
+            }
+            return ActionAuditEvent(
                 executionId = draft.executionId,
-                sequence = ++nextAuditSequence,
+                sequence = nextAuditSequence + 1,
                 fromState = draft.fromState,
                 toState = draft.toState,
                 type = draft.type,
@@ -780,6 +845,12 @@ class ActionPortContractTest {
                 actorId = draft.actorId,
                 occurredAt = draft.occurredAt,
             )
+        }
+
+        private fun appendAudit(draft: ActionAuditDraft) {
+            val event = prepareAudit(draft)
+            auditEvents += event
+            nextAuditSequence = event.sequence
         }
 
         override suspend fun updateReconciliation(
@@ -813,8 +884,37 @@ class ActionPortContractTest {
                     reconciledAt = update.completedAt,
                 ),
             )
+            val audit = try {
+                prepareAudit(update.audit)
+            } catch (_: Exception) {
+                return ReconciliationUpdateResult.Conflict(
+                    com.wzx.huitai.action.model.ActionError(
+                        ActionErrorCode.EXECUTION_CONFLICT,
+                        "reconciliation audit rolled back",
+                    ),
+                )
+            }
             records[update.executionId] = updated
+            auditEvents += audit
+            nextAuditSequence = audit.sequence
             return ReconciliationUpdateResult.Updated(updated)
+        }
+
+        override suspend fun appendReconciliationAudit(
+            append: ReconciliationAuditAppend,
+        ): ReconciliationAuditAppendResult {
+            val existing = records.getValue(append.executionId)
+            if (existing.isFinalTerminal) return ReconciliationAuditAppendResult.ExistingFinal(existing)
+            if (!existing.needsReconciliation || existing.recordVersion != append.expectedVersion) {
+                return ReconciliationAuditAppendResult.Conflict(
+                    com.wzx.huitai.action.model.ActionError(
+                        ActionErrorCode.EXECUTION_CONFLICT,
+                        "reconciliation audit conflict",
+                    ),
+                )
+            }
+            appendAudit(append.audit)
+            return ReconciliationAuditAppendResult.Appended(existing)
         }
     }
 

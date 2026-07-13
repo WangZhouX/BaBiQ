@@ -32,6 +32,8 @@ import com.wzx.huitai.action.port.ExecutionSuccessFact
 import com.wzx.huitai.action.port.ExecutionTransition
 import com.wzx.huitai.action.port.ExecutionTransitionResult
 import com.wzx.huitai.action.port.ReconciliationExecutionUpdate
+import com.wzx.huitai.action.port.ReconciliationAuditAppend
+import com.wzx.huitai.action.port.ReconciliationAuditAppendResult
 import com.wzx.huitai.action.port.ReconciliationUpdateResult
 import com.wzx.huitai.action.port.RiskEvaluation
 import kotlinx.coroutines.CompletableDeferred
@@ -488,10 +490,13 @@ internal class BusFixture(
     private val effectiveRisk: ActionRiskLevel = risk,
     freezeRegistry: Boolean = true,
     throwingOutputCodec: Boolean = false,
+    reconciliationPolicy: ReconciliationPolicy = ReconciliationPolicy.MANUAL,
     outputEncodingFailureOverride: ((ActionInvocationResult.OutputEncodingFailed) ->
         ActionInvocationResult.OutputEncodingFailed)? = null,
     previewInvocationOverride: ((ActionInvocationResult) -> ActionInvocationResult)? = null,
+    reconcileInvocationOverride: ((ActionInvocationResult) -> ActionInvocationResult)? = null,
 ) {
+    var reconcileExecutionIdOverride: String? = null
     val identity = ActionIdentityScope(
         desktopInstanceId = "secret-desktop",
         desktopSessionId = "secret-session",
@@ -502,7 +507,7 @@ internal class BusFixture(
         platformId = "secret-platform",
     )
     val context = ActionContext(identity, "page-1", 7, setOf("demo:read", "demo:write"))
-    val action = BusCountingAction(busDescriptor(risk))
+    val action = BusCountingAction(busDescriptor(risk, reconciliationPolicy))
     var commandInput: JsonObject = buildJsonObject { put("value", 1) }
     private val registered = RegisteredAction(
         action,
@@ -536,6 +541,22 @@ internal class BusFixture(
             } else {
                 invocation
             }
+        }
+
+        override suspend fun reconcile(
+            registered: RegisteredAction<*, *>,
+            input: JsonObject,
+            context: ActionContext,
+            remoteReference: String?,
+            executionId: String,
+        ): ActionInvocationResult {
+            val invocation = registered.invokeReconcile(input, context, remoteReference, executionId)
+            val correlated = if (invocation is ActionInvocationResult.Reconciled && reconcileExecutionIdOverride != null) {
+                invocation.copy(executionId = reconcileExecutionIdOverride!!)
+            } else {
+                invocation
+            }
+            return reconcileInvocationOverride?.invoke(correlated) ?: correlated
         }
     }
     val confirmation = BusConfirmationPort()
@@ -582,16 +603,21 @@ internal class BusCountingAction(
 ) : ApplicationAction<BusInput, BusOutput> {
     var previewCount = 0
     var executeCount = 0
+    var reconcileCount = 0
     var previewExecutionId = "execution-1"
     var previewResultMode = PreviewResultMode.NORMAL
     var executeFailure: Throwable? = null
+    var reconcileFailure: Throwable? = null
     var previewEntered: CompletableDeferred<Unit>? = null
     var executeEntered: CompletableDeferred<Unit>? = null
+    var reconcileEntered: CompletableDeferred<Unit>? = null
+    var reconcileRelease: CompletableDeferred<Unit>? = null
     var result: ActionResult<BusOutput> = ActionResult.Success(
         "execution-1",
         BusOutput(1),
         remoteReference = "remote-1",
     )
+    var reconciliationResult: ReconciliationResult = ReconciliationResult.Unsupported
 
     override suspend fun preview(input: BusInput, context: ActionContext): ActionPreview {
         previewCount += 1
@@ -611,6 +637,20 @@ internal class BusCountingAction(
         }
         executeFailure?.let { throw it }
         return result
+    }
+
+    override suspend fun reconcile(
+        input: BusInput,
+        context: ActionContext,
+        remoteReference: String?,
+    ): ReconciliationResult {
+        reconcileCount += 1
+        reconcileEntered?.let {
+            it.complete(Unit)
+            reconcileRelease?.await()
+        }
+        reconcileFailure?.let { throw it }
+        return reconciliationResult
     }
 }
 
@@ -829,9 +869,56 @@ internal class BusExecutionStore : ActionExecutionStore {
 
     override suspend fun updateReconciliation(
         update: ReconciliationExecutionUpdate,
-    ): ReconciliationUpdateResult = ReconciliationUpdateResult.Conflict(
-        ActionError(ActionErrorCode.EXECUTION_CONFLICT, "not used"),
-    )
+    ): ReconciliationUpdateResult {
+        val current = record ?: return ReconciliationUpdateResult.Conflict(
+            ActionError(ActionErrorCode.EXECUTION_CONFLICT, "missing"),
+        )
+        if (current.reconciliation?.sourceRecordVersion == update.expectedVersion) {
+            return ReconciliationUpdateResult.ExistingFinal(current)
+        }
+        if (!current.needsReconciliation || current.recordVersion != update.expectedVersion) {
+            return ReconciliationUpdateResult.Conflict(
+                ActionError(ActionErrorCode.EXECUTION_CONFLICT, "reconciliation conflict"),
+            )
+        }
+        val state = update.result.stateForStore()
+        val updated = current.copy(
+            state = state,
+            result = update.result,
+            completedAt = update.completedAt,
+            updatedAt = update.completedAt,
+            recordVersion = current.recordVersion + 1,
+            reconciliation = com.wzx.huitai.action.port.ReconciliationProvenance(
+                sourceRecordVersion = current.recordVersion,
+                reconciledAt = update.completedAt,
+            ),
+        )
+        val event = prepareAudit(update.audit) ?: return ReconciliationUpdateResult.Conflict(
+            ActionError(ActionErrorCode.EXECUTION_CONFLICT, "audit transaction rolled back"),
+        )
+        record = updated
+        commitAudit(event)
+        return ReconciliationUpdateResult.Updated(updated)
+    }
+
+    override suspend fun appendReconciliationAudit(
+        append: ReconciliationAuditAppend,
+    ): ReconciliationAuditAppendResult {
+        val current = record ?: return ReconciliationAuditAppendResult.Conflict(
+            ActionError(ActionErrorCode.EXECUTION_CONFLICT, "missing"),
+        )
+        if (current.isFinalTerminal) return ReconciliationAuditAppendResult.ExistingFinal(current)
+        if (!current.needsReconciliation || current.recordVersion != append.expectedVersion) {
+            return ReconciliationAuditAppendResult.Conflict(
+                ActionError(ActionErrorCode.EXECUTION_CONFLICT, "reconciliation audit conflict"),
+            )
+        }
+        val event = prepareAudit(append.audit) ?: return ReconciliationAuditAppendResult.Conflict(
+            ActionError(ActionErrorCode.EXECUTION_CONFLICT, "audit transaction rolled back"),
+        )
+        commitAudit(event)
+        return ReconciliationAuditAppendResult.Appended(current)
+    }
 }
 
 internal class BusAuditPort : ActionAuditPort {
@@ -879,7 +966,10 @@ internal class BusClock : ActionClock {
     override fun now(): Instant = Instant.parse("2026-07-14T00:00:00Z").plusSeconds(seconds++)
 }
 
-internal fun busDescriptor(risk: ActionRiskLevel) = ActionDescriptor(
+internal fun busDescriptor(
+    risk: ActionRiskLevel,
+    reconciliationPolicy: ReconciliationPolicy = ReconciliationPolicy.MANUAL,
+) = ActionDescriptor(
     id = "demo.action",
     version = 1,
     title = "演示动作",
@@ -889,5 +979,5 @@ internal fun busDescriptor(risk: ActionRiskLevel) = ActionDescriptor(
     requiredPermissions = setOf("demo:read"),
     target = ActionTarget("generic-form", "submit"),
     replayPolicy = ActionReplayPolicy.NEVER,
-    reconciliationPolicy = ReconciliationPolicy.MANUAL,
+    reconciliationPolicy = reconciliationPolicy,
 )

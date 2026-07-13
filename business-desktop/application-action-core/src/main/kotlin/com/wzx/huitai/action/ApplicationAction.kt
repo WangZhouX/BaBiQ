@@ -31,6 +31,17 @@ sealed interface ReconciliationResult {
     /** 当前动作不支持自动对账。 */
     data object Unsupported : ReconciliationResult
 
+    /** 远程仍在处理，本次没有足够事实收束最终态。 */
+    data object Pending : ReconciliationResult
+
+    /** 按当前查询条件未找到远程事实，不能据此断言业务失败。 */
+    data object NotFound : ReconciliationResult
+
+    /** 对账查询自身失败，保留原结果未知等待后续重试或人工处理。 */
+    data class Error(val error: ActionError) : ReconciliationResult {
+        override fun toString(): String = "ReconciliationResult.Error(errorCode=${error.code})"
+    }
+
     /** 对账确认远程动作已成功。 */
     data class Succeeded(val remoteReference: String? = null) : ReconciliationResult {
         override fun toString(): String = "ReconciliationResult.Succeeded(remoteReference=[REDACTED])"

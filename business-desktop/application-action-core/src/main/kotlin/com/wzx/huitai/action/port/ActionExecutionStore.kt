@@ -157,21 +157,45 @@ data class ReconciliationProvenance(
  * @param expectedVersion 期望的结果不确定记录版本。
  * @param result 对账确认的精确成功或失败结果。
  * @param completedAt 对账完成时间。
+ * @param audit 与最终态和对账来源原子提交的独立对账审计。
  */
 data class ReconciliationExecutionUpdate(
     val executionId: String,
     val expectedVersion: Long,
     val result: ActionResult<JsonElement>,
     val completedAt: Instant,
+    val audit: ActionAuditDraft,
 ) {
     init {
+        require(audit.executionId == executionId) { "对账审计 executionId 必须一致" }
+        require(audit.fromState == ActionExecutionState.OUTCOME_UNKNOWN) { "对账审计必须源自 OUTCOME_UNKNOWN" }
         val terminalState = result.terminalStateOrNull()
         require(terminalState == ActionExecutionState.SUCCEEDED || terminalState == ActionExecutionState.FAILED) {
             "对账结果只能是 Success 或 Failure"
         }
+        require(audit.toState == terminalState) { "对账审计目标状态必须与结果一致" }
         require(result.executionId() == executionId) {
             "对账结果 executionId 不匹配：expected=$executionId, actual=${result.executionId()}"
         }
+    }
+}
+
+/**
+ * 对账期间不改变执行状态的原子审计追加。
+ *
+ * @param executionId 动作执行标识。
+ * @param expectedVersion 仍应处于 OUTCOME_UNKNOWN 的记录版本。
+ * @param audit 同状态的对账尝试或未确认结果事件。
+ */
+data class ReconciliationAuditAppend(
+    val executionId: String,
+    val expectedVersion: Long,
+    val audit: ActionAuditDraft,
+) {
+    init {
+        require(audit.executionId == executionId) { "对账审计 executionId 必须一致" }
+        require(audit.fromState == ActionExecutionState.OUTCOME_UNKNOWN) { "对账审计必须源自 OUTCOME_UNKNOWN" }
+        require(audit.toState == ActionExecutionState.OUTCOME_UNKNOWN) { "纯对账审计不能改变执行状态" }
     }
 }
 
@@ -237,6 +261,13 @@ sealed interface ReconciliationUpdateResult {
     data class Conflict(val error: ActionError) : ReconciliationUpdateResult
 }
 
+/** 保持 OUTCOME_UNKNOWN 的原子审计追加结果。 */
+sealed interface ReconciliationAuditAppendResult {
+    data class Appended(val record: ActionExecutionRecord) : ReconciliationAuditAppendResult
+    data class ExistingFinal(val record: ActionExecutionRecord) : ReconciliationAuditAppendResult
+    data class Conflict(val error: ActionError) : ReconciliationAuditAppendResult
+}
+
 /** 动作幂等和终态重放存储端口。 */
 interface ActionExecutionStore {
     /** 按 executionId 查询当前精确记录；不存在返回 null。 */
@@ -251,10 +282,15 @@ interface ActionExecutionStore {
     /** 原子提交乐观状态变化和同一迁移审计。 */
     suspend fun transition(update: ExecutionTransition): ExecutionTransitionResult
 
-    /** 仅将当前 OUTCOME_UNKNOWN 记录原子收束为成功或失败。 */
+    /** 仅将当前 OUTCOME_UNKNOWN 记录和独立对账审计原子收束为成功或失败。 */
     suspend fun updateReconciliation(
         update: ReconciliationExecutionUpdate,
     ): ReconciliationUpdateResult
+
+    /** 仅在匹配版本的 OUTCOME_UNKNOWN 上原子追加一次审计，不改变记录版本或结果。 */
+    suspend fun appendReconciliationAudit(
+        append: ReconciliationAuditAppend,
+    ): ReconciliationAuditAppendResult
 }
 
 /** 校验记录或更新中的状态、结果、执行标识和完成时间必须一致。 */
