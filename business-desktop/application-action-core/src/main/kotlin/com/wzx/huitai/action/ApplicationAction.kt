@@ -28,27 +28,38 @@ data class ActionContext(
 
 /** 动作对账结果，与正常执行结果保持独立语义。 */
 sealed interface ReconciliationResult {
+    val executionId: String
+
     /** 当前动作不支持自动对账。 */
-    data object Unsupported : ReconciliationResult
+    data class Unsupported(override val executionId: String) : ReconciliationResult
 
     /** 远程仍在处理，本次没有足够事实收束最终态。 */
-    data object Pending : ReconciliationResult
+    data class Pending(override val executionId: String) : ReconciliationResult
 
     /** 按当前查询条件未找到远程事实，不能据此断言业务失败。 */
-    data object NotFound : ReconciliationResult
+    data class NotFound(override val executionId: String) : ReconciliationResult
 
     /** 对账查询自身失败，保留原结果未知等待后续重试或人工处理。 */
-    data class Error(val error: ActionError) : ReconciliationResult {
+    data class Error(
+        val error: ActionError,
+        override val executionId: String,
+    ) : ReconciliationResult {
         override fun toString(): String = "ReconciliationResult.Error(errorCode=${error.code})"
     }
 
     /** 对账确认远程动作已成功。 */
-    data class Succeeded(val remoteReference: String? = null) : ReconciliationResult {
+    data class Succeeded(
+        val remoteReference: String? = null,
+        override val executionId: String,
+    ) : ReconciliationResult {
         override fun toString(): String = "ReconciliationResult.Succeeded(remoteReference=[REDACTED])"
     }
 
     /** 对账确认远程动作已失败。 */
-    data class Failed(val error: ActionError) : ReconciliationResult {
+    data class Failed(
+        val error: ActionError,
+        override val executionId: String,
+    ) : ReconciliationResult {
         override fun toString(): String = "ReconciliationResult.Failed(errorCode=${error.code})"
     }
 }
@@ -73,5 +84,6 @@ interface ApplicationAction<I : Any, O : Any> {
         input: I,
         context: ActionContext,
         remoteReference: String?,
-    ): ReconciliationResult = ReconciliationResult.Unsupported
+        executionId: String,
+    ): ReconciliationResult = ReconciliationResult.Unsupported(executionId)
 }

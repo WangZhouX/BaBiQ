@@ -17,8 +17,35 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicInteger
+
+/** 同 execution 的进程内串行边界；持久存储仍负责跨进程唯一所有权。 */
+internal interface ActionExecutionLockScope {
+    suspend fun <T> withLock(executionId: String, block: suspend () -> T): T
+}
+
+/**
+ * 固定大小分片锁不创建或删除单 execution entry，因此没有引用计数 ABA，也不会随历史 ID 增长。
+ * hash 使用无符号取模，包含 Int.MIN_VALUE 在内的负 hash 都能落到有效分片；碰撞只降低并发度，不破坏互斥。
+ */
+internal class StripedActionExecutionLockScope(
+    val stripeCount: Int = DEFAULT_STRIPE_COUNT,
+) : ActionExecutionLockScope {
+    private val stripes: Array<Mutex>
+
+    init {
+        require(stripeCount > 0) { "分片锁数量必须为正数" }
+        stripes = Array(stripeCount) { Mutex() }
+    }
+
+    override suspend fun <T> withLock(executionId: String, block: suspend () -> T): T {
+        val index = executionId.hashCode().toUInt().mod(stripeCount.toUInt()).toInt()
+        return stripes[index].withLock { block() }
+    }
+
+    private companion object {
+        const val DEFAULT_STRIPE_COUNT = 64
+    }
+}
 
 /**
  * 在任何动作解码或副作用前取得 execution 的唯一持久化所有权。
@@ -26,10 +53,16 @@ import java.util.concurrent.atomic.AtomicInteger
  * compare-and-create 仍由持久化端口原子完成；本协调器只负责生成稳定指纹并把存储结果翻译成
  * Bus 可穷举处理的分支，避免进程内先查后写造成 TOCTOU。
  */
-class ActionExecutionCoordinator(
+class ActionExecutionCoordinator internal constructor(
     private val executionStore: ActionExecutionStore,
     private val clock: ActionClock,
+    private val lockScope: ActionExecutionLockScope = sharedLockScope,
 ) {
+    /** 生产装配共享固定分片锁；测试可通过 internal 构造注入隔离锁域模拟跨进程。 */
+    constructor(
+        executionStore: ActionExecutionStore,
+        clock: ActionClock,
+    ) : this(executionStore, clock, sharedLockScope)
     /**
      * 原子创建新执行，或返回同 execution 的精确现状。
      *
@@ -88,25 +121,11 @@ class ActionExecutionCoordinator(
 
     /** 同 execution 的进程内短锁防止薄 fake/adapter 暴露竞争，持久层仍负责最终原子裁决。 */
     private suspend fun <T> withExecutionLock(executionId: String, block: suspend () -> T): T {
-        val entry = executionLocks.compute(executionId) { _, existing ->
-            (existing ?: LockEntry()).also { it.references.incrementAndGet() }
-        }!!
-        return try {
-            entry.mutex.withLock { block() }
-        } finally {
-            if (entry.references.decrementAndGet() == 0) {
-                executionLocks.remove(executionId, entry)
-            }
-        }
+        return lockScope.withLock(executionId, block)
     }
 
-    private class LockEntry(
-        val mutex: Mutex = Mutex(),
-        val references: AtomicInteger = AtomicInteger(),
-    )
-
     private companion object {
-        val executionLocks = ConcurrentHashMap<String, LockEntry>()
+        val sharedLockScope: ActionExecutionLockScope = StripedActionExecutionLockScope()
     }
 }
 

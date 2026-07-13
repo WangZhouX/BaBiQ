@@ -36,6 +36,7 @@ data class ExecutionFingerprint(
  * @param recordVersion 乐观并发版本。
  * @param reconciliation 从结果不确定状态收束时的对账来源。
  * @param successFact 业务成功但普通 JSON 结果不可用时的结构化事实。
+ * @param reconciliationClaim 当前持有远程对账权的持久 claim；仅 OUTCOME_UNKNOWN 可非空。
  */
 data class ActionExecutionRecord(
     val command: ActionCommand,
@@ -49,6 +50,7 @@ data class ActionExecutionRecord(
     val recordVersion: Long,
     val reconciliation: ReconciliationProvenance? = null,
     val successFact: ExecutionSuccessFact? = null,
+    val reconciliationClaim: ReconciliationClaim? = null,
 ) {
     init {
         validateExecutionState(
@@ -82,6 +84,11 @@ data class ActionExecutionRecord(
             require(state == ActionExecutionState.SUCCEEDED) { "成功事实只能附着在 SUCCEEDED" }
             require(result == null) { "输出不可用成功事实不能同时伪造普通成功结果" }
         }
+        reconciliationClaim?.let {
+            require(state == ActionExecutionState.OUTCOME_UNKNOWN) { "对账 claim 只能附着在 OUTCOME_UNKNOWN" }
+            require(!it.claimedAt.isBefore(createdAt)) { "对账 claim 时间不能早于记录创建时间" }
+            require(!updatedAt.isBefore(it.claimedAt)) { "updatedAt 不能早于对账 claim 时间" }
+        }
     }
 
     val isTerminal: Boolean
@@ -97,7 +104,7 @@ data class ActionExecutionRecord(
     override fun toString(): String =
         "ActionExecutionRecord(executionId=${command.executionId}, actionId=${command.actionId}, " +
             "state=$state, recordVersion=$recordVersion, command=[REDACTED], fingerprint=[REDACTED], " +
-            "result=[REDACTED])"
+            "result=[REDACTED], reconciliationClaim=[REDACTED])"
 
     private companion object {
         val TERMINAL_STATES = setOf(
@@ -113,25 +120,69 @@ data class ActionExecutionRecord(
 }
 
 /**
+ * 结果未知记录的持久对账所有权。
+ *
+ * @param claimToken 单次 claim 的不可猜测标识，仅后续 release/final mutation 使用。
+ * @param ownerId 发起本次对账的本地 owner 标识，用于审计归属，不作为授权主体。
+ * @param claimedAt claim 与 attempt 审计原子提交的时间。
+ */
+data class ReconciliationClaim(
+    val claimToken: String,
+    val ownerId: String,
+    val claimedAt: Instant,
+) {
+    init {
+        require(claimToken.isNotBlank()) { "对账 claim token 不能为空" }
+        require(ownerId.isNotBlank()) { "对账 owner 不能为空" }
+    }
+
+    /** 日志只表明 claim 存在，不暴露 token、owner 或业务时间。 */
+    override fun toString(): String =
+        "ReconciliationClaim(claimToken=[REDACTED], ownerId=[REDACTED], claimedAt=[REDACTED])"
+}
+
+/**
  * 业务副作用已成功但 JSON 输出不可用的持久化事实。
  *
- * @param kind 稳定事实类型，目前固定为 OUTPUT_ENCODING_FAILED。
+ * @param kind 稳定事实类型。
  * @param remoteReference 可用于人工查询的远程引用。
+ * @param errorCode 输出不可用时持久化的稳定错误码；远程对账成功时为空。
+ * @param safeMessage 输出不可用时可安全重放的固定说明；不得包含远程原文或敏感值。
+ * @param source 成功事实的稳定来源，供 Bus 区分编码失败和远程对账确认。
  */
 data class ExecutionSuccessFact(
     val kind: String,
     val remoteReference: String? = null,
+    val errorCode: com.wzx.huitai.action.model.ActionErrorCode? =
+        com.wzx.huitai.action.model.ActionErrorCode.PROTOCOL_ERROR,
+    val safeMessage: String? = "动作输出不可用",
+    val source: String = SOURCE_OUTPUT_ENCODING,
 ) {
     init {
-        require(kind == OUTPUT_ENCODING_FAILED) { "不支持的成功事实类型" }
+        require(kind in setOf(OUTPUT_ENCODING_FAILED, RECONCILED_REMOTE_SUCCESS)) { "不支持的成功事实类型" }
+        when (kind) {
+            OUTPUT_ENCODING_FAILED -> {
+                require(errorCode != null) { "输出编码失败事实必须保存错误码" }
+                require(!safeMessage.isNullOrBlank()) { "输出编码失败事实必须保存安全说明" }
+                require(source == SOURCE_OUTPUT_ENCODING) { "输出编码失败来源不匹配" }
+            }
+            RECONCILED_REMOTE_SUCCESS -> {
+                require(errorCode == null && safeMessage == null) { "远程对账成功不能伪造错误" }
+                require(source == SOURCE_RECONCILIATION) { "远程对账成功来源不匹配" }
+            }
+        }
     }
 
     /** 日志保留事实类型并隐藏远程引用。 */
     override fun toString(): String =
-        "ExecutionSuccessFact(kind=$kind, remoteReference=[REDACTED])"
+        "ExecutionSuccessFact(kind=$kind, remoteReference=[REDACTED], errorCode=$errorCode, " +
+            "safeMessage=[REDACTED], source=$source)"
 
     companion object {
         const val OUTPUT_ENCODING_FAILED = "OUTPUT_ENCODING_FAILED"
+        const val RECONCILED_REMOTE_SUCCESS = "RECONCILED_REMOTE_SUCCESS"
+        const val SOURCE_OUTPUT_ENCODING = "output_encoding"
+        const val SOURCE_RECONCILIATION = "reconciliation"
     }
 }
 
@@ -155,48 +206,105 @@ data class ReconciliationProvenance(
  *
  * @param executionId 动作执行标识。
  * @param expectedVersion 期望的结果不确定记录版本。
- * @param result 对账确认的精确成功或失败结果。
+ * @param claimToken 必须匹配当前持久 claim 的 token。
+ * @param result 对账确认的精确失败结果；成功无业务输出时为空。
+ * @param successFact 远程对账确认成功但没有业务输出时的持久事实。
  * @param completedAt 对账完成时间。
  * @param audit 与最终态和对账来源原子提交的独立对账审计。
  */
 data class ReconciliationExecutionUpdate(
     val executionId: String,
     val expectedVersion: Long,
-    val result: ActionResult<JsonElement>,
+    val claimToken: String,
+    val result: ActionResult<JsonElement>?,
+    val successFact: ExecutionSuccessFact? = null,
     val completedAt: Instant,
     val audit: ActionAuditDraft,
 ) {
     init {
         require(audit.executionId == executionId) { "对账审计 executionId 必须一致" }
+        require(claimToken.isNotBlank()) { "最终对账 claim token 不能为空" }
         require(audit.fromState == ActionExecutionState.OUTCOME_UNKNOWN) { "对账审计必须源自 OUTCOME_UNKNOWN" }
-        val terminalState = result.terminalStateOrNull()
-        require(terminalState == ActionExecutionState.SUCCEEDED || terminalState == ActionExecutionState.FAILED) {
-            "对账结果只能是 Success 或 Failure"
+        val terminalState = result?.terminalStateOrNull()
+        require(terminalState == ActionExecutionState.FAILED || successFact != null) {
+            "对账最终态只能是精确 Failure 或远程成功事实"
         }
-        require(audit.toState == terminalState) { "对账审计目标状态必须与结果一致" }
-        require(result.executionId() == executionId) {
-            "对账结果 executionId 不匹配：expected=$executionId, actual=${result.executionId()}"
+        successFact?.let {
+            require(result == null) { "成功事实不能同时携带普通结果" }
+            require(it.kind == ExecutionSuccessFact.RECONCILED_REMOTE_SUCCESS) {
+                "最终对账成功只能使用 RECONCILED_REMOTE_SUCCESS"
+            }
+        }
+        val expectedState = terminalState ?: ActionExecutionState.SUCCEEDED
+        require(audit.toState == expectedState) { "对账审计目标状态必须与结果一致" }
+        result?.let {
+            require(it.executionId() == executionId) {
+                "对账结果 executionId 不匹配：expected=$executionId, actual=${it.executionId()}"
+            }
         }
     }
 }
 
 /**
- * 对账期间不改变执行状态的原子审计追加。
+ * 原子取得 OUTCOME_UNKNOWN 对账所有权并追加 attempt 审计。
  *
  * @param executionId 动作执行标识。
- * @param expectedVersion 仍应处于 OUTCOME_UNKNOWN 的记录版本。
- * @param audit 同状态的对账尝试或未确认结果事件。
+ * @param expectedVersion 期望的未 claim 记录版本。
+ * @param claimToken 本次 claim token。
+ * @param ownerId 本次对账 owner。
+ * @param claimedAt claim 时间。
+ * @param audit 与 claim 原子提交的 reconciliation_attempt 审计。
  */
-data class ReconciliationAuditAppend(
+data class ReconciliationClaimRequest(
     val executionId: String,
     val expectedVersion: Long,
+    val claimToken: String,
+    val ownerId: String,
+    val claimedAt: Instant,
     val audit: ActionAuditDraft,
 ) {
     init {
-        require(audit.executionId == executionId) { "对账审计 executionId 必须一致" }
-        require(audit.fromState == ActionExecutionState.OUTCOME_UNKNOWN) { "对账审计必须源自 OUTCOME_UNKNOWN" }
-        require(audit.toState == ActionExecutionState.OUTCOME_UNKNOWN) { "纯对账审计不能改变执行状态" }
+        ReconciliationClaim(claimToken, ownerId, claimedAt)
+        require(audit.executionId == executionId) { "claim 审计 executionId 必须一致" }
+        require(audit.fromState == ActionExecutionState.OUTCOME_UNKNOWN) { "claim 审计必须源自 OUTCOME_UNKNOWN" }
+        require(audit.toState == ActionExecutionState.OUTCOME_UNKNOWN) { "claim 不能改变执行状态" }
+        require(audit.type == "reconciliation_attempt") { "claim 必须提交 reconciliation_attempt 审计" }
     }
+
+    /** 日志隐藏 claim token、owner 和审计载荷。 */
+    override fun toString(): String =
+        "ReconciliationClaimRequest(executionId=$executionId, expectedVersion=$expectedVersion, " +
+            "claimToken=[REDACTED], ownerId=[REDACTED], claimedAt=[REDACTED], audit=[REDACTED])"
+}
+
+/**
+ * 原子释放未收束对账 claim 并追加 result 审计。
+ *
+ * @param executionId 动作执行标识。
+ * @param expectedVersion 当前已 claim 记录版本。
+ * @param claimToken 必须匹配持久 claim 的 token。
+ * @param releasedAt 释放时间。
+ * @param audit 与 release 原子提交的 reconciliation_result 审计。
+ */
+data class ReconciliationReleaseRequest(
+    val executionId: String,
+    val expectedVersion: Long,
+    val claimToken: String,
+    val releasedAt: Instant,
+    val audit: ActionAuditDraft,
+) {
+    init {
+        require(claimToken.isNotBlank()) { "release claim token 不能为空" }
+        require(audit.executionId == executionId) { "release 审计 executionId 必须一致" }
+        require(audit.fromState == ActionExecutionState.OUTCOME_UNKNOWN) { "release 审计必须源自 OUTCOME_UNKNOWN" }
+        require(audit.toState == ActionExecutionState.OUTCOME_UNKNOWN) { "release 不能改变执行状态" }
+        require(audit.type == "reconciliation_result") { "release 必须提交 reconciliation_result 审计" }
+    }
+
+    /** 日志隐藏 claim token 和审计载荷。 */
+    override fun toString(): String =
+        "ReconciliationReleaseRequest(executionId=$executionId, expectedVersion=$expectedVersion, " +
+            "claimToken=[REDACTED], releasedAt=$releasedAt, audit=[REDACTED])"
 }
 
 /**
@@ -261,11 +369,19 @@ sealed interface ReconciliationUpdateResult {
     data class Conflict(val error: ActionError) : ReconciliationUpdateResult
 }
 
-/** 保持 OUTCOME_UNKNOWN 的原子审计追加结果。 */
-sealed interface ReconciliationAuditAppendResult {
-    data class Appended(val record: ActionExecutionRecord) : ReconciliationAuditAppendResult
-    data class ExistingFinal(val record: ActionExecutionRecord) : ReconciliationAuditAppendResult
-    data class Conflict(val error: ActionError) : ReconciliationAuditAppendResult
+/** 持久对账 claim 的原子结果。 */
+sealed interface ReconciliationClaimResult {
+    data class Claimed(val record: ActionExecutionRecord) : ReconciliationClaimResult
+    data class ExistingClaim(val record: ActionExecutionRecord) : ReconciliationClaimResult
+    data class ExistingFinal(val record: ActionExecutionRecord) : ReconciliationClaimResult
+    data class Conflict(val error: ActionError) : ReconciliationClaimResult
+}
+
+/** 未收束对账 release 的原子结果。 */
+sealed interface ReconciliationReleaseResult {
+    data class Released(val record: ActionExecutionRecord) : ReconciliationReleaseResult
+    data class ExistingFinal(val record: ActionExecutionRecord) : ReconciliationReleaseResult
+    data class Conflict(val error: ActionError) : ReconciliationReleaseResult
 }
 
 /** 动作幂等和终态重放存储端口。 */
@@ -287,10 +403,11 @@ interface ActionExecutionStore {
         update: ReconciliationExecutionUpdate,
     ): ReconciliationUpdateResult
 
-    /** 仅在匹配版本的 OUTCOME_UNKNOWN 上原子追加一次审计，不改变记录版本或结果。 */
-    suspend fun appendReconciliationAudit(
-        append: ReconciliationAuditAppend,
-    ): ReconciliationAuditAppendResult
+    /** 原子取得跨进程唯一对账所有权并提交 attempt 审计。 */
+    suspend fun claimReconciliation(request: ReconciliationClaimRequest): ReconciliationClaimResult
+
+    /** 原子释放未收束 claim 并提交 result 审计。 */
+    suspend fun releaseReconciliation(request: ReconciliationReleaseRequest): ReconciliationReleaseResult
 }
 
 /** 校验记录或更新中的状态、结果、执行标识和完成时间必须一致。 */

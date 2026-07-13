@@ -18,8 +18,6 @@ import com.wzx.huitai.action.port.ExecutionTransition
 import com.wzx.huitai.action.port.ExecutionTransitionResult
 import com.wzx.huitai.action.port.ReconciliationExecutionUpdate
 import com.wzx.huitai.action.port.ReconciliationUpdateResult
-import com.wzx.huitai.action.port.ReconciliationAuditAppend
-import com.wzx.huitai.action.port.ReconciliationAuditAppendResult
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
@@ -34,11 +32,61 @@ import kotlinx.serialization.json.put
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.time.Instant
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 
 class ActionIdempotencyTest {
+    @Test
+    fun `固定分片锁在A释放B已引用窗口不会让C进入第二把锁`() = runTest {
+        val scope = StripedActionExecutionLockScope(stripeCount = 4)
+        val active = AtomicInteger()
+        val maximumActive = AtomicInteger()
+        val aEntered = CompletableDeferred<Unit>()
+        val bEntered = CompletableDeferred<Unit>()
+        val cEntered = CompletableDeferred<Unit>()
+        val releaseA = CompletableDeferred<Unit>()
+        val releaseB = CompletableDeferred<Unit>()
+        val releaseC = CompletableDeferred<Unit>()
+
+        suspend fun enter(entered: CompletableDeferred<Unit>, release: CompletableDeferred<Unit>) {
+            scope.withLock("execution-aba") {
+                val current = active.incrementAndGet()
+                maximumActive.accumulateAndGet(current, ::maxOf)
+                entered.complete(Unit)
+                try {
+                    release.await()
+                } finally {
+                    active.decrementAndGet()
+                }
+            }
+        }
+
+        val a = async { enter(aEntered, releaseA) }
+        aEntered.await()
+        val b = async { enter(bEntered, releaseB) }
+        yield()
+        releaseA.complete(Unit)
+        bEntered.await()
+        val c = async { enter(cEntered, releaseC) }
+        yield()
+
+        assertEquals(false, cEntered.isCompleted)
+        releaseB.complete(Unit)
+        cEntered.await()
+        releaseC.complete(Unit)
+        a.await()
+        b.await()
+        c.await()
+        assertEquals(1, maximumActive.get())
+
+        repeat(1_000) { index ->
+            scope.withLock("execution-$index") { Unit }
+        }
+        assertEquals(4, scope.stripeCount)
+    }
+
     @Test
     fun `相同执行标识与输入在所有非终态只返回已有运行且不再调用动作`() = runTest {
         val states = listOf(
@@ -263,8 +311,12 @@ class ActionIdempotencyTest {
             update: ReconciliationExecutionUpdate,
         ): ReconciliationUpdateResult = error("本测试不进入对账")
 
-        override suspend fun appendReconciliationAudit(
-            append: ReconciliationAuditAppend,
-        ): ReconciliationAuditAppendResult = error("本测试不进入对账审计")
+        override suspend fun claimReconciliation(
+            request: com.wzx.huitai.action.port.ReconciliationClaimRequest,
+        ): com.wzx.huitai.action.port.ReconciliationClaimResult = error("本测试不进入对账 claim")
+
+        override suspend fun releaseReconciliation(
+            request: com.wzx.huitai.action.port.ReconciliationReleaseRequest,
+        ): com.wzx.huitai.action.port.ReconciliationReleaseResult = error("本测试不进入对账 release")
     }
 }

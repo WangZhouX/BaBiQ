@@ -298,9 +298,10 @@ class ActionRegistryTest {
             input: DemoInput,
             context: ActionContext,
             remoteReference: String?,
+            executionId: String,
         ): ReconciliationResult {
             reconcileCount += 1
-            return super.reconcile(input, context, remoteReference)
+            return super.reconcile(input, context, remoteReference, executionId)
         }
     }
 }

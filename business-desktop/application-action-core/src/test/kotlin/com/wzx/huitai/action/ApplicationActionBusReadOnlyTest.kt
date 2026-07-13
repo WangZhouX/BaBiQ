@@ -32,8 +32,6 @@ import com.wzx.huitai.action.port.ExecutionSuccessFact
 import com.wzx.huitai.action.port.ExecutionTransition
 import com.wzx.huitai.action.port.ExecutionTransitionResult
 import com.wzx.huitai.action.port.ReconciliationExecutionUpdate
-import com.wzx.huitai.action.port.ReconciliationAuditAppend
-import com.wzx.huitai.action.port.ReconciliationAuditAppendResult
 import com.wzx.huitai.action.port.ReconciliationUpdateResult
 import com.wzx.huitai.action.port.RiskEvaluation
 import kotlinx.coroutines.CompletableDeferred
@@ -425,17 +423,28 @@ class ApplicationActionBusReadOnlyTest {
     }
 
     @Test
-    fun `output encoding failure persists unavailable success without fake null output`() = runTest {
+    fun `output encoding failure persists exact replayable fact without fake output`() = runTest {
         val fixture = BusFixture(ActionRiskLevel.READ_ONLY, throwingOutputCodec = true)
 
-        val result = fixture.bus.execute(fixture.command(), fixture.context)
+        val first = fixture.bus.execute(fixture.command(), fixture.context)
+        val replay = fixture.bus.execute(fixture.command(), fixture.context)
 
-        val failed = assertIs<ActionBusResult.OutputEncodingFailed>(result)
+        val failed = assertIs<ActionBusResult.OutputEncodingFailed>(first)
         assertEquals(ActionExecutionState.SUCCEEDED, failed.terminalState)
+        assertEquals(ActionErrorCode.PROTOCOL_ERROR, failed.error.code)
+        assertEquals("动作输出编码失败", failed.error.message)
+        assertEquals("remote-1", failed.remoteReference)
+        assertEquals(first, replay)
         assertEquals(ActionExecutionState.SUCCEEDED, fixture.store.record?.state)
         assertNull(fixture.store.record?.result)
         assertEquals("OUTPUT_ENCODING_FAILED", fixture.store.record?.successFact?.kind)
         assertEquals("remote-1", fixture.store.record?.successFact?.remoteReference)
+        assertEquals(ActionErrorCode.PROTOCOL_ERROR, fixture.store.record?.successFact?.errorCode)
+        assertEquals("动作输出编码失败", fixture.store.record?.successFact?.safeMessage)
+        assertEquals(
+            ExecutionSuccessFact.SOURCE_OUTPUT_ENCODING,
+            fixture.store.record?.successFact?.source,
+        )
         assertEquals(1, fixture.action.executeCount)
         assertFalse(fixture.audit.events.last().redactedPayload.toString().contains("secret"))
         assertEquals("OUTPUT_ENCODING_FAILED",
@@ -489,14 +498,17 @@ internal class BusFixture(
     risk: ActionRiskLevel,
     private val effectiveRisk: ActionRiskLevel = risk,
     freezeRegistry: Boolean = true,
+    registerAction: Boolean = true,
     throwingOutputCodec: Boolean = false,
     reconciliationPolicy: ReconciliationPolicy = ReconciliationPolicy.MANUAL,
     outputEncodingFailureOverride: ((ActionInvocationResult.OutputEncodingFailed) ->
         ActionInvocationResult.OutputEncodingFailed)? = null,
     previewInvocationOverride: ((ActionInvocationResult) -> ActionInvocationResult)? = null,
     reconcileInvocationOverride: ((ActionInvocationResult) -> ActionInvocationResult)? = null,
+    val lockScope: ActionExecutionLockScope = StripedActionExecutionLockScope(),
+    val store: BusExecutionStore = BusExecutionStore(),
+    val audit: BusAuditPort = BusAuditPort(),
 ) {
-    var reconcileExecutionIdOverride: String? = null
     val identity = ActionIdentityScope(
         desktopInstanceId = "secret-desktop",
         desktopSessionId = "secret-session",
@@ -515,7 +527,7 @@ internal class BusFixture(
         if (throwingOutputCodec) ActionOutputCodec<BusOutput> { error("secret-codec") } else BusOutputCodec(),
     )
     val registry = ActionRegistry().apply {
-        register(registered)
+        if (registerAction) register(registered)
         if (freezeRegistry) freeze()
     }
     private val actionInvoker = object : RegisteredActionInvoker {
@@ -551,18 +563,11 @@ internal class BusFixture(
             executionId: String,
         ): ActionInvocationResult {
             val invocation = registered.invokeReconcile(input, context, remoteReference, executionId)
-            val correlated = if (invocation is ActionInvocationResult.Reconciled && reconcileExecutionIdOverride != null) {
-                invocation.copy(executionId = reconcileExecutionIdOverride!!)
-            } else {
-                invocation
-            }
-            return reconcileInvocationOverride?.invoke(correlated) ?: correlated
+            return reconcileInvocationOverride?.invoke(invocation) ?: invocation
         }
     }
     val confirmation = BusConfirmationPort()
     val approval = BusApprovalPort()
-    val store = BusExecutionStore()
-    val audit = BusAuditPort()
     val clock = BusClock()
     val bus: ApplicationActionBus
         get() = ApplicationActionBus(
@@ -576,6 +581,7 @@ internal class BusFixture(
             clock = clock,
             contextValidator = ActionExecutionContextValidator(),
             actionInvoker = actionInvoker,
+            lockScope = lockScope,
         )
 
     init {
@@ -617,7 +623,7 @@ internal class BusCountingAction(
         BusOutput(1),
         remoteReference = "remote-1",
     )
-    var reconciliationResult: ReconciliationResult = ReconciliationResult.Unsupported
+    var reconciliationResult: ReconciliationResult = ReconciliationResult.Unsupported("execution-1")
 
     override suspend fun preview(input: BusInput, context: ActionContext): ActionPreview {
         previewCount += 1
@@ -643,6 +649,7 @@ internal class BusCountingAction(
         input: BusInput,
         context: ActionContext,
         remoteReference: String?,
+        executionId: String,
     ): ReconciliationResult {
         reconcileCount += 1
         reconcileEntered?.let {
@@ -876,15 +883,19 @@ internal class BusExecutionStore : ActionExecutionStore {
         if (current.reconciliation?.sourceRecordVersion == update.expectedVersion) {
             return ReconciliationUpdateResult.ExistingFinal(current)
         }
-        if (!current.needsReconciliation || current.recordVersion != update.expectedVersion) {
+        if (!current.needsReconciliation ||
+            current.recordVersion != update.expectedVersion ||
+            current.reconciliationClaim?.claimToken != update.claimToken
+        ) {
             return ReconciliationUpdateResult.Conflict(
                 ActionError(ActionErrorCode.EXECUTION_CONFLICT, "reconciliation conflict"),
             )
         }
-        val state = update.result.stateForStore()
+        val state = update.result?.stateForStore() ?: ActionExecutionState.SUCCEEDED
         val updated = current.copy(
             state = state,
             result = update.result,
+            successFact = update.successFact,
             completedAt = update.completedAt,
             updatedAt = update.completedAt,
             recordVersion = current.recordVersion + 1,
@@ -892,6 +903,7 @@ internal class BusExecutionStore : ActionExecutionStore {
                 sourceRecordVersion = current.recordVersion,
                 reconciledAt = update.completedAt,
             ),
+            reconciliationClaim = null,
         )
         val event = prepareAudit(update.audit) ?: return ReconciliationUpdateResult.Conflict(
             ActionError(ActionErrorCode.EXECUTION_CONFLICT, "audit transaction rolled back"),
@@ -901,23 +913,68 @@ internal class BusExecutionStore : ActionExecutionStore {
         return ReconciliationUpdateResult.Updated(updated)
     }
 
-    override suspend fun appendReconciliationAudit(
-        append: ReconciliationAuditAppend,
-    ): ReconciliationAuditAppendResult {
-        val current = record ?: return ReconciliationAuditAppendResult.Conflict(
+    override suspend fun claimReconciliation(
+        request: com.wzx.huitai.action.port.ReconciliationClaimRequest,
+    ): com.wzx.huitai.action.port.ReconciliationClaimResult {
+        val current = record ?: return com.wzx.huitai.action.port.ReconciliationClaimResult.Conflict(
             ActionError(ActionErrorCode.EXECUTION_CONFLICT, "missing"),
         )
-        if (current.isFinalTerminal) return ReconciliationAuditAppendResult.ExistingFinal(current)
-        if (!current.needsReconciliation || current.recordVersion != append.expectedVersion) {
-            return ReconciliationAuditAppendResult.Conflict(
-                ActionError(ActionErrorCode.EXECUTION_CONFLICT, "reconciliation audit conflict"),
+        if (current.isFinalTerminal) {
+            return com.wzx.huitai.action.port.ReconciliationClaimResult.ExistingFinal(current)
+        }
+        current.reconciliationClaim?.let {
+            return com.wzx.huitai.action.port.ReconciliationClaimResult.ExistingClaim(current)
+        }
+        if (!current.needsReconciliation || current.recordVersion != request.expectedVersion) {
+            return com.wzx.huitai.action.port.ReconciliationClaimResult.Conflict(
+                ActionError(ActionErrorCode.EXECUTION_CONFLICT, "claim conflict"),
             )
         }
-        val event = prepareAudit(append.audit) ?: return ReconciliationAuditAppendResult.Conflict(
-            ActionError(ActionErrorCode.EXECUTION_CONFLICT, "audit transaction rolled back"),
+        val event = prepareAudit(request.audit) ?: return com.wzx.huitai.action.port.ReconciliationClaimResult.Conflict(
+            ActionError(ActionErrorCode.EXECUTION_CONFLICT, "claim audit rolled back"),
         )
+        val claimed = current.copy(
+            updatedAt = request.claimedAt,
+            recordVersion = current.recordVersion + 1,
+            reconciliationClaim = com.wzx.huitai.action.port.ReconciliationClaim(
+                request.claimToken,
+                request.ownerId,
+                request.claimedAt,
+            ),
+        )
+        record = claimed
         commitAudit(event)
-        return ReconciliationAuditAppendResult.Appended(current)
+        return com.wzx.huitai.action.port.ReconciliationClaimResult.Claimed(claimed)
+    }
+
+    override suspend fun releaseReconciliation(
+        request: com.wzx.huitai.action.port.ReconciliationReleaseRequest,
+    ): com.wzx.huitai.action.port.ReconciliationReleaseResult {
+        val current = record ?: return com.wzx.huitai.action.port.ReconciliationReleaseResult.Conflict(
+            ActionError(ActionErrorCode.EXECUTION_CONFLICT, "missing"),
+        )
+        if (current.isFinalTerminal) {
+            return com.wzx.huitai.action.port.ReconciliationReleaseResult.ExistingFinal(current)
+        }
+        if (!current.needsReconciliation ||
+            current.recordVersion != request.expectedVersion ||
+            current.reconciliationClaim?.claimToken != request.claimToken
+        ) {
+            return com.wzx.huitai.action.port.ReconciliationReleaseResult.Conflict(
+                ActionError(ActionErrorCode.EXECUTION_CONFLICT, "release conflict"),
+            )
+        }
+        val event = prepareAudit(request.audit) ?: return com.wzx.huitai.action.port.ReconciliationReleaseResult.Conflict(
+            ActionError(ActionErrorCode.EXECUTION_CONFLICT, "release audit rolled back"),
+        )
+        val released = current.copy(
+            updatedAt = request.releasedAt,
+            recordVersion = current.recordVersion + 1,
+            reconciliationClaim = null,
+        )
+        record = released
+        commitAudit(event)
+        return com.wzx.huitai.action.port.ReconciliationReleaseResult.Released(released)
     }
 }
 

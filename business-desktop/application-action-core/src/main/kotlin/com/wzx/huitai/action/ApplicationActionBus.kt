@@ -22,8 +22,10 @@ import com.wzx.huitai.action.port.ExecutionTransition
 import com.wzx.huitai.action.port.ExecutionTransitionResult
 import com.wzx.huitai.action.port.ExecutionSuccessFact
 import com.wzx.huitai.action.port.ReconciliationExecutionUpdate
-import com.wzx.huitai.action.port.ReconciliationAuditAppend
-import com.wzx.huitai.action.port.ReconciliationAuditAppendResult
+import com.wzx.huitai.action.port.ReconciliationClaimRequest
+import com.wzx.huitai.action.port.ReconciliationClaimResult
+import com.wzx.huitai.action.port.ReconciliationReleaseRequest
+import com.wzx.huitai.action.port.ReconciliationReleaseResult
 import com.wzx.huitai.action.port.ReconciliationUpdateResult
 import com.wzx.huitai.action.port.RiskEvaluation
 import kotlinx.coroutines.CancellationException
@@ -34,6 +36,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.util.UUID
 
 /** 应用动作在 JSON 安全边界上的执行结果。 */
 sealed interface ActionBusResult {
@@ -51,7 +54,23 @@ sealed interface ActionBusResult {
         val executionId: String,
         val terminalState: ActionExecutionState,
         val error: ActionError,
-    ) : ActionBusResult
+        val remoteReference: String? = null,
+    ) : ActionBusResult {
+        override fun toString(): String =
+            "ActionBusResult.OutputEncodingFailed(executionId=$executionId, terminalState=$terminalState, " +
+                "errorCode=${error.code}, remoteReference=[REDACTED])"
+    }
+
+    /** 远程对账确认业务成功，但原动作输出无法恢复。 */
+    data class SuccessWithoutOutput(
+        val executionId: String,
+        val remoteReference: String?,
+        val source: String,
+    ) : ActionBusResult {
+        override fun toString(): String =
+            "ActionBusResult.SuccessWithoutOutput(executionId=$executionId, " +
+                "remoteReference=[REDACTED], source=$source)"
+    }
 }
 
 private sealed interface PreviewAttempt {
@@ -121,8 +140,9 @@ class ApplicationActionBus internal constructor(
     private val clock: ActionClock,
     private val contextValidator: ActionExecutionContextValidator,
     private val actionInvoker: RegisteredActionInvoker,
+    lockScope: ActionExecutionLockScope = StripedActionExecutionLockScope(),
 ) {
-    private val executionCoordinator = ActionExecutionCoordinator(executionStore, clock)
+    private val executionCoordinator = ActionExecutionCoordinator(executionStore, clock, lockScope)
 
     /** 生产装配使用的公开构造，只启用直接动作调用实现。 */
     constructor(
@@ -142,6 +162,7 @@ class ApplicationActionBus internal constructor(
         clock,
         contextValidator,
         DirectRegisteredActionInvoker,
+        StripedActionExecutionLockScope(),
     )
     init {
         check(registry.isFrozen) { "动作注册表必须在创建 Bus 前冻结" }
@@ -236,39 +257,49 @@ class ApplicationActionBus internal constructor(
         stored: ActionResult.OutcomeUnknown,
         context: ActionContext,
     ): ActionBusResult {
-        when (val attempt = appendReconciliationAudit(unknown, "reconciliation_attempt")) {
-            is ReconciliationAuditAppendResult.Appended -> Unit
-            is ReconciliationAuditAppendResult.ExistingFinal -> return existingTerminal(attempt.record)
-            is ReconciliationAuditAppendResult.Conflict -> return ActionBusResult.Rejected(attempt.error)
+        val claimed = when (val claim = claimReconciliation(unknown)) {
+            is ReconciliationClaimResult.Claimed -> claim.record
+            is ReconciliationClaimResult.ExistingClaim -> return ActionBusResult.InProgress(
+                claim.record.command.executionId,
+                ActionExecutionState.OUTCOME_UNKNOWN,
+            )
+            is ReconciliationClaimResult.ExistingFinal -> return existingTerminal(claim.record)
+            is ReconciliationClaimResult.Conflict -> return ActionBusResult.Rejected(claim.error)
         }
         val registered = when (val resolution = registry.resolve(unknown.command.actionId)) {
             is ActionResolution.Found -> resolution.action
-            is ActionResolution.NotFound -> return ActionBusResult.Rejected(resolution.error)
+            is ActionResolution.NotFound -> return releaseReconciliation(
+                claimed,
+                "action_not_found",
+                ActionBusResult.Rejected(resolution.error),
+            )
+        }
+        contextValidator.validate(registered.descriptor, claimed.command, context)?.let { error ->
+            return releaseReconciliation(
+                claimed,
+                "context_invalid",
+                ActionBusResult.Rejected(error),
+            )
         }
         val invocation = try {
             actionInvoker.reconcile(
                 registered,
-                unknown.command.input,
+                claimed.command.input,
                 context,
                 stored.remoteReference,
-                unknown.command.executionId,
+                claimed.command.executionId,
             )
         } catch (cancellation: CancellationException) {
-            appendReconciliationResultBestEffort(unknown, "canceled")
+            releaseReconciliationBestEffort(claimed, "canceled")
             throw cancellation
         } catch (_: Exception) {
-            when (val result = appendReconciliationAudit(unknown, "reconciliation_result", "error")) {
-                is ReconciliationAuditAppendResult.Conflict -> return ActionBusResult.Rejected(result.error)
-                is ReconciliationAuditAppendResult.ExistingFinal -> return existingTerminal(result.record)
-                is ReconciliationAuditAppendResult.Appended -> Unit
-            }
-            return existingTerminal(unknown)
+            return releaseReconciliation(claimed, "error", existingTerminal(unknown))
         }
         val reconciled = when (invocation) {
             is ActionInvocationResult.Reconciled -> {
-                if (invocation.executionId != unknown.command.executionId) {
+                if (invocation.executionId != claimed.command.executionId) {
                     return reconciliationDiagnostic(
-                        unknown,
+                        claimed,
                         outcome = "protocol_error",
                         result = protocolError("对账结果 executionId 不匹配"),
                     )
@@ -276,62 +307,66 @@ class ApplicationActionBus internal constructor(
                 invocation.result
             }
             is ActionInvocationResult.Failure -> return reconciliationDiagnostic(
-                unknown,
+                claimed,
                 outcome = "validation_error",
                 result = existingTerminal(unknown),
             )
             else -> return reconciliationDiagnostic(
-                unknown,
+                claimed,
                 outcome = "protocol_error",
                 result = protocolError("对账返回了非法结果类型"),
             )
         }
-        val result: ActionResult<JsonElement> = when (reconciled) {
-            is ReconciliationResult.Succeeded -> ActionResult.Success(
-                executionId = unknown.command.executionId,
-                output = emptyPayload(),
-                remoteReference = reconciled.remoteReference ?: stored.remoteReference,
-            )
-            is ReconciliationResult.Failed -> ActionResult.Failure(
-                executionId = unknown.command.executionId,
-                error = reconciled.error,
-                remoteReference = stored.remoteReference,
-            )
-            ReconciliationResult.Unsupported,
-            ReconciliationResult.Pending,
-            ReconciliationResult.NotFound,
+        val result: ActionResult<JsonElement>?
+        val successFact: ExecutionSuccessFact?
+        when (reconciled) {
+            is ReconciliationResult.Succeeded -> {
+                result = null
+                successFact = ExecutionSuccessFact(
+                    kind = ExecutionSuccessFact.RECONCILED_REMOTE_SUCCESS,
+                    remoteReference = reconciled.remoteReference ?: stored.remoteReference,
+                    errorCode = null,
+                    safeMessage = null,
+                    source = ExecutionSuccessFact.SOURCE_RECONCILIATION,
+                )
+            }
+            is ReconciliationResult.Failed -> {
+                result = ActionResult.Failure(
+                    executionId = claimed.command.executionId,
+                    error = reconciled.error,
+                    remoteReference = stored.remoteReference,
+                )
+                successFact = null
+            }
+            is ReconciliationResult.Unsupported,
+            is ReconciliationResult.Pending,
+            is ReconciliationResult.NotFound,
             is ReconciliationResult.Error,
             -> {
                 val outcome = when (reconciled) {
-                    ReconciliationResult.Unsupported -> "unsupported"
-                    ReconciliationResult.Pending -> "pending"
-                    ReconciliationResult.NotFound -> "not_found"
+                    is ReconciliationResult.Unsupported -> "unsupported"
+                    is ReconciliationResult.Pending -> "pending"
+                    is ReconciliationResult.NotFound -> "not_found"
                     is ReconciliationResult.Error -> "error"
                     is ReconciliationResult.Succeeded,
                     is ReconciliationResult.Failed,
                     -> error("确认结果已在前置分支处理")
                 }
-                return when (val appended = appendReconciliationAudit(
-                    unknown,
-                    "reconciliation_result",
-                    outcome,
-                )) {
-                    is ReconciliationAuditAppendResult.Appended -> existingTerminal(unknown)
-                    is ReconciliationAuditAppendResult.ExistingFinal -> existingTerminal(appended.record)
-                    is ReconciliationAuditAppendResult.Conflict -> ActionBusResult.Rejected(appended.error)
-                }
+                return releaseReconciliation(claimed, outcome, existingTerminal(unknown))
             }
         }
         val completedAt = clock.now()
-        val terminalState = result.terminalState() ?: return protocolError("对账结果不是最终态")
+        val terminalState = result?.terminalState() ?: ActionExecutionState.SUCCEEDED
         val update = try {
             ReconciliationExecutionUpdate(
-                executionId = unknown.command.executionId,
-                expectedVersion = unknown.recordVersion,
+                executionId = claimed.command.executionId,
+                expectedVersion = claimed.recordVersion,
+                claimToken = claimed.reconciliationClaim!!.claimToken,
                 result = result,
+                successFact = successFact,
                 completedAt = completedAt,
                 audit = auditDraft(
-                    executionId = unknown.command.executionId,
+                    executionId = claimed.command.executionId,
                     fromState = ActionExecutionState.OUTCOME_UNKNOWN,
                     toState = terminalState,
                     type = "reconciliation_result",
@@ -350,39 +385,38 @@ class ApplicationActionBus internal constructor(
         }
     }
 
-    /** 同版本未知记录上的审计追加由 store 原子校验，payload 只含稳定枚举。 */
-    private suspend fun appendReconciliationAudit(
-        unknown: ActionExecutionRecord,
-        type: String,
-        outcome: String? = null,
-    ): ReconciliationAuditAppendResult {
+    /** 原子取得跨进程唯一 claim，并将 attempt 审计和版本更新一起持久化。 */
+    private suspend fun claimReconciliation(unknown: ActionExecutionRecord): ReconciliationClaimResult {
         val now = clock.now()
-        return executionStore.appendReconciliationAudit(
-            ReconciliationAuditAppend(
+        return executionStore.claimReconciliation(
+            ReconciliationClaimRequest(
                 executionId = unknown.command.executionId,
                 expectedVersion = unknown.recordVersion,
+                claimToken = UUID.randomUUID().toString(),
+                ownerId = "desktop-process",
+                claimedAt = now,
                 audit = auditDraft(
-                    executionId = unknown.command.executionId,
-                    fromState = ActionExecutionState.OUTCOME_UNKNOWN,
-                    toState = ActionExecutionState.OUTCOME_UNKNOWN,
-                    type = type,
-                    payload = buildJsonObject { outcome?.let { put("outcome", it) } },
-                    actorId = null,
-                    occurredAt = now,
+                    unknown.command.executionId,
+                    ActionExecutionState.OUTCOME_UNKNOWN,
+                    ActionExecutionState.OUTCOME_UNKNOWN,
+                    "reconciliation_attempt",
+                    emptyPayload(),
+                    null,
+                    now,
                 ),
             ),
         )
     }
 
     /** 真实取消以取消本身为主异常，审计故障不能覆盖取消语义。 */
-    private suspend fun appendReconciliationResultBestEffort(
-        unknown: ActionExecutionRecord,
+    private suspend fun releaseReconciliationBestEffort(
+        claimed: ActionExecutionRecord,
         outcome: String,
     ) {
         try {
             withContext(NonCancellable) {
                 withTimeout(CANCELLATION_HANDOFF_TIMEOUT_MILLIS) {
-                    appendReconciliationAudit(unknown, "reconciliation_result", outcome)
+                    releaseReconciliation(claimed, outcome, existingTerminal(claimed))
                 }
             }
         } catch (_: Throwable) {
@@ -392,17 +426,41 @@ class ApplicationActionBus internal constructor(
 
     /** 在返回本地诊断前补齐对应的结果审计，审计冲突必须显式暴露。 */
     private suspend fun reconciliationDiagnostic(
-        unknown: ActionExecutionRecord,
+        claimed: ActionExecutionRecord,
         outcome: String,
         result: ActionBusResult,
-    ): ActionBusResult = when (val appended = appendReconciliationAudit(
-        unknown,
-        "reconciliation_result",
-        outcome,
-    )) {
-        is ReconciliationAuditAppendResult.Appended -> result
-        is ReconciliationAuditAppendResult.ExistingFinal -> existingTerminal(appended.record)
-        is ReconciliationAuditAppendResult.Conflict -> ActionBusResult.Rejected(appended.error)
+    ): ActionBusResult = releaseReconciliation(claimed, outcome, result)
+
+    /** 原子释放未收束 claim，并在同事务提交 result 审计。 */
+    private suspend fun releaseReconciliation(
+        claimed: ActionExecutionRecord,
+        outcome: String,
+        result: ActionBusResult,
+    ): ActionBusResult {
+        val now = clock.now()
+        val token = claimed.reconciliationClaim?.claimToken
+            ?: return conflict("对账 claim 缺失")
+        return when (val released = executionStore.releaseReconciliation(
+            ReconciliationReleaseRequest(
+                executionId = claimed.command.executionId,
+                expectedVersion = claimed.recordVersion,
+                claimToken = token,
+                releasedAt = now,
+                audit = auditDraft(
+                    claimed.command.executionId,
+                    ActionExecutionState.OUTCOME_UNKNOWN,
+                    ActionExecutionState.OUTCOME_UNKNOWN,
+                    "reconciliation_result",
+                    buildJsonObject { put("outcome", outcome) },
+                    null,
+                    now,
+                ),
+            ),
+        )) {
+            is ReconciliationReleaseResult.Released -> result
+            is ReconciliationReleaseResult.ExistingFinal -> existingTerminal(released.record)
+            is ReconciliationReleaseResult.Conflict -> ActionBusResult.Rejected(released.error)
+        }
     }
 
     private suspend fun executeReversible(
@@ -756,6 +814,9 @@ class ApplicationActionBus internal constructor(
         val fact = ExecutionSuccessFact(
             kind = ExecutionSuccessFact.OUTPUT_ENCODING_FAILED,
             remoteReference = invocation.remoteReference,
+            errorCode = invocation.error.code,
+            safeMessage = invocation.error.message,
+            source = ExecutionSuccessFact.SOURCE_OUTPUT_ENCODING,
         )
         val completedAt = clock.now()
         return when (val updated = executionStore.transition(
@@ -778,11 +839,7 @@ class ApplicationActionBus internal constructor(
                 ),
             ),
         )) {
-            is ExecutionTransitionResult.Updated -> ActionBusResult.OutputEncodingFailed(
-                invocation.executionId,
-                invocation.terminalState,
-                invocation.error,
-            )
+            is ExecutionTransitionResult.Updated -> existingTerminal(updated.record)
             is ExecutionTransitionResult.ExistingTerminal -> existingTerminal(updated.record)
             is ExecutionTransitionResult.Conflict -> ActionBusResult.Rejected(updated.error)
         }
@@ -945,10 +1002,22 @@ private fun auditDraft(
 
 private fun existingTerminal(record: ActionExecutionRecord): ActionBusResult = when {
     record.result != null -> ActionBusResult.Completed(record.result)
-    record.successFact != null -> ActionBusResult.OutputEncodingFailed(
+    record.successFact?.kind == ExecutionSuccessFact.OUTPUT_ENCODING_FAILED -> {
+        val fact = record.successFact
+        ActionBusResult.OutputEncodingFailed(
+            executionId = record.command.executionId,
+            terminalState = record.state,
+            error = ActionError(
+                fact.errorCode ?: ActionErrorCode.PROTOCOL_ERROR,
+                fact.safeMessage ?: "动作输出不可用",
+            ),
+            remoteReference = fact.remoteReference,
+        )
+    }
+    record.successFact?.kind == ExecutionSuccessFact.RECONCILED_REMOTE_SUCCESS -> ActionBusResult.SuccessWithoutOutput(
         executionId = record.command.executionId,
-        terminalState = record.state,
-        error = ActionError(ActionErrorCode.PROTOCOL_ERROR, "动作输出不可用"),
+        remoteReference = record.successFact.remoteReference,
+        source = record.successFact.source,
     )
     else -> conflict("终态记录缺少事实")
 }

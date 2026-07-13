@@ -74,7 +74,8 @@ class RegisteredAction<I : Any, O : Any>(
         remoteReference: String?,
         executionId: String,
     ): ActionInvocationResult = invokeWithDecodedInput(input) { decoded ->
-        ActionInvocationResult.Reconciled(executionId, action.reconcile(decoded, context, remoteReference))
+        val result = action.reconcile(decoded, context, remoteReference, executionId)
+        ActionInvocationResult.Reconciled(result.executionId, result)
     }
 
     private fun decode(input: JsonObject): ActionInputDecodeResult<I> = try {

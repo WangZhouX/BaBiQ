@@ -22,25 +22,35 @@ class ActionReconciliationTest {
     @Test
     fun `远程查询确认成功后原子收束且第二次只重放最终事实`() = runTest {
         val fixture = reconciliationFixture(ReconciliationPolicy.QUERY_REMOTE)
-        fixture.action.reconciliationResult = ReconciliationResult.Succeeded("remote-confirmed")
+        fixture.action.reconciliationResult = ReconciliationResult.Succeeded(
+            remoteReference = "remote-confirmed",
+            executionId = "execution-1",
+        )
 
         val first = fixture.bus.execute(fixture.command(), fixture.context)
         val second = fixture.bus.execute(fixture.command(), fixture.context)
 
-        val success = assertIs<ActionResult.Success<JsonElement>>(assertIs<ActionBusResult.Completed>(first).result)
+        val success = assertIs<ActionBusResult.SuccessWithoutOutput>(first)
         assertEquals("execution-1", success.executionId)
         assertEquals("remote-confirmed", success.remoteReference)
+        assertEquals(com.wzx.huitai.action.port.ExecutionSuccessFact.SOURCE_RECONCILIATION, success.source)
         assertEquals(first, second)
         assertEquals(1, fixture.action.reconcileCount)
         assertEquals(0, fixture.action.executeCount)
         assertEquals(ActionExecutionState.SUCCEEDED, fixture.store.record?.state)
+        assertNull(fixture.store.record?.result)
+        assertEquals(
+            com.wzx.huitai.action.port.ExecutionSuccessFact.RECONCILED_REMOTE_SUCCESS,
+            fixture.store.record?.successFact?.kind,
+        )
+        assertEquals("remote-confirmed", fixture.store.record?.successFact?.remoteReference)
     }
 
     @Test
     fun `远程查询确认失败后精确保存失败结果且不执行动作`() = runTest {
         val fixture = reconciliationFixture(ReconciliationPolicy.QUERY_REMOTE)
         val error = ActionError(ActionErrorCode.REMOTE_REQUEST_FAILED, "远程查询确认失败")
-        fixture.action.reconciliationResult = ReconciliationResult.Failed(error)
+        fixture.action.reconciliationResult = ReconciliationResult.Failed(error, "execution-1")
 
         val result = fixture.bus.execute(fixture.command(), fixture.context)
 
@@ -67,7 +77,7 @@ class ActionReconciliationTest {
     @Test
     fun `无对账策略返回配置错误且不改变存储或审计`() = runTest {
         val fixture = reconciliationFixture(ReconciliationPolicy.NONE)
-        val before = fixture.store.record
+        val before = fixture.store.record!!
 
         val result = fixture.bus.execute(fixture.command(), fixture.context)
 
@@ -81,13 +91,13 @@ class ActionReconciliationTest {
     @Test
     fun `对账不支持时保留结果未知且不盲写失败`() = runTest {
         val fixture = reconciliationFixture(ReconciliationPolicy.QUERY_REMOTE)
-        fixture.action.reconciliationResult = ReconciliationResult.Unsupported
-        val before = fixture.store.record
+        fixture.action.reconciliationResult = ReconciliationResult.Unsupported("execution-1")
+        val before = fixture.store.record!!
 
         val result = fixture.bus.execute(fixture.command(), fixture.context)
 
-        assertEquals(before!!.result, assertIs<ActionBusResult.Completed>(result).result)
-        assertEquals(before, fixture.store.record)
+        assertEquals(before.result, assertIs<ActionBusResult.Completed>(result).result)
+        assertReleasedUnknown(before, fixture.store.record!!)
         assertEquals(1, fixture.action.reconcileCount)
         assertEquals(0, fixture.action.executeCount)
     }
@@ -95,10 +105,11 @@ class ActionReconciliationTest {
     @Test
     fun `待处理未找到和查询错误都保留结果未知`() = runTest {
         val uncertain = listOf(
-            ReconciliationResult.Pending,
-            ReconciliationResult.NotFound,
+            ReconciliationResult.Pending("execution-1"),
+            ReconciliationResult.NotFound("execution-1"),
             ReconciliationResult.Error(
                 ActionError(ActionErrorCode.REMOTE_REQUEST_FAILED, "对账查询失败"),
+                "execution-1",
             ),
         )
 
@@ -110,29 +121,103 @@ class ActionReconciliationTest {
             val result = fixture.bus.execute(fixture.command(), fixture.context)
 
             assertEquals(before!!.result, assertIs<ActionBusResult.Completed>(result).result)
-            assertEquals(before, fixture.store.record)
+            assertReleasedUnknown(before, fixture.store.record!!)
             assertEquals(1, fixture.action.reconcileCount)
             assertEquals(0, fixture.action.executeCount)
         }
     }
 
     @Test
-    fun `对账结果执行标识错配返回协议错误且保留结果未知`() = runTest {
+    fun `真实动作返回错误执行标识时结构化拒绝并释放claim`() = runTest {
         val fixture = reconciliationFixture(ReconciliationPolicy.QUERY_REMOTE)
-        fixture.reconcileExecutionIdOverride = "other-execution"
-        fixture.action.reconciliationResult = ReconciliationResult.Succeeded("remote-confirmed")
-        val before = fixture.store.record
+        fixture.action.reconciliationResult = ReconciliationResult.Succeeded(
+            executionId = "other-execution",
+            remoteReference = "remote-confirmed",
+        )
+        val before = fixture.store.record!!
 
         val result = fixture.bus.execute(fixture.command(), fixture.context)
 
         assertEquals(ActionErrorCode.PROTOCOL_ERROR, assertIs<ActionBusResult.Rejected>(result).error.code)
-        assertEquals(before, fixture.store.record)
+        assertReleasedUnknown(before, fixture.store.record!!)
         assertEquals(1, fixture.action.reconcileCount)
         assertEquals(0, fixture.action.executeCount)
         assertEquals(
             listOf("reconciliation_attempt", "reconciliation_result"),
             fixture.audit.events.map { it.type },
         )
+    }
+
+    @Test
+    fun `冻结上下文任一维度变化都在远程查询前释放claim`() = runTest {
+        val fixture = reconciliationFixture(ReconciliationPolicy.QUERY_REMOTE)
+        val contexts = listOf(
+            fixture.context.copy(identityScope = fixture.identity.copy(identityEpoch = 2)),
+            fixture.context.copy(pageId = "page-2"),
+            fixture.context.copy(contextRevision = fixture.context.contextRevision + 1),
+            fixture.context.copy(permissions = emptySet()),
+        )
+        val expectedCodes = listOf(
+            ActionErrorCode.CONTEXT_STALE,
+            ActionErrorCode.CONTEXT_STALE,
+            ActionErrorCode.CONTEXT_STALE,
+            ActionErrorCode.PERMISSION_DENIED,
+        )
+
+        contexts.zip(expectedCodes).forEach { (changedContext, expectedCode) ->
+            val isolated = reconciliationFixture(ReconciliationPolicy.QUERY_REMOTE)
+            val before = isolated.store.record!!
+
+            val result = isolated.bus.execute(isolated.command(), changedContext)
+
+            assertEquals(expectedCode, assertIs<ActionBusResult.Rejected>(result).error.code)
+            assertReleasedUnknown(before, isolated.store.record!!)
+            assertEquals(0, isolated.action.reconcileCount)
+            assertEquals(
+                listOf("reconciliation_attempt", "reconciliation_result"),
+                isolated.audit.events.map { it.type },
+            )
+        }
+    }
+
+    @Test
+    fun `动作注册缺失时成对审计释放claim且允许再次尝试`() = runTest {
+        val fixture = BusFixture(
+            risk = ActionRiskLevel.REVERSIBLE_WRITE,
+            reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
+            registerAction = false,
+        )
+        val unknown: ActionResult<JsonElement> = ActionResult.OutcomeUnknown(
+            executionId = "execution-1",
+            error = ActionError(ActionErrorCode.OUTCOME_UNKNOWN, "远程响应丢失"),
+            remoteReference = "remote-original",
+            reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
+        )
+        fixture.store.installExistingTerminal(fixture.command(), result = unknown)
+        val before = fixture.store.record!!
+
+        val first = fixture.bus.execute(fixture.command(), fixture.context)
+        val afterFirst = fixture.store.record!!
+        val second = fixture.bus.execute(fixture.command(), fixture.context)
+
+        assertEquals(ActionErrorCode.ACTION_NOT_FOUND, assertIs<ActionBusResult.Rejected>(first).error.code)
+        assertEquals(first, second)
+        assertEquals(before.result, afterFirst.result)
+        assertEquals(before.state, afterFirst.state)
+        assertEquals(before.recordVersion + 2, afterFirst.recordVersion)
+        assertNull(afterFirst.reconciliationClaim)
+        assertEquals(before.recordVersion + 4, fixture.store.record?.recordVersion)
+        assertNull(fixture.store.record?.reconciliationClaim)
+        assertEquals(
+            listOf(
+                "reconciliation_attempt",
+                "reconciliation_result",
+                "reconciliation_attempt",
+                "reconciliation_result",
+            ),
+            fixture.audit.events.map { it.type },
+        )
+        assertEquals(0, fixture.action.reconcileCount)
     }
 
     @Test
@@ -149,12 +234,12 @@ class ActionReconciliationTest {
                 reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
             ),
         )
-        val before = fixture.store.record
+        val before = fixture.store.record!!
 
         val result = fixture.bus.execute(fixture.command(), fixture.context)
 
-        assertEquals(before!!.result, assertIs<ActionBusResult.Completed>(result).result)
-        assertEquals(before, fixture.store.record)
+        assertEquals(before.result, assertIs<ActionBusResult.Completed>(result).result)
+        assertReleasedUnknown(before, fixture.store.record!!)
         assertEquals(
             listOf("reconciliation_attempt", "reconciliation_result"),
             fixture.audit.events.map { it.type },
@@ -180,12 +265,12 @@ class ActionReconciliationTest {
                 reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
             ),
         )
-        val before = fixture.store.record
+        val before = fixture.store.record!!
 
         val result = fixture.bus.execute(fixture.command(), fixture.context)
 
         assertEquals(ActionErrorCode.PROTOCOL_ERROR, assertIs<ActionBusResult.Rejected>(result).error.code)
-        assertEquals(before, fixture.store.record)
+        assertReleasedUnknown(before, fixture.store.record!!)
         assertEquals(
             listOf("reconciliation_attempt", "reconciliation_result"),
             fixture.audit.events.map { it.type },
@@ -197,7 +282,10 @@ class ActionReconciliationTest {
         val fixture = reconciliationFixture(ReconciliationPolicy.QUERY_REMOTE)
         fixture.action.reconcileEntered = CompletableDeferred()
         fixture.action.reconcileRelease = CompletableDeferred()
-        fixture.action.reconciliationResult = ReconciliationResult.Succeeded("remote-confirmed")
+        fixture.action.reconciliationResult = ReconciliationResult.Succeeded(
+            remoteReference = "remote-confirmed",
+            executionId = "execution-1",
+        )
 
         val owner = async { fixture.bus.execute(fixture.command(), fixture.context) }
         fixture.action.reconcileEntered!!.await()
@@ -213,15 +301,49 @@ class ActionReconciliationTest {
     }
 
     @Test
+    fun `两个隔离进程锁域共享存储时持久claim只允许一个远程对账`() = runTest {
+        val first = BusFixture(
+            risk = ActionRiskLevel.REVERSIBLE_WRITE,
+            reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
+            lockScope = StripedActionExecutionLockScope(4),
+        )
+        val second = BusFixture(
+            risk = ActionRiskLevel.REVERSIBLE_WRITE,
+            reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
+            lockScope = StripedActionExecutionLockScope(4),
+            store = first.store,
+            audit = first.audit,
+        )
+        val unknown: ActionResult<JsonElement> = ActionResult.OutcomeUnknown(
+            executionId = "execution-1",
+            error = ActionError(ActionErrorCode.OUTCOME_UNKNOWN, "远程响应丢失"),
+            reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
+        )
+        first.store.installExistingTerminal(first.command(), result = unknown)
+        first.action.reconcileEntered = CompletableDeferred()
+        first.action.reconcileRelease = CompletableDeferred()
+        first.action.reconciliationResult = ReconciliationResult.Pending("execution-1")
+
+        val owner = async { first.bus.execute(first.command(), first.context) }
+        first.action.reconcileEntered!!.await()
+        val duplicate = second.bus.execute(second.command(), second.context)
+
+        assertIs<ActionBusResult.InProgress>(duplicate)
+        assertEquals(1, first.action.reconcileCount + second.action.reconcileCount)
+        first.action.reconcileRelease!!.complete(Unit)
+        owner.await()
+    }
+
+    @Test
     fun `对账普通异常保留结果未知且不追加审计`() = runTest {
         val fixture = reconciliationFixture(ReconciliationPolicy.QUERY_REMOTE)
         fixture.action.reconcileFailure = IllegalStateException("secret-reconcile")
-        val before = fixture.store.record
+        val before = fixture.store.record!!
 
         val result = fixture.bus.execute(fixture.command(), fixture.context)
 
-        assertEquals(before!!.result, assertIs<ActionBusResult.Completed>(result).result)
-        assertEquals(before, fixture.store.record)
+        assertEquals(before.result, assertIs<ActionBusResult.Completed>(result).result)
+        assertReleasedUnknown(before, fixture.store.record!!)
         assertEquals(
             listOf("reconciliation_attempt", "reconciliation_result"),
             fixture.audit.events.map { it.type },
@@ -241,14 +363,14 @@ class ActionReconciliationTest {
     fun `对账真实取消传播原取消且保留结果未知`() = runTest {
         val fixture = reconciliationFixture(ReconciliationPolicy.QUERY_REMOTE)
         fixture.action.reconcileFailure = CancellationException("cancel-reconciliation")
-        val before = fixture.store.record
+        val before = fixture.store.record!!
 
         val thrown = assertFailsWith<CancellationException> {
             fixture.bus.execute(fixture.command(), fixture.context)
         }
 
         assertEquals("cancel-reconciliation", thrown.message)
-        assertEquals(before, fixture.store.record)
+        assertReleasedUnknown(before, fixture.store.record!!)
         assertEquals(
             listOf("reconciliation_attempt", "reconciliation_result"),
             fixture.audit.events.map { it.type },
@@ -260,7 +382,10 @@ class ActionReconciliationTest {
     @Test
     fun `对账结果审计插入失败时仅保留已提交尝试且状态版本来源不变`() = runTest {
         val fixture = reconciliationFixture(ReconciliationPolicy.QUERY_REMOTE)
-        fixture.action.reconciliationResult = ReconciliationResult.Succeeded("remote-confirmed")
+        fixture.action.reconciliationResult = ReconciliationResult.Succeeded(
+            remoteReference = "remote-confirmed",
+            executionId = "execution-1",
+        )
         fixture.audit.failOnState = ActionExecutionState.SUCCEEDED
         val before = fixture.store.record
         val sequenceBefore = fixture.store.nextAuditSequence
@@ -268,8 +393,11 @@ class ActionReconciliationTest {
         val result = fixture.bus.execute(fixture.command(), fixture.context)
 
         assertEquals(ActionErrorCode.EXECUTION_CONFLICT, assertIs<ActionBusResult.Rejected>(result).error.code)
-        assertEquals(before, fixture.store.record)
-        assertNull(fixture.store.record?.reconciliation)
+        val claimed = fixture.store.record!!
+        assertEquals(before!!.result, claimed.result)
+        assertEquals(before.recordVersion + 1, claimed.recordVersion)
+        kotlin.test.assertNotNull(claimed.reconciliationClaim)
+        assertNull(claimed.reconciliation)
         assertEquals(listOf("reconciliation_attempt"), fixture.audit.events.map { it.type })
         assertEquals(sequenceBefore + 1, fixture.store.nextAuditSequence)
     }
@@ -277,14 +405,20 @@ class ActionReconciliationTest {
     @Test
     fun `成功对账只追加独立脱敏事件并记录精确来源`() = runTest {
         val fixture = reconciliationFixture(ReconciliationPolicy.QUERY_REMOTE)
-        fixture.action.reconciliationResult = ReconciliationResult.Succeeded("secret-remote-confirmed")
+        fixture.action.reconciliationResult = ReconciliationResult.Succeeded(
+            remoteReference = "secret-remote-confirmed",
+            executionId = "execution-1",
+        )
         val sourceVersion = fixture.store.record!!.recordVersion
 
         val result = fixture.bus.execute(fixture.command(), fixture.context)
 
-        assertIs<ActionBusResult.Completed>(result)
+        val success = assertIs<ActionBusResult.SuccessWithoutOutput>(result)
+        assertEquals("execution-1", success.executionId)
+        assertEquals("secret-remote-confirmed", success.remoteReference)
+        assertEquals(com.wzx.huitai.action.port.ExecutionSuccessFact.SOURCE_RECONCILIATION, success.source)
         val record = fixture.store.record!!
-        assertEquals(sourceVersion, record.reconciliation?.sourceRecordVersion)
+        assertEquals(sourceVersion + 1, record.reconciliation?.sourceRecordVersion)
         assertEquals(record.completedAt, record.reconciliation?.reconciledAt)
         assertEquals(2, fixture.audit.events.size)
         assertEquals(
@@ -307,13 +441,13 @@ class ActionReconciliationTest {
     @Test
     fun `未确认结果追加尝试和结果审计但保持版本与来源不变`() = runTest {
         val fixture = reconciliationFixture(ReconciliationPolicy.QUERY_REMOTE)
-        fixture.action.reconciliationResult = ReconciliationResult.Pending
+        fixture.action.reconciliationResult = ReconciliationResult.Pending("execution-1")
         val before = fixture.store.record
 
         val result = fixture.bus.execute(fixture.command(), fixture.context)
 
         assertEquals(before!!.result, assertIs<ActionBusResult.Completed>(result).result)
-        assertEquals(before, fixture.store.record)
+        assertReleasedUnknown(before, fixture.store.record!!)
         assertNull(fixture.store.record?.reconciliation)
         assertEquals(
             listOf("reconciliation_attempt", "reconciliation_result"),
@@ -335,5 +469,16 @@ class ActionReconciliationTest {
         )
         fixture.store.installExistingTerminal(fixture.command(), result = unknown)
         return fixture
+    }
+
+    private fun assertReleasedUnknown(
+        before: com.wzx.huitai.action.port.ActionExecutionRecord,
+        after: com.wzx.huitai.action.port.ActionExecutionRecord,
+    ) {
+        assertEquals(before.state, after.state)
+        assertEquals(before.result, after.result)
+        assertEquals(before.recordVersion + 2, after.recordVersion)
+        assertNull(after.reconciliationClaim)
+        assertNull(after.reconciliation)
     }
 }
