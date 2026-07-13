@@ -9,9 +9,19 @@ sealed interface ActionResolution {
     data class NotFound(val error: ActionError) : ActionResolution
 }
 
-/** 按动作标识和版本维护强类型注册项。 */
+/**
+ * 按动作标识和版本维护强类型注册项。
+ *
+ * composition root 必须先完成全部注册，再调用 [freeze]，之后才能把注册表共享给并发执行路径。
+ * freeze 前的 [resolve] 仅用于启动期串行装配和校验，不提供并发安全保证。
+ */
 class ActionRegistry {
     private val actions = linkedMapOf<ActionKey, RegisteredAction<*, *>>()
+    @Volatile
+    private var frozenSnapshot: Map<ActionKey, RegisteredAction<*, *>>? = null
+
+    val isFrozen: Boolean
+        get() = frozenSnapshot != null
 
     /**
      * 注册一个动作；相同标识和版本重复时在启动阶段立即失败。
@@ -20,8 +30,16 @@ class ActionRegistry {
      */
     fun register(action: RegisteredAction<*, *>) {
         val key = ActionKey(action.descriptor.id, action.descriptor.version)
+        check(!isFrozen) { "动作注册表已冻结，不能继续注册: ${key.actionId}@${key.version}" }
         check(key !in actions) { "动作重复注册: ${key.actionId}@${key.version}" }
         actions[key] = action
+    }
+
+    /** 发布不可变查找快照；重复冻结保持同一快照。 */
+    fun freeze() {
+        if (frozenSnapshot == null) {
+            frozenSnapshot = actions.toMap()
+        }
     }
 
     /**
@@ -31,13 +49,14 @@ class ActionRegistry {
      * @param version 可选精确版本。
      */
     fun resolve(actionId: String, version: Int? = null): ActionResolution {
+        val lookup = frozenSnapshot ?: actions
         val action = if (version == null) {
-            actions.asSequence()
+            lookup.asSequence()
                 .filter { (key, _) -> key.actionId == actionId }
                 .maxByOrNull { (key, _) -> key.version }
                 ?.value
         } else {
-            actions[ActionKey(actionId, version)]
+            lookup[ActionKey(actionId, version)]
         }
         return action?.let(ActionResolution::Found) ?: ActionResolution.NotFound(
             ActionError(ActionErrorCode.ACTION_NOT_FOUND, "动作不存在: $actionId"),

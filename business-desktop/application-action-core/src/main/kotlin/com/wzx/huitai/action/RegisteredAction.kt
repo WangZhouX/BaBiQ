@@ -3,10 +3,12 @@ package com.wzx.huitai.action
 import com.wzx.huitai.action.model.ActionDescriptor
 import com.wzx.huitai.action.model.ActionError
 import com.wzx.huitai.action.model.ActionErrorCode
+import com.wzx.huitai.action.model.ActionExecutionState
 import com.wzx.huitai.action.model.ActionPreview
 import com.wzx.huitai.action.model.ActionResult
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.coroutines.CancellationException
 
 /** JSON 边界上的动作调用结果。 */
 sealed interface ActionInvocationResult {
@@ -14,6 +16,21 @@ sealed interface ActionInvocationResult {
     data class Executed(val result: ActionResult<JsonElement>) : ActionInvocationResult
     data class Reconciled(val result: ReconciliationResult) : ActionInvocationResult
     data class Failure(val error: ActionError) : ActionInvocationResult
+
+    /**
+     * 业务动作已成功，但成功结果无法编码到 JSON 展示边界。
+     *
+     * Bus 必须保留 [terminalState] 对应的成功终态，单独记录协议/展示编码错误，绝不能重试 execute。
+     */
+    data class OutputEncodingFailed(
+        val executionId: String,
+        val terminalState: ActionExecutionState,
+        val error: ActionError,
+    ) : ActionInvocationResult {
+        override fun toString(): String =
+            "ActionInvocationResult.OutputEncodingFailed(executionId=$executionId, " +
+                "terminalState=$terminalState, errorCode=${error.code})"
+    }
 }
 
 /**
@@ -56,21 +73,35 @@ class RegisteredAction<I : Any, O : Any>(
 
     private fun decode(input: JsonObject): ActionInputDecodeResult<I> = try {
         inputCodec.decode(input)
+    } catch (cancellation: CancellationException) {
+        throw cancellation
     } catch (_: Exception) {
         ActionInputDecodeResult.Failure(
             ActionError(ActionErrorCode.VALIDATION_FAILED, "动作输入解析失败"),
         )
     }
 
-    private fun encodeExecutionResult(result: ActionResult<O>): ActionInvocationResult = try {
-        ActionInvocationResult.Executed(
-            when (result) {
-                is ActionResult.Success -> ActionResult.Success(
+    private fun encodeExecutionResult(result: ActionResult<O>): ActionInvocationResult = when (result) {
+        is ActionResult.Success -> try {
+            ActionInvocationResult.Executed(
+                ActionResult.Success(
                     executionId = result.executionId,
                     output = outputCodec.encode(result.output),
                     redactedOutput = result.redactedOutput?.let(outputCodec::encode),
                     remoteReference = result.remoteReference,
-                )
+                ),
+            )
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            ActionInvocationResult.OutputEncodingFailed(
+                executionId = result.executionId,
+                terminalState = ActionExecutionState.SUCCEEDED,
+                error = ActionError(ActionErrorCode.PROTOCOL_ERROR, "动作输出编码失败"),
+            )
+        }
+        else -> ActionInvocationResult.Executed(
+            when (result) {
                 is ActionResult.Preview -> ActionResult.Preview(result.preview)
                 is ActionResult.ApprovalRequired -> ActionResult.ApprovalRequired(
                     executionId = result.executionId,
@@ -92,11 +123,8 @@ class RegisteredAction<I : Any, O : Any>(
                     remoteReference = result.remoteReference,
                     reconciliationPolicy = result.reconciliationPolicy,
                 )
+                is ActionResult.Success -> error("成功结果已在前置分支处理")
             },
-        )
-    } catch (_: Exception) {
-        ActionInvocationResult.Failure(
-            ActionError(ActionErrorCode.PROTOCOL_ERROR, "动作输出编码失败"),
         )
     }
 

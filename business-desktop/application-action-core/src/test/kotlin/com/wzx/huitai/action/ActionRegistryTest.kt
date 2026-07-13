@@ -3,6 +3,7 @@ package com.wzx.huitai.action
 import com.wzx.huitai.action.model.ActionDescriptor
 import com.wzx.huitai.action.model.ActionError
 import com.wzx.huitai.action.model.ActionErrorCode
+import com.wzx.huitai.action.model.ActionExecutionState
 import com.wzx.huitai.action.model.ActionIdentityScope
 import com.wzx.huitai.action.model.ActionPreview
 import com.wzx.huitai.action.model.ActionReplayPolicy
@@ -11,6 +12,7 @@ import com.wzx.huitai.action.model.ActionRiskLevel
 import com.wzx.huitai.action.model.ActionTarget
 import com.wzx.huitai.action.model.ReconciliationPolicy
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -51,6 +53,28 @@ class ActionRegistryTest {
         assertSame(version3, assertIs<ActionResolution.Found>(registry.resolve("demo.action")).action)
         assertSame(version2, assertIs<ActionResolution.Found>(registry.resolve("demo.action", 2)).action)
         assertSame(version1, assertIs<ActionResolution.Found>(registry.resolve("demo.action", 1)).action)
+    }
+
+    @Test
+    fun `freeze publishes an immutable lookup snapshot and rejects later registration`() {
+        val version1 = registeredAction("demo.frozen", 1)
+        val version2 = registeredAction("demo.frozen", 2)
+        val registry = ActionRegistry().apply {
+            register(version1)
+            register(version2)
+        }
+
+        registry.freeze()
+
+        assertEquals(true, registry.isFrozen)
+        assertSame(version2, assertIs<ActionResolution.Found>(registry.resolve("demo.frozen")).action)
+        assertSame(version1, assertIs<ActionResolution.Found>(registry.resolve("demo.frozen", 1)).action)
+        val error = assertFailsWith<IllegalStateException> {
+            registry.register(registeredAction("demo.late", 1))
+        }
+        assertEquals("动作注册表已冻结，不能继续注册: demo.late@1", error.message)
+        registry.freeze()
+        assertSame(version2, assertIs<ActionResolution.Found>(registry.resolve("demo.frozen")).action)
     }
 
     @Test
@@ -137,7 +161,7 @@ class ActionRegistryTest {
     }
 
     @Test
-    fun `output codec exceptions become redacted protocol failure without reexecuting action`() = runTest {
+    fun `output codec exceptions preserve succeeded terminal and report redacted encoding failure`() = runTest {
         val action = CountingAction(descriptor("demo.throwing-output", 1))
         val registered = RegisteredAction(
             action,
@@ -147,10 +171,42 @@ class ActionRegistryTest {
 
         val invocation = registered.invokeExecute(buildJsonObject { put("value", 7) }, context())
 
-        val failure = assertIs<ActionInvocationResult.Failure>(invocation)
+        val failure = assertIs<ActionInvocationResult.OutputEncodingFailed>(invocation)
+        assertEquals("execution-7", failure.executionId)
+        assertEquals(ActionExecutionState.SUCCEEDED, failure.terminalState)
         assertEquals(ActionErrorCode.PROTOCOL_ERROR, failure.error.code)
         assertFalse("secret-output-codec-exception" in failure.toString())
         assertFalse("secret-output" in failure.toString())
+        assertEquals(1, action.executeCount)
+    }
+
+    @Test
+    fun `input codec cancellation propagates without invoking action`() = runTest {
+        val action = CountingAction(descriptor("demo.input-cancel", 1))
+        val registered = RegisteredAction(
+            action,
+            ActionInputCodec { throw CancellationException("secret-input-cancel") },
+            DemoOutputCodec(),
+        )
+
+        assertFailsWith<CancellationException> {
+            registered.invokeExecute(buildJsonObject { put("value", 7) }, context())
+        }
+        assertEquals(0, action.executeCount)
+    }
+
+    @Test
+    fun `output codec cancellation propagates after action succeeds`() = runTest {
+        val action = CountingAction(descriptor("demo.output-cancel", 1))
+        val registered = RegisteredAction(
+            action,
+            DemoInputCodec(),
+            ActionOutputCodec<DemoOutput> { throw CancellationException("secret-output-cancel") },
+        )
+
+        assertFailsWith<CancellationException> {
+            registered.invokeExecute(buildJsonObject { put("value", 7) }, context())
+        }
         assertEquals(1, action.executeCount)
     }
 
