@@ -15,6 +15,8 @@ class ActionExecutionContextValidator {
     ): ActionError? = when {
         command.actionId != descriptor.id ->
             ActionError(ActionErrorCode.PROTOCOL_ERROR, "命令动作标识与描述符不一致")
+        command.actionVersion != descriptor.version ->
+            ActionError(ActionErrorCode.PROTOCOL_ERROR, "命令动作版本与描述符不一致")
         command.pageId != context.pageId ->
             ActionError(ActionErrorCode.CONTEXT_STALE, "命令页面已变化")
         command.contextRevision != context.contextRevision ->

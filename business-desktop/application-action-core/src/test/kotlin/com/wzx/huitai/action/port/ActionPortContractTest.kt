@@ -143,7 +143,12 @@ class ActionPortContractTest {
 
         val conflict = assertIs<ExecutionCreateResult.Conflict>(
             store.compareAndCreate(
-                running.copy(fingerprint = ExecutionFingerprint("other.action", "other-fingerprint")),
+                running.copy(
+                    binding = running.binding.copy(
+                        actionId = "other.action",
+                        inputFingerprint = "other-fingerprint",
+                    ),
+                ),
                 auditDraft(),
             ),
         )
@@ -185,7 +190,7 @@ class ActionPortContractTest {
         )
         assertEquals(updated.record, repeated.record)
         assertFalse("secret-input" in updated.record.toString())
-        assertFalse("fingerprint-1" in running.fingerprint.toString())
+        assertFalse("fingerprint-1" in running.binding.toString())
     }
 
     @Test
@@ -940,6 +945,7 @@ class ActionPortContractTest {
     private fun command() = ActionCommand(
         executionId = "execution-1",
         actionId = "demo.action",
+        actionVersion = 1,
         input = buildJsonObject { put("token", "secret-input") },
         origin = ActionOrigin.AGENT,
         identityScope = identity(),
@@ -980,7 +986,7 @@ class ActionPortContractTest {
 
     private fun runningRecord(command: ActionCommand) = ActionExecutionRecord(
         command = command,
-        fingerprint = ExecutionFingerprint(command.actionId, "fingerprint-1"),
+        binding = binding(command),
         state = ActionExecutionState.EXECUTING,
         result = null,
         createdAt = NOW,
@@ -988,6 +994,16 @@ class ActionPortContractTest {
         completedAt = null,
         updatedAt = NOW.plusSeconds(1),
         recordVersion = 1,
+    )
+
+    private fun binding(command: ActionCommand) = ExecutionBinding(
+        actionId = command.actionId,
+        actionVersion = command.actionVersion,
+        inputFingerprint = "fingerprint-1",
+        origin = command.origin,
+        identityScope = command.identityScope,
+        pageId = command.pageId,
+        contextRevision = command.contextRevision,
     )
 
     private fun auditDraft(
@@ -1008,7 +1024,7 @@ class ActionPortContractTest {
         result: ActionResult<JsonElement>,
     ) = ActionExecutionRecord(
         command = command(),
-        fingerprint = ExecutionFingerprint("demo.action", "fingerprint-1"),
+        binding = binding(command()),
         state = state,
         result = result,
         createdAt = NOW,
@@ -1094,11 +1110,11 @@ class ActionPortContractTest {
                 appendAudit(audit)
                 return ExecutionCreateResult.Created(record)
             }
-            if (existing.fingerprint != record.fingerprint) {
+            if (existing.binding != record.binding) {
                 return ExecutionCreateResult.Conflict(
                     com.wzx.huitai.action.model.ActionError(
                         ActionErrorCode.EXECUTION_CONFLICT,
-                        "execution fingerprint conflict",
+                        "execution binding conflict",
                     ),
                 )
             }

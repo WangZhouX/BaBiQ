@@ -44,6 +44,7 @@ data class ActionIdentityScope(
  *
  * @param executionId 本地与远程共用的幂等执行标识。
  * @param actionId 目标动作标识。
+ * @param actionVersion 创建命令时冻结的动作版本。
  * @param input JSON 动作输入。
  * @param origin 动作发起来源。
  * @param identityScope 创建命令时冻结的身份范围。
@@ -54,14 +55,19 @@ data class ActionIdentityScope(
 data class ActionCommand(
     val executionId: String,
     val actionId: String,
+    val actionVersion: Int,
     val input: JsonObject,
     val origin: ActionOrigin,
     val identityScope: ActionIdentityScope,
     val pageId: String,
     val contextRevision: Long,
 ) {
+    init {
+        require(actionVersion > 0) { "动作版本必须为正整数" }
+    }
+
     /** 日志中保留动作定位信息，隐藏身份和值载荷。 */
     override fun toString(): String =
-        "ActionCommand(executionId=$executionId, actionId=$actionId, origin=$origin, " +
+        "ActionCommand(executionId=$executionId, actionId=$actionId, actionVersion=$actionVersion, origin=$origin, " +
             "pageId=$pageId, contextRevision=$contextRevision, input=[REDACTED], identityScope=[REDACTED])"
 }

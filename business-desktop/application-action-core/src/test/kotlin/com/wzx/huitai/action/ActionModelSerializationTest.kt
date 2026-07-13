@@ -25,6 +25,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class ActionModelSerializationTest {
@@ -51,6 +52,7 @@ class ActionModelSerializationTest {
         val command = ActionCommand(
             executionId = "execution-1",
             actionId = descriptor.id,
+            actionVersion = descriptor.version,
             input = buildJsonObject { put("confirmed", true) },
             origin = ActionOrigin.AGENT,
             identityScope = ActionIdentityScope(
@@ -68,6 +70,8 @@ class ActionModelSerializationTest {
 
         assertRoundTrip(ActionDescriptor.serializer(), descriptor)
         assertRoundTrip(ActionCommand.serializer(), command)
+        assertTrue("\"actionVersion\":2" in json.encodeToString(ActionCommand.serializer(), command))
+        assertFailsWith<IllegalArgumentException> { command.copy(actionVersion = 0) }
     }
 
     @Test

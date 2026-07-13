@@ -3,31 +3,45 @@ package com.wzx.huitai.action.port
 import com.wzx.huitai.action.model.ActionCommand
 import com.wzx.huitai.action.model.ActionError
 import com.wzx.huitai.action.model.ActionExecutionState
+import com.wzx.huitai.action.model.ActionIdentityScope
+import com.wzx.huitai.action.model.ActionOrigin
 import com.wzx.huitai.action.model.ActionResult
 import kotlinx.serialization.json.JsonElement
 import java.time.Duration
 import java.time.Instant
 
 /**
- * 用于识别同一 execution 是否仍是同一动作输入。
+ * 用于识别同一 execution 是否仍绑定同一动作、输入、来源、身份和页面上下文。
  *
  * @param actionId 动作标识。
+ * @param actionVersion 创建命令时冻结的动作版本。
  * @param inputFingerprint 已脱敏的稳定输入摘要。
+ * @param origin 动作发起来源。
+ * @param identityScope 创建命令时冻结的完整身份范围。
+ * @param pageId 创建命令时的页面标识。
+ * @param contextRevision 创建命令时的上下文版本。
  */
-data class ExecutionFingerprint(
+data class ExecutionBinding(
     val actionId: String,
+    val actionVersion: Int,
     val inputFingerprint: String,
+    val origin: ActionOrigin,
+    val identityScope: ActionIdentityScope,
+    val pageId: String,
+    val contextRevision: Long,
 ) {
-    /** 日志只保留动作标识，隐藏输入摘要。 */
+    /** 日志只保留非敏感定位元数据，隐藏输入摘要和完整身份。 */
     override fun toString(): String =
-        "ExecutionFingerprint(actionId=$actionId, inputFingerprint=[REDACTED])"
+        "ExecutionBinding(actionId=$actionId, actionVersion=$actionVersion, origin=$origin, " +
+            "pageId=$pageId, contextRevision=$contextRevision, inputFingerprint=[REDACTED], " +
+            "identityScope=[REDACTED])"
 }
 
 /**
  * 动作执行的精确持久化记录。
  *
  * @param command 创建执行时冻结的命令。
- * @param fingerprint 动作和输入指纹。
+ * @param binding execution 的完整冻结绑定。
  * @param state 当前执行状态。
  * @param result JSON 安全的精确终态结果。
  * @param createdAt 记录创建时间。
@@ -41,7 +55,7 @@ data class ExecutionFingerprint(
  */
 data class ActionExecutionRecord(
     val command: ActionCommand,
-    val fingerprint: ExecutionFingerprint,
+    val binding: ExecutionBinding,
     val state: ActionExecutionState,
     val result: ActionResult<JsonElement>?,
     val createdAt: Instant,
@@ -104,7 +118,7 @@ data class ActionExecutionRecord(
     /** 日志保留执行状态和版本，隐藏命令、指纹与结果。 */
     override fun toString(): String =
         "ActionExecutionRecord(executionId=${command.executionId}, actionId=${command.actionId}, " +
-            "state=$state, recordVersion=$recordVersion, command=[REDACTED], fingerprint=[REDACTED], " +
+            "state=$state, recordVersion=$recordVersion, command=[REDACTED], binding=[REDACTED], " +
             "result=[REDACTED], reconciliationClaim=[REDACTED])"
 
     private companion object {

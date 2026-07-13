@@ -4,11 +4,12 @@ import com.wzx.huitai.action.model.ActionCommand
 import com.wzx.huitai.action.model.ActionError
 import com.wzx.huitai.action.model.ActionErrorCode
 import com.wzx.huitai.action.model.ActionExecutionState
+import com.wzx.huitai.action.model.ActionOrigin
 import com.wzx.huitai.action.model.ActionResult
 import com.wzx.huitai.action.model.ActionRiskLevel
 import com.wzx.huitai.action.model.ReconciliationPolicy
 import com.wzx.huitai.action.port.ActionExecutionRecord
-import com.wzx.huitai.action.port.ExecutionFingerprint
+import com.wzx.huitai.action.port.ExecutionBinding
 import com.wzx.huitai.action.port.ExecutionSuccessFact
 import com.wzx.huitai.action.port.ActionAuditDraft
 import com.wzx.huitai.action.port.ActionClock
@@ -115,7 +116,15 @@ class ActionIdempotencyTest {
 
     @Test
     fun `相同执行标识但动作不同优先返回执行冲突`() = runTest {
-        val fixture = BusFixture(ActionRiskLevel.READ_ONLY)
+        val otherAction = BusCountingAction(
+            busDescriptor(ActionRiskLevel.READ_ONLY).copy(id = "other.action"),
+        )
+        val fixture = BusFixture(
+            risk = ActionRiskLevel.READ_ONLY,
+            additionalRegisteredActions = listOf(
+                RegisteredAction(otherAction, BusInputCodec(), BusOutputCodec()),
+            ),
+        )
         fixture.store.record = runningRecord(fixture.command(), ActionExecutionState.VALIDATING)
         val conflicting = fixture.command().copy(actionId = "other.action")
 
@@ -148,6 +157,83 @@ class ActionIdempotencyTest {
 
         assertIs<ActionBusResult.InProgress>(result)
         assertEquals(0, fixture.action.executeCount)
+    }
+
+    @Test
+    fun `已有执行完整绑定任一维度变化都在结果重放和对账前冲突`() = runTest {
+        val states = listOf("running", "terminal", "unknown")
+
+        states.forEach { storedState ->
+            val version2Action = BusCountingAction(
+                busDescriptor(ActionRiskLevel.READ_ONLY, version = 2),
+            )
+            val fixture = BusFixture(
+                risk = ActionRiskLevel.READ_ONLY,
+                additionalRegisteredActions = listOf(
+                    RegisteredAction(version2Action, BusInputCodec(), BusOutputCodec()),
+                ),
+            )
+            val base = fixture.command()
+            when (storedState) {
+                "running" -> fixture.store.record = runningRecord(base, ActionExecutionState.VALIDATING)
+                "terminal" -> fixture.store.installExistingTerminal(
+                    base,
+                    result = ActionResult.Success(
+                        executionId = base.executionId,
+                        output = buildJsonObject { put("secretResult", true) },
+                        remoteReference = "secret-remote",
+                    ),
+                )
+                "unknown" -> fixture.store.installExistingTerminal(
+                    base,
+                    result = ActionResult.OutcomeUnknown(
+                        executionId = base.executionId,
+                        error = ActionError(ActionErrorCode.OUTCOME_UNKNOWN, "远程结果未知"),
+                        remoteReference = "secret-remote",
+                        reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
+                    ),
+                )
+            }
+            val before = fixture.store.record
+            fun identityCase(
+                transform: (com.wzx.huitai.action.model.ActionIdentityScope) ->
+                    com.wzx.huitai.action.model.ActionIdentityScope,
+            ): Pair<ActionCommand, ActionContext> {
+                val changed = transform(base.identityScope)
+                return base.copy(identityScope = changed) to fixture.context.copy(identityScope = changed)
+            }
+            val cases = listOf(
+                "desktopInstance" to identityCase { it.copy(desktopInstanceId = "other-desktop") },
+                "desktopSession" to identityCase { it.copy(desktopSessionId = "other-session") },
+                "authSession" to identityCase { it.copy(authSessionId = "other-auth") },
+                "identityEpoch" to identityCase { it.copy(identityEpoch = it.identityEpoch + 1) },
+                "user" to identityCase { it.copy(userId = "other-user") },
+                "tenant" to identityCase { it.copy(tenantId = "other-tenant") },
+                "platform" to identityCase { it.copy(platformId = "other-platform") },
+                "page" to (base.copy(pageId = "other-page") to fixture.context.copy(pageId = "other-page")),
+                "revision" to (
+                    base.copy(contextRevision = base.contextRevision + 1) to
+                        fixture.context.copy(contextRevision = fixture.context.contextRevision + 1)
+                ),
+                "origin" to (base.copy(origin = ActionOrigin.AGENT) to fixture.context),
+                "version" to (base.copy(actionVersion = 2) to fixture.context),
+            )
+
+            cases.forEach { (dimension, incoming) ->
+                val (command, context) = incoming
+                val result = fixture.bus.execute(command, context)
+
+                assertEquals(
+                    ActionErrorCode.EXECUTION_CONFLICT,
+                    assertIs<ActionBusResult.Rejected>(result, "$storedState/$dimension").error.code,
+                )
+                assertEquals(before, fixture.store.record, "$storedState/$dimension")
+                assertEquals(emptyList(), fixture.audit.events, "$storedState/$dimension")
+                assertEquals(0, fixture.action.executeCount, "$storedState/$dimension")
+                assertEquals(0, fixture.action.reconcileCount, "$storedState/$dimension")
+                assertEquals(0, version2Action.reconcileCount, "$storedState/$dimension")
+            }
+        }
     }
 
     @Test
@@ -248,7 +334,15 @@ class ActionIdempotencyTest {
         state: ActionExecutionState,
     ): ActionExecutionRecord = ActionExecutionRecord(
         command = command,
-        fingerprint = ExecutionFingerprint(command.actionId, command.inputFingerprint()),
+        binding = ExecutionBinding(
+            actionId = command.actionId,
+            actionVersion = command.actionVersion,
+            inputFingerprint = command.inputFingerprint(),
+            origin = command.origin,
+            identityScope = command.identityScope,
+            pageId = command.pageId,
+            contextRevision = command.contextRevision,
+        ),
         state = state,
         result = null,
         createdAt = NOW,
@@ -259,7 +353,7 @@ class ActionIdempotencyTest {
 
     private fun ActionCommand.inputFingerprint(): String {
         val digest = MessageDigest.getInstance("SHA-256")
-            .digest("$actionId\n${input.canonicalJson()}".toByteArray(StandardCharsets.UTF_8))
+            .digest(input.canonicalJson().toByteArray(StandardCharsets.UTF_8))
         return digest.joinToString("") { "%02x".format(it) }
     }
 
@@ -296,8 +390,8 @@ class ActionIdempotencyTest {
                     createdAudits += 1
                     ExecutionCreateResult.Created(record)
                 }
-                existing.fingerprint != record.fingerprint -> ExecutionCreateResult.Conflict(
-                    ActionError(ActionErrorCode.EXECUTION_CONFLICT, "fingerprint conflict"),
+                existing.binding != record.binding -> ExecutionCreateResult.Conflict(
+                    ActionError(ActionErrorCode.EXECUTION_CONFLICT, "binding conflict"),
                 )
                 existing.isTerminal -> ExecutionCreateResult.ExistingTerminal(existing)
                 else -> ExecutionCreateResult.ExistingRunning(existing)

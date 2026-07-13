@@ -79,7 +79,10 @@ interface ApplicationAction<I : Any, O : Any> {
     /** 执行已通过风险流程的动作。 */
     suspend fun execute(input: I, context: ActionContext): ActionResult<O>
 
-    /** 对结果不确定的远程动作执行查询或对账。 */
+    /**
+     * 对结果不确定的远程动作执行查询或对账。
+     * 实现必须遵守 suspend 的合作式取消契约，避免硬超时后仍继续占用远程并发或产生迟到结果。
+     */
     suspend fun reconcile(
         input: I,
         context: ActionContext,

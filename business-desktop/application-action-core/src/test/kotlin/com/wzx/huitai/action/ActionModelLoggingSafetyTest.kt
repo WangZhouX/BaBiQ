@@ -32,6 +32,7 @@ class ActionModelLoggingSafetyTest {
         val command = ActionCommand(
             executionId = "execution-safe",
             actionId = "action-safe",
+            actionVersion = 1,
             input = secretJson,
             origin = ActionOrigin.AGENT,
             identityScope = identity,

@@ -17,12 +17,24 @@ import kotlinx.serialization.json.put
 import java.time.Duration
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ActionReconciliationTest {
+    @Test
+    fun `远程对账硬超时严格早于claim租约并保留安全余量`() {
+        assertEquals(Duration.ofSeconds(30), ReconciliationTimingPolicy.RECONCILIATION_TIMEOUT)
+        assertEquals(Duration.ofSeconds(60), ReconciliationTimingPolicy.CLAIM_LEASE)
+        assertTrue(ReconciliationTimingPolicy.RECONCILIATION_TIMEOUT < ReconciliationTimingPolicy.CLAIM_LEASE)
+        assertTrue(
+            ReconciliationTimingPolicy.CLAIM_LEASE.minus(ReconciliationTimingPolicy.RECONCILIATION_TIMEOUT) >=
+                Duration.ofSeconds(10),
+        )
+    }
+
     @Test
     fun `远程查询确认成功后原子收束且第二次只重放最终事实`() = runTest {
         val fixture = reconciliationFixture(ReconciliationPolicy.QUERY_REMOTE)
@@ -153,7 +165,7 @@ class ActionReconciliationTest {
     }
 
     @Test
-    fun `冻结上下文任一维度变化都在远程查询前释放claim`() = runTest {
+    fun `当前上下文任一维度变化都在begin和claim前拒绝`() = runTest {
         val fixture = reconciliationFixture(ReconciliationPolicy.QUERY_REMOTE)
         val contexts = listOf(
             fixture.context.copy(identityScope = fixture.identity.copy(identityEpoch = 2)),
@@ -175,17 +187,14 @@ class ActionReconciliationTest {
             val result = isolated.bus.execute(isolated.command(), changedContext)
 
             assertEquals(expectedCode, assertIs<ActionBusResult.Rejected>(result).error.code)
-            assertReleasedUnknown(before, isolated.store.record!!)
+            assertEquals(before, isolated.store.record)
             assertEquals(0, isolated.action.reconcileCount)
-            assertEquals(
-                listOf("reconciliation_attempt", "reconciliation_result"),
-                isolated.audit.events.map { it.type },
-            )
+            assertEquals(emptyList(), isolated.audit.events)
         }
     }
 
     @Test
-    fun `动作注册缺失时成对审计释放claim且允许再次尝试`() = runTest {
+    fun `动作注册缺失时在begin和claim前拒绝且允许再次检查`() = runTest {
         val fixture = BusFixture(
             risk = ActionRiskLevel.REVERSIBLE_WRITE,
             reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
@@ -201,27 +210,82 @@ class ActionReconciliationTest {
         val before = fixture.store.record!!
 
         val first = fixture.bus.execute(fixture.command(), fixture.context)
-        val afterFirst = fixture.store.record!!
         val second = fixture.bus.execute(fixture.command(), fixture.context)
 
         assertEquals(ActionErrorCode.ACTION_NOT_FOUND, assertIs<ActionBusResult.Rejected>(first).error.code)
         assertEquals(first, second)
-        assertEquals(before.result, afterFirst.result)
-        assertEquals(before.state, afterFirst.state)
-        assertEquals(before.recordVersion + 2, afterFirst.recordVersion)
-        assertNull(afterFirst.reconciliationClaim)
-        assertEquals(before.recordVersion + 4, fixture.store.record?.recordVersion)
+        assertEquals(before, fixture.store.record)
         assertNull(fixture.store.record?.reconciliationClaim)
-        assertEquals(
-            listOf(
-                "reconciliation_attempt",
-                "reconciliation_result",
-                "reconciliation_attempt",
-                "reconciliation_result",
-            ),
-            fixture.audit.events.map { it.type },
-        )
+        assertEquals(emptyList(), fixture.audit.events)
         assertEquals(0, fixture.action.reconcileCount)
+    }
+
+    @Test
+    fun `v1结果未知只调用冻结的v1对账而不选择更高版本`() = runTest {
+        val version2Action = BusCountingAction(
+            busDescriptor(
+                risk = ActionRiskLevel.REVERSIBLE_WRITE,
+                reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
+                version = 2,
+            ),
+        )
+        val fixture = BusFixture(
+            risk = ActionRiskLevel.REVERSIBLE_WRITE,
+            reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
+            additionalRegisteredActions = listOf(
+                RegisteredAction(version2Action, BusInputCodec(), BusOutputCodec()),
+            ),
+        )
+        val unknown: ActionResult<JsonElement> = ActionResult.OutcomeUnknown(
+            executionId = "execution-1",
+            error = ActionError(ActionErrorCode.OUTCOME_UNKNOWN, "远程响应丢失"),
+            reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
+        )
+        fixture.store.installExistingTerminal(fixture.command(), result = unknown)
+        fixture.action.reconciliationResult = ReconciliationResult.Pending("execution-1")
+        version2Action.reconciliationResult = ReconciliationResult.Failed(
+            ActionError(ActionErrorCode.REMOTE_REQUEST_FAILED, "不应调用v2"),
+            "execution-1",
+        )
+
+        fixture.bus.execute(fixture.command(), fixture.context)
+
+        assertEquals(1, fixture.action.reconcileCount)
+        assertEquals(0, version2Action.reconcileCount)
+    }
+
+    @Test
+    fun `v1已移除时不回退v2且不claim未知记录`() = runTest {
+        val version2Action = BusCountingAction(
+            busDescriptor(
+                risk = ActionRiskLevel.REVERSIBLE_WRITE,
+                reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
+                version = 2,
+            ),
+        )
+        val fixture = BusFixture(
+            risk = ActionRiskLevel.REVERSIBLE_WRITE,
+            reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
+            registerAction = false,
+            additionalRegisteredActions = listOf(
+                RegisteredAction(version2Action, BusInputCodec(), BusOutputCodec()),
+            ),
+        )
+        val unknown: ActionResult<JsonElement> = ActionResult.OutcomeUnknown(
+            executionId = "execution-1",
+            error = ActionError(ActionErrorCode.OUTCOME_UNKNOWN, "远程响应丢失"),
+            reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
+        )
+        fixture.store.installExistingTerminal(fixture.command(), result = unknown)
+        val before = fixture.store.record
+
+        val result = fixture.bus.execute(fixture.command(), fixture.context)
+
+        assertEquals(ActionErrorCode.ACTION_NOT_FOUND, assertIs<ActionBusResult.Rejected>(result).error.code)
+        assertEquals(before, fixture.store.record)
+        assertEquals(emptyList(), fixture.audit.events)
+        assertEquals(0, fixture.action.reconcileCount)
+        assertEquals(0, version2Action.reconcileCount)
     }
 
     @Test
@@ -282,7 +346,7 @@ class ActionReconciliationTest {
     }
 
     @Test
-    fun `并发结果对账最多调用远程一次且第二调用返回最终事实`() = runTest {
+    fun `并发结果对账最多调用远程一次且第二调用观察持久claim`() = runTest {
         val fixture = reconciliationFixture(ReconciliationPolicy.QUERY_REMOTE)
         fixture.action.reconcileEntered = CompletableDeferred()
         fixture.action.reconcileRelease = CompletableDeferred()
@@ -295,11 +359,11 @@ class ActionReconciliationTest {
         fixture.action.reconcileEntered!!.await()
         val duplicate = async { fixture.bus.execute(fixture.command(), fixture.context) }
         yield()
+        val duplicateResult = duplicate.await()
+        assertIs<ActionBusResult.InProgress>(duplicateResult)
         fixture.action.reconcileRelease!!.complete(Unit)
 
-        val ownerResult = owner.await()
-        val duplicateResult = duplicate.await()
-        assertEquals(ownerResult, duplicateResult)
+        assertIs<ActionBusResult.SuccessWithoutOutput>(owner.await())
         assertEquals(1, fixture.action.reconcileCount)
         assertEquals(0, fixture.action.executeCount)
     }
@@ -336,6 +400,151 @@ class ActionReconciliationTest {
         assertEquals(1, first.action.reconcileCount + second.action.reconcileCount)
         first.action.reconcileRelease!!.complete(Unit)
         owner.await()
+    }
+
+    @Test
+    fun `同一stripe不同execution在A远程阻塞时B仍可完成`() = runTest {
+        val sharedScope = StripedActionExecutionLockScope(1)
+        val first = BusFixture(
+            risk = ActionRiskLevel.REVERSIBLE_WRITE,
+            reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
+            lockScope = sharedScope,
+        )
+        val unknown: ActionResult<JsonElement> = ActionResult.OutcomeUnknown(
+            executionId = "execution-1",
+            error = ActionError(ActionErrorCode.OUTCOME_UNKNOWN, "远程响应丢失"),
+            reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
+        )
+        first.store.installExistingTerminal(first.command(), result = unknown)
+        first.action.reconcileEntered = CompletableDeferred()
+        first.action.reconcileRelease = CompletableDeferred()
+        first.action.reconciliationResult = ReconciliationResult.Pending("execution-1")
+
+        val owner = async { first.bus.execute(first.command(), first.context) }
+        first.action.reconcileEntered!!.await()
+
+        val second = BusFixture(
+            risk = ActionRiskLevel.READ_ONLY,
+            lockScope = sharedScope,
+        )
+        second.action.result = ActionResult.Success(
+            executionId = "execution-2",
+            output = BusOutput(2),
+        )
+        val independent = async {
+            second.bus.execute(second.command(executionId = "execution-2"), second.context)
+        }
+        yield()
+
+        assertTrue(independent.isCompleted, "不同 execution 不应被同 stripe 的远程 I/O 阻塞")
+        assertIs<ActionBusResult.Completed>(independent.await())
+        assertEquals(1, second.action.executeCount)
+
+        first.action.reconcileRelease!!.complete(Unit)
+        owner.await()
+    }
+
+    @Test
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun `远程对账超时先释放claim再允许第二Bus重试且不并发`() = runTest {
+        val sharedClock = BusClock()
+        val first = BusFixture(
+            risk = ActionRiskLevel.REVERSIBLE_WRITE,
+            reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
+            lockScope = StripedActionExecutionLockScope(4),
+            clock = sharedClock,
+        )
+        val second = BusFixture(
+            risk = ActionRiskLevel.REVERSIBLE_WRITE,
+            reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
+            lockScope = StripedActionExecutionLockScope(4),
+            store = first.store,
+            audit = first.audit,
+            clock = sharedClock,
+        )
+        val unknown: ActionResult<JsonElement> = ActionResult.OutcomeUnknown(
+            executionId = "execution-1",
+            error = ActionError(ActionErrorCode.OUTCOME_UNKNOWN, "远程响应丢失"),
+            remoteReference = "remote-original",
+            reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
+        )
+        first.store.installExistingTerminal(first.command(), result = unknown)
+        first.action.reconcileEntered = CompletableDeferred()
+        first.action.reconcileRelease = CompletableDeferred()
+
+        val owner = async { first.bus.execute(first.command(), first.context) }
+        first.action.reconcileEntered!!.await()
+        val claimed = first.store.record!!
+
+        testScheduler.advanceTimeBy(ReconciliationTimingPolicy.RECONCILIATION_TIMEOUT.toMillis() - 1)
+        testScheduler.runCurrent()
+        assertFalse(owner.isCompleted)
+        assertIs<ActionBusResult.InProgress>(second.bus.execute(second.command(), second.context))
+        assertEquals(0, second.action.reconcileCount)
+
+        testScheduler.advanceTimeBy(1)
+        testScheduler.runCurrent()
+
+        assertTrue(owner.isCompleted, "硬超时到达后 owner 必须先结束并释放 claim")
+        assertEquals(unknown, assertIs<ActionBusResult.Completed>(owner.await()).result)
+        assertEquals(0, first.action.activeReconcileCount)
+        assertEquals(1, first.action.maximumActiveReconcileCount)
+        assertNull(first.store.record?.reconciliationClaim)
+        assertEquals(
+            listOf("reconciliation_attempt", "reconciliation_result"),
+            first.audit.events.map { it.type },
+        )
+
+        sharedClock.advanceTo(claimed.reconciliationClaim!!.expiresAt)
+        second.action.reconciliationResult = ReconciliationResult.Pending("execution-1")
+        val retried = second.bus.execute(second.command(), second.context)
+
+        assertIs<ActionBusResult.Completed>(retried)
+        assertEquals(1, second.action.reconcileCount)
+        assertEquals(0, first.action.activeReconcileCount)
+        assertEquals(0, second.action.activeReconcileCount)
+        assertEquals(1, second.action.maximumActiveReconcileCount)
+    }
+
+    @Test
+    fun `claim owner由冻结桌面实例和session派生且日志不泄露`() = runTest {
+        suspend fun claimedOwner(sessionId: String): Pair<String, String> {
+            val identity = busIdentity(
+                desktopInstanceId = "secret-desktop-instance",
+                desktopSessionId = sessionId,
+            )
+            val fixture = BusFixture(
+                risk = ActionRiskLevel.REVERSIBLE_WRITE,
+                reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
+                identity = identity,
+            )
+            val unknown: ActionResult<JsonElement> = ActionResult.OutcomeUnknown(
+                executionId = "execution-1",
+                error = ActionError(ActionErrorCode.OUTCOME_UNKNOWN, "远程响应丢失"),
+                reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
+            )
+            fixture.store.installExistingTerminal(fixture.command(), result = unknown)
+            fixture.action.reconcileEntered = CompletableDeferred()
+            fixture.action.reconcileRelease = CompletableDeferred()
+
+            val owner = async { fixture.bus.execute(fixture.command(), fixture.context) }
+            fixture.action.reconcileEntered!!.await()
+            val claim = fixture.store.record!!.reconciliationClaim!!
+            owner.cancel()
+
+            assertFalse(claim.ownerId.contains(identity.desktopInstanceId))
+            assertFalse(claim.ownerId.contains(identity.desktopSessionId))
+            assertFalse(claim.toString().contains(identity.desktopInstanceId))
+            assertFalse(claim.toString().contains(identity.desktopSessionId))
+            return claim.ownerId to claim.toString()
+        }
+
+        val first = claimedOwner("secret-session-a")
+        val second = claimedOwner("secret-session-b")
+
+        assertTrue(first.first != second.first)
+        assertFalse(first.second.contains("secret-session"))
+        assertFalse(second.second.contains("secret-session"))
     }
 
     @Test

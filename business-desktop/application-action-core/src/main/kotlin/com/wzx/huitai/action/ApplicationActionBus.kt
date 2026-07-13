@@ -17,7 +17,6 @@ import com.wzx.huitai.action.port.ActionRiskPolicy
 import com.wzx.huitai.action.port.ApprovalDecision
 import com.wzx.huitai.action.port.ConfirmationDecision
 import com.wzx.huitai.action.port.ExecutionCreateResult
-import com.wzx.huitai.action.port.ExecutionFingerprint
 import com.wzx.huitai.action.port.ExecutionTransition
 import com.wzx.huitai.action.port.ExecutionTransitionResult
 import com.wzx.huitai.action.port.ExecutionSuccessFact
@@ -30,14 +29,30 @@ import com.wzx.huitai.action.port.ReconciliationUpdateResult
 import com.wzx.huitai.action.port.RiskEvaluation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.time.Duration
 import java.util.UUID
+
+/** 远程对账硬超时必须严格早于持久 claim 租约，避免 owner 仍运行时被其他进程接管。 */
+internal object ReconciliationTimingPolicy {
+    val RECONCILIATION_TIMEOUT: Duration = Duration.ofSeconds(30)
+    val CLAIM_LEASE: Duration = Duration.ofSeconds(60)
+
+    init {
+        require(RECONCILIATION_TIMEOUT < CLAIM_LEASE) { "远程对账超时必须早于 claim 租约" }
+        require(CLAIM_LEASE.minus(RECONCILIATION_TIMEOUT) >= Duration.ofSeconds(10)) {
+            "远程对账超时与 claim 租约之间必须保留安全余量"
+        }
+    }
+}
 
 /** 应用动作在 JSON 安全边界上的执行结果。 */
 sealed interface ActionBusResult {
@@ -171,6 +186,13 @@ class ApplicationActionBus internal constructor(
 
     /** 解析、校验并按有效风险执行一个动作命令。 */
     suspend fun execute(command: ActionCommand, context: ActionContext): ActionBusResult {
+        val registered = when (val resolution = registry.resolve(command.actionId, command.actionVersion)) {
+            is ActionResolution.Found -> resolution.action
+            is ActionResolution.NotFound -> return ActionBusResult.Rejected(resolution.error)
+        }
+        contextValidator.validate(registered.descriptor, command, context)?.let {
+            return ActionBusResult.Rejected(it)
+        }
         val validating = when (val start = executionCoordinator.begin(command)) {
             is ActionExecutionStart.New -> start.record
             is ActionExecutionStart.ExistingRunning -> return ActionBusResult.InProgress(
@@ -178,15 +200,8 @@ class ApplicationActionBus internal constructor(
                 state = start.record.state,
             )
             is ActionExecutionStart.ExistingTerminal -> return existingTerminal(start.record)
-            is ActionExecutionStart.NeedsReconciliation -> return reconcileSerialized(start.record, context)
+            is ActionExecutionStart.NeedsReconciliation -> return reconcile(start.record, context, registered)
             is ActionExecutionStart.Conflict -> return ActionBusResult.Rejected(start.error)
-        }
-        val registered = when (val resolution = registry.resolve(command.actionId)) {
-            is ActionResolution.Found -> resolution.action
-            is ActionResolution.NotFound -> return persistFailure(validating, resolution.error)
-        }
-        contextValidator.validate(registered.descriptor, command, context)?.let {
-            return persistFailure(validating, it)
         }
         val risk = riskPolicy.evaluate(registered.descriptor, command, context)
         if (risk.baseRisk != registered.descriptor.riskLevel) {
@@ -220,25 +235,11 @@ class ApplicationActionBus internal constructor(
         }
     }
 
-    /** 等待同 execution 的已有对账后重新读取事实，确保远程 reconcile 最多一个在途。 */
-    private suspend fun reconcileSerialized(
-        observed: ActionExecutionRecord,
-        context: ActionContext,
-    ): ActionBusResult = executionCoordinator.serialized(observed.command.executionId) {
-        val current = executionStore.find(observed.command.executionId)
-            ?: return@serialized conflict("对账执行记录不存在")
-        when {
-            current.fingerprint != observed.fingerprint -> conflict("对账执行指纹冲突")
-            current.needsReconciliation -> reconcile(current, context)
-            current.isFinalTerminal -> existingTerminal(current)
-            else -> ActionBusResult.InProgress(current.command.executionId, current.state)
-        }
-    }
-
     /** 按持久化未知结果携带的策略执行一次有界对账。 */
     private suspend fun reconcile(
         unknown: ActionExecutionRecord,
         context: ActionContext,
+        registered: RegisteredAction<*, *>,
     ): ActionBusResult {
         val stored = unknown.result as? ActionResult.OutcomeUnknown
             ?: return protocolError("结果未知记录缺少 OutcomeUnknown 事实")
@@ -249,6 +250,7 @@ class ApplicationActionBus internal constructor(
                 unknown,
                 stored,
                 context,
+                registered,
             )
         }
     }
@@ -257,6 +259,7 @@ class ApplicationActionBus internal constructor(
         unknown: ActionExecutionRecord,
         stored: ActionResult.OutcomeUnknown,
         context: ActionContext,
+        registered: RegisteredAction<*, *>,
     ): ActionBusResult {
         val claimed = when (val claim = claimReconciliation(unknown)) {
             is ReconciliationClaimResult.Claimed -> claim.record
@@ -267,29 +270,20 @@ class ApplicationActionBus internal constructor(
             is ReconciliationClaimResult.ExistingFinal -> return existingTerminal(claim.record)
             is ReconciliationClaimResult.Conflict -> return ActionBusResult.Rejected(claim.error)
         }
-        val registered = when (val resolution = registry.resolve(unknown.command.actionId)) {
-            is ActionResolution.Found -> resolution.action
-            is ActionResolution.NotFound -> return releaseReconciliation(
-                claimed,
-                "action_not_found",
-                ActionBusResult.Rejected(resolution.error),
-            )
-        }
-        contextValidator.validate(registered.descriptor, claimed.command, context)?.let { error ->
-            return releaseReconciliation(
-                claimed,
-                "context_invalid",
-                ActionBusResult.Rejected(error),
-            )
-        }
         val invocation = try {
-            actionInvoker.reconcile(
-                registered,
-                claimed.command.input,
-                context,
-                stored.remoteReference,
-                claimed.command.executionId,
-            )
+            withTimeout(ReconciliationTimingPolicy.RECONCILIATION_TIMEOUT.toMillis()) {
+                actionInvoker.reconcile(
+                    registered,
+                    claimed.command.input,
+                    context,
+                    stored.remoteReference,
+                    claimed.command.executionId,
+                )
+            }
+        } catch (_: TimeoutCancellationException) {
+            return withContext(NonCancellable) {
+                releaseReconciliation(claimed, "timeout", existingTerminal(unknown))
+            }
         } catch (cancellation: CancellationException) {
             releaseReconciliationBestEffort(claimed, "canceled")
             throw cancellation
@@ -387,19 +381,19 @@ class ApplicationActionBus internal constructor(
     }
 
     /** 原子取得跨进程唯一 claim，并将 attempt 审计和版本更新一起持久化。 */
-    private suspend fun claimReconciliation(unknown: ActionExecutionRecord): ReconciliationClaimResult {
-        val now = clock.now()
-        val takeover = unknown.reconciliationClaim?.let { !now.isBefore(it.expiresAt) } == true
-        return executionStore.claimReconciliation(
+    private suspend fun claimReconciliation(unknown: ActionExecutionRecord): ReconciliationClaimResult =
+        executionCoordinator.claimReconciliation(unknown) { current ->
+            val now = clock.now()
+            val takeover = current.reconciliationClaim?.let { !now.isBefore(it.expiresAt) } == true
             ReconciliationClaimRequest(
-                executionId = unknown.command.executionId,
-                expectedVersion = unknown.recordVersion,
+                executionId = current.command.executionId,
+                expectedVersion = current.recordVersion,
                 claimToken = UUID.randomUUID().toString(),
-                ownerId = "desktop-process",
+                ownerId = reconciliationOwnerId(current.command),
                 now = now,
-                leaseDuration = RECONCILIATION_CLAIM_LEASE,
+                leaseDuration = ReconciliationTimingPolicy.CLAIM_LEASE,
                 audit = auditDraft(
-                    unknown.command.executionId,
+                    current.command.executionId,
                     ActionExecutionState.OUTCOME_UNKNOWN,
                     ActionExecutionState.OUTCOME_UNKNOWN,
                     "reconciliation_attempt",
@@ -407,9 +401,8 @@ class ApplicationActionBus internal constructor(
                     null,
                     now,
                 ),
-            ),
-        )
-    }
+            )
+        }
 
     /** 真实取消以取消本身为主异常，审计故障不能覆盖取消语义。 */
     private suspend fun releaseReconciliationBestEffort(
@@ -977,7 +970,6 @@ class ApplicationActionBus internal constructor(
 
     private companion object {
         const val CANCELLATION_HANDOFF_TIMEOUT_MILLIS = 5_000L
-        val RECONCILIATION_CLAIM_LEASE: Duration = Duration.ofSeconds(60)
     }
 }
 
@@ -1027,6 +1019,15 @@ private fun existingTerminal(record: ActionExecutionRecord): ActionBusResult = w
 }
 
 private fun emptyPayload(): JsonObject = buildJsonObject { }
+
+/** 从冻结桌面实例与 session 派生稳定 owner，持久层不保存原始桌面标识。 */
+private fun reconciliationOwnerId(command: ActionCommand): String {
+    val identity = command.identityScope
+    val bytes = MessageDigest.getInstance("SHA-256").digest(
+        "${identity.desktopInstanceId}\n${identity.desktopSessionId}".toByteArray(StandardCharsets.UTF_8),
+    )
+    return "desktop-session:${bytes.joinToString("") { "%02x".format(it) }.take(32)}"
+}
 
 private fun protocolError(message: String): ActionBusResult.Rejected =
     ActionBusResult.Rejected(ActionError(ActionErrorCode.PROTOCOL_ERROR, message))

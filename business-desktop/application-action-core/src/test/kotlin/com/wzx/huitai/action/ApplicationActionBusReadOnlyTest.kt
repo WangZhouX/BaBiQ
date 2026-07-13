@@ -27,7 +27,7 @@ import com.wzx.huitai.action.port.ActionRiskPolicy
 import com.wzx.huitai.action.port.ApprovalDecision
 import com.wzx.huitai.action.port.ConfirmationDecision
 import com.wzx.huitai.action.port.ExecutionCreateResult
-import com.wzx.huitai.action.port.ExecutionFingerprint
+import com.wzx.huitai.action.port.ExecutionBinding
 import com.wzx.huitai.action.port.ExecutionSuccessFact
 import com.wzx.huitai.action.port.ExecutionTransition
 import com.wzx.huitai.action.port.ExecutionTransitionResult
@@ -347,6 +347,9 @@ class ApplicationActionBusReadOnlyTest {
         assertEquals(ActionErrorCode.PROTOCOL_ERROR, validator.validate(
             descriptor.copy(id = "other.action"), command, fixture.context,
         )?.code)
+        assertEquals(ActionErrorCode.PROTOCOL_ERROR, validator.validate(
+            descriptor.copy(version = descriptor.version + 1), command, fixture.context,
+        )?.code)
         assertEquals(ActionErrorCode.CONTEXT_STALE, validator.validate(
             descriptor, command.copy(pageId = "other-page"), fixture.context,
         )?.code)
@@ -362,7 +365,7 @@ class ApplicationActionBusReadOnlyTest {
     }
 
     @Test
-    fun `context rejection is persisted after validating audit before action invocation`() = runTest {
+    fun `context rejection happens before begin audit and action invocation`() = runTest {
         val fixture = BusFixture(ActionRiskLevel.READ_ONLY)
         val stale = fixture.command(ActionOrigin.AGENT).copy(contextRevision = 99)
 
@@ -371,14 +374,8 @@ class ApplicationActionBusReadOnlyTest {
         assertEquals(ActionErrorCode.CONTEXT_STALE, assertIs<ActionBusResult.Rejected>(result).error.code)
         assertEquals(0, fixture.action.previewCount)
         assertEquals(0, fixture.action.executeCount)
-        assertEquals(ActionExecutionState.FAILED, fixture.store.record?.state)
-        assertEquals(
-            listOf(
-                ActionExecutionState.RECEIVED to ActionExecutionState.VALIDATING,
-                ActionExecutionState.VALIDATING to ActionExecutionState.FAILED,
-            ),
-            fixture.audit.events.map { it.fromState to it.toState },
-        )
+        assertNull(fixture.store.record)
+        assertEquals(emptyList(), fixture.audit.events)
     }
 
     @Test
@@ -509,16 +506,9 @@ internal class BusFixture(
     val store: BusExecutionStore = BusExecutionStore(),
     val audit: BusAuditPort = BusAuditPort(),
     val clock: BusClock = BusClock(),
+    additionalRegisteredActions: List<RegisteredAction<*, *>> = emptyList(),
+    val identity: ActionIdentityScope = busIdentity(),
 ) {
-    val identity = ActionIdentityScope(
-        desktopInstanceId = "secret-desktop",
-        desktopSessionId = "secret-session",
-        authSessionId = "secret-auth",
-        identityEpoch = 1,
-        userId = "secret-user",
-        tenantId = "secret-tenant",
-        platformId = "secret-platform",
-    )
     val context = ActionContext(identity, "page-1", 7, setOf("demo:read", "demo:write"))
     val action = BusCountingAction(busDescriptor(risk, reconciliationPolicy))
     var commandInput: JsonObject = buildJsonObject { put("value", 1) }
@@ -529,6 +519,7 @@ internal class BusFixture(
     )
     val registry = ActionRegistry().apply {
         if (registerAction) register(registered)
+        additionalRegisteredActions.forEach(::register)
         if (freezeRegistry) freeze()
     }
     private val actionInvoker = object : RegisteredActionInvoker {
@@ -590,9 +581,13 @@ internal class BusFixture(
         store.audit = audit
     }
 
-    fun command(origin: ActionOrigin = ActionOrigin.USER) = ActionCommand(
-        executionId = "execution-1",
+    fun command(
+        origin: ActionOrigin = ActionOrigin.USER,
+        executionId: String = "execution-1",
+    ) = ActionCommand(
+        executionId = executionId,
         actionId = action.descriptor.id,
+        actionVersion = action.descriptor.version,
         input = commandInput,
         origin = origin,
         identityScope = identity,
@@ -600,6 +595,19 @@ internal class BusFixture(
         contextRevision = context.contextRevision,
     )
 }
+
+internal fun busIdentity(
+    desktopInstanceId: String = "secret-desktop",
+    desktopSessionId: String = "secret-session",
+) = ActionIdentityScope(
+    desktopInstanceId = desktopInstanceId,
+    desktopSessionId = desktopSessionId,
+    authSessionId = "secret-auth",
+    identityEpoch = 1,
+    userId = "secret-user",
+    tenantId = "secret-tenant",
+    platformId = "secret-platform",
+)
 
 internal data class BusInput(val value: Int)
 internal data class BusOutput(val value: Int)
@@ -610,6 +618,8 @@ internal class BusCountingAction(
     var previewCount = 0
     var executeCount = 0
     var reconcileCount = 0
+    var activeReconcileCount = 0
+    var maximumActiveReconcileCount = 0
     var previewExecutionId = "execution-1"
     var previewResultMode = PreviewResultMode.NORMAL
     var executeFailure: Throwable? = null
@@ -652,12 +662,18 @@ internal class BusCountingAction(
         executionId: String,
     ): ReconciliationResult {
         reconcileCount += 1
-        reconcileEntered?.let {
-            it.complete(Unit)
-            reconcileRelease?.await()
+        activeReconcileCount += 1
+        maximumActiveReconcileCount = maxOf(maximumActiveReconcileCount, activeReconcileCount)
+        try {
+            reconcileEntered?.let {
+                it.complete(Unit)
+                reconcileRelease?.await()
+            }
+            reconcileFailure?.let { throw it }
+            return reconciliationResult
+        } finally {
+            activeReconcileCount -= 1
         }
-        reconcileFailure?.let { throw it }
-        return reconciliationResult
     }
 }
 
@@ -745,7 +761,7 @@ internal class BusExecutionStore : ActionExecutionStore {
         audit: ActionAuditDraft,
     ): ExecutionCreateResult {
         this.record?.let { existing ->
-            return if (existing.fingerprint == record.fingerprint) {
+            return if (existing.binding == record.binding) {
                 if (existing.isTerminal) ExecutionCreateResult.ExistingTerminal(existing)
                 else ExecutionCreateResult.ExistingRunning(existing)
             } else {
@@ -851,7 +867,7 @@ internal class BusExecutionStore : ActionExecutionStore {
         val state = if (successFact != null) ActionExecutionState.SUCCEEDED else result!!.stateForStore()
         record = ActionExecutionRecord(
             command = command,
-            fingerprint = ExecutionFingerprint(command.actionId, command.fingerprintForStore()),
+            binding = command.bindingForStore(),
             state = state,
             result = result,
             successFact = successFact,
@@ -1012,13 +1028,21 @@ private fun ActionResult<JsonElement>.stateForStore(): ActionExecutionState = wh
     else -> error("terminal result required")
 }
 
-private fun ActionCommand.fingerprintForStore(): String {
+private fun ActionCommand.bindingForStore(): ExecutionBinding {
     val canonical = input.entries.sortedBy { it.key }.joinToString(prefix = "{", postfix = "}") {
         "${kotlinx.serialization.json.JsonPrimitive(it.key)}:${it.value}"
     }
     val bytes = MessageDigest.getInstance("SHA-256")
-        .digest("$actionId\n$canonical".toByteArray(StandardCharsets.UTF_8))
-    return bytes.joinToString("") { "%02x".format(it) }
+        .digest(canonical.toByteArray(StandardCharsets.UTF_8))
+    return ExecutionBinding(
+        actionId = actionId,
+        actionVersion = actionVersion,
+        inputFingerprint = bytes.joinToString("") { "%02x".format(it) },
+        origin = origin,
+        identityScope = identityScope,
+        pageId = pageId,
+        contextRevision = contextRevision,
+    )
 }
 
 internal class BusClock : ActionClock {
@@ -1033,9 +1057,10 @@ internal class BusClock : ActionClock {
 internal fun busDescriptor(
     risk: ActionRiskLevel,
     reconciliationPolicy: ReconciliationPolicy = ReconciliationPolicy.MANUAL,
+    version: Int = 1,
 ) = ActionDescriptor(
     id = "demo.action",
-    version = 1,
+    version = version,
     title = "演示动作",
     description = "Bus 测试动作",
     inputSchema = buildJsonObject { put("type", "object") },
