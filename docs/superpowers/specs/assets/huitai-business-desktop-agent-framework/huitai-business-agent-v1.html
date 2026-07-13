@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>翔鸟律智桌面端 - 业务 Agent 原型</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: "Microsoft YaHei", "Segoe UI", sans-serif; color: #17233d; background: #edf1f6; }
+    .app { width: 1600px; height: 1000px; overflow: hidden; background: #f5f7fa; }
+    .topbar { height: 62px; display: flex; align-items: center; border-bottom: 1px solid #dce2eb; background: #fff; padding: 0 22px; }
+    .brand { display: flex; align-items: center; gap: 12px; width: 230px; font-size: 18px; font-weight: 700; }
+    .logo { width: 32px; height: 32px; border-radius: 9px; background: linear-gradient(135deg,#1c5db6,#163a78); color: white; display: grid; place-items: center; }
+    .workspace { font-size: 13px; color: #60708b; border-left: 1px solid #e2e7ef; padding-left: 22px; }
+    .search { margin-left: auto; width: 340px; height: 36px; border: 1px solid #d8dee8; border-radius: 9px; background: #f7f9fc; display: flex; align-items: center; padding: 0 12px; color: #8b97aa; font-size: 13px; }
+    .top-actions { display: flex; align-items: center; gap: 16px; margin-left: 22px; color: #65738a; font-size: 13px; }
+    .avatar { width: 32px; height: 32px; border-radius: 50%; background: #dbe8fb; display: grid; place-items: center; color: #2458a2; font-weight: 700; }
+    .body { display: grid; grid-template-columns: 210px 1fr 480px; height: 938px; }
+    .sidebar { background: #fff; border-right: 1px solid #dce2eb; padding: 18px 12px; }
+    .nav-label { margin: 0 12px 12px; font-size: 11px; color: #9aa5b5; letter-spacing: 1px; }
+    .nav { display: flex; align-items: center; gap: 12px; height: 44px; padding: 0 14px; margin: 4px 0; border-radius: 9px; font-size: 14px; color: #536078; }
+    .nav.active { color: #1d57a7; background: #edf4ff; font-weight: 700; }
+    .nav .icon { width: 22px; text-align: center; font-size: 16px; }
+    .sidebar-card { margin-top: 30px; padding: 14px; border: 1px solid #dfe6f0; border-radius: 10px; background: #f8fafd; }
+    .sidebar-card b { font-size: 13px; }
+    .sidebar-card p { color: #7c899d; line-height: 1.6; font-size: 11px; margin: 7px 0 0; }
+    .main { overflow: hidden; padding: 22px 24px; }
+    .crumb { color: #7f8ca0; font-size: 12px; margin-bottom: 10px; }
+    .page-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+    .page-head h1 { font-size: 24px; margin: 0; }
+    .case-tag { font-size: 12px; padding: 6px 10px; color: #67758c; background: #fff; border: 1px solid #dce2eb; border-radius: 16px; }
+    .steps { height: 58px; background: #fff; border: 1px solid #dfe4ec; border-radius: 12px; display: flex; align-items: center; justify-content: space-around; padding: 0 22px; margin-bottom: 16px; }
+    .step { display: flex; align-items: center; gap: 8px; color: #8a95a7; font-size: 13px; }
+    .step .num { width: 25px; height: 25px; border-radius: 50%; border: 1px solid #cbd3df; display: grid; place-items: center; font-size: 11px; }
+    .step.active { color: #1e5bb1; font-weight: 700; }
+    .step.active .num { color: #fff; background: #2868bd; border-color: #2868bd; }
+    .line { width: 48px; height: 1px; background: #d8dee8; }
+    .agent-banner { display: flex; align-items: center; justify-content: space-between; background: #edf5ff; border: 1px solid #cfe2fb; color: #244c7f; padding: 11px 14px; border-radius: 10px; font-size: 13px; margin-bottom: 14px; }
+    .agent-banner strong { color: #154e9a; }
+    .form-card { background: #fff; border: 1px solid #dfe4ec; border-radius: 12px; padding: 19px 20px 6px; margin-bottom: 14px; }
+    .form-card h3 { margin: 0 0 16px; font-size: 15px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 18px; }
+    .field { position: relative; }
+    .field label { display: block; font-size: 12px; color: #66748a; margin-bottom: 7px; }
+    .input { height: 39px; border: 1px solid #d6dde7; border-radius: 8px; padding: 0 11px; display: flex; align-items: center; background: #fff; font-size: 13px; color: #2b3850; }
+    .input.suggested { border-color: #75a8e9; background: #f5f9ff; box-shadow: 0 0 0 2px rgba(55,119,200,.08); }
+    .ai-mark { position: absolute; right: 8px; top: 27px; font-size: 10px; color: #2c68b7; background: #e2efff; border-radius: 10px; padding: 3px 6px; }
+    .textarea { min-height: 72px; align-items: flex-start; padding-top: 10px; line-height: 1.6; }
+    .span2 { grid-column: 1 / 3; }
+    .footer-actions { display: flex; justify-content: flex-end; gap: 10px; padding-top: 4px; }
+    button { height: 38px; border-radius: 8px; padding: 0 18px; font-family: inherit; font-weight: 600; cursor: default; }
+    .secondary { background: #fff; color: #47566d; border: 1px solid #cfd7e2; }
+    .primary { background: #2462ae; color: #fff; border: 1px solid #2462ae; }
+    .agent { background: #fff; border-left: 1px solid #dce2eb; display: flex; flex-direction: column; }
+    .agent-head { height: 66px; display: flex; align-items: center; border-bottom: 1px solid #e1e6ee; padding: 0 18px; }
+    .agent-title { display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 700; }
+    .agent-orb { width: 30px; height: 30px; border-radius: 9px; background: #225ca9; color: #fff; display: grid; place-items: center; }
+    .status { margin-left: auto; font-size: 11px; color: #26815d; background: #e9f7f1; padding: 5px 8px; border-radius: 12px; }
+    .conversation { padding: 18px; overflow: hidden; flex: 1; background: #fbfcfe; }
+    .message { max-width: 92%; padding: 11px 13px; border-radius: 11px; font-size: 13px; line-height: 1.6; margin-bottom: 14px; }
+    .user { margin-left: auto; background: #eaf2fd; color: #244b7b; border-bottom-right-radius: 3px; }
+    .assistant { background: #fff; border: 1px solid #dfe5ee; border-bottom-left-radius: 3px; }
+    .assistant b { color: #1f4f8b; }
+    .change-card { border: 1px solid #d7e0eb; border-radius: 11px; background: #fff; padding: 14px; margin-top: 12px; }
+    .change-card h4 { margin: 0 0 4px; font-size: 14px; }
+    .change-card .sub { font-size: 11px; color: #8995a7; margin-bottom: 10px; }
+    .change { padding: 9px 0; border-top: 1px solid #edf0f4; }
+    .change:first-of-type { border-top: 0; }
+    .change-head { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px; }
+    .confidence { color: #27805e; font-size: 10px; }
+    .value { color: #26364f; font-size: 12px; font-weight: 600; }
+    .source { color: #8a96a8; font-size: 10px; margin-top: 3px; }
+    .change-actions { display: flex; gap: 8px; margin-top: 12px; }
+    .change-actions button { flex: 1; height: 36px; }
+    .warning { margin-top: 12px; padding: 10px 11px; background: #fff8e8; border: 1px solid #f1d99e; border-radius: 9px; color: #755820; font-size: 11px; line-height: 1.5; }
+    .composer { border-top: 1px solid #e1e6ee; padding: 13px 16px 15px; background: #fff; }
+    .composer-box { min-height: 70px; border: 1px solid #cfd7e3; border-radius: 10px; padding: 10px 11px; color: #9aa4b4; font-size: 12px; }
+    .composer-foot { display: flex; align-items: center; margin-top: 8px; color: #8792a3; font-size: 11px; }
+    .send { margin-left: auto; width: 30px; height: 30px; border-radius: 8px; background: #2867b7; color: #fff; display: grid; place-items: center; }
+  </style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand"><div class="logo">律</div>翔鸟律智桌面端</div>
+    <div class="workspace">北京汇泰律师事务所 · 业务工作台</div>
+    <div class="search">⌕&nbsp;&nbsp;搜索客户、案件、文书或功能</div>
+    <div class="top-actions"><span>消息 3</span><span>帮助</span><div class="avatar">王</div></div>
+  </header>
+  <div class="body">
+    <aside class="sidebar">
+      <div class="nav-label">业务导航</div>
+      <div class="nav"><span class="icon">⌂</span>工作台</div>
+      <div class="nav"><span class="icon">♙</span>客户</div>
+      <div class="nav active"><span class="icon">▣</span>案件</div>
+      <div class="nav"><span class="icon">□</span>日程</div>
+      <div class="nav"><span class="icon">▤</span>文书</div>
+      <div class="nav"><span class="icon">✓</span>审批</div>
+      <div class="nav"><span class="icon">⚙</span>设置</div>
+      <div class="sidebar-card"><b>Agent 协作模式</b><p>Agent 可读取当前页面上下文，所有写入先预览，提交类操作必须再次确认。</p></div>
+    </aside>
+    <main class="main">
+      <div class="crumb">案件管理 / 新建案件</div>
+      <div class="page-head"><h1>案件立案</h1><div class="case-tag">草稿 · 最近保存 10:42</div></div>
+      <div class="steps">
+        <div class="step active"><span class="num">1</span>基本信息</div><div class="line"></div>
+        <div class="step"><span class="num">2</span>当事人</div><div class="line"></div>
+        <div class="step"><span class="num">3</span>诉讼请求</div><div class="line"></div>
+        <div class="step"><span class="num">4</span>材料</div><div class="line"></div>
+        <div class="step"><span class="num">5</span>确认</div>
+      </div>
+      <div class="agent-banner"><span>✦ <strong>Agent 已识别 8 个字段，待确认</strong>　字段来源和修改内容可在右侧查看</span><span>查看变更 →</span></div>
+      <section class="form-card">
+        <h3>案件基本信息</h3>
+        <div class="grid">
+          <div class="field"><label>案件名称 *</label><div class="input suggested">华远科技合同纠纷案</div><span class="ai-mark">Agent 建议</span></div>
+          <div class="field"><label>案件类型 *</label><div class="input suggested">民事案件　⌄</div><span class="ai-mark">Agent 建议</span></div>
+          <div class="field"><label>委托人 *</label><div class="input suggested">北京华远科技有限公司</div><span class="ai-mark">Agent 建议</span></div>
+          <div class="field"><label>对方当事人</label><div class="input suggested">上海明川数据服务有限公司</div><span class="ai-mark">Agent 建议</span></div>
+          <div class="field"><label>案由 *</label><div class="input suggested">服务合同纠纷　⌄</div><span class="ai-mark">Agent 建议</span></div>
+          <div class="field"><label>受理法院</label><div class="input">请选择受理法院　⌄</div></div>
+          <div class="field"><label>标的金额（元）</label><div class="input suggested">680,000.00</div><span class="ai-mark">Agent 建议</span></div>
+          <div class="field"><label>承办律师</label><div class="input">王律师　⌄</div></div>
+          <div class="field span2"><label>案件事实</label><div class="input textarea suggested">双方于 2026 年 3 月签订技术服务合同。委托人已完成约定交付，对方尚欠服务费 68 万元，经多次催告仍未支付。</div><span class="ai-mark">Agent 建议</span></div>
+        </div>
+      </section>
+      <section class="form-card">
+        <h3>来源材料</h3>
+        <div class="grid">
+          <div class="field"><label>已关联材料</label><div class="input">委托合同.pdf　催款函.docx　银行流水.xlsx</div></div>
+          <div class="field"><label>信息完整度</label><div class="input">82% · 仍缺少受理法院</div></div>
+        </div>
+      </section>
+      <div class="footer-actions"><button class="secondary">取消</button><button class="secondary">保存草稿</button><button class="primary">下一步：当事人</button></div>
+    </main>
+    <aside class="agent">
+      <div class="agent-head"><div class="agent-title"><div class="agent-orb">✦</div>业务 Agent</div><div class="status">● 正在协助填写</div></div>
+      <div class="conversation">
+        <div class="message user">根据客户发来的材料，帮我创建案件并填写立案信息。</div>
+        <div class="message assistant"><b>已完成材料分析。</b><br>我从 3 份材料中识别了案件主体、案由、标的金额和主要事实。受理法院暂时无法可靠确定，因此没有自动填写。</div>
+        <div class="change-card">
+          <h4>待应用的表单变更</h4>
+          <div class="sub">共 8 项 · 应用前不会修改业务数据</div>
+          <div class="change"><div class="change-head"><span>案件名称</span><span class="confidence">置信度 96%</span></div><div class="value">华远科技合同纠纷案</div><div class="source">来源：委托合同.pdf 第 1 页</div></div>
+          <div class="change"><div class="change-head"><span>委托人</span><span class="confidence">置信度 99%</span></div><div class="value">北京华远科技有限公司</div><div class="source">来源：委托合同.pdf 第 2 页</div></div>
+          <div class="change"><div class="change-head"><span>案由</span><span class="confidence">置信度 91%</span></div><div class="value">服务合同纠纷</div><div class="source">来源：委托合同.pdf 合同条款</div></div>
+          <div class="change"><div class="change-head"><span>标的金额</span><span class="confidence">置信度 94%</span></div><div class="value">680,000.00 元</div><div class="source">来源：催款函.docx 第 1 页</div></div>
+          <div class="change-actions"><button class="secondary">继续修改</button><button class="primary">确认并填入</button></div>
+        </div>
+        <div class="warning"><b>提交审核需要再次确认</b><br>保存草稿可由 Agent 在确认后执行；提交、删除、发送等高风险动作会单独弹出审批。</div>
+      </div>
+      <div class="composer"><div class="composer-box">继续告诉 Agent：修改案由、补充当事人，或分析新的材料...</div><div class="composer-foot"><span>＋ 添加材料　⌁ 引用当前页面</span><span class="send">➤</span></div></div>
+    </aside>
+  </div>
+</div>
+</body>
+</html>
