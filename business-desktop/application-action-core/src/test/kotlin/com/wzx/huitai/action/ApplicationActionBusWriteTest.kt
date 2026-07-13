@@ -80,6 +80,51 @@ class ApplicationActionBusWriteTest {
     }
 
     @Test
+    fun `effective reversible write exception from read only descriptor becomes outcome unknown`() = runTest {
+        val fixture = BusFixture(
+            risk = ActionRiskLevel.READ_ONLY,
+            effectiveRisk = ActionRiskLevel.REVERSIBLE_WRITE,
+        )
+        fixture.action.executeFailure = IllegalStateException("secret-upgraded-write")
+
+        val result = fixture.bus.execute(fixture.command(), fixture.context)
+
+        assertEquals(ActionErrorCode.REMOTE_REQUEST_FAILED, assertIs<ActionBusResult.Rejected>(result).error.code)
+        assertEquals(ActionExecutionState.OUTCOME_UNKNOWN, fixture.store.record?.state)
+        assertEquals(1, fixture.action.previewCount)
+        assertEquals(1, fixture.confirmation.requests)
+        assertEquals(
+            ActionExecutionState.EXECUTING to ActionExecutionState.OUTCOME_UNKNOWN,
+            fixture.audit.events.last().fromState to fixture.audit.events.last().toState,
+        )
+    }
+
+    @Test
+    fun `effective high risk cancellation from read only descriptor becomes outcome unknown`() = runTest {
+        val fixture = BusFixture(
+            risk = ActionRiskLevel.READ_ONLY,
+            effectiveRisk = ActionRiskLevel.HIGH_RISK,
+        )
+        fixture.action.executeEntered = CompletableDeferred()
+
+        val execution = async { fixture.bus.execute(fixture.command(), fixture.context) }
+        fixture.action.executeEntered!!.await()
+        execution.cancel(CancellationException("cancel-upgraded-high-risk"))
+
+        assertEquals(
+            "cancel-upgraded-high-risk",
+            assertFailsWith<CancellationException> { execution.await() }.message,
+        )
+        assertEquals(ActionExecutionState.OUTCOME_UNKNOWN, fixture.store.record?.state)
+        assertEquals(1, fixture.confirmation.requests)
+        assertEquals(1, fixture.approval.requests)
+        assertEquals(
+            ActionExecutionState.EXECUTING to ActionExecutionState.OUTCOME_UNKNOWN,
+            fixture.audit.events.last().fromState to fixture.audit.events.last().toState,
+        )
+    }
+
+    @Test
     fun `preview execution mismatch is rejected before confirmation`() = runTest {
         val fixture = BusFixture(ActionRiskLevel.REVERSIBLE_WRITE)
         fixture.action.previewExecutionId = "other-execution"

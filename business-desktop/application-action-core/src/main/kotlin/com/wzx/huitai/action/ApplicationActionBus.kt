@@ -154,12 +154,14 @@ class ApplicationActionBus internal constructor(
                 command,
                 context,
                 validating,
+                risk.effectiveRisk,
             )
             ActionRiskLevel.REVERSIBLE_WRITE -> executeReversible(
                 registered,
                 command,
                 context,
                 validating,
+                risk.effectiveRisk,
             )
             ActionRiskLevel.HIGH_RISK -> executeHighRisk(
                 registered,
@@ -176,6 +178,7 @@ class ApplicationActionBus internal constructor(
         command: ActionCommand,
         context: ActionContext,
         validating: ActionExecutionRecord,
+        effectiveRisk: ActionRiskLevel,
     ): ActionBusResult {
         val preview = try {
             when (val attempt = preview(registered, command, context)) {
@@ -218,6 +221,7 @@ class ApplicationActionBus internal constructor(
                 command,
                 context,
                 previewed,
+                effectiveRisk,
             )
             ConfirmationDecision.REJECTED -> finishWithoutExecution(
                 previewed,
@@ -331,6 +335,7 @@ class ApplicationActionBus internal constructor(
                 command,
                 context,
                 waiting,
+                risk.effectiveRisk,
                 "approval_approved",
                 payload,
                 approval.decidedBy,
@@ -377,6 +382,7 @@ class ApplicationActionBus internal constructor(
         command: ActionCommand,
         context: ActionContext,
         current: ActionExecutionRecord,
+        effectiveRisk: ActionRiskLevel,
         transitionType: String = "state_transition",
         transitionPayload: JsonObject = emptyPayload(),
         actorId: String? = null,
@@ -397,7 +403,7 @@ class ApplicationActionBus internal constructor(
             actionInvoker.execute(registered, command.input, context)
         } catch (cancellation: CancellationException) {
             handoffCancellation(cancellation) {
-                if (registered.descriptor.riskLevel == ActionRiskLevel.READ_ONLY) {
+                if (effectiveRisk == ActionRiskLevel.READ_ONLY) {
                     persistFailure(
                         running,
                         ActionError(ActionErrorCode.REMOTE_REQUEST_FAILED, "只读动作执行已取消"),
@@ -412,7 +418,7 @@ class ApplicationActionBus internal constructor(
             }
         } catch (_: Exception) {
             val error = ActionError(ActionErrorCode.REMOTE_REQUEST_FAILED, "动作执行失败")
-            return if (registered.descriptor.riskLevel == ActionRiskLevel.READ_ONLY) {
+            return if (effectiveRisk == ActionRiskLevel.READ_ONLY) {
                 persistFailure(running, error)
             } else {
                 persistExecutionUnknown(running, error, registered.descriptor.reconciliationPolicy)
