@@ -34,7 +34,10 @@ data class ActionIdentityScope(
     val userId: String,
     val tenantId: String,
     val platformId: String,
-)
+) {
+    /** 日志中只保留身份代次，避免暴露完整业务身份。 */
+    override fun toString(): String = "ActionIdentityScope(identityEpoch=$identityEpoch, values=[REDACTED])"
+}
 
 /**
  * 用户点击和 Agent 调用共用的动作命令。
@@ -56,4 +59,9 @@ data class ActionCommand(
     val identityScope: ActionIdentityScope,
     val pageId: String,
     val contextRevision: Long,
-)
+) {
+    /** 日志中保留动作定位信息，隐藏身份和值载荷。 */
+    override fun toString(): String =
+        "ActionCommand(executionId=$executionId, actionId=$actionId, origin=$origin, " +
+            "pageId=$pageId, contextRevision=$contextRevision, input=[REDACTED], identityScope=[REDACTED])"
+}

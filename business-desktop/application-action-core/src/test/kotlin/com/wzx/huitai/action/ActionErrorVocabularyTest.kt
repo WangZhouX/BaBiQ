@@ -4,6 +4,7 @@ import com.wzx.huitai.action.model.ActionErrorCode
 import com.wzx.huitai.action.model.ErrorDisposition
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class ActionErrorVocabularyTest {
     @Test
@@ -31,5 +32,18 @@ class ActionErrorVocabularyTest {
         expected.forEach { (code, disposition) ->
             assertEquals(disposition, code.disposition, code.name)
         }
+    }
+
+    @Test
+    fun `error disposition is only a remediation hint and exposes no replay authority`() {
+        val forbiddenMethodNames = sequenceOf(
+            ActionErrorCode::class.java,
+            ErrorDisposition::class.java,
+        ).flatMap { type -> type.declaredMethods.asSequence() }
+            .map { it.name.lowercase() }
+            .filter { "replay" in it || "execute" in it }
+            .toList()
+
+        assertTrue(forbiddenMethodNames.isEmpty(), "错误词汇不得提供自动重放或执行授权: $forbiddenMethodNames")
     }
 }

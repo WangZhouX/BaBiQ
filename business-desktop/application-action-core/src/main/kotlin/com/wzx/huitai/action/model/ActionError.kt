@@ -4,7 +4,12 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 
-/** 错误发生后调用方应采取的固定处置方式。 */
+/**
+ * 错误发生后提供给上层的恢复提示。
+ *
+ * `RETRYABLE` 只表示上层可在独立安全判断后尝试恢复，不能单独授权自动 execute。
+ * 自动重放必须同时依据后续传输结果和 [ActionReplayPolicy]，本枚举不提供重放决策。
+ */
 @Serializable
 enum class ErrorDisposition {
     @SerialName("user_fixable")
@@ -26,7 +31,8 @@ enum class ErrorDisposition {
 /**
  * 动作执行错误码。
  *
- * @param disposition 此错误唯一对应的处置方式。
+ * @param disposition 此错误对应的上层恢复提示，不是自动重放授权。
+ * 自动重放必须由传输结果和 [ActionReplayPolicy] 共同决定。
  */
 @Serializable
 enum class ActionErrorCode(val disposition: ErrorDisposition) {
@@ -91,4 +97,8 @@ data class ActionError(
     val code: ActionErrorCode,
     val message: String,
     val details: JsonObject? = null,
-)
+) {
+    /** 日志中只保留结构化错误类型，隐藏说明和上下文。 */
+    override fun toString(): String =
+        "ActionError(code=$code, disposition=${code.disposition}, message=[REDACTED], details=[REDACTED])"
+}

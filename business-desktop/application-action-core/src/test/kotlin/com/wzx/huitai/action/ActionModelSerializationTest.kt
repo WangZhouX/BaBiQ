@@ -117,31 +117,109 @@ class ActionModelSerializationTest {
                 reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
             ),
         )
+        val discriminators = listOf(
+            "preview",
+            "approval_required",
+            "success",
+            "failure",
+            "canceled",
+            "expired",
+            "outcome_unknown",
+        )
 
         assertRoundTrip(ActionPreview.serializer(), preview)
-        results.forEach { assertRoundTrip(resultSerializer, it) }
+        results.zip(discriminators).forEach { (result, discriminator) ->
+            assertRoundTrip(resultSerializer, result)
+            assertTrue("\"type\":\"$discriminator\"" in json.encodeToString(resultSerializer, result))
+        }
     }
 
     @Test
     fun `all wire enums use lower snake case`() {
-        assertWireNames(ActionRiskLevel.serializer(), ActionRiskLevel.entries)
-        assertWireNames(ActionOrigin.serializer(), ActionOrigin.entries)
-        assertWireNames(ActionReplayPolicy.serializer(), ActionReplayPolicy.entries)
-        assertWireNames(ReconciliationPolicy.serializer(), ReconciliationPolicy.entries)
-        assertWireNames(ActionExecutionState.serializer(), ActionExecutionState.entries)
-        assertWireNames(ActionErrorCode.serializer(), ActionErrorCode.entries)
-        assertWireNames(ErrorDisposition.serializer(), ErrorDisposition.entries)
-        val approvalJson = json.encodeToString(
-            ActionResult.serializer(serializer()),
-            ActionResult.ApprovalRequired(
-                executionId = "execution-1",
-                approvalId = "approval-1",
-                preview = ActionPreview("execution-1", "预览"),
-                reason = "需要确认",
-                expiresAtEpochMillis = 1_800_000_000_000,
+        assertWireNames(
+            ActionRiskLevel.serializer(),
+            ActionRiskLevel.entries,
+            mapOf(
+                ActionRiskLevel.READ_ONLY to "read_only",
+                ActionRiskLevel.REVERSIBLE_WRITE to "reversible_write",
+                ActionRiskLevel.HIGH_RISK to "high_risk",
             ),
         )
-        assertTrue("\"type\":\"approval_required\"" in approvalJson)
+        assertWireNames(
+            ActionOrigin.serializer(),
+            ActionOrigin.entries,
+            mapOf(
+                ActionOrigin.USER to "user",
+                ActionOrigin.AGENT to "agent",
+            ),
+        )
+        assertWireNames(
+            ActionReplayPolicy.serializer(),
+            ActionReplayPolicy.entries,
+            mapOf(
+                ActionReplayPolicy.SAFE to "safe",
+                ActionReplayPolicy.IDEMPOTENCY_KEY_REQUIRED to "idempotency_key_required",
+                ActionReplayPolicy.NEVER to "never",
+            ),
+        )
+        assertWireNames(
+            ReconciliationPolicy.serializer(),
+            ReconciliationPolicy.entries,
+            mapOf(
+                ReconciliationPolicy.NONE to "none",
+                ReconciliationPolicy.QUERY_REMOTE to "query_remote",
+                ReconciliationPolicy.MANUAL to "manual",
+            ),
+        )
+        assertWireNames(
+            ActionExecutionState.serializer(),
+            ActionExecutionState.entries,
+            mapOf(
+                ActionExecutionState.RECEIVED to "received",
+                ActionExecutionState.VALIDATING to "validating",
+                ActionExecutionState.PREVIEWED to "previewed",
+                ActionExecutionState.WAITING_APPROVAL to "waiting_approval",
+                ActionExecutionState.EXECUTING to "executing",
+                ActionExecutionState.SUCCEEDED to "succeeded",
+                ActionExecutionState.FAILED to "failed",
+                ActionExecutionState.CANCELED to "canceled",
+                ActionExecutionState.EXPIRED to "expired",
+                ActionExecutionState.OUTCOME_UNKNOWN to "outcome_unknown",
+            ),
+        )
+        assertWireNames(
+            ActionErrorCode.serializer(),
+            ActionErrorCode.entries,
+            mapOf(
+                ActionErrorCode.ACTION_NOT_FOUND to "action_not_found",
+                ActionErrorCode.ACTION_DISABLED to "action_disabled",
+                ActionErrorCode.PERMISSION_DENIED to "permission_denied",
+                ActionErrorCode.VALIDATION_FAILED to "validation_failed",
+                ActionErrorCode.CONTEXT_STALE to "context_stale",
+                ActionErrorCode.APPROVAL_DENIED to "approval_denied",
+                ActionErrorCode.APPROVAL_EXPIRED to "approval_expired",
+                ActionErrorCode.EXECUTION_CONFLICT to "execution_conflict",
+                ActionErrorCode.EXECUTION_TIMEOUT to "execution_timeout",
+                ActionErrorCode.DESKTOP_DISCONNECTED to "desktop_disconnected",
+                ActionErrorCode.AGENT_DISCONNECTED to "agent_disconnected",
+                ActionErrorCode.AUTH_EXPIRED to "auth_expired",
+                ActionErrorCode.MEMBERSHIP_EXPIRED to "membership_expired",
+                ActionErrorCode.REMOTE_REQUEST_FAILED to "remote_request_failed",
+                ActionErrorCode.OUTCOME_UNKNOWN to "outcome_unknown",
+                ActionErrorCode.PROTOCOL_ERROR to "protocol_error",
+            ),
+        )
+        assertWireNames(
+            ErrorDisposition.serializer(),
+            ErrorDisposition.entries,
+            mapOf(
+                ErrorDisposition.USER_FIXABLE to "user_fixable",
+                ErrorDisposition.RELOGIN_REQUIRED to "relogin_required",
+                ErrorDisposition.RETRYABLE to "retryable",
+                ErrorDisposition.NON_RETRYABLE to "non_retryable",
+                ErrorDisposition.MANUAL_RECONCILIATION to "manual_reconciliation",
+            ),
+        )
     }
 
     private fun <T> assertRoundTrip(serializer: KSerializer<T>, value: T) {
@@ -149,9 +227,14 @@ class ActionModelSerializationTest {
         assertEquals(value, json.decodeFromString(serializer, encoded))
     }
 
-    private fun <T : Enum<T>> assertWireNames(serializer: KSerializer<T>, values: Iterable<T>) {
-        values.forEach { value ->
-            assertEquals("\"${value.name.lowercase()}\"", json.encodeToString(serializer, value))
+    private fun <T : Enum<T>> assertWireNames(
+        serializer: KSerializer<T>,
+        allValues: Iterable<T>,
+        wireNames: Map<T, String>,
+    ) {
+        assertEquals(allValues.toSet(), wireNames.keys)
+        wireNames.forEach { (value, wireName) ->
+            assertEquals("\"$wireName\"", json.encodeToString(serializer, value))
         }
     }
 }
