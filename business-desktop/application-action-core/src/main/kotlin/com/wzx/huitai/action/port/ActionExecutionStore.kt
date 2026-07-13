@@ -303,6 +303,43 @@ data class ReconciliationClaimRequest(
 }
 
 /**
+ * 原子续租当前 OUTCOME_UNKNOWN 对账 claim 并追加脱敏 heartbeat 审计。
+ *
+ * @param executionId 动作执行标识。
+ * @param expectedVersion 当前 claim 的精确记录版本。
+ * @param claimToken 必须匹配持久 claim 的 token。
+ * @param now 续租原子判断使用的当前时间。
+ * @param leaseDuration 从 now 开始计算的新租约时长。
+ * @param audit 与续租原子提交的 reconciliation_claim_renewed 审计。
+ */
+data class ReconciliationRenewRequest(
+    val executionId: String,
+    val expectedVersion: Long,
+    val claimToken: String,
+    val now: Instant,
+    val leaseDuration: Duration,
+    val audit: ActionAuditDraft,
+) {
+    val expiresAt: Instant = now.plus(leaseDuration)
+
+    init {
+        require(claimToken.isNotBlank()) { "renew claim token 不能为空" }
+        require(!leaseDuration.isZero && !leaseDuration.isNegative) { "对账 renew 租约必须为正时长" }
+        require(audit.executionId == executionId) { "renew 审计 executionId 必须一致" }
+        require(audit.fromState == ActionExecutionState.OUTCOME_UNKNOWN) { "renew 审计必须源自 OUTCOME_UNKNOWN" }
+        require(audit.toState == ActionExecutionState.OUTCOME_UNKNOWN) { "renew 不能改变执行状态" }
+        require(audit.type == "reconciliation_claim_renewed") {
+            "renew 必须提交 reconciliation_claim_renewed 审计"
+        }
+    }
+
+    /** 日志隐藏 claim token、租约业务时间和审计载荷。 */
+    override fun toString(): String =
+        "ReconciliationRenewRequest(executionId=$executionId, expectedVersion=$expectedVersion, " +
+            "claimToken=[REDACTED], now=[REDACTED], leaseDuration=[REDACTED], audit=[REDACTED])"
+}
+
+/**
  * 原子释放未收束对账 claim 并追加 result 审计。
  *
  * @param executionId 动作执行标识。
@@ -402,6 +439,14 @@ sealed interface ReconciliationClaimResult {
     data class Conflict(val error: ActionError) : ReconciliationClaimResult
 }
 
+/** 当前对账 claim 原子续租的结果。 */
+sealed interface ReconciliationRenewResult {
+    data class Renewed(val record: ActionExecutionRecord) : ReconciliationRenewResult
+    data class ExistingClaim(val record: ActionExecutionRecord) : ReconciliationRenewResult
+    data class ExistingFinal(val record: ActionExecutionRecord) : ReconciliationRenewResult
+    data class Conflict(val error: ActionError) : ReconciliationRenewResult
+}
+
 /** 未收束对账 release 的原子结果。 */
 sealed interface ReconciliationReleaseResult {
     data class Released(val record: ActionExecutionRecord) : ReconciliationReleaseResult
@@ -430,6 +475,9 @@ interface ActionExecutionStore {
 
     /** 原子取得跨进程唯一对账所有权并提交 attempt 审计。 */
     suspend fun claimReconciliation(request: ReconciliationClaimRequest): ReconciliationClaimResult
+
+    /** 仅由当前 token/version owner 原子续租 claim 并提交 heartbeat 审计。 */
+    suspend fun renewReconciliation(request: ReconciliationRenewRequest): ReconciliationRenewResult
 
     /** 原子释放未收束 claim 并提交 result 审计。 */
     suspend fun releaseReconciliation(request: ReconciliationReleaseRequest): ReconciliationReleaseResult

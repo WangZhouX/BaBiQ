@@ -23,15 +23,20 @@ import com.wzx.huitai.action.port.ExecutionSuccessFact
 import com.wzx.huitai.action.port.ReconciliationExecutionUpdate
 import com.wzx.huitai.action.port.ReconciliationClaimRequest
 import com.wzx.huitai.action.port.ReconciliationClaimResult
+import com.wzx.huitai.action.port.ReconciliationRenewRequest
+import com.wzx.huitai.action.port.ReconciliationRenewResult
 import com.wzx.huitai.action.port.ReconciliationReleaseRequest
 import com.wzx.huitai.action.port.ReconciliationReleaseResult
 import com.wzx.huitai.action.port.ReconciliationUpdateResult
 import com.wzx.huitai.action.port.RiskEvaluation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -40,13 +45,21 @@ import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.time.Duration
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicReference
 
 /** 远程对账硬超时必须严格早于持久 claim 租约，避免 owner 仍运行时被其他进程接管。 */
 internal object ReconciliationTimingPolicy {
+    val HEARTBEAT_INTERVAL: Duration = Duration.ofSeconds(15)
     val RECONCILIATION_TIMEOUT: Duration = Duration.ofSeconds(30)
     val CLAIM_LEASE: Duration = Duration.ofSeconds(60)
 
     init {
+        require(!HEARTBEAT_INTERVAL.isZero && !HEARTBEAT_INTERVAL.isNegative) {
+            "对账 heartbeat 间隔必须为正时长"
+        }
+        require(HEARTBEAT_INTERVAL < RECONCILIATION_TIMEOUT) {
+            "对账 heartbeat 间隔必须早于远程对账超时"
+        }
         require(RECONCILIATION_TIMEOUT < CLAIM_LEASE) { "远程对账超时必须早于 claim 租约" }
         require(CLAIM_LEASE.minus(RECONCILIATION_TIMEOUT) >= Duration.ofSeconds(10)) {
             "远程对账超时与 claim 租约之间必须保留安全余量"
@@ -98,6 +111,19 @@ private sealed interface StateAdvanceResult {
     data class Advanced(val record: ActionExecutionRecord) : StateAdvanceResult
     data class ExistingTerminal(val result: ActionBusResult) : StateAdvanceResult
     data class Rejected(val result: ActionBusResult.Rejected) : StateAdvanceResult
+}
+
+/** 远程调用把普通异常收口为值，避免 async 子任务提前取消 heartbeat 协调 scope。 */
+private sealed interface ReconciliationInvocationOutcome {
+    data class Completed(val invocation: ActionInvocationResult) : ReconciliationInvocationOutcome
+    data class Failed(val failure: Exception) : ReconciliationInvocationOutcome
+}
+
+/** heartbeat 循环只产生远程结果、内部超时或 fencing 三类确定出口。 */
+private sealed interface ReconciliationLoopResult {
+    data class Invocation(val outcome: ReconciliationInvocationOutcome) : ReconciliationLoopResult
+    data class Fenced(val result: ActionBusResult) : ReconciliationLoopResult
+    data object TimedOut : ReconciliationLoopResult
 }
 
 /** Bus 与注册动作之间的模块内部调用边界，生产实现只做直接委派。 */
@@ -261,7 +287,7 @@ class ApplicationActionBus internal constructor(
         context: ActionContext,
         registered: RegisteredAction<*, *>,
     ): ActionBusResult {
-        val claimed = when (val claim = claimReconciliation(unknown)) {
+        val initialClaim = when (val claim = claimReconciliation(unknown)) {
             is ReconciliationClaimResult.Claimed -> claim.record
             is ReconciliationClaimResult.ExistingClaim -> return ActionBusResult.InProgress(
                 claim.record.command.executionId,
@@ -270,113 +296,192 @@ class ApplicationActionBus internal constructor(
             is ReconciliationClaimResult.ExistingFinal -> return existingTerminal(claim.record)
             is ReconciliationClaimResult.Conflict -> return ActionBusResult.Rejected(claim.error)
         }
-        val invocation = try {
-            withTimeout(ReconciliationTimingPolicy.RECONCILIATION_TIMEOUT.toMillis()) {
-                actionInvoker.reconcile(
-                    registered,
-                    claimed.command.input,
-                    context,
-                    stored.remoteReference,
-                    claimed.command.executionId,
-                )
+        return coroutineScope {
+            val latestClaim = AtomicReference(initialClaim)
+            val remote = async {
+                try {
+                    ReconciliationInvocationOutcome.Completed(
+                        actionInvoker.reconcile(
+                            registered,
+                            initialClaim.command.input,
+                            context,
+                            stored.remoteReference,
+                            initialClaim.command.executionId,
+                        ),
+                    )
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (failure: Exception) {
+                    ReconciliationInvocationOutcome.Failed(failure)
+                }
             }
-        } catch (_: TimeoutCancellationException) {
-            return withContext(NonCancellable) {
-                releaseReconciliation(claimed, "timeout", existingTerminal(unknown))
-            }
-        } catch (cancellation: CancellationException) {
-            releaseReconciliationBestEffort(claimed, "canceled")
-            throw cancellation
-        } catch (_: Exception) {
-            return releaseReconciliation(claimed, "error", existingTerminal(unknown))
-        }
-        val reconciled = when (invocation) {
-            is ActionInvocationResult.Reconciled -> {
-                if (invocation.executionId != claimed.command.executionId) {
-                    return reconciliationDiagnostic(
+            try {
+                val loopResult = withTimeoutOrNull(
+                    ReconciliationTimingPolicy.RECONCILIATION_TIMEOUT.toMillis(),
+                ) {
+                    var remainingMillis = ReconciliationTimingPolicy.RECONCILIATION_TIMEOUT.toMillis()
+                    while (true) {
+                        val waitMillis = minOf(
+                            ReconciliationTimingPolicy.HEARTBEAT_INTERVAL.toMillis(),
+                            remainingMillis,
+                        )
+                        val outcome = withTimeoutOrNull(
+                            waitMillis,
+                        ) {
+                            remote.await()
+                        }
+                        if (outcome != null) {
+                            return@withTimeoutOrNull ReconciliationLoopResult.Invocation(outcome)
+                        }
+                        remainingMillis -= waitMillis
+                        if (remainingMillis <= 0) {
+                            return@withTimeoutOrNull ReconciliationLoopResult.TimedOut
+                        }
+                        when (val renewed = renewReconciliation(latestClaim)) {
+                            is ReconciliationRenewResult.Renewed -> Unit
+                            is ReconciliationRenewResult.ExistingClaim -> {
+                                return@withTimeoutOrNull ReconciliationLoopResult.Fenced(
+                                    ActionBusResult.InProgress(
+                                        renewed.record.command.executionId,
+                                        ActionExecutionState.OUTCOME_UNKNOWN,
+                                    ),
+                                )
+                            }
+                            is ReconciliationRenewResult.ExistingFinal -> {
+                                return@withTimeoutOrNull ReconciliationLoopResult.Fenced(
+                                    existingTerminal(renewed.record),
+                                )
+                            }
+                            is ReconciliationRenewResult.Conflict -> {
+                                return@withTimeoutOrNull ReconciliationLoopResult.Fenced(
+                                    ActionBusResult.Rejected(renewed.error),
+                                )
+                            }
+                        }
+                    }
+                    error("heartbeat 循环必须通过显式分支退出")
+                } ?: ReconciliationLoopResult.TimedOut
+
+                val invocation = when (loopResult) {
+                    is ReconciliationLoopResult.Invocation -> when (val outcome = loopResult.outcome) {
+                        is ReconciliationInvocationOutcome.Completed -> outcome.invocation
+                        is ReconciliationInvocationOutcome.Failed -> {
+                            return@coroutineScope releaseReconciliation(
+                                latestClaim.get(),
+                                "error",
+                                existingTerminal(unknown),
+                            )
+                        }
+                    }
+                    is ReconciliationLoopResult.Fenced -> {
+                        remote.cancelAndJoin()
+                        return@coroutineScope loopResult.result
+                    }
+                    ReconciliationLoopResult.TimedOut -> {
+                        remote.cancelAndJoin()
+                        return@coroutineScope withContext(NonCancellable) {
+                            releaseReconciliation(latestClaim.get(), "timeout", existingTerminal(unknown))
+                        }
+                    }
+                }
+                val claimed = latestClaim.get()
+                val reconciled = when (invocation) {
+                    is ActionInvocationResult.Reconciled -> {
+                        if (invocation.executionId != claimed.command.executionId) {
+                            return@coroutineScope reconciliationDiagnostic(
+                                claimed,
+                                outcome = "protocol_error",
+                                result = protocolError("对账结果 executionId 不匹配"),
+                            )
+                        }
+                        invocation.result
+                    }
+                    is ActionInvocationResult.Failure -> return@coroutineScope reconciliationDiagnostic(
+                        claimed,
+                        outcome = "validation_error",
+                        result = existingTerminal(unknown),
+                    )
+                    else -> return@coroutineScope reconciliationDiagnostic(
                         claimed,
                         outcome = "protocol_error",
-                        result = protocolError("对账结果 executionId 不匹配"),
+                        result = protocolError("对账返回了非法结果类型"),
                     )
                 }
-                invocation.result
-            }
-            is ActionInvocationResult.Failure -> return reconciliationDiagnostic(
-                claimed,
-                outcome = "validation_error",
-                result = existingTerminal(unknown),
-            )
-            else -> return reconciliationDiagnostic(
-                claimed,
-                outcome = "protocol_error",
-                result = protocolError("对账返回了非法结果类型"),
-            )
-        }
-        val result: ActionResult<JsonElement>?
-        val successFact: ExecutionSuccessFact?
-        when (reconciled) {
-            is ReconciliationResult.Succeeded -> {
-                result = null
-                successFact = ExecutionSuccessFact(
-                    kind = ExecutionSuccessFact.RECONCILED_REMOTE_SUCCESS,
-                    remoteReference = reconciled.remoteReference ?: stored.remoteReference,
-                    errorCode = null,
-                    safeMessage = null,
-                    source = ExecutionSuccessFact.SOURCE_RECONCILIATION,
-                )
-            }
-            is ReconciliationResult.Failed -> {
-                result = ActionResult.Failure(
-                    executionId = claimed.command.executionId,
-                    error = reconciled.error,
-                    remoteReference = stored.remoteReference,
-                )
-                successFact = null
-            }
-            is ReconciliationResult.Unsupported,
-            is ReconciliationResult.Pending,
-            is ReconciliationResult.NotFound,
-            is ReconciliationResult.Error,
-            -> {
-                val outcome = when (reconciled) {
-                    is ReconciliationResult.Unsupported -> "unsupported"
-                    is ReconciliationResult.Pending -> "pending"
-                    is ReconciliationResult.NotFound -> "not_found"
-                    is ReconciliationResult.Error -> "error"
-                    is ReconciliationResult.Succeeded,
-                    is ReconciliationResult.Failed,
-                    -> error("确认结果已在前置分支处理")
+                val result: ActionResult<JsonElement>?
+                val successFact: ExecutionSuccessFact?
+                when (reconciled) {
+                    is ReconciliationResult.Succeeded -> {
+                        result = null
+                        successFact = ExecutionSuccessFact(
+                            kind = ExecutionSuccessFact.RECONCILED_REMOTE_SUCCESS,
+                            remoteReference = reconciled.remoteReference ?: stored.remoteReference,
+                            errorCode = null,
+                            safeMessage = null,
+                            source = ExecutionSuccessFact.SOURCE_RECONCILIATION,
+                        )
+                    }
+                    is ReconciliationResult.Failed -> {
+                        result = ActionResult.Failure(
+                            executionId = claimed.command.executionId,
+                            error = reconciled.error,
+                            remoteReference = stored.remoteReference,
+                        )
+                        successFact = null
+                    }
+                    is ReconciliationResult.Unsupported,
+                    is ReconciliationResult.Pending,
+                    is ReconciliationResult.NotFound,
+                    is ReconciliationResult.Error,
+                    -> {
+                        val outcome = when (reconciled) {
+                            is ReconciliationResult.Unsupported -> "unsupported"
+                            is ReconciliationResult.Pending -> "pending"
+                            is ReconciliationResult.NotFound -> "not_found"
+                            is ReconciliationResult.Error -> "error"
+                            is ReconciliationResult.Succeeded,
+                            is ReconciliationResult.Failed,
+                            -> error("确认结果已在前置分支处理")
+                        }
+                        return@coroutineScope releaseReconciliation(
+                            claimed,
+                            outcome,
+                            existingTerminal(unknown),
+                        )
+                    }
                 }
-                return releaseReconciliation(claimed, outcome, existingTerminal(unknown))
+                val completedAt = clock.now()
+                val terminalState = result?.terminalState() ?: ActionExecutionState.SUCCEEDED
+                val update = try {
+                    ReconciliationExecutionUpdate(
+                        executionId = claimed.command.executionId,
+                        expectedVersion = claimed.recordVersion,
+                        claimToken = claimed.reconciliationClaim!!.claimToken,
+                        result = result,
+                        successFact = successFact,
+                        completedAt = completedAt,
+                        audit = auditDraft(
+                            executionId = claimed.command.executionId,
+                            fromState = ActionExecutionState.OUTCOME_UNKNOWN,
+                            toState = terminalState,
+                            type = "reconciliation_result",
+                            payload = buildJsonObject { put("confirmed", true) },
+                            actorId = null,
+                            occurredAt = completedAt,
+                        ),
+                    )
+                } catch (_: IllegalArgumentException) {
+                    return@coroutineScope protocolError("对账结果关联错误")
+                }
+                when (val updated = executionStore.updateReconciliation(update)) {
+                    is ReconciliationUpdateResult.Updated -> existingTerminal(updated.record)
+                    is ReconciliationUpdateResult.ExistingFinal -> existingTerminal(updated.record)
+                    is ReconciliationUpdateResult.Conflict -> ActionBusResult.Rejected(updated.error)
+                }
+            } catch (cancellation: CancellationException) {
+                remote.cancel()
+                releaseReconciliationAfterCancellation(remote, latestClaim.get(), cancellation)
+                throw (cancellation.cause as? CancellationException ?: cancellation)
             }
-        }
-        val completedAt = clock.now()
-        val terminalState = result?.terminalState() ?: ActionExecutionState.SUCCEEDED
-        val update = try {
-            ReconciliationExecutionUpdate(
-                executionId = claimed.command.executionId,
-                expectedVersion = claimed.recordVersion,
-                claimToken = claimed.reconciliationClaim!!.claimToken,
-                result = result,
-                successFact = successFact,
-                completedAt = completedAt,
-                audit = auditDraft(
-                    executionId = claimed.command.executionId,
-                    fromState = ActionExecutionState.OUTCOME_UNKNOWN,
-                    toState = terminalState,
-                    type = "reconciliation_result",
-                    payload = buildJsonObject { put("confirmed", true) },
-                    actorId = null,
-                    occurredAt = completedAt,
-                ),
-            )
-        } catch (_: IllegalArgumentException) {
-            return protocolError("对账结果关联错误")
-        }
-        return when (val updated = executionStore.updateReconciliation(update)) {
-            is ReconciliationUpdateResult.Updated -> existingTerminal(updated.record)
-            is ReconciliationUpdateResult.ExistingFinal -> existingTerminal(updated.record)
-            is ReconciliationUpdateResult.Conflict -> ActionBusResult.Rejected(updated.error)
         }
     }
 
@@ -404,19 +509,69 @@ class ApplicationActionBus internal constructor(
             )
         }
 
-    /** 真实取消以取消本身为主异常，审计故障不能覆盖取消语义。 */
-    private suspend fun releaseReconciliationBestEffort(
+    /** 使用当前最新 token/version 原子续租；即使外部取消到达也先取得确定持久化结果。 */
+    private suspend fun renewReconciliation(
+        latestClaim: AtomicReference<ActionExecutionRecord>,
+    ): ReconciliationRenewResult = withContext(NonCancellable) {
+        val claimed = latestClaim.get()
+        val now = clock.now()
+        val token = claimed.reconciliationClaim?.claimToken
+            ?: return@withContext ReconciliationRenewResult.Conflict(
+                ActionError(ActionErrorCode.EXECUTION_CONFLICT, "对账 renew claim 缺失"),
+            )
+        val renewed = executionStore.renewReconciliation(
+            ReconciliationRenewRequest(
+                executionId = claimed.command.executionId,
+                expectedVersion = claimed.recordVersion,
+                claimToken = token,
+                now = now,
+                leaseDuration = ReconciliationTimingPolicy.CLAIM_LEASE,
+                audit = auditDraft(
+                    claimed.command.executionId,
+                    ActionExecutionState.OUTCOME_UNKNOWN,
+                    ActionExecutionState.OUTCOME_UNKNOWN,
+                    "reconciliation_claim_renewed",
+                    buildJsonObject { },
+                    null,
+                    now,
+                ),
+            ),
+        )
+        if (renewed is ReconciliationRenewResult.Renewed) {
+            latestClaim.set(renewed.record)
+        }
+        renewed
+    }
+
+    /** 取消必须传播；远程停止或 release 失败作为 suppressed 保留，续租租约继续承担恢复边界。 */
+    private suspend fun releaseReconciliationAfterCancellation(
+        remote: kotlinx.coroutines.Deferred<*>,
         claimed: ActionExecutionRecord,
-        outcome: String,
+        cancellation: CancellationException,
     ) {
-        try {
+        val handoffFailure = try {
             withContext(NonCancellable) {
                 withTimeout(CANCELLATION_HANDOFF_TIMEOUT_MILLIS) {
-                    releaseReconciliation(claimed, outcome, existingTerminal(claimed))
+                    remote.cancelAndJoin()
+                    val released = releaseReconciliation(claimed, "canceled", existingTerminal(claimed))
+                    if (released is ActionBusResult.Rejected) {
+                        throw IllegalStateException("对账取消释放失败: ${released.error.code}")
+                    }
                 }
             }
-        } catch (_: Throwable) {
-            // 调用方继续传播原 CancellationException，审计失败不伪装成业务结果。
+            null
+        } catch (failure: Throwable) {
+            failure
+        }
+        if (handoffFailure != null && handoffFailure !== cancellation) {
+            val visited = java.util.Collections.newSetFromMap(
+                java.util.IdentityHashMap<Throwable, Boolean>(),
+            )
+            var current: Throwable? = cancellation
+            while (current != null && visited.add(current)) {
+                if (current !== handoffFailure) current.addSuppressed(handoffFailure)
+                current = current.cause
+            }
         }
     }
 

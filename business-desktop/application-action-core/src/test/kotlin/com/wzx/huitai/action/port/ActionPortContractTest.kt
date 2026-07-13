@@ -36,8 +36,15 @@ class ActionPortContractTest {
         assertEquals(1, createMethods.size)
         assertTrue(createMethods.single().parameterTypes.contains(ActionAuditDraft::class.java))
         val reconciliationMethods = ActionExecutionStore::class.java.methods
-            .filter { it.name in setOf("updateReconciliation", "claimReconciliation", "releaseReconciliation") }
-        assertEquals(3, reconciliationMethods.size)
+            .filter {
+                it.name in setOf(
+                    "updateReconciliation",
+                    "claimReconciliation",
+                    "renewReconciliation",
+                    "releaseReconciliation",
+                )
+            }
+        assertEquals(4, reconciliationMethods.size)
         assertTrue(
             reconciliationMethods.all { method ->
                 method.parameterTypes
@@ -651,6 +658,108 @@ class ActionPortContractTest {
         assertEquals(sequenceBefore, store.auditSequence)
     }
 
+    @Test
+    fun `reconciliation renew atomically extends lease and preserves unknown facts`() = runTest {
+        val store = FakeExecutionStore()
+        val claimed = claimUnknown(store)
+        val claim = claimed.reconciliationClaim!!
+        val renewedAt = claim.claimedAt.plusSeconds(15)
+
+        val renewed = assertIs<ReconciliationRenewResult.Renewed>(
+            store.renewReconciliation(renewRequest(claimed, claim.claimToken, renewedAt)),
+        ).record
+
+        assertEquals(claimed.recordVersion + 1, renewed.recordVersion)
+        assertEquals(claimed.state, renewed.state)
+        assertEquals(claimed.result, renewed.result)
+        assertEquals(claimed.successFact, renewed.successFact)
+        assertEquals(claimed.reconciliation, renewed.reconciliation)
+        assertEquals(claim.claimToken, renewed.reconciliationClaim?.claimToken)
+        assertEquals(claim.ownerId, renewed.reconciliationClaim?.ownerId)
+        assertEquals(claim.claimedAt, renewed.reconciliationClaim?.claimedAt)
+        assertEquals(renewedAt.plusSeconds(60), renewed.reconciliationClaim?.expiresAt)
+        assertEquals(renewedAt, renewed.updatedAt)
+        assertEquals("reconciliation_claim_renewed", store.auditEvents.last().type)
+        assertIs<ReconciliationUpdateResult.Conflict>(
+            store.updateReconciliation(finalSuccessFactUpdate(claimed, reconciledSuccessFact(), claim.claimToken)),
+        )
+        assertIs<ReconciliationReleaseResult.Conflict>(
+            store.releaseReconciliation(releaseRequest(claimed, claim.claimToken)),
+        )
+    }
+
+    @Test
+    fun `reconciliation renew fences wrong token and version without mutation`() = runTest {
+        val store = FakeExecutionStore()
+        val claimed = claimUnknown(store)
+        val beforeEvents = store.auditEvents.toList()
+        val beforeSequence = store.auditSequence
+        val now = claimed.reconciliationClaim!!.claimedAt.plusSeconds(15)
+
+        assertIs<ReconciliationRenewResult.ExistingClaim>(
+            store.renewReconciliation(renewRequest(claimed, "wrong-token", now)),
+        )
+        assertIs<ReconciliationRenewResult.Conflict>(
+            store.renewReconciliation(
+                renewRequest(claimed, claimed.reconciliationClaim.claimToken, now)
+                    .copy(expectedVersion = claimed.recordVersion - 1),
+            ),
+        )
+
+        assertEquals(claimed, store.find(claimed.command.executionId))
+        assertEquals(beforeEvents, store.auditEvents)
+        assertEquals(beforeSequence, store.auditSequence)
+    }
+
+    @Test
+    fun `reconciliation renew audit failure rolls back record version lease event and sequence`() = runTest {
+        val store = FakeExecutionStore()
+        val claimed = claimUnknown(store)
+        val eventsBefore = store.auditEvents.toList()
+        val sequenceBefore = store.auditSequence
+        store.failNextAudit = true
+
+        val result = store.renewReconciliation(
+            renewRequest(
+                claimed,
+                claimed.reconciliationClaim!!.claimToken,
+                claimed.reconciliationClaim.claimedAt.plusSeconds(15),
+            ),
+        )
+
+        assertIs<ReconciliationRenewResult.Conflict>(result)
+        assertEquals(claimed, store.find(claimed.command.executionId))
+        assertEquals(eventsBefore, store.auditEvents)
+        assertEquals(sequenceBefore, store.auditSequence)
+    }
+
+    @Test
+    fun `reconciliation renew request validates audit and redacts lease secrets`() {
+        val request = ReconciliationRenewRequest(
+            executionId = "execution-1",
+            expectedVersion = 3,
+            claimToken = "secret-renew-token",
+            now = NOW.plusSeconds(18),
+            leaseDuration = Duration.ofSeconds(60),
+            audit = auditDraft(
+                ActionExecutionState.OUTCOME_UNKNOWN,
+                ActionExecutionState.OUTCOME_UNKNOWN,
+            ).copy(
+                type = "reconciliation_claim_renewed",
+                occurredAt = NOW.plusSeconds(18),
+            ),
+        )
+
+        assertFalse(request.toString().contains("secret-renew-token"))
+        assertFalse(request.toString().contains("2026-07-14T00:00:18Z"))
+        assertFailsWith<IllegalArgumentException> {
+            request.copy(leaseDuration = Duration.ZERO)
+        }
+        assertFailsWith<IllegalArgumentException> {
+            request.copy(audit = request.audit.copy(type = "reconciliation_attempt"))
+        }
+    }
+
     private suspend fun installUnknown(store: FakeExecutionStore): ActionExecutionRecord {
         val running = runningRecord(command())
         store.compareAndCreate(running, auditDraft())
@@ -698,6 +807,33 @@ class ActionPortContractTest {
             ActionExecutionState.OUTCOME_UNKNOWN,
             ActionExecutionState.OUTCOME_UNKNOWN,
         ).copy(type = "reconciliation_result"),
+    )
+
+    private fun renewRequest(
+        claimed: ActionExecutionRecord,
+        token: String,
+        now: Instant,
+    ) = ReconciliationRenewRequest(
+        executionId = claimed.command.executionId,
+        expectedVersion = claimed.recordVersion,
+        claimToken = token,
+        now = now,
+        leaseDuration = Duration.ofSeconds(60),
+        audit = auditDraft(
+            ActionExecutionState.OUTCOME_UNKNOWN,
+            ActionExecutionState.OUTCOME_UNKNOWN,
+        ).copy(
+            type = "reconciliation_claim_renewed",
+            occurredAt = now,
+        ),
+    )
+
+    private fun reconciledSuccessFact() = ExecutionSuccessFact(
+        kind = ExecutionSuccessFact.RECONCILED_REMOTE_SUCCESS,
+        remoteReference = "remote-reference",
+        errorCode = null,
+        safeMessage = null,
+        source = ExecutionSuccessFact.SOURCE_RECONCILIATION,
     )
 
     private fun finalSuccessFactUpdate(
@@ -1268,6 +1404,58 @@ class ActionPortContractTest {
             auditEvents += audit
             nextAuditSequence = audit.sequence
             return ReconciliationClaimResult.Claimed(claimed)
+        }
+
+        override suspend fun renewReconciliation(
+            request: ReconciliationRenewRequest,
+        ): ReconciliationRenewResult {
+            val existing = records.getValue(request.executionId)
+            if (existing.isFinalTerminal) return ReconciliationRenewResult.ExistingFinal(existing)
+            val claim = existing.reconciliationClaim ?: return ReconciliationRenewResult.Conflict(
+                com.wzx.huitai.action.model.ActionError(
+                    ActionErrorCode.EXECUTION_CONFLICT,
+                    "reconciliation renew claim missing",
+                ),
+            )
+            if (claim.claimToken != request.claimToken) {
+                return ReconciliationRenewResult.ExistingClaim(existing)
+            }
+            if (!existing.needsReconciliation || existing.recordVersion != request.expectedVersion) {
+                return ReconciliationRenewResult.Conflict(
+                    com.wzx.huitai.action.model.ActionError(
+                        ActionErrorCode.EXECUTION_CONFLICT,
+                        "reconciliation renew conflict",
+                    ),
+                )
+            }
+            val renewed = try {
+                existing.copy(
+                    updatedAt = request.now,
+                    recordVersion = existing.recordVersion + 1,
+                    reconciliationClaim = claim.copy(expiresAt = request.expiresAt),
+                )
+            } catch (_: IllegalArgumentException) {
+                return ReconciliationRenewResult.Conflict(
+                    com.wzx.huitai.action.model.ActionError(
+                        ActionErrorCode.EXECUTION_CONFLICT,
+                        "reconciliation renew time conflict",
+                    ),
+                )
+            }
+            val audit = try {
+                prepareAudit(request.audit)
+            } catch (_: Exception) {
+                return ReconciliationRenewResult.Conflict(
+                    com.wzx.huitai.action.model.ActionError(
+                        ActionErrorCode.EXECUTION_CONFLICT,
+                        "reconciliation renew audit rolled back",
+                    ),
+                )
+            }
+            records[request.executionId] = renewed
+            auditEvents += audit
+            nextAuditSequence = audit.sequence
+            return ReconciliationRenewResult.Renewed(renewed)
         }
 
         override suspend fun releaseReconciliation(

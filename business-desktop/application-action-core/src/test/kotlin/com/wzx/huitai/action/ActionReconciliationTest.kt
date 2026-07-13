@@ -9,7 +9,11 @@ import com.wzx.huitai.action.model.ReconciliationPolicy
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.buildJsonObject
@@ -26,8 +30,12 @@ import kotlin.test.assertTrue
 class ActionReconciliationTest {
     @Test
     fun `远程对账硬超时严格早于claim租约并保留安全余量`() {
+        assertEquals(Duration.ofSeconds(15), ReconciliationTimingPolicy.HEARTBEAT_INTERVAL)
         assertEquals(Duration.ofSeconds(30), ReconciliationTimingPolicy.RECONCILIATION_TIMEOUT)
         assertEquals(Duration.ofSeconds(60), ReconciliationTimingPolicy.CLAIM_LEASE)
+        assertTrue(!ReconciliationTimingPolicy.HEARTBEAT_INTERVAL.isZero)
+        assertTrue(!ReconciliationTimingPolicy.HEARTBEAT_INTERVAL.isNegative)
+        assertTrue(ReconciliationTimingPolicy.HEARTBEAT_INTERVAL < ReconciliationTimingPolicy.RECONCILIATION_TIMEOUT)
         assertTrue(ReconciliationTimingPolicy.RECONCILIATION_TIMEOUT < ReconciliationTimingPolicy.CLAIM_LEASE)
         assertTrue(
             ReconciliationTimingPolicy.CLAIM_LEASE.minus(ReconciliationTimingPolicy.RECONCILIATION_TIMEOUT) >=
@@ -447,7 +455,7 @@ class ActionReconciliationTest {
     @Test
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     fun `远程对账超时先释放claim再允许第二Bus重试且不并发`() = runTest {
-        val sharedClock = BusClock()
+        val sharedClock = BusClock(autoAdvance = false, initialSeconds = 2)
         val first = BusFixture(
             risk = ActionRiskLevel.REVERSIBLE_WRITE,
             reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
@@ -491,7 +499,7 @@ class ActionReconciliationTest {
         assertEquals(1, first.action.maximumActiveReconcileCount)
         assertNull(first.store.record?.reconciliationClaim)
         assertEquals(
-            listOf("reconciliation_attempt", "reconciliation_result"),
+            listOf("reconciliation_attempt", "reconciliation_claim_renewed", "reconciliation_result"),
             first.audit.events.map { it.type },
         )
 
@@ -504,6 +512,221 @@ class ActionReconciliationTest {
         assertEquals(0, first.action.activeReconcileCount)
         assertEquals(0, second.action.activeReconcileCount)
         assertEquals(1, second.action.maximumActiveReconcileCount)
+    }
+
+    @Test
+    fun `调用方较短外层timeout必须传播且释放claim保留结果未知`() = runTest {
+        val fixture = reconciliationFixture(ReconciliationPolicy.QUERY_REMOTE)
+        fixture.action.reconcileEntered = CompletableDeferred()
+        fixture.action.reconcileRelease = CompletableDeferred()
+        val before = fixture.store.record!!
+
+        assertFailsWith<TimeoutCancellationException> {
+            withTimeout(1_000) {
+                fixture.bus.execute(fixture.command(), fixture.context)
+            }
+        }
+
+        assertReleasedUnknown(before, fixture.store.record!!)
+        assertEquals(
+            listOf("reconciliation_attempt", "reconciliation_result"),
+            fixture.audit.events.map { it.type },
+        )
+        assertTrue(
+            fixture.audit.events.last().redactedPayload.toString().contains("\"outcome\":\"canceled\""),
+        )
+        assertEquals(1, fixture.action.reconcileCount)
+        assertEquals(0, fixture.action.activeReconcileCount)
+    }
+
+    @Test
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun `活动owner续租后跨scope在旧expiresAt仍不能接管且远程最多并发一次`() = runTest {
+        val sharedClock = BusClock()
+        val first = BusFixture(
+            risk = ActionRiskLevel.REVERSIBLE_WRITE,
+            reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
+            lockScope = StripedActionExecutionLockScope(4),
+            clock = sharedClock,
+        )
+        val second = BusFixture(
+            risk = ActionRiskLevel.REVERSIBLE_WRITE,
+            reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
+            lockScope = StripedActionExecutionLockScope(4),
+            store = first.store,
+            audit = first.audit,
+            clock = sharedClock,
+        )
+        val unknown: ActionResult<JsonElement> = ActionResult.OutcomeUnknown(
+            executionId = "execution-1",
+            error = ActionError(ActionErrorCode.OUTCOME_UNKNOWN, "远程响应丢失"),
+            reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
+        )
+        first.store.installExistingTerminal(first.command(), result = unknown)
+        first.action.reconcileEntered = CompletableDeferred()
+        first.action.reconcileRelease = CompletableDeferred()
+
+        val owner = async { first.bus.execute(first.command(), first.context) }
+        first.action.reconcileEntered!!.await()
+        val originalClaimed = first.store.record!!
+        val originalExpiresAt = originalClaimed.reconciliationClaim!!.expiresAt
+
+        sharedClock.advanceTo(
+            originalClaimed.reconciliationClaim.claimedAt.plus(ReconciliationTimingPolicy.HEARTBEAT_INTERVAL),
+        )
+        testScheduler.advanceTimeBy(ReconciliationTimingPolicy.HEARTBEAT_INTERVAL.toMillis())
+        testScheduler.runCurrent()
+        val renewed = first.store.record!!
+
+        assertEquals(originalClaimed.recordVersion + 1, renewed.recordVersion)
+        assertTrue(renewed.reconciliationClaim!!.expiresAt.isAfter(originalExpiresAt))
+        assertEquals(1, first.audit.events.count { it.type == "reconciliation_claim_renewed" })
+
+        sharedClock.advanceTo(originalExpiresAt)
+        assertIs<ActionBusResult.InProgress>(second.bus.execute(second.command(), second.context))
+        assertEquals(0, second.action.reconcileCount)
+        assertEquals(1, first.action.maximumActiveReconcileCount)
+        assertEquals(1, first.action.activeReconcileCount)
+
+        testScheduler.advanceTimeBy(ReconciliationTimingPolicy.HEARTBEAT_INTERVAL.toMillis())
+        testScheduler.runCurrent()
+
+        assertTrue(owner.isCompleted)
+        assertEquals(unknown, assertIs<ActionBusResult.Completed>(owner.await()).result)
+        assertEquals(0, first.action.activeReconcileCount)
+        assertEquals(1, first.action.maximumActiveReconcileCount)
+        assertNull(first.store.record?.reconciliationClaim)
+    }
+
+    @Test
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun `远程结果在heartbeat后使用最新record version提交终态`() = runTest {
+        val fixture = reconciliationFixture(ReconciliationPolicy.QUERY_REMOTE)
+        fixture.action.reconcileEntered = CompletableDeferred()
+        fixture.action.reconcileRelease = CompletableDeferred()
+        fixture.action.reconciliationResult = ReconciliationResult.Succeeded(
+            remoteReference = "remote-confirmed",
+            executionId = "execution-1",
+        )
+
+        val owner = async { fixture.bus.execute(fixture.command(), fixture.context) }
+        fixture.action.reconcileEntered!!.await()
+        testScheduler.advanceTimeBy(ReconciliationTimingPolicy.HEARTBEAT_INTERVAL.toMillis())
+        testScheduler.runCurrent()
+        val renewedVersion = fixture.store.record!!.recordVersion
+        fixture.action.reconcileRelease!!.complete(Unit)
+
+        assertIs<ActionBusResult.SuccessWithoutOutput>(owner.await())
+        assertEquals(renewedVersion, fixture.store.record?.reconciliation?.sourceRecordVersion)
+        assertNull(fixture.store.record?.reconciliationClaim)
+        assertEquals(
+            listOf("reconciliation_attempt", "reconciliation_claim_renewed", "reconciliation_result"),
+            fixture.audit.events.map { it.type },
+        )
+    }
+
+    @Test
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun `heartbeat发现其他claim时取消本地对账且不覆盖新owner`() = runTest {
+        val fixture = reconciliationFixture(ReconciliationPolicy.QUERY_REMOTE)
+        fixture.action.reconcileEntered = CompletableDeferred()
+        fixture.action.reconcileRelease = CompletableDeferred()
+        lateinit var takeover: com.wzx.huitai.action.port.ActionExecutionRecord
+        fixture.store.renewOverride = { request, current ->
+            takeover = current.copy(
+                updatedAt = request.now,
+                recordVersion = current.recordVersion + 1,
+                reconciliationClaim = current.reconciliationClaim!!.copy(
+                    claimToken = "replacement-token",
+                    ownerId = "replacement-owner",
+                    claimedAt = request.now,
+                    expiresAt = request.expiresAt,
+                ),
+            )
+            fixture.store.record = takeover
+            com.wzx.huitai.action.port.ReconciliationRenewResult.ExistingClaim(takeover)
+        }
+
+        val owner = async { fixture.bus.execute(fixture.command(), fixture.context) }
+        fixture.action.reconcileEntered!!.await()
+        testScheduler.advanceTimeBy(ReconciliationTimingPolicy.HEARTBEAT_INTERVAL.toMillis())
+        testScheduler.runCurrent()
+
+        assertIs<ActionBusResult.InProgress>(owner.await())
+        assertEquals(takeover, fixture.store.record)
+        assertEquals(0, fixture.action.activeReconcileCount)
+        assertEquals(listOf("reconciliation_attempt"), fixture.audit.events.map { it.type })
+    }
+
+    @Test
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun `heartbeat版本冲突时取消本地对账并返回冲突`() = runTest {
+        val fixture = reconciliationFixture(ReconciliationPolicy.QUERY_REMOTE)
+        fixture.action.reconcileEntered = CompletableDeferred()
+        fixture.action.reconcileRelease = CompletableDeferred()
+        val conflict = ActionError(ActionErrorCode.EXECUTION_CONFLICT, "renew conflict")
+        fixture.store.renewOverride = { _, _ ->
+            com.wzx.huitai.action.port.ReconciliationRenewResult.Conflict(conflict)
+        }
+
+        val owner = async { fixture.bus.execute(fixture.command(), fixture.context) }
+        fixture.action.reconcileEntered!!.await()
+        testScheduler.advanceTimeBy(ReconciliationTimingPolicy.HEARTBEAT_INTERVAL.toMillis())
+        testScheduler.runCurrent()
+
+        assertEquals(conflict, assertIs<ActionBusResult.Rejected>(owner.await()).error)
+        assertEquals(0, fixture.action.activeReconcileCount)
+        assertEquals(listOf("reconciliation_attempt"), fixture.audit.events.map { it.type })
+        assertEquals(ActionExecutionState.OUTCOME_UNKNOWN, fixture.store.record?.state)
+    }
+
+    @Test
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun `heartbeat后外部取消的release失败附加suppressed并保留续租租约`() = runTest {
+        val fixture = reconciliationFixture(ReconciliationPolicy.QUERY_REMOTE)
+        fixture.action.reconcileEntered = CompletableDeferred()
+        fixture.action.reconcileRelease = CompletableDeferred()
+        val cancellation = CancellationException("external-cancel")
+        fixture.action.reconcileFailure = cancellation
+        val conflict = ActionError(ActionErrorCode.EXECUTION_CONFLICT, "release conflict")
+        fixture.store.releaseOverride = { _, _ ->
+            com.wzx.huitai.action.port.ReconciliationReleaseResult.Conflict(conflict)
+        }
+        lateinit var originalExpiresAt: java.time.Instant
+        val releaseAfterHeartbeat = launch {
+            fixture.action.reconcileEntered!!.await()
+            originalExpiresAt = fixture.store.record!!.reconciliationClaim!!.expiresAt
+            delay(ReconciliationTimingPolicy.HEARTBEAT_INTERVAL.toMillis() + 1_000)
+            fixture.action.reconcileRelease!!.complete(Unit)
+        }
+
+        val thrown = assertFailsWith<CancellationException> {
+            fixture.bus.execute(fixture.command(), fixture.context)
+        }
+        releaseAfterHeartbeat.join()
+        val renewedExpiresAt = fixture.store.record!!.reconciliationClaim!!.expiresAt
+
+        assertEquals("external-cancel", thrown.message)
+        val cancellationChain = mutableListOf<Throwable>()
+        var current: Throwable? = thrown
+        while (current != null && cancellationChain.none { it === current }) {
+            cancellationChain += current
+            current = current.cause
+        }
+        assertTrue(
+            cancellationChain.any { cancellation ->
+                cancellation.suppressed.any { it.message?.contains("EXECUTION_CONFLICT") == true }
+            },
+            "message=${thrown.message}, cause=${thrown.cause?.message}, " +
+                "suppressed=${cancellationChain.flatMap { it.suppressed.toList() }.map { it.message }}",
+        )
+        assertTrue(renewedExpiresAt.isAfter(originalExpiresAt))
+        assertEquals(renewedExpiresAt, fixture.store.record?.reconciliationClaim?.expiresAt)
+        assertEquals(0, fixture.action.activeReconcileCount)
+        assertEquals(
+            listOf("reconciliation_attempt", "reconciliation_claim_renewed"),
+            fixture.audit.events.map { it.type },
+        )
     }
 
     @Test

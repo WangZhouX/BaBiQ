@@ -409,6 +409,10 @@ class ActionIdempotencyTest {
             request: com.wzx.huitai.action.port.ReconciliationClaimRequest,
         ): com.wzx.huitai.action.port.ReconciliationClaimResult = error("本测试不进入对账 claim")
 
+        override suspend fun renewReconciliation(
+            request: com.wzx.huitai.action.port.ReconciliationRenewRequest,
+        ): com.wzx.huitai.action.port.ReconciliationRenewResult = error("本测试不进入对账 renew")
+
         override suspend fun releaseReconciliation(
             request: com.wzx.huitai.action.port.ReconciliationReleaseRequest,
         ): com.wzx.huitai.action.port.ReconciliationReleaseResult = error("本测试不进入对账 release")

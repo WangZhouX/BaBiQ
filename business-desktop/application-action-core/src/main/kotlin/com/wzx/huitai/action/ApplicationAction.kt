@@ -82,6 +82,7 @@ interface ApplicationAction<I : Any, O : Any> {
     /**
      * 对结果不确定的远程动作执行查询或对账。
      * 实现必须遵守 suspend 的合作式取消契约，避免硬超时后仍继续占用远程并发或产生迟到结果。
+     * heartbeat 只保障合作式挂起或长查询的租约；非合作网络 transport 的硬超时由 Task 12 集成适配器实现。
      */
     suspend fun reconcile(
         input: I,

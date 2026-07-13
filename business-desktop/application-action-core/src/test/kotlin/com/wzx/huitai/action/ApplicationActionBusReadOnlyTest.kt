@@ -752,6 +752,14 @@ internal class BusExecutionStore : ActionExecutionStore {
     var preparedStateBeforeAuditFailure: ActionExecutionState? = null
     var existingTerminalResult: ActionResult<JsonElement>? = null
     var existingTerminalOnTransitionTo: ActionExecutionState? = null
+    var renewOverride: ((
+        com.wzx.huitai.action.port.ReconciliationRenewRequest,
+        ActionExecutionRecord,
+    ) -> com.wzx.huitai.action.port.ReconciliationRenewResult)? = null
+    var releaseOverride: ((
+        com.wzx.huitai.action.port.ReconciliationReleaseRequest,
+        ActionExecutionRecord,
+    ) -> com.wzx.huitai.action.port.ReconciliationReleaseResult)? = null
     lateinit var audit: BusAuditPort
 
     override suspend fun find(executionId: String): ActionExecutionRecord? = record
@@ -966,12 +974,54 @@ internal class BusExecutionStore : ActionExecutionStore {
         return com.wzx.huitai.action.port.ReconciliationClaimResult.Claimed(claimed)
     }
 
+    override suspend fun renewReconciliation(
+        request: com.wzx.huitai.action.port.ReconciliationRenewRequest,
+    ): com.wzx.huitai.action.port.ReconciliationRenewResult {
+        val current = record ?: return com.wzx.huitai.action.port.ReconciliationRenewResult.Conflict(
+            ActionError(ActionErrorCode.EXECUTION_CONFLICT, "missing"),
+        )
+        renewOverride?.let { return it(request, current) }
+        if (current.isFinalTerminal) {
+            return com.wzx.huitai.action.port.ReconciliationRenewResult.ExistingFinal(current)
+        }
+        val claim = current.reconciliationClaim ?: return com.wzx.huitai.action.port.ReconciliationRenewResult.Conflict(
+            ActionError(ActionErrorCode.EXECUTION_CONFLICT, "renew claim missing"),
+        )
+        if (claim.claimToken != request.claimToken) {
+            return com.wzx.huitai.action.port.ReconciliationRenewResult.ExistingClaim(current)
+        }
+        if (!current.needsReconciliation || current.recordVersion != request.expectedVersion) {
+            return com.wzx.huitai.action.port.ReconciliationRenewResult.Conflict(
+                ActionError(ActionErrorCode.EXECUTION_CONFLICT, "renew conflict"),
+            )
+        }
+        val renewed = try {
+            current.copy(
+                updatedAt = request.now,
+                recordVersion = current.recordVersion + 1,
+                reconciliationClaim = claim.copy(expiresAt = request.expiresAt),
+            )
+        } catch (_: IllegalArgumentException) {
+            return com.wzx.huitai.action.port.ReconciliationRenewResult.Conflict(
+                ActionError(ActionErrorCode.EXECUTION_CONFLICT, "renew time conflict"),
+            )
+        }
+        val event = prepareAudit(request.audit)
+            ?: return com.wzx.huitai.action.port.ReconciliationRenewResult.Conflict(
+                ActionError(ActionErrorCode.EXECUTION_CONFLICT, "renew audit rolled back"),
+            )
+        record = renewed
+        commitAudit(event)
+        return com.wzx.huitai.action.port.ReconciliationRenewResult.Renewed(renewed)
+    }
+
     override suspend fun releaseReconciliation(
         request: com.wzx.huitai.action.port.ReconciliationReleaseRequest,
     ): com.wzx.huitai.action.port.ReconciliationReleaseResult {
         val current = record ?: return com.wzx.huitai.action.port.ReconciliationReleaseResult.Conflict(
             ActionError(ActionErrorCode.EXECUTION_CONFLICT, "missing"),
         )
+        releaseOverride?.let { return it(request, current) }
         if (current.isFinalTerminal) {
             return com.wzx.huitai.action.port.ReconciliationReleaseResult.ExistingFinal(current)
         }
@@ -1045,9 +1095,16 @@ private fun ActionCommand.bindingForStore(): ExecutionBinding {
     )
 }
 
-internal class BusClock : ActionClock {
-    private var seconds = 0L
-    override fun now(): Instant = Instant.parse("2026-07-14T00:00:00Z").plusSeconds(seconds++)
+internal class BusClock(
+    private val autoAdvance: Boolean = true,
+    initialSeconds: Long = 0,
+) : ActionClock {
+    private var seconds = initialSeconds
+    override fun now(): Instant {
+        val current = Instant.parse("2026-07-14T00:00:00Z").plusSeconds(seconds)
+        if (autoAdvance) seconds += 1
+        return current
+    }
 
     fun advanceTo(instant: Instant) {
         seconds = java.time.Duration.between(Instant.parse("2026-07-14T00:00:00Z"), instant).seconds
