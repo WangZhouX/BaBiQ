@@ -52,7 +52,12 @@ data class ActionAuditDraft(
     val redactedPayload: JsonObject,
     val actorId: String?,
     val occurredAt: Instant,
-)
+) {
+    /** 日志保留迁移元数据，隐藏载荷和操作者。 */
+    override fun toString(): String =
+        "ActionAuditDraft(executionId=$executionId, fromState=$fromState, toState=$toState, " +
+            "type=$type, redactedPayload=[REDACTED], actorId=[REDACTED], occurredAt=$occurredAt)"
+}
 
 /** 仅允许追加动作审计事件。 */
 fun interface ActionAuditPort {

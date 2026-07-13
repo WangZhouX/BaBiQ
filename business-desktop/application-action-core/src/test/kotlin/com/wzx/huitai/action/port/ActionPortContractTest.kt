@@ -29,6 +29,22 @@ import kotlin.test.assertTrue
 
 class ActionPortContractTest {
     @Test
+    fun `execution store exposes only audited create and transition mutations`() {
+        val createMethods = ActionExecutionStore::class.java.methods.filter { it.name == "compareAndCreate" }
+
+        assertEquals(1, createMethods.size)
+        assertTrue(createMethods.single().parameterTypes.contains(ActionAuditDraft::class.java))
+        listOf(
+            "com.wzx.huitai.action.port.ExecutionStateUpdate",
+            "com.wzx.huitai.action.port.ExecutionStateUpdateResult",
+            "com.wzx.huitai.action.port.TerminalExecutionUpdate",
+            "com.wzx.huitai.action.port.TerminalUpdateResult",
+        ).forEach { removedType ->
+            assertFailsWith<ClassNotFoundException> { Class.forName(removedType) }
+        }
+    }
+
+    @Test
     fun `confirmation and approval use distinct per-execution vocabularies`() = runTest {
         val confirmation = QueueConfirmationPort(
             ActionConfirmation(
@@ -108,13 +124,15 @@ class ActionPortContractTest {
         assertNull(store.find("execution-1"))
         val running = runningRecord(command())
 
-        val created = assertIs<ExecutionCreateResult.Created>(store.compareAndCreate(running))
+        val created = assertIs<ExecutionCreateResult.Created>(store.compareAndCreate(running, auditDraft()))
         assertSame(running, created.record)
-        assertIs<ExecutionCreateResult.ExistingRunning>(store.compareAndCreate(running.copy()))
+        assertEquals(listOf(1L), store.auditEvents.map { it.sequence })
+        assertIs<ExecutionCreateResult.ExistingRunning>(store.compareAndCreate(running.copy(), auditDraft()))
 
         val conflict = assertIs<ExecutionCreateResult.Conflict>(
             store.compareAndCreate(
                 running.copy(fingerprint = ExecutionFingerprint("other.action", "other-fingerprint")),
+                auditDraft(),
             ),
         )
         assertEquals(ActionErrorCode.EXECUTION_CONFLICT, conflict.error.code)
@@ -123,28 +141,33 @@ class ActionPortContractTest {
             executionId = running.command.executionId,
             output = buildJsonObject { put("saved", true) },
         )
-        val updated = assertIs<TerminalUpdateResult.Updated>(
-            store.updateTerminal(
-                TerminalExecutionUpdate(
+        val updated = assertIs<ExecutionTransitionResult.Updated>(
+            store.transition(
+                ExecutionTransition(
                     executionId = running.command.executionId,
                     expectedVersion = running.recordVersion,
-                    terminalState = ActionExecutionState.SUCCEEDED,
+                    state = ActionExecutionState.SUCCEEDED,
                     result = terminalResult,
+                    updatedAt = NOW.plusSeconds(2),
                     completedAt = NOW.plusSeconds(2),
+                    audit = auditDraft(ActionExecutionState.EXECUTING, ActionExecutionState.SUCCEEDED),
                 ),
             ),
         )
         assertEquals(terminalResult, updated.record.result)
         assertEquals(ActionExecutionState.SUCCEEDED, updated.record.state)
-        assertIs<ExecutionCreateResult.ExistingTerminal>(store.compareAndCreate(running))
-        val repeated = assertIs<TerminalUpdateResult.ExistingTerminal>(
-            store.updateTerminal(
-                TerminalExecutionUpdate(
+        assertEquals(listOf(1L, 2L), store.auditEvents.map { it.sequence })
+        assertIs<ExecutionCreateResult.ExistingTerminal>(store.compareAndCreate(running, auditDraft()))
+        val repeated = assertIs<ExecutionTransitionResult.ExistingTerminal>(
+            store.transition(
+                ExecutionTransition(
                     executionId = running.command.executionId,
                     expectedVersion = updated.record.recordVersion,
-                    terminalState = ActionExecutionState.FAILED,
+                    state = ActionExecutionState.FAILED,
                     result = failure(running.command.executionId),
+                    updatedAt = NOW.plusSeconds(3),
                     completedAt = NOW.plusSeconds(3),
+                    audit = auditDraft(ActionExecutionState.SUCCEEDED, ActionExecutionState.FAILED),
                 ),
             ),
         )
@@ -233,32 +256,37 @@ class ActionPortContractTest {
     }
 
     @Test
-    fun `terminal and reconciliation updates reject invalid structured payloads`() {
+    fun `transition and reconciliation updates reject invalid structured payloads`() {
         assertFailsWith<IllegalArgumentException> {
-            TerminalExecutionUpdate(
+            ExecutionTransition(
                 executionId = "execution-1",
                 expectedVersion = 1,
-                terminalState = ActionExecutionState.SUCCEEDED,
+                state = ActionExecutionState.SUCCEEDED,
                 result = failure(),
+                updatedAt = NOW,
                 completedAt = NOW,
+                audit = auditDraft(ActionExecutionState.EXECUTING, ActionExecutionState.SUCCEEDED),
             )
         }
         assertFailsWith<IllegalArgumentException> {
-            TerminalExecutionUpdate(
+            ExecutionTransition(
                 executionId = "execution-1",
                 expectedVersion = 1,
-                terminalState = ActionExecutionState.EXECUTING,
+                state = ActionExecutionState.EXECUTING,
                 result = success(),
-                completedAt = NOW,
+                updatedAt = NOW,
+                audit = auditDraft(ActionExecutionState.VALIDATING, ActionExecutionState.EXECUTING),
             )
         }
         assertFailsWith<IllegalArgumentException> {
-            TerminalExecutionUpdate(
+            ExecutionTransition(
                 executionId = "execution-1",
                 expectedVersion = 1,
-                terminalState = ActionExecutionState.SUCCEEDED,
+                state = ActionExecutionState.SUCCEEDED,
                 result = success("other-execution"),
+                updatedAt = NOW,
                 completedAt = NOW,
+                audit = auditDraft(ActionExecutionState.EXECUTING, ActionExecutionState.SUCCEEDED),
             )
         }
         assertFailsWith<IllegalArgumentException> {
@@ -285,13 +313,15 @@ class ActionPortContractTest {
             ExecutionSuccessFact.OUTPUT_ENCODING_FAILED,
             "secret-remote-reference",
         )
-        val update = TerminalExecutionUpdate(
+        val update = ExecutionTransition(
             executionId = "execution-1",
             expectedVersion = 1,
-            terminalState = ActionExecutionState.SUCCEEDED,
+            state = ActionExecutionState.SUCCEEDED,
             result = null,
+            updatedAt = NOW,
             completedAt = NOW,
             successFact = fact,
+            audit = auditDraft(ActionExecutionState.EXECUTING, ActionExecutionState.SUCCEEDED),
         )
 
         assertFalse("secret-remote-reference" in fact.toString())
@@ -302,16 +332,18 @@ class ActionPortContractTest {
     fun `outcome unknown blocks replay and can be reconciled exactly once`() = runTest {
         val store = FakeExecutionStore()
         val running = runningRecord(command())
-        store.compareAndCreate(running)
+        store.compareAndCreate(running, auditDraft())
         val unknownResult = outcomeUnknown()
-        val unknown = assertIs<TerminalUpdateResult.Updated>(
-            store.updateTerminal(
-                TerminalExecutionUpdate(
+        val unknown = assertIs<ExecutionTransitionResult.Updated>(
+            store.transition(
+                ExecutionTransition(
                     executionId = running.command.executionId,
                     expectedVersion = running.recordVersion,
-                    terminalState = ActionExecutionState.OUTCOME_UNKNOWN,
+                    state = ActionExecutionState.OUTCOME_UNKNOWN,
                     result = unknownResult,
+                    updatedAt = NOW.plusSeconds(2),
                     completedAt = NOW.plusSeconds(2),
+                    audit = auditDraft(ActionExecutionState.EXECUTING, ActionExecutionState.OUTCOME_UNKNOWN),
                 ),
             ),
         ).record
@@ -319,7 +351,7 @@ class ActionPortContractTest {
         assertTrue(unknown.isTerminal)
         assertFalse(unknown.isFinalTerminal)
         assertTrue(unknown.needsReconciliation)
-        assertIs<ExecutionCreateResult.ExistingTerminal>(store.compareAndCreate(running))
+        assertIs<ExecutionCreateResult.ExistingTerminal>(store.compareAndCreate(running, auditDraft()))
 
         val reconciledResult = success()
         val reconciled = assertIs<ReconciliationUpdateResult.Updated>(
@@ -356,15 +388,17 @@ class ActionPortContractTest {
     fun `reconciliation conflicts on version mismatch or non-unknown state`() = runTest {
         val versionStore = FakeExecutionStore()
         val running = runningRecord(command())
-        versionStore.compareAndCreate(running)
-        val unknown = assertIs<TerminalUpdateResult.Updated>(
-            versionStore.updateTerminal(
-                TerminalExecutionUpdate(
+        versionStore.compareAndCreate(running, auditDraft())
+        val unknown = assertIs<ExecutionTransitionResult.Updated>(
+            versionStore.transition(
+                ExecutionTransition(
                     executionId = running.command.executionId,
                     expectedVersion = running.recordVersion,
-                    terminalState = ActionExecutionState.OUTCOME_UNKNOWN,
+                    state = ActionExecutionState.OUTCOME_UNKNOWN,
                     result = outcomeUnknown(),
+                    updatedAt = NOW.plusSeconds(2),
                     completedAt = NOW.plusSeconds(2),
+                    audit = auditDraft(ActionExecutionState.EXECUTING, ActionExecutionState.OUTCOME_UNKNOWN),
                 ),
             ),
         ).record
@@ -380,7 +414,7 @@ class ActionPortContractTest {
         )
 
         val runningStore = FakeExecutionStore()
-        runningStore.compareAndCreate(running)
+        runningStore.compareAndCreate(running, auditDraft())
         assertIs<ReconciliationUpdateResult.Conflict>(
             runningStore.updateReconciliation(
                 ReconciliationExecutionUpdate(
@@ -393,15 +427,17 @@ class ActionPortContractTest {
         )
 
         val finalStore = FakeExecutionStore()
-        finalStore.compareAndCreate(running)
-        val final = assertIs<TerminalUpdateResult.Updated>(
-            finalStore.updateTerminal(
-                TerminalExecutionUpdate(
+        finalStore.compareAndCreate(running, auditDraft())
+        val final = assertIs<ExecutionTransitionResult.Updated>(
+            finalStore.transition(
+                ExecutionTransition(
                     executionId = running.command.executionId,
                     expectedVersion = running.recordVersion,
-                    terminalState = ActionExecutionState.FAILED,
+                    state = ActionExecutionState.FAILED,
                     result = failure(),
+                    updatedAt = NOW.plusSeconds(2),
                     completedAt = NOW.plusSeconds(2),
+                    audit = auditDraft(ActionExecutionState.EXECUTING, ActionExecutionState.FAILED),
                 ),
             ),
         ).record
@@ -468,6 +504,39 @@ class ActionPortContractTest {
         assertEquals(listOf(event), port.events)
         assertEquals(listOf("append"), ActionAuditPort::class.java.declaredMethods.map { it.name }.distinct())
         assertFalse("secret" in event.toString())
+    }
+
+    @Test
+    fun `audit draft and transition logs redact nested secrets`() {
+        val draft = ActionAuditDraft(
+            executionId = "execution-1",
+            fromState = ActionExecutionState.EXECUTING,
+            toState = ActionExecutionState.SUCCEEDED,
+            type = "secret-event-type",
+            redactedPayload = buildJsonObject { put("token", "secret-payload") },
+            actorId = "secret-actor",
+            occurredAt = NOW,
+        )
+        val transition = ExecutionTransition(
+            executionId = "execution-1",
+            expectedVersion = 1,
+            state = ActionExecutionState.SUCCEEDED,
+            result = ActionResult.Success(
+                "execution-1",
+                buildJsonObject { put("token", "secret-result") },
+                remoteReference = "secret-remote-reference",
+            ),
+            updatedAt = NOW,
+            completedAt = NOW,
+            audit = draft,
+        )
+
+        listOf(draft.toString(), transition.toString()).forEach { logged ->
+            assertFalse("secret-payload" in logged)
+            assertFalse("secret-actor" in logged)
+            assertFalse("secret-result" in logged)
+            assertFalse("secret-remote-reference" in logged)
+        }
     }
 
     @Test
@@ -559,6 +628,19 @@ class ActionPortContractTest {
         recordVersion = 1,
     )
 
+    private fun auditDraft(
+        fromState: ActionExecutionState = ActionExecutionState.RECEIVED,
+        toState: ActionExecutionState = ActionExecutionState.EXECUTING,
+    ) = ActionAuditDraft(
+        executionId = "execution-1",
+        fromState = fromState,
+        toState = toState,
+        type = "state_transition",
+        redactedPayload = buildJsonObject { },
+        actorId = null,
+        occurredAt = NOW,
+    )
+
     private fun terminalRecord(
         state: ActionExecutionState,
         result: ActionResult<JsonElement>,
@@ -632,13 +714,19 @@ class ActionPortContractTest {
 
     private class FakeExecutionStore : ActionExecutionStore {
         private val records = mutableMapOf<String, ActionExecutionRecord>()
+        val auditEvents = mutableListOf<ActionAuditEvent>()
+        private var nextAuditSequence = 0L
 
         override suspend fun find(executionId: String): ActionExecutionRecord? = records[executionId]
 
-        override suspend fun compareAndCreate(record: ActionExecutionRecord): ExecutionCreateResult {
+        override suspend fun compareAndCreate(
+            record: ActionExecutionRecord,
+            audit: ActionAuditDraft,
+        ): ExecutionCreateResult {
             val existing = records[record.command.executionId]
             if (existing == null) {
                 records[record.command.executionId] = record
+                appendAudit(audit)
                 return ExecutionCreateResult.Created(record)
             }
             if (existing.fingerprint != record.fingerprint) {
@@ -655,11 +743,6 @@ class ActionPortContractTest {
                 ExecutionCreateResult.ExistingRunning(existing)
             }
         }
-
-        override suspend fun compareAndCreate(
-            record: ActionExecutionRecord,
-            audit: ActionAuditDraft,
-        ): ExecutionCreateResult = compareAndCreate(record)
 
         override suspend fun transition(update: ExecutionTransition): ExecutionTransitionResult {
             val existing = records.getValue(update.executionId)
@@ -682,50 +765,21 @@ class ActionPortContractTest {
                 recordVersion = existing.recordVersion + 1,
             )
             records[update.executionId] = updated
+            appendAudit(update.audit)
             return ExecutionTransitionResult.Updated(updated)
         }
 
-        suspend fun updateState(update: ExecutionStateUpdate): ExecutionStateUpdateResult {
-            val existing = records.getValue(update.executionId)
-            if (existing.isTerminal || existing.recordVersion != update.expectedVersion) {
-                return ExecutionStateUpdateResult.Conflict(
-                    com.wzx.huitai.action.model.ActionError(
-                        ActionErrorCode.EXECUTION_CONFLICT,
-                        "state conflict",
-                    ),
-                )
-            }
-            val updated = existing.copy(
-                state = update.state,
-                startedAt = update.startedAt ?: existing.startedAt,
-                updatedAt = update.updatedAt,
-                recordVersion = existing.recordVersion + 1,
+        private fun appendAudit(draft: ActionAuditDraft) {
+            auditEvents += ActionAuditEvent(
+                executionId = draft.executionId,
+                sequence = ++nextAuditSequence,
+                fromState = draft.fromState,
+                toState = draft.toState,
+                type = draft.type,
+                redactedPayload = draft.redactedPayload,
+                actorId = draft.actorId,
+                occurredAt = draft.occurredAt,
             )
-            records[update.executionId] = updated
-            return ExecutionStateUpdateResult.Updated(updated)
-        }
-
-        suspend fun updateTerminal(update: TerminalExecutionUpdate): TerminalUpdateResult {
-            val existing = records.getValue(update.executionId)
-            if (existing.isTerminal) return TerminalUpdateResult.ExistingTerminal(existing)
-            if (existing.recordVersion != update.expectedVersion) {
-                return TerminalUpdateResult.Conflict(
-                    com.wzx.huitai.action.model.ActionError(
-                        ActionErrorCode.EXECUTION_CONFLICT,
-                        "record version conflict",
-                    ),
-                )
-            }
-            val updated = existing.copy(
-                state = update.terminalState,
-                result = update.result,
-                successFact = update.successFact,
-                completedAt = update.completedAt,
-                updatedAt = update.completedAt,
-                recordVersion = existing.recordVersion + 1,
-            )
-            records[update.executionId] = updated
-            return TerminalUpdateResult.Updated(updated)
         }
 
         override suspend fun updateReconciliation(

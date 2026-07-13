@@ -7,8 +7,11 @@ import com.wzx.huitai.action.model.ActionResult
 import com.wzx.huitai.action.model.ActionRiskLevel
 import com.wzx.huitai.action.port.ConfirmationDecision
 import com.wzx.huitai.action.port.ApprovalDecision
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -196,6 +199,7 @@ class ApplicationActionBusWriteTest {
         val result = fixture.bus.execute(fixture.command(), fixture.context)
 
         assertFailedAt(fixture, result, ActionExecutionState.VALIDATING)
+        assertEquals(ActionErrorCode.REMOTE_REQUEST_FAILED, assertIs<ActionBusResult.Rejected>(result).error.code)
         assertEquals(1, fixture.action.previewCount)
         assertEquals(0, fixture.confirmation.requests)
         assertEquals(0, fixture.action.executeCount)
@@ -217,6 +221,7 @@ class ApplicationActionBusWriteTest {
         val result = fixture.bus.execute(fixture.command(), fixture.context)
 
         assertFailedAt(fixture, result, ActionExecutionState.VALIDATING)
+        assertEquals(ActionErrorCode.PROTOCOL_ERROR, assertIs<ActionBusResult.Rejected>(result).error.code)
         assertEquals(1, fixture.action.previewCount)
         assertEquals(0, fixture.confirmation.requests)
         assertEquals(0, fixture.action.executeCount)
@@ -230,6 +235,7 @@ class ApplicationActionBusWriteTest {
         val result = fixture.bus.execute(fixture.command(), fixture.context)
 
         assertFailedAt(fixture, result, ActionExecutionState.VALIDATING)
+        assertEquals(ActionErrorCode.PROTOCOL_ERROR, assertIs<ActionBusResult.Rejected>(result).error.code)
         assertEquals(1, fixture.action.previewCount)
         assertEquals(0, fixture.confirmation.requests)
         assertEquals(0, fixture.action.executeCount)
@@ -294,6 +300,84 @@ class ApplicationActionBusWriteTest {
                 }
                 assertEquals(0, fixture.action.executeCount)
             }
+    }
+
+    @Test
+    fun `real confirmation cancellation hands off canceled before propagation`() = runTest {
+        val fixture = BusFixture(ActionRiskLevel.REVERSIBLE_WRITE)
+        fixture.confirmation.requestEntered = CompletableDeferred()
+
+        val execution = async { fixture.bus.execute(fixture.command(), fixture.context) }
+        fixture.confirmation.requestEntered!!.await()
+        execution.cancel(CancellationException("cancel-confirmation"))
+
+        assertEquals("cancel-confirmation", assertFailsWith<CancellationException> { execution.await() }.message)
+        assertEquals(ActionExecutionState.CANCELED, fixture.store.record?.state)
+        assertEquals(
+            ActionExecutionState.PREVIEWED to ActionExecutionState.CANCELED,
+            fixture.audit.events.last().fromState to fixture.audit.events.last().toState,
+        )
+    }
+
+    @Test
+    fun `real approval cancellation hands off canceled before propagation`() = runTest {
+        val fixture = BusFixture(ActionRiskLevel.HIGH_RISK)
+        fixture.approval.requestEntered = CompletableDeferred()
+
+        val execution = async { fixture.bus.execute(fixture.command(), fixture.context) }
+        fixture.approval.requestEntered!!.await()
+        execution.cancel(CancellationException("cancel-approval"))
+
+        assertEquals("cancel-approval", assertFailsWith<CancellationException> { execution.await() }.message)
+        assertEquals(ActionExecutionState.CANCELED, fixture.store.record?.state)
+        assertEquals(
+            ActionExecutionState.WAITING_APPROVAL to ActionExecutionState.CANCELED,
+            fixture.audit.events.last().fromState to fixture.audit.events.last().toState,
+        )
+    }
+
+    @Test
+    fun `cancellation handoff failure is suppressed without replacing original cancellation`() = runTest {
+        val fixture = BusFixture(ActionRiskLevel.REVERSIBLE_WRITE)
+        fixture.confirmation.requestEntered = CompletableDeferred()
+        fixture.store.failTransitionTo = ActionExecutionState.CANCELED
+
+        val execution = async { fixture.bus.execute(fixture.command(), fixture.context) }
+        fixture.confirmation.requestEntered!!.await()
+        val original = CancellationException("original-cancellation")
+        execution.cancel(original)
+
+        val cancellation = assertFailsWith<CancellationException> { execution.await() }
+        assertEquals("original-cancellation", cancellation.message)
+        assertEquals(1, original.suppressed.size)
+        assertEquals(ActionExecutionState.PREVIEWED, fixture.store.record?.state)
+    }
+
+    @Test
+    fun `preview to execute terminal race replays exact persisted result`() = runTest {
+        val fixture = BusFixture(ActionRiskLevel.REVERSIBLE_WRITE)
+        val persisted: ActionResult<JsonElement> = ActionResult.Canceled("execution-1", "concurrent cancel")
+        fixture.store.existingTerminalResult = persisted
+        fixture.store.existingTerminalOnTransitionTo = ActionExecutionState.EXECUTING
+
+        val result = fixture.bus.execute(fixture.command(), fixture.context)
+
+        assertEquals(persisted, assertIs<ActionBusResult.Completed>(result).result)
+        assertEquals(0, fixture.action.executeCount)
+    }
+
+    @Test
+    fun `waiting approval to execute terminal race replays exact persisted result`() = runTest {
+        val fixture = BusFixture(ActionRiskLevel.HIGH_RISK)
+        val persisted: ActionResult<JsonElement> = ActionResult.Expired("execution-1", "concurrent expiry")
+        fixture.store.existingTerminalResult = persisted
+        fixture.store.existingTerminalOnTransitionTo = ActionExecutionState.EXECUTING
+
+        val result = fixture.bus.execute(fixture.command(), fixture.context)
+
+        assertEquals(persisted, assertIs<ActionBusResult.Completed>(result).result)
+        assertEquals(1, fixture.approval.requests)
+        assertEquals(0, fixture.action.executeCount)
     }
 
     private fun assertFailedAt(

@@ -151,35 +151,6 @@ data class ReconciliationProvenance(
 }
 
 /**
- * 首次写入终态所需的完整结构化更新。
- *
- * @param executionId 动作执行标识。
- * @param expectedVersion 期望的当前记录版本。
- * @param terminalState 待写入的终态。
- * @param result 与终态严格对应的精确结果。
- * @param completedAt 终态完成时间。
- * @param successFact 仅用于表达输出不可编码的成功事实。
- */
-data class TerminalExecutionUpdate(
-    val executionId: String,
-    val expectedVersion: Long,
-    val terminalState: ActionExecutionState,
-    val result: ActionResult<JsonElement>?,
-    val completedAt: Instant,
-    val successFact: ExecutionSuccessFact? = null,
-) {
-    init {
-        validateExecutionState(executionId, terminalState, result, completedAt, successFact)
-    }
-
-
-    /** 日志隐藏精确结果、成功事实和完成时间中的业务关联。 */
-    override fun toString(): String =
-        "TerminalExecutionUpdate(executionId=$executionId, expectedVersion=$expectedVersion, " +
-            "terminalState=$terminalState, result=[REDACTED], successFact=[REDACTED], completedAt=$completedAt)"
-}
-
-/**
  * 将结果不确定状态收束为成功或失败的对账更新。
  *
  * @param executionId 动作执行标识。
@@ -200,30 +171,6 @@ data class ReconciliationExecutionUpdate(
         }
         require(result.executionId() == executionId) {
             "对账结果 executionId 不匹配：expected=$executionId, actual=${result.executionId()}"
-        }
-    }
-}
-
-/**
- * 以乐观版本保护推进一个非终态执行状态。
- *
- * @param executionId 动作执行标识。
- * @param expectedVersion 期望的当前记录版本。
- * @param state 待写入的非终态。
- * @param updatedAt 状态更新时间。
- * @param startedAt 首次进入 EXECUTING 时的副作用开始时间。
- */
-data class ExecutionStateUpdate(
-    val executionId: String,
-    val expectedVersion: Long,
-    val state: ActionExecutionState,
-    val updatedAt: Instant,
-    val startedAt: Instant? = null,
-) {
-    init {
-        require(state !in TERMINAL_STATES) { "ExecutionStateUpdate 只能推进非终态" }
-        require(startedAt == null || state == ActionExecutionState.EXECUTING) {
-            "startedAt 只能在 EXECUTING 状态写入"
         }
     }
 }
@@ -260,6 +207,12 @@ data class ExecutionTransition(
             "startedAt 只能在 EXECUTING 状态写入"
         }
     }
+
+    /** 日志隐藏结果、成功事实和审计草稿，只保留并发与状态元数据。 */
+    override fun toString(): String =
+        "ExecutionTransition(executionId=$executionId, expectedVersion=$expectedVersion, state=$state, " +
+            "result=[REDACTED], successFact=[REDACTED], updatedAt=$updatedAt, startedAt=$startedAt, " +
+            "completedAt=$completedAt, audit=[REDACTED])"
 }
 
 /** 原子创建执行记录的结果。 */
@@ -268,19 +221,6 @@ sealed interface ExecutionCreateResult {
     data class ExistingRunning(val record: ActionExecutionRecord) : ExecutionCreateResult
     data class ExistingTerminal(val record: ActionExecutionRecord) : ExecutionCreateResult
     data class Conflict(val error: ActionError) : ExecutionCreateResult
-}
-
-/** 首个终态更新结果。 */
-sealed interface TerminalUpdateResult {
-    data class Updated(val record: ActionExecutionRecord) : TerminalUpdateResult
-    data class ExistingTerminal(val record: ActionExecutionRecord) : TerminalUpdateResult
-    data class Conflict(val error: ActionError) : TerminalUpdateResult
-}
-
-/** 非终态乐观推进结果。 */
-sealed interface ExecutionStateUpdateResult {
-    data class Updated(val record: ActionExecutionRecord) : ExecutionStateUpdateResult
-    data class Conflict(val error: ActionError) : ExecutionStateUpdateResult
 }
 
 /** 原子状态与审计迁移结果。 */
@@ -301,9 +241,6 @@ sealed interface ReconciliationUpdateResult {
 interface ActionExecutionStore {
     /** 按 executionId 查询当前精确记录；不存在返回 null。 */
     suspend fun find(executionId: String): ActionExecutionRecord?
-
-    /** 原子比较并创建运行记录。 */
-    suspend fun compareAndCreate(record: ActionExecutionRecord): ExecutionCreateResult
 
     /** 原子创建首条执行记录并追加由适配器分配 sequence 的首个审计。 */
     suspend fun compareAndCreate(

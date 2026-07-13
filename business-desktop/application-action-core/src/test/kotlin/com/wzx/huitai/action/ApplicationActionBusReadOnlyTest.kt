@@ -27,17 +27,20 @@ import com.wzx.huitai.action.port.ActionRiskPolicy
 import com.wzx.huitai.action.port.ApprovalDecision
 import com.wzx.huitai.action.port.ConfirmationDecision
 import com.wzx.huitai.action.port.ExecutionCreateResult
-import com.wzx.huitai.action.port.ExecutionStateUpdate
-import com.wzx.huitai.action.port.ExecutionStateUpdateResult
+import com.wzx.huitai.action.port.ExecutionFingerprint
+import com.wzx.huitai.action.port.ExecutionSuccessFact
 import com.wzx.huitai.action.port.ExecutionTransition
 import com.wzx.huitai.action.port.ExecutionTransitionResult
 import com.wzx.huitai.action.port.ReconciliationExecutionUpdate
 import com.wzx.huitai.action.port.ReconciliationUpdateResult
 import com.wzx.huitai.action.port.RiskEvaluation
-import com.wzx.huitai.action.port.TerminalExecutionUpdate
-import com.wzx.huitai.action.port.TerminalUpdateResult
-import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -45,6 +48,8 @@ import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.time.Instant
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -53,6 +58,14 @@ import kotlin.test.assertNull
 import kotlin.test.assertFalse
 
 class ApplicationActionBusReadOnlyTest {
+    @Test
+    fun `public bus constructor no longer exposes standalone audit port`() {
+        val constructors = ApplicationActionBus::class.java.constructors.toList()
+
+        assertFalse(constructors.any { it.parameterTypes.contains(ActionAuditPort::class.java) })
+        assertEquals(true, constructors.any { it.parameterCount == 7 })
+    }
+
     @Test
     fun `user and agent share the same read-only pipeline`() = runTest {
         listOf(ActionOrigin.USER, ActionOrigin.AGENT).forEach { origin ->
@@ -151,6 +164,60 @@ class ApplicationActionBusReadOnlyTest {
     }
 
     @Test
+    fun `real preview cancellation hands off canceled from validating`() = runTest {
+        val fixture = BusFixture(ActionRiskLevel.REVERSIBLE_WRITE)
+        fixture.action.previewEntered = CompletableDeferred()
+
+        val execution = async { fixture.bus.execute(fixture.command(), fixture.context) }
+        fixture.action.previewEntered!!.await()
+        execution.cancel(CancellationException("cancel-preview"))
+
+        assertEquals("cancel-preview", assertFailsWith<CancellationException> { execution.await() }.message)
+        assertEquals(ActionExecutionState.CANCELED, fixture.store.record?.state)
+        assertEquals(
+            listOf(
+                ActionExecutionState.RECEIVED to ActionExecutionState.VALIDATING,
+                ActionExecutionState.VALIDATING to ActionExecutionState.CANCELED,
+            ),
+            fixture.audit.events.map { it.fromState to it.toState },
+        )
+    }
+
+    @Test
+    fun `real read execute cancellation reaches terminal before propagation`() = runTest {
+        val fixture = BusFixture(ActionRiskLevel.READ_ONLY)
+        fixture.action.executeEntered = CompletableDeferred()
+
+        val execution = async { fixture.bus.execute(fixture.command(), fixture.context) }
+        fixture.action.executeEntered!!.await()
+        execution.cancel(CancellationException("cancel-read-execute"))
+
+        assertEquals("cancel-read-execute", assertFailsWith<CancellationException> { execution.await() }.message)
+        assertEquals(ActionExecutionState.FAILED, fixture.store.record?.state)
+        assertEquals(
+            ActionExecutionState.EXECUTING to ActionExecutionState.FAILED,
+            fixture.audit.events.last().fromState to fixture.audit.events.last().toState,
+        )
+    }
+
+    @Test
+    fun `real write execute cancellation hands off outcome unknown before propagation`() = runTest {
+        val fixture = BusFixture(ActionRiskLevel.REVERSIBLE_WRITE)
+        fixture.action.executeEntered = CompletableDeferred()
+
+        val execution = async { fixture.bus.execute(fixture.command(), fixture.context) }
+        fixture.action.executeEntered!!.await()
+        execution.cancel(CancellationException("cancel-write-execute"))
+
+        assertEquals("cancel-write-execute", assertFailsWith<CancellationException> { execution.await() }.message)
+        assertEquals(ActionExecutionState.OUTCOME_UNKNOWN, fixture.store.record?.state)
+        assertEquals(
+            ActionExecutionState.EXECUTING to ActionExecutionState.OUTCOME_UNKNOWN,
+            fixture.audit.events.last().fromState to fixture.audit.events.last().toState,
+        )
+    }
+
+    @Test
     fun `first persisted terminal wins over local failure handling`() = runTest {
         val successFixture = BusFixture(ActionRiskLevel.REVERSIBLE_WRITE)
         successFixture.confirmation.failure = IllegalStateException("confirm")
@@ -193,15 +260,72 @@ class ApplicationActionBusReadOnlyTest {
     }
 
     @Test
+    fun `initial existing terminals replay exactly including unavailable success fact`() = runTest {
+        val terminalResults = listOf<ActionResult<JsonElement>>(
+            ActionResult.Success("execution-1", buildJsonObject { put("winner", "success") }),
+            ActionResult.Failure("execution-1", ActionError(ActionErrorCode.REMOTE_REQUEST_FAILED, "persisted")),
+            ActionResult.Canceled("execution-1", "persisted canceled"),
+            ActionResult.Expired("execution-1", "persisted expired"),
+            ActionResult.OutcomeUnknown(
+                "execution-1",
+                ActionError(ActionErrorCode.OUTCOME_UNKNOWN, "persisted unknown"),
+                reconciliationPolicy = ReconciliationPolicy.MANUAL,
+            ),
+        )
+        terminalResults.forEach { persisted ->
+            val fixture = BusFixture(ActionRiskLevel.READ_ONLY)
+            fixture.store.installExistingTerminal(fixture.command(), result = persisted)
+
+            val replay = assertIs<ActionBusResult.Completed>(fixture.bus.execute(fixture.command(), fixture.context))
+
+            assertEquals(persisted, replay.result)
+            assertEquals(0, fixture.action.executeCount)
+        }
+
+        val unavailable = BusFixture(ActionRiskLevel.READ_ONLY)
+        unavailable.store.installExistingTerminal(
+            unavailable.command(),
+            successFact = ExecutionSuccessFact(ExecutionSuccessFact.OUTPUT_ENCODING_FAILED, "secret-reference"),
+        )
+
+        val replay = assertIs<ActionBusResult.OutputEncodingFailed>(
+            unavailable.bus.execute(unavailable.command(), unavailable.context),
+        )
+        assertEquals(ActionExecutionState.SUCCEEDED, replay.terminalState)
+        assertEquals(0, unavailable.action.executeCount)
+    }
+
+    @Test
     fun `audit failure rolls back state transition atomically`() = runTest {
         val fixture = BusFixture(ActionRiskLevel.READ_ONLY)
-        fixture.store.failAuditOnState = ActionExecutionState.EXECUTING
+        fixture.store.nextAuditSequence = 7
+        fixture.audit.failOnState = ActionExecutionState.EXECUTING
 
         val result = fixture.bus.execute(fixture.command(), fixture.context)
 
         assertEquals(ActionErrorCode.EXECUTION_CONFLICT, assertIs<ActionBusResult.Rejected>(result).error.code)
         assertEquals(ActionExecutionState.VALIDATING, fixture.store.record?.state)
+        assertEquals(1, fixture.store.record?.recordVersion)
         assertEquals(1, fixture.audit.events.size)
+        assertEquals(8L, fixture.audit.events.single().sequence)
+        assertEquals(8L, fixture.store.nextAuditSequence)
+        assertEquals(ActionExecutionState.EXECUTING, fixture.store.preparedStateBeforeAuditFailure)
+        assertEquals(0, fixture.action.executeCount)
+    }
+
+    @Test
+    fun `initial audit insertion failure rolls back record event and sequence atomically`() = runTest {
+        val fixture = BusFixture(ActionRiskLevel.READ_ONLY)
+        fixture.store.nextAuditSequence = 11
+        fixture.audit.failOnState = ActionExecutionState.VALIDATING
+
+        val result = fixture.bus.execute(fixture.command(), fixture.context)
+
+        assertEquals(ActionErrorCode.EXECUTION_CONFLICT, assertIs<ActionBusResult.Rejected>(result).error.code)
+        assertNull(fixture.store.record)
+        assertEquals(emptyList(), fixture.audit.events)
+        assertEquals(11L, fixture.store.nextAuditSequence)
+        assertEquals(ActionExecutionState.VALIDATING, fixture.store.preparedStateBeforeAuditFailure)
         assertEquals(0, fixture.action.executeCount)
     }
 
@@ -461,6 +585,8 @@ internal class BusCountingAction(
     var previewExecutionId = "execution-1"
     var previewResultMode = PreviewResultMode.NORMAL
     var executeFailure: Throwable? = null
+    var previewEntered: CompletableDeferred<Unit>? = null
+    var executeEntered: CompletableDeferred<Unit>? = null
     var result: ActionResult<BusOutput> = ActionResult.Success(
         "execution-1",
         BusOutput(1),
@@ -469,12 +595,20 @@ internal class BusCountingAction(
 
     override suspend fun preview(input: BusInput, context: ActionContext): ActionPreview {
         previewCount += 1
+        previewEntered?.let {
+            it.complete(Unit)
+            awaitCancellation()
+        }
         if (previewResultMode == PreviewResultMode.THROW) error("secret-preview-error")
         return ActionPreview(previewExecutionId, "secret-preview")
     }
 
     override suspend fun execute(input: BusInput, context: ActionContext): ActionResult<BusOutput> {
         executeCount += 1
+        executeEntered?.let {
+            it.complete(Unit)
+            awaitCancellation()
+        }
         executeFailure?.let { throw it }
         return result
     }
@@ -499,6 +633,7 @@ internal class BusConfirmationPort : ActionConfirmationPort {
     var store: BusExecutionStore? = null
     var stateAtRequest: ActionExecutionState? = null
     var failure: Throwable? = null
+    var requestEntered: CompletableDeferred<Unit>? = null
     var response = ActionConfirmation(
         "confirmation-1", "execution-1", ConfirmationDecision.ACCEPTED, Instant.parse("2026-07-14T00:00:02Z"),
     )
@@ -510,6 +645,10 @@ internal class BusConfirmationPort : ActionConfirmationPort {
     ): ActionConfirmation {
         requests += 1
         stateAtRequest = store?.record?.state
+        requestEntered?.let {
+            it.complete(Unit)
+            awaitCancellation()
+        }
         failure?.let { throw it }
         return response
     }
@@ -520,6 +659,7 @@ internal class BusApprovalPort : ActionApprovalPort {
     var store: BusExecutionStore? = null
     var stateAtRequest: ActionExecutionState? = null
     var failure: Throwable? = null
+    var requestEntered: CompletableDeferred<Unit>? = null
     var response = ActionApproval(
         "approval-1", "execution-1", ApprovalDecision.APPROVED, Instant.parse("2026-07-14T00:00:03Z"),
         decidedBy = "secret-actor",
@@ -533,6 +673,10 @@ internal class BusApprovalPort : ActionApprovalPort {
     ): ActionApproval {
         requests += 1
         stateAtRequest = store?.record?.state
+        requestEntered?.let {
+            it.complete(Unit)
+            awaitCancellation()
+        }
         failure?.let { throw it }
         return response
     }
@@ -542,40 +686,47 @@ internal class BusExecutionStore : ActionExecutionStore {
     var record: ActionExecutionRecord? = null
     var nextAuditSequence = 0L
     var failTransitionTo: ActionExecutionState? = null
-    var failAuditOnState: ActionExecutionState? = null
+    var preparedStateBeforeAuditFailure: ActionExecutionState? = null
     var existingTerminalResult: ActionResult<JsonElement>? = null
+    var existingTerminalOnTransitionTo: ActionExecutionState? = null
     lateinit var audit: BusAuditPort
 
     override suspend fun find(executionId: String): ActionExecutionRecord? = record
-
-    override suspend fun compareAndCreate(record: ActionExecutionRecord): ExecutionCreateResult {
-        if (this.record != null) {
-            return ExecutionCreateResult.Conflict(ActionError(ActionErrorCode.EXECUTION_CONFLICT, "duplicate"))
-        }
-        this.record = record
-        return ExecutionCreateResult.Created(record)
-    }
 
     override suspend fun compareAndCreate(
         record: ActionExecutionRecord,
         audit: ActionAuditDraft,
     ): ExecutionCreateResult {
-        if (this.record != null) {
-            return ExecutionCreateResult.Conflict(ActionError(ActionErrorCode.EXECUTION_CONFLICT, "duplicate"))
+        this.record?.let { existing ->
+            return if (existing.fingerprint == record.fingerprint) {
+                if (existing.isTerminal) ExecutionCreateResult.ExistingTerminal(existing)
+                else ExecutionCreateResult.ExistingRunning(existing)
+            } else {
+                ExecutionCreateResult.Conflict(ActionError(ActionErrorCode.EXECUTION_CONFLICT, "duplicate"))
+            }
         }
+        if (audit.toState == this.audit.failOnState) {
+            preparedStateBeforeAuditFailure = record.state
+        }
+        val event = prepareAudit(audit) ?: return auditConflict()
         this.record = record
-        appendAudit(audit)
+        commitAudit(event)
         return ExecutionCreateResult.Created(record)
     }
 
     override suspend fun transition(update: ExecutionTransition): ExecutionTransitionResult {
+        currentCoroutineContext().ensureActive()
         val current = record ?: return ExecutionTransitionResult.Conflict(
             ActionError(ActionErrorCode.EXECUTION_CONFLICT, "missing"),
         )
         if (current.isTerminal) return ExecutionTransitionResult.ExistingTerminal(current)
+        if (existingTerminalOnTransitionTo == update.state && existingTerminalResult != null) {
+            val terminal = terminalRecord(current, existingTerminalResult!!, update.updatedAt)
+            record = terminal
+            return ExecutionTransitionResult.ExistingTerminal(terminal)
+        }
         if (current.recordVersion != update.expectedVersion ||
-            failTransitionTo == update.state ||
-            failAuditOnState == update.state
+            failTransitionTo == update.state
         ) {
             return ExecutionTransitionResult.Conflict(
                 ActionError(ActionErrorCode.EXECUTION_CONFLICT, "transition conflict"),
@@ -590,21 +741,7 @@ internal class BusExecutionStore : ActionExecutionStore {
             )
         ) {
             existingTerminalResult?.let { result ->
-                val state = when (result) {
-                    is ActionResult.Success -> ActionExecutionState.SUCCEEDED
-                    is ActionResult.Failure -> ActionExecutionState.FAILED
-                    is ActionResult.Canceled -> ActionExecutionState.CANCELED
-                    is ActionResult.Expired -> ActionExecutionState.EXPIRED
-                    is ActionResult.OutcomeUnknown -> ActionExecutionState.OUTCOME_UNKNOWN
-                    else -> error("terminal result required")
-                }
-                val terminal = current.copy(
-                    state = state,
-                    result = result,
-                    completedAt = update.updatedAt,
-                    updatedAt = update.updatedAt,
-                    recordVersion = current.recordVersion + 1,
-                )
+                val terminal = terminalRecord(current, result, update.updatedAt)
                 record = terminal
                 return ExecutionTransitionResult.ExistingTerminal(terminal)
             }
@@ -618,60 +755,77 @@ internal class BusExecutionStore : ActionExecutionStore {
             updatedAt = update.updatedAt,
             recordVersion = current.recordVersion + 1,
         )
+        if (update.audit.toState == audit.failOnState) {
+            preparedStateBeforeAuditFailure = updated.state
+        }
+        val event = prepareAudit(update.audit) ?: return auditTransitionConflict()
         record = updated
-        appendAudit(update.audit)
+        commitAudit(event)
         return ExecutionTransitionResult.Updated(updated)
     }
 
-    private suspend fun appendAudit(draft: ActionAuditDraft) {
-        audit.append(
-            ActionAuditEvent(
-                executionId = draft.executionId,
-                sequence = ++nextAuditSequence,
-                fromState = draft.fromState,
-                toState = draft.toState,
-                type = draft.type,
-                redactedPayload = draft.redactedPayload,
-                actorId = draft.actorId,
-                occurredAt = draft.occurredAt,
-            ),
+    private suspend fun prepareAudit(draft: ActionAuditDraft): ActionAuditEvent? {
+        val event = ActionAuditEvent(
+            executionId = draft.executionId,
+            sequence = nextAuditSequence + 1,
+            fromState = draft.fromState,
+            toState = draft.toState,
+            type = draft.type,
+            redactedPayload = draft.redactedPayload,
+            actorId = draft.actorId,
+            occurredAt = draft.occurredAt,
         )
-    }
-
-    suspend fun updateState(update: ExecutionStateUpdate): ExecutionStateUpdateResult {
-        val current = record ?: return ExecutionStateUpdateResult.Conflict(
-            ActionError(ActionErrorCode.EXECUTION_CONFLICT, "missing"),
-        )
-        if (current.recordVersion != update.expectedVersion || current.isTerminal) {
-            return ExecutionStateUpdateResult.Conflict(
-                ActionError(ActionErrorCode.EXECUTION_CONFLICT, "state conflict"),
-            )
+        return try {
+            audit.prepare(event)
+            event
+        } catch (_: Exception) {
+            null
         }
-        val updated = current.copy(
-            state = update.state,
-            startedAt = update.startedAt ?: current.startedAt,
-            updatedAt = update.updatedAt,
-            recordVersion = current.recordVersion + 1,
-        )
-        record = updated
-        return ExecutionStateUpdateResult.Updated(updated)
     }
 
-    suspend fun updateTerminal(update: TerminalExecutionUpdate): TerminalUpdateResult {
-        val current = record ?: return TerminalUpdateResult.Conflict(
-            ActionError(ActionErrorCode.EXECUTION_CONFLICT, "missing"),
-        )
-        val updated = current.copy(
-            state = update.terminalState,
-            result = update.result,
-            successFact = update.successFact,
-            completedAt = update.completedAt,
-            updatedAt = update.completedAt,
-            recordVersion = current.recordVersion + 1,
-        )
-        record = updated
-        return TerminalUpdateResult.Updated(updated)
+    private fun commitAudit(event: ActionAuditEvent) {
+        audit.commit(event)
+        nextAuditSequence = event.sequence
     }
+
+    private fun auditConflict(): ExecutionCreateResult.Conflict = ExecutionCreateResult.Conflict(
+        ActionError(ActionErrorCode.EXECUTION_CONFLICT, "audit transaction rolled back"),
+    )
+
+    private fun auditTransitionConflict(): ExecutionTransitionResult.Conflict = ExecutionTransitionResult.Conflict(
+        ActionError(ActionErrorCode.EXECUTION_CONFLICT, "audit transaction rolled back"),
+    )
+
+    fun installExistingTerminal(
+        command: ActionCommand,
+        result: ActionResult<JsonElement>? = null,
+        successFact: ExecutionSuccessFact? = null,
+    ) {
+        val state = if (successFact != null) ActionExecutionState.SUCCEEDED else result!!.stateForStore()
+        record = ActionExecutionRecord(
+            command = command,
+            fingerprint = ExecutionFingerprint(command.actionId, command.fingerprintForStore()),
+            state = state,
+            result = result,
+            successFact = successFact,
+            createdAt = Instant.parse("2026-07-14T00:00:00Z"),
+            completedAt = Instant.parse("2026-07-14T00:00:01Z"),
+            updatedAt = Instant.parse("2026-07-14T00:00:01Z"),
+            recordVersion = 2,
+        )
+    }
+
+    private fun terminalRecord(
+        current: ActionExecutionRecord,
+        result: ActionResult<JsonElement>,
+        completedAt: Instant,
+    ): ActionExecutionRecord = current.copy(
+        state = result.stateForStore(),
+        result = result,
+        completedAt = completedAt,
+        updatedAt = completedAt,
+        recordVersion = current.recordVersion + 1,
+    )
 
     override suspend fun updateReconciliation(
         update: ReconciliationExecutionUpdate,
@@ -684,12 +838,40 @@ internal class BusAuditPort : ActionAuditPort {
     val events = mutableListOf<ActionAuditEvent>()
     var requireExistingRecord = false
     var allAppendsSawRecord = true
+    var failOnState: ActionExecutionState? = null
     override suspend fun append(event: ActionAuditEvent) {
+        prepare(event)
+        commit(event)
+    }
+
+    fun prepare(event: ActionAuditEvent) {
+        if (event.toState == failOnState) error("audit insertion failed")
+    }
+
+    fun commit(event: ActionAuditEvent) {
         if (requireExistingRecord) {
             allAppendsSawRecord = allAppendsSawRecord && true
         }
         events += event
     }
+}
+
+private fun ActionResult<JsonElement>.stateForStore(): ActionExecutionState = when (this) {
+    is ActionResult.Success -> ActionExecutionState.SUCCEEDED
+    is ActionResult.Failure -> ActionExecutionState.FAILED
+    is ActionResult.Canceled -> ActionExecutionState.CANCELED
+    is ActionResult.Expired -> ActionExecutionState.EXPIRED
+    is ActionResult.OutcomeUnknown -> ActionExecutionState.OUTCOME_UNKNOWN
+    else -> error("terminal result required")
+}
+
+private fun ActionCommand.fingerprintForStore(): String {
+    val canonical = input.entries.sortedBy { it.key }.joinToString(prefix = "{", postfix = "}") {
+        "${kotlinx.serialization.json.JsonPrimitive(it.key)}:${it.value}"
+    }
+    val bytes = MessageDigest.getInstance("SHA-256")
+        .digest("$actionId\n$canonical".toByteArray(StandardCharsets.UTF_8))
+    return bytes.joinToString("") { "%02x".format(it) }
 }
 
 internal class BusClock : ActionClock {

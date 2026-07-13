@@ -9,7 +9,6 @@ import com.wzx.huitai.action.model.ActionRiskLevel
 import com.wzx.huitai.action.port.ActionApproval
 import com.wzx.huitai.action.port.ActionApprovalPort
 import com.wzx.huitai.action.port.ActionAuditDraft
-import com.wzx.huitai.action.port.ActionAuditPort
 import com.wzx.huitai.action.port.ActionClock
 import com.wzx.huitai.action.port.ActionConfirmationPort
 import com.wzx.huitai.action.port.ActionExecutionRecord
@@ -24,6 +23,9 @@ import com.wzx.huitai.action.port.ExecutionTransitionResult
 import com.wzx.huitai.action.port.ExecutionSuccessFact
 import com.wzx.huitai.action.port.RiskEvaluation
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -55,6 +57,12 @@ private sealed interface InitialRecordResult {
 private sealed interface PreviewAttempt {
     data class Ready(val preview: com.wzx.huitai.action.model.ActionPreview) : PreviewAttempt
     data class Failed(val error: ActionError) : PreviewAttempt
+}
+
+private sealed interface StateAdvanceResult {
+    data class Advanced(val record: ActionExecutionRecord) : StateAdvanceResult
+    data class ExistingTerminal(val result: ActionBusResult) : StateAdvanceResult
+    data class Rejected(val result: ActionBusResult.Rejected) : StateAdvanceResult
 }
 
 /** Bus 与注册动作之间的模块内部调用边界，生产实现只做直接委派。 */
@@ -104,7 +112,6 @@ class ApplicationActionBus internal constructor(
         confirmationPort: ActionConfirmationPort,
         approvalPort: ActionApprovalPort,
         executionStore: ActionExecutionStore,
-        auditPort: ActionAuditPort,
         clock: ActionClock,
         contextValidator: ActionExecutionContextValidator,
     ) : this(
@@ -170,17 +177,27 @@ class ApplicationActionBus internal constructor(
         context: ActionContext,
         validating: ActionExecutionRecord,
     ): ActionBusResult {
-        val preview = when (val attempt = preview(registered, command, context)) {
-            is PreviewAttempt.Ready -> attempt.preview
-            is PreviewAttempt.Failed -> return persistFailure(validating, attempt.error)
+        val preview = try {
+            when (val attempt = preview(registered, command, context)) {
+                is PreviewAttempt.Ready -> attempt.preview
+                is PreviewAttempt.Failed -> return persistFailure(validating, attempt.error)
+            }
+        } catch (cancellation: CancellationException) {
+            handoffCancellation(cancellation) {
+                persistPreExecutionCancellation(validating, "动作预览已取消")
+            }
         }
-        val previewed = advanceState(validating, ActionExecutionState.PREVIEWED)
-            ?: return conflict("无法持久化预览状态")
+        val previewed = when (val advanced = advanceState(validating, ActionExecutionState.PREVIEWED)) {
+            is StateAdvanceResult.Advanced -> advanced.record
+            is StateAdvanceResult.ExistingTerminal -> return advanced.result
+            is StateAdvanceResult.Rejected -> return advanced.result
+        }
         val confirmation = try {
             confirmationPort.request(command, preview, context)
         } catch (cancellation: CancellationException) {
-            persistPreExecutionCancellation(previewed, "确认等待已取消")
-            throw cancellation
+            handoffCancellation(cancellation) {
+                persistPreExecutionCancellation(previewed, "确认等待已取消")
+            }
         } catch (_: Exception) {
             return persistFailure(
                 previewed,
@@ -226,17 +243,27 @@ class ApplicationActionBus internal constructor(
         risk: RiskEvaluation,
         validating: ActionExecutionRecord,
     ): ActionBusResult {
-        val preview = when (val attempt = preview(registered, command, context)) {
-            is PreviewAttempt.Ready -> attempt.preview
-            is PreviewAttempt.Failed -> return persistFailure(validating, attempt.error)
+        val preview = try {
+            when (val attempt = preview(registered, command, context)) {
+                is PreviewAttempt.Ready -> attempt.preview
+                is PreviewAttempt.Failed -> return persistFailure(validating, attempt.error)
+            }
+        } catch (cancellation: CancellationException) {
+            handoffCancellation(cancellation) {
+                persistPreExecutionCancellation(validating, "动作预览已取消")
+            }
         }
-        val previewed = advanceState(validating, ActionExecutionState.PREVIEWED)
-            ?: return conflict("无法持久化预览状态")
+        val previewed = when (val advanced = advanceState(validating, ActionExecutionState.PREVIEWED)) {
+            is StateAdvanceResult.Advanced -> advanced.record
+            is StateAdvanceResult.ExistingTerminal -> return advanced.result
+            is StateAdvanceResult.Rejected -> return advanced.result
+        }
         val confirmation = try {
             confirmationPort.request(command, preview, context)
         } catch (cancellation: CancellationException) {
-            persistPreExecutionCancellation(previewed, "确认等待已取消")
-            throw cancellation
+            handoffCancellation(cancellation) {
+                persistPreExecutionCancellation(previewed, "确认等待已取消")
+            }
         } catch (_: Exception) {
             return persistFailure(
                 previewed,
@@ -268,17 +295,21 @@ class ApplicationActionBus internal constructor(
             )
             ConfirmationDecision.ACCEPTED -> Unit
         }
-        val waiting = advanceState(
+        val waiting = when (val advanced = advanceState(
             previewed,
             ActionExecutionState.WAITING_APPROVAL,
             transitionType = "approval_requested",
-        )
-            ?: return conflict("无法持久化审批等待状态")
+        )) {
+            is StateAdvanceResult.Advanced -> advanced.record
+            is StateAdvanceResult.ExistingTerminal -> return advanced.result
+            is StateAdvanceResult.Rejected -> return advanced.result
+        }
         val approval = try {
             approvalPort.request(command, preview, risk, context)
         } catch (cancellation: CancellationException) {
-            persistPreExecutionCancellation(waiting, "审批等待已取消")
-            throw cancellation
+            handoffCancellation(cancellation) {
+                persistPreExecutionCancellation(waiting, "审批等待已取消")
+            }
         } catch (_: Exception) {
             return persistFailure(
                 waiting,
@@ -338,7 +369,7 @@ class ApplicationActionBus internal constructor(
     } catch (cancellation: CancellationException) {
         throw cancellation
     } catch (_: Exception) {
-        PreviewAttempt.Failed(ActionError(ActionErrorCode.PROTOCOL_ERROR, "动作预览失败"))
+        PreviewAttempt.Failed(ActionError(ActionErrorCode.REMOTE_REQUEST_FAILED, "动作预览失败"))
     }
 
     private suspend fun executeAfterGate(
@@ -350,31 +381,35 @@ class ApplicationActionBus internal constructor(
         transitionPayload: JsonObject = emptyPayload(),
         actorId: String? = null,
     ): ActionBusResult {
-        val running = advanceState(
+        val running = when (val advanced = advanceState(
             current,
             ActionExecutionState.EXECUTING,
             started = true,
             transitionType = transitionType,
             transitionPayload = transitionPayload,
             actorId = actorId,
-        )
-            ?: return conflict("无法持久化执行状态")
+        )) {
+            is StateAdvanceResult.Advanced -> advanced.record
+            is StateAdvanceResult.ExistingTerminal -> return advanced.result
+            is StateAdvanceResult.Rejected -> return advanced.result
+        }
         val invocation = try {
             actionInvoker.execute(registered, command.input, context)
         } catch (cancellation: CancellationException) {
-            if (registered.descriptor.riskLevel == ActionRiskLevel.READ_ONLY) {
-                persistFailure(
-                    running,
-                    ActionError(ActionErrorCode.REMOTE_REQUEST_FAILED, "只读动作执行已取消"),
-                )
-            } else {
-                persistExecutionUnknown(
-                    running,
-                    ActionError(ActionErrorCode.OUTCOME_UNKNOWN, "写动作执行已取消"),
-                    registered.descriptor.reconciliationPolicy,
-                )
+            handoffCancellation(cancellation) {
+                if (registered.descriptor.riskLevel == ActionRiskLevel.READ_ONLY) {
+                    persistFailure(
+                        running,
+                        ActionError(ActionErrorCode.REMOTE_REQUEST_FAILED, "只读动作执行已取消"),
+                    )
+                } else {
+                    persistExecutionUnknown(
+                        running,
+                        ActionError(ActionErrorCode.OUTCOME_UNKNOWN, "写动作执行已取消"),
+                        registered.descriptor.reconciliationPolicy,
+                    )
+                }
             }
-            throw cancellation
         } catch (_: Exception) {
             val error = ActionError(ActionErrorCode.REMOTE_REQUEST_FAILED, "动作执行失败")
             return if (registered.descriptor.riskLevel == ActionRiskLevel.READ_ONLY) {
@@ -401,11 +436,38 @@ class ApplicationActionBus internal constructor(
     private suspend fun persistPreExecutionCancellation(
         current: ActionExecutionRecord,
         reason: String,
-    ) {
-        persistTerminal(
+    ): ActionBusResult = persistTerminal(
             current,
             ActionResult.Canceled(current.command.executionId, reason),
         )
+
+    /** 在已取消 Job 外完成一次快速持久化交接，并始终保留原始取消为主异常。 */
+    private suspend fun handoffCancellation(
+        cancellation: CancellationException,
+        handoff: suspend () -> ActionBusResult,
+    ): Nothing {
+        try {
+            withContext(NonCancellable) {
+                withTimeout(CANCELLATION_HANDOFF_TIMEOUT_MILLIS) {
+                    when (val result = handoff()) {
+                        is ActionBusResult.Rejected -> throw IllegalStateException(
+                            "取消交接失败：${result.error.code}",
+                        )
+                        else -> Unit
+                    }
+                }
+            }
+        } catch (handoffFailure: Throwable) {
+            var observableCancellation: Throwable? = cancellation
+            val visited = mutableSetOf<Throwable>()
+            while (observableCancellation != null && visited.add(observableCancellation)) {
+                if (observableCancellation !== handoffFailure) {
+                    observableCancellation.addSuppressed(handoffFailure)
+                }
+                observableCancellation = observableCancellation.cause
+            }
+        }
+        throw cancellation
     }
 
     /** 写动作开始后的异常只能安全交接为 OUTCOME_UNKNOWN。 */
@@ -608,8 +670,7 @@ class ApplicationActionBus internal constructor(
             is ExecutionCreateResult.Conflict -> InitialRecordResult.Rejected(ActionBusResult.Rejected(created.error))
             is ExecutionCreateResult.ExistingRunning -> InitialRecordResult.Rejected(conflict("动作已在执行"))
             is ExecutionCreateResult.ExistingTerminal -> InitialRecordResult.Rejected(
-                created.record.result?.let(ActionBusResult::Completed)
-                    ?: conflict("终态记录缺少结果"),
+                existingTerminal(created.record),
             )
         }
     }
@@ -621,7 +682,7 @@ class ApplicationActionBus internal constructor(
         transitionType: String = "state_transition",
         transitionPayload: JsonObject = emptyPayload(),
         actorId: String? = null,
-    ): ActionExecutionRecord? {
+    ): StateAdvanceResult {
         val now = clock.now()
         return when (val updated = executionStore.transition(
             ExecutionTransition(
@@ -641,9 +702,13 @@ class ApplicationActionBus internal constructor(
                 ),
             ),
         )) {
-            is ExecutionTransitionResult.Updated -> updated.record
-            is ExecutionTransitionResult.ExistingTerminal -> null
-            is ExecutionTransitionResult.Conflict -> null
+            is ExecutionTransitionResult.Updated -> StateAdvanceResult.Advanced(updated.record)
+            is ExecutionTransitionResult.ExistingTerminal -> StateAdvanceResult.ExistingTerminal(
+                existingTerminal(updated.record),
+            )
+            is ExecutionTransitionResult.Conflict -> StateAdvanceResult.Rejected(
+                ActionBusResult.Rejected(updated.error),
+            )
         }
     }
 
@@ -653,6 +718,10 @@ class ApplicationActionBus internal constructor(
         val bytes = MessageDigest.getInstance("SHA-256")
             .digest("${command.actionId}\n$canonical".toByteArray(StandardCharsets.UTF_8))
         return ExecutionFingerprint(command.actionId, bytes.joinToString("") { "%02x".format(it) })
+    }
+
+    private companion object {
+        const val CANCELLATION_HANDOFF_TIMEOUT_MILLIS = 5_000L
     }
 }
 
