@@ -26,6 +26,8 @@ import com.wzx.huitai.action.port.ActionRiskPolicy
 import com.wzx.huitai.action.port.ApprovalDecision
 import com.wzx.huitai.action.port.ConfirmationDecision
 import com.wzx.huitai.action.port.ExecutionCreateResult
+import com.wzx.huitai.action.port.ExecutionStateUpdate
+import com.wzx.huitai.action.port.ExecutionStateUpdateResult
 import com.wzx.huitai.action.port.ReconciliationExecutionUpdate
 import com.wzx.huitai.action.port.ReconciliationUpdateResult
 import com.wzx.huitai.action.port.RiskEvaluation
@@ -44,6 +46,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertNull
+import kotlin.test.assertFalse
 
 class ApplicationActionBusReadOnlyTest {
     @Test
@@ -124,12 +127,85 @@ class ApplicationActionBusReadOnlyTest {
             fixture.audit.events.map { it.fromState to it.toState },
         )
     }
+
+    @Test
+    fun `all terminal result execution mismatches become audited protocol failure`() = runTest {
+        val results = listOf<ActionResult<BusOutput>>(
+            ActionResult.Success("other-execution", BusOutput(1)),
+            ActionResult.Failure("other-execution", ActionError(ActionErrorCode.REMOTE_REQUEST_FAILED, "failed")),
+            ActionResult.Canceled("other-execution", "canceled"),
+            ActionResult.Expired("other-execution", "expired"),
+            ActionResult.OutcomeUnknown(
+                "other-execution",
+                ActionError(ActionErrorCode.OUTCOME_UNKNOWN, "unknown"),
+                reconciliationPolicy = ReconciliationPolicy.MANUAL,
+            ),
+        )
+
+        results.forEach { mismatched ->
+            val fixture = BusFixture(ActionRiskLevel.READ_ONLY)
+            fixture.action.result = mismatched
+
+            val result = fixture.bus.execute(fixture.command(), fixture.context)
+
+            assertEquals(ActionErrorCode.PROTOCOL_ERROR, assertIs<ActionBusResult.Rejected>(result).error.code)
+            assertEquals(ActionExecutionState.FAILED, fixture.store.record?.state)
+            assertEquals(ActionExecutionState.EXECUTING to ActionExecutionState.FAILED,
+                fixture.audit.events.last().fromState to fixture.audit.events.last().toState)
+        }
+    }
+
+    @Test
+    fun `decode failure after executing state is persisted as failed`() = runTest {
+        val fixture = BusFixture(ActionRiskLevel.READ_ONLY)
+        fixture.commandInput = buildJsonObject { put("unexpected", true) }
+
+        val result = fixture.bus.execute(fixture.command(), fixture.context)
+
+        assertEquals(ActionErrorCode.VALIDATION_FAILED, assertIs<ActionBusResult.Rejected>(result).error.code)
+        assertEquals(ActionExecutionState.FAILED, fixture.store.record?.state)
+        assertEquals(0, fixture.action.executeCount)
+        assertEquals(ActionExecutionState.EXECUTING to ActionExecutionState.FAILED,
+            fixture.audit.events.last().fromState to fixture.audit.events.last().toState)
+    }
+
+    @Test
+    fun `output encoding failure persists unavailable success without fake null output`() = runTest {
+        val fixture = BusFixture(ActionRiskLevel.READ_ONLY, throwingOutputCodec = true)
+
+        val result = fixture.bus.execute(fixture.command(), fixture.context)
+
+        val failed = assertIs<ActionBusResult.OutputEncodingFailed>(result)
+        assertEquals(ActionExecutionState.SUCCEEDED, failed.terminalState)
+        assertEquals(ActionExecutionState.SUCCEEDED, fixture.store.record?.state)
+        assertNull(fixture.store.record?.result)
+        assertEquals("OUTPUT_ENCODING_FAILED", fixture.store.record?.successFact?.kind)
+        assertEquals("remote-1", fixture.store.record?.successFact?.remoteReference)
+        assertEquals(1, fixture.action.executeCount)
+        assertFalse(fixture.audit.events.last().redactedPayload.toString().contains("secret"))
+        assertEquals("OUTPUT_ENCODING_FAILED",
+            fixture.audit.events.last().redactedPayload.getValue("successFact").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `illegal intermediate execution result is persisted as protocol failure`() = runTest {
+        val fixture = BusFixture(ActionRiskLevel.READ_ONLY)
+        fixture.action.result = ActionResult.Preview(ActionPreview("execution-1", "illegal"))
+
+        val result = fixture.bus.execute(fixture.command(), fixture.context)
+
+        assertEquals(ActionErrorCode.PROTOCOL_ERROR, assertIs<ActionBusResult.Rejected>(result).error.code)
+        assertEquals(ActionExecutionState.FAILED, fixture.store.record?.state)
+        assertEquals(ActionExecutionState.EXECUTING to ActionExecutionState.FAILED,
+            fixture.audit.events.last().fromState to fixture.audit.events.last().toState)
+    }
 }
 
 internal class BusFixture(
     risk: ActionRiskLevel,
     private val effectiveRisk: ActionRiskLevel = risk,
     freezeRegistry: Boolean = true,
+    throwingOutputCodec: Boolean = false,
 ) {
     val identity = ActionIdentityScope(
         desktopInstanceId = "secret-desktop",
@@ -142,8 +218,13 @@ internal class BusFixture(
     )
     val context = ActionContext(identity, "page-1", 7, setOf("demo:read", "demo:write"))
     val action = BusCountingAction(busDescriptor(risk))
+    var commandInput: JsonObject = buildJsonObject { put("value", 1) }
     val registry = ActionRegistry().apply {
-        register(RegisteredAction(action, BusInputCodec(), BusOutputCodec()))
+        register(RegisteredAction(
+            action,
+            BusInputCodec(),
+            if (throwingOutputCodec) ActionOutputCodec<BusOutput> { error("secret-codec") } else BusOutputCodec(),
+        ))
         if (freezeRegistry) freeze()
     }
     val confirmation = BusConfirmationPort()
@@ -165,10 +246,15 @@ internal class BusFixture(
             contextValidator = ActionExecutionContextValidator(),
         )
 
+    init {
+        confirmation.store = store
+        approval.store = store
+    }
+
     fun command(origin: ActionOrigin = ActionOrigin.USER) = ActionCommand(
         executionId = "execution-1",
         actionId = action.descriptor.id,
-        input = buildJsonObject { put("value", 1) },
+        input = commandInput,
         origin = origin,
         identityScope = identity,
         pageId = context.pageId,
@@ -185,7 +271,11 @@ internal class BusCountingAction(
     var previewCount = 0
     var executeCount = 0
     var previewExecutionId = "execution-1"
-    var result: ActionResult<BusOutput> = ActionResult.Success("execution-1", BusOutput(1))
+    var result: ActionResult<BusOutput> = ActionResult.Success(
+        "execution-1",
+        BusOutput(1),
+        remoteReference = "remote-1",
+    )
 
     override suspend fun preview(input: BusInput, context: ActionContext): ActionPreview {
         previewCount += 1
@@ -199,8 +289,11 @@ internal class BusCountingAction(
 }
 
 internal class BusInputCodec : ActionInputCodec<BusInput> {
-    override fun decode(input: JsonObject): ActionInputDecodeResult<BusInput> =
+    override fun decode(input: JsonObject): ActionInputDecodeResult<BusInput> = try {
         ActionInputDecodeResult.Success(BusInput(input.getValue("value").jsonPrimitive.int))
+    } catch (_: Exception) {
+        ActionInputDecodeResult.Failure(ActionError(ActionErrorCode.VALIDATION_FAILED, "value 必须是整数"))
+    }
 }
 
 internal class BusOutputCodec : ActionOutputCodec<BusOutput> {
@@ -209,6 +302,8 @@ internal class BusOutputCodec : ActionOutputCodec<BusOutput> {
 
 internal class BusConfirmationPort : ActionConfirmationPort {
     var requests = 0
+    var store: BusExecutionStore? = null
+    var stateAtRequest: ActionExecutionState? = null
     var response = ActionConfirmation(
         "confirmation-1", "execution-1", ConfirmationDecision.ACCEPTED, Instant.parse("2026-07-14T00:00:02Z"),
     )
@@ -219,12 +314,15 @@ internal class BusConfirmationPort : ActionConfirmationPort {
         context: ActionContext,
     ): ActionConfirmation {
         requests += 1
+        stateAtRequest = store?.record?.state
         return response
     }
 }
 
 internal class BusApprovalPort : ActionApprovalPort {
     var requests = 0
+    var store: BusExecutionStore? = null
+    var stateAtRequest: ActionExecutionState? = null
     var response = ActionApproval(
         "approval-1", "execution-1", ApprovalDecision.APPROVED, Instant.parse("2026-07-14T00:00:03Z"),
         decidedBy = "secret-actor",
@@ -237,6 +335,7 @@ internal class BusApprovalPort : ActionApprovalPort {
         context: ActionContext,
     ): ActionApproval {
         requests += 1
+        stateAtRequest = store?.record?.state
         return response
     }
 }
@@ -254,6 +353,25 @@ internal class BusExecutionStore : ActionExecutionStore {
         return ExecutionCreateResult.Created(record)
     }
 
+    override suspend fun updateState(update: ExecutionStateUpdate): ExecutionStateUpdateResult {
+        val current = record ?: return ExecutionStateUpdateResult.Conflict(
+            ActionError(ActionErrorCode.EXECUTION_CONFLICT, "missing"),
+        )
+        if (current.recordVersion != update.expectedVersion || current.isTerminal) {
+            return ExecutionStateUpdateResult.Conflict(
+                ActionError(ActionErrorCode.EXECUTION_CONFLICT, "state conflict"),
+            )
+        }
+        val updated = current.copy(
+            state = update.state,
+            startedAt = update.startedAt ?: current.startedAt,
+            updatedAt = update.updatedAt,
+            recordVersion = current.recordVersion + 1,
+        )
+        record = updated
+        return ExecutionStateUpdateResult.Updated(updated)
+    }
+
     override suspend fun updateTerminal(update: TerminalExecutionUpdate): TerminalUpdateResult {
         val current = record ?: return TerminalUpdateResult.Conflict(
             ActionError(ActionErrorCode.EXECUTION_CONFLICT, "missing"),
@@ -261,6 +379,7 @@ internal class BusExecutionStore : ActionExecutionStore {
         val updated = current.copy(
             state = update.terminalState,
             result = update.result,
+            successFact = update.successFact,
             completedAt = update.completedAt,
             updatedAt = update.completedAt,
             recordVersion = current.recordVersion + 1,

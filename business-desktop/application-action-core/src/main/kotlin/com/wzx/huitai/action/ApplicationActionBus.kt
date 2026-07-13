@@ -6,18 +6,23 @@ import com.wzx.huitai.action.model.ActionErrorCode
 import com.wzx.huitai.action.model.ActionExecutionState
 import com.wzx.huitai.action.model.ActionResult
 import com.wzx.huitai.action.model.ActionRiskLevel
+import com.wzx.huitai.action.port.ActionApproval
 import com.wzx.huitai.action.port.ActionApprovalPort
-import com.wzx.huitai.action.port.ApprovalDecision
 import com.wzx.huitai.action.port.ActionAuditEvent
 import com.wzx.huitai.action.port.ActionAuditPort
 import com.wzx.huitai.action.port.ActionClock
 import com.wzx.huitai.action.port.ActionConfirmationPort
-import com.wzx.huitai.action.port.ConfirmationDecision
 import com.wzx.huitai.action.port.ActionExecutionRecord
 import com.wzx.huitai.action.port.ActionExecutionStore
 import com.wzx.huitai.action.port.ActionRiskPolicy
+import com.wzx.huitai.action.port.ApprovalDecision
+import com.wzx.huitai.action.port.ConfirmationDecision
 import com.wzx.huitai.action.port.ExecutionCreateResult
 import com.wzx.huitai.action.port.ExecutionFingerprint
+import com.wzx.huitai.action.port.ExecutionStateUpdate
+import com.wzx.huitai.action.port.ExecutionStateUpdateResult
+import com.wzx.huitai.action.port.ExecutionSuccessFact
+import com.wzx.huitai.action.port.RiskEvaluation
 import com.wzx.huitai.action.port.TerminalExecutionUpdate
 import com.wzx.huitai.action.port.TerminalUpdateResult
 import kotlinx.serialization.json.JsonArray
@@ -26,6 +31,7 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 
@@ -40,6 +46,19 @@ sealed interface ActionBusResult {
         val terminalState: ActionExecutionState,
         val error: ActionError,
     ) : ActionBusResult
+}
+
+private typealias AuditAppender = suspend (
+    ActionExecutionState,
+    ActionExecutionState,
+    String,
+    JsonObject,
+    String?,
+) -> Unit
+
+private sealed interface InitialRecordResult {
+    data class Created(val record: ActionExecutionRecord) : InitialRecordResult
+    data class Rejected(val result: ActionBusResult) : InitialRecordResult
 }
 
 /** 用户点击和 Agent 调用共用的应用动作编排入口。 */
@@ -60,7 +79,13 @@ class ApplicationActionBus(
     /** 解析、校验并按有效风险执行一个动作命令。 */
     suspend fun execute(command: ActionCommand, context: ActionContext): ActionBusResult {
         var sequence = 0L
-        suspend fun audit(from: ActionExecutionState, to: ActionExecutionState, type: String) {
+        suspend fun audit(
+            from: ActionExecutionState,
+            to: ActionExecutionState,
+            type: String,
+            payload: JsonObject,
+            actorId: String?,
+        ) {
             auditPort.append(
                 ActionAuditEvent(
                     executionId = command.executionId,
@@ -68,8 +93,8 @@ class ApplicationActionBus(
                     fromState = from,
                     toState = to,
                     type = type,
-                    redactedPayload = buildJsonObject { },
-                    actorId = null,
+                    redactedPayload = payload,
+                    actorId = actorId,
                     occurredAt = clock.now(),
                 ),
             )
@@ -79,7 +104,13 @@ class ApplicationActionBus(
             is ActionResolution.Found -> resolution.action
             is ActionResolution.NotFound -> return ActionBusResult.Rejected(resolution.error)
         }
-        audit(ActionExecutionState.RECEIVED, ActionExecutionState.VALIDATING, command.origin.name.lowercase())
+        audit(
+            ActionExecutionState.RECEIVED,
+            ActionExecutionState.VALIDATING,
+            command.origin.name.lowercase(),
+            emptyPayload(),
+            null,
+        )
         contextValidator.validate(registered.descriptor, command, context)?.let {
             return ActionBusResult.Rejected(it)
         }
@@ -87,81 +118,33 @@ class ApplicationActionBus(
         if (risk.baseRisk != registered.descriptor.riskLevel) {
             return ActionBusResult.Rejected(ActionError(ActionErrorCode.PROTOCOL_ERROR, "风险评估基础等级不一致"))
         }
+        val validating = when (val initial = createValidatingRecord(command)) {
+            is InitialRecordResult.Created -> initial.record
+            is InitialRecordResult.Rejected -> return initial.result
+        }
         return when (risk.effectiveRisk) {
-            ActionRiskLevel.READ_ONLY -> executeReadOnly(registered, command, context, ::audit)
-            ActionRiskLevel.REVERSIBLE_WRITE -> executeReversible(registered, command, context, ::audit)
-            ActionRiskLevel.HIGH_RISK -> executeHighRisk(registered, command, context, risk, ::audit)
-        }
-    }
-
-    private suspend fun executeHighRisk(
-        registered: RegisteredAction<*, *>,
-        command: ActionCommand,
-        context: ActionContext,
-        risk: com.wzx.huitai.action.port.RiskEvaluation,
-        audit: suspend (ActionExecutionState, ActionExecutionState, String) -> Unit,
-    ): ActionBusResult {
-        val preview = when (val invocation = registered.invokePreview(command.input, context)) {
-            is ActionInvocationResult.Previewed -> invocation.preview
-            is ActionInvocationResult.Failure -> return ActionBusResult.Rejected(invocation.error)
-            else -> return ActionBusResult.Rejected(ActionError(ActionErrorCode.PROTOCOL_ERROR, "预览返回了错误结果类型"))
-        }
-        if (preview.executionId != command.executionId) {
-            return ActionBusResult.Rejected(ActionError(ActionErrorCode.PROTOCOL_ERROR, "预览 executionId 不匹配"))
-        }
-        audit(ActionExecutionState.VALIDATING, ActionExecutionState.PREVIEWED, "state_transition")
-        val confirmation = confirmationPort.request(command, preview, context)
-        try {
-            confirmation.requireExecution(command.executionId)
-        } catch (_: IllegalArgumentException) {
-            return ActionBusResult.Rejected(ActionError(ActionErrorCode.PROTOCOL_ERROR, "确认决定 executionId 不匹配"))
-        }
-        when (confirmation.decision) {
-            ConfirmationDecision.REJECTED -> return finishWithoutExecution(
+            ActionRiskLevel.READ_ONLY -> executeAfterGate(
+                registered,
                 command,
-                ActionExecutionState.PREVIEWED,
-                ActionResult.Canceled(command.executionId, "用户拒绝动作预览"),
-                audit,
+                context,
+                validating,
+                ActionExecutionState.VALIDATING,
+                ::audit,
             )
-            ConfirmationDecision.EXPIRED -> return finishWithoutExecution(
+            ActionRiskLevel.REVERSIBLE_WRITE -> executeReversible(
+                registered,
                 command,
-                ActionExecutionState.PREVIEWED,
-                ActionResult.Expired(command.executionId, "动作预览确认已过期"),
-                audit,
+                context,
+                validating,
+                ::audit,
             )
-            ConfirmationDecision.ACCEPTED -> Unit
-        }
-        audit(ActionExecutionState.PREVIEWED, ActionExecutionState.WAITING_APPROVAL, "approval_requested")
-        val approval = approvalPort.request(command, preview, risk, context)
-        try {
-            approval.requireExecution(command.executionId)
-        } catch (_: IllegalArgumentException) {
-            return ActionBusResult.Rejected(ActionError(ActionErrorCode.PROTOCOL_ERROR, "审批决定 executionId 不匹配"))
-        }
-        return when (approval.decision) {
-            ApprovalDecision.APPROVED -> {
-                executeAfterGate(
-                    registered,
-                    command,
-                    context,
-                    ActionExecutionState.WAITING_APPROVAL,
-                    audit,
-                    transitionType = "approval_approved",
-                )
-            }
-            ApprovalDecision.DENIED -> finishWithoutExecution(
+            ActionRiskLevel.HIGH_RISK -> executeHighRisk(
+                registered,
                 command,
-                ActionExecutionState.WAITING_APPROVAL,
-                ActionResult.Canceled(command.executionId, "高风险动作审批被拒绝"),
-                audit,
-                transitionType = "approval_denied",
-            )
-            ApprovalDecision.EXPIRED -> finishWithoutExecution(
-                command,
-                ActionExecutionState.WAITING_APPROVAL,
-                ActionResult.Expired(command.executionId, "高风险动作审批已过期"),
-                audit,
-                transitionType = "approval_expired",
+                context,
+                risk,
+                validating,
+                ::audit,
             )
         }
     }
@@ -170,170 +153,342 @@ class ApplicationActionBus(
         registered: RegisteredAction<*, *>,
         command: ActionCommand,
         context: ActionContext,
-        audit: suspend (ActionExecutionState, ActionExecutionState, String) -> Unit,
+        validating: ActionExecutionRecord,
+        audit: AuditAppender,
     ): ActionBusResult {
-        val preview = when (val invocation = registered.invokePreview(command.input, context)) {
-            is ActionInvocationResult.Previewed -> invocation.preview
-            is ActionInvocationResult.Failure -> return ActionBusResult.Rejected(invocation.error)
-            else -> return ActionBusResult.Rejected(ActionError(ActionErrorCode.PROTOCOL_ERROR, "预览返回了错误结果类型"))
-        }
-        if (preview.executionId != command.executionId) {
-            return ActionBusResult.Rejected(ActionError(ActionErrorCode.PROTOCOL_ERROR, "预览 executionId 不匹配"))
-        }
-        audit(ActionExecutionState.VALIDATING, ActionExecutionState.PREVIEWED, "state_transition")
+        val preview = preview(registered, command, context) ?: return protocolError("动作预览失败或关联错误")
+        val previewed = advanceState(validating, ActionExecutionState.PREVIEWED)
+            ?: return conflict("无法持久化预览状态")
+        audit(
+            ActionExecutionState.VALIDATING,
+            ActionExecutionState.PREVIEWED,
+            "state_transition",
+            emptyPayload(),
+            null,
+        )
         val confirmation = confirmationPort.request(command, preview, context)
         try {
             confirmation.requireExecution(command.executionId)
         } catch (_: IllegalArgumentException) {
-            return ActionBusResult.Rejected(ActionError(ActionErrorCode.PROTOCOL_ERROR, "确认决定 executionId 不匹配"))
+            return protocolError("确认决定 executionId 不匹配")
         }
         return when (confirmation.decision) {
             ConfirmationDecision.ACCEPTED -> executeAfterGate(
                 registered,
                 command,
                 context,
+                previewed,
                 ActionExecutionState.PREVIEWED,
                 audit,
             )
             ConfirmationDecision.REJECTED -> finishWithoutExecution(
-                command,
-                ActionExecutionState.PREVIEWED,
+                previewed,
                 ActionResult.Canceled(command.executionId, "用户拒绝动作预览"),
+                "state_transition",
+                emptyPayload(),
+                null,
                 audit,
             )
             ConfirmationDecision.EXPIRED -> finishWithoutExecution(
-                command,
-                ActionExecutionState.PREVIEWED,
+                previewed,
                 ActionResult.Expired(command.executionId, "动作预览确认已过期"),
+                "state_transition",
+                emptyPayload(),
+                null,
                 audit,
             )
         }
     }
 
-    private suspend fun executeReadOnly(
+    private suspend fun executeHighRisk(
         registered: RegisteredAction<*, *>,
         command: ActionCommand,
         context: ActionContext,
-        audit: suspend (ActionExecutionState, ActionExecutionState, String) -> Unit,
+        risk: RiskEvaluation,
+        validating: ActionExecutionRecord,
+        audit: AuditAppender,
     ): ActionBusResult {
-        return executeAfterGate(registered, command, context, ActionExecutionState.VALIDATING, audit)
+        val preview = preview(registered, command, context) ?: return protocolError("动作预览失败或关联错误")
+        val previewed = advanceState(validating, ActionExecutionState.PREVIEWED)
+            ?: return conflict("无法持久化预览状态")
+        audit(
+            ActionExecutionState.VALIDATING,
+            ActionExecutionState.PREVIEWED,
+            "state_transition",
+            emptyPayload(),
+            null,
+        )
+        val confirmation = confirmationPort.request(command, preview, context)
+        try {
+            confirmation.requireExecution(command.executionId)
+        } catch (_: IllegalArgumentException) {
+            return protocolError("确认决定 executionId 不匹配")
+        }
+        when (confirmation.decision) {
+            ConfirmationDecision.REJECTED -> return finishWithoutExecution(
+                previewed,
+                ActionResult.Canceled(command.executionId, "用户拒绝动作预览"),
+                "state_transition",
+                emptyPayload(),
+                null,
+                audit,
+            )
+            ConfirmationDecision.EXPIRED -> return finishWithoutExecution(
+                previewed,
+                ActionResult.Expired(command.executionId, "动作预览确认已过期"),
+                "state_transition",
+                emptyPayload(),
+                null,
+                audit,
+            )
+            ConfirmationDecision.ACCEPTED -> Unit
+        }
+        val waiting = advanceState(previewed, ActionExecutionState.WAITING_APPROVAL)
+            ?: return conflict("无法持久化审批等待状态")
+        audit(
+            ActionExecutionState.PREVIEWED,
+            ActionExecutionState.WAITING_APPROVAL,
+            "approval_requested",
+            emptyPayload(),
+            null,
+        )
+        val approval = approvalPort.request(command, preview, risk, context)
+        try {
+            approval.requireExecution(command.executionId)
+        } catch (_: IllegalArgumentException) {
+            return protocolError("审批决定 executionId 不匹配")
+        }
+        val payload = approvalPayload(approval)
+        return when (approval.decision) {
+            ApprovalDecision.APPROVED -> executeAfterGate(
+                registered,
+                command,
+                context,
+                waiting,
+                ActionExecutionState.WAITING_APPROVAL,
+                audit,
+                "approval_approved",
+                payload,
+                approval.decidedBy,
+            )
+            ApprovalDecision.DENIED -> finishWithoutExecution(
+                waiting,
+                ActionResult.Canceled(command.executionId, "高风险动作审批被拒绝"),
+                "approval_denied",
+                payload,
+                approval.decidedBy,
+                audit,
+            )
+            ApprovalDecision.EXPIRED -> finishWithoutExecution(
+                waiting,
+                ActionResult.Expired(command.executionId, "高风险动作审批已过期"),
+                "approval_expired",
+                payload,
+                approval.decidedBy,
+                audit,
+            )
+        }
+    }
+
+    private suspend fun preview(
+        registered: RegisteredAction<*, *>,
+        command: ActionCommand,
+        context: ActionContext,
+    ) = when (val invocation = registered.invokePreview(command.input, context)) {
+        is ActionInvocationResult.Previewed -> invocation.preview.takeIf { it.executionId == command.executionId }
+        else -> null
     }
 
     private suspend fun executeAfterGate(
         registered: RegisteredAction<*, *>,
         command: ActionCommand,
         context: ActionContext,
+        current: ActionExecutionRecord,
         fromState: ActionExecutionState,
-        audit: suspend (ActionExecutionState, ActionExecutionState, String) -> Unit,
+        audit: AuditAppender,
         transitionType: String = "state_transition",
+        transitionPayload: JsonObject = emptyPayload(),
+        actorId: String? = null,
     ): ActionBusResult {
-        val running = createRecord(command, ActionExecutionState.EXECUTING, started = true)
-        when (val created = executionStore.compareAndCreate(running)) {
-            is ExecutionCreateResult.Created -> Unit
-            is ExecutionCreateResult.Conflict -> return ActionBusResult.Rejected(created.error)
-            is ExecutionCreateResult.ExistingRunning -> return ActionBusResult.Rejected(
-                ActionError(ActionErrorCode.EXECUTION_CONFLICT, "动作已在执行"),
-            )
-            is ExecutionCreateResult.ExistingTerminal -> return created.record.result?.let(ActionBusResult::Completed)
-                ?: ActionBusResult.Rejected(ActionError(ActionErrorCode.EXECUTION_CONFLICT, "终态记录缺少结果"))
-        }
-        audit(fromState, ActionExecutionState.EXECUTING, transitionType)
+        val running = advanceState(current, ActionExecutionState.EXECUTING, started = true)
+            ?: return conflict("无法持久化执行状态")
+        audit(
+            fromState,
+            ActionExecutionState.EXECUTING,
+            transitionType,
+            transitionPayload,
+            actorId,
+        )
         return when (val invocation = registered.invokeExecute(command.input, context)) {
-            is ActionInvocationResult.Executed -> persistTerminal(command, running, invocation.result, audit)
-            is ActionInvocationResult.Failure -> ActionBusResult.Rejected(invocation.error)
-            is ActionInvocationResult.OutputEncodingFailed -> persistEncodingFailure(command, running, invocation, audit)
+            is ActionInvocationResult.Executed -> persistTerminal(running, invocation.result, audit)
+            is ActionInvocationResult.Failure -> persistFailureAfterExecutionStart(running, invocation.error, audit)
+            is ActionInvocationResult.OutputEncodingFailed -> persistEncodingFailure(running, invocation, audit)
             is ActionInvocationResult.Previewed,
             is ActionInvocationResult.Reconciled,
-            -> ActionBusResult.Rejected(ActionError(ActionErrorCode.PROTOCOL_ERROR, "执行返回了非终态结果"))
+            -> persistProtocolFailure(running, "执行返回了非终态结果", audit)
         }
     }
 
     private suspend fun finishWithoutExecution(
-        command: ActionCommand,
-        fromState: ActionExecutionState,
+        current: ActionExecutionRecord,
         result: ActionResult<JsonElement>,
-        audit: suspend (ActionExecutionState, ActionExecutionState, String) -> Unit,
-        transitionType: String = "state_transition",
-    ): ActionBusResult {
-        val terminalState = result.terminalState()!!
-        val completedAt = clock.now()
-        val record = ActionExecutionRecord(
-            command = command,
-            fingerprint = fingerprint(command),
-            state = terminalState,
-            result = result,
-            createdAt = completedAt,
-            completedAt = completedAt,
-            updatedAt = completedAt,
-            recordVersion = 1,
-        )
-        return when (val created = executionStore.compareAndCreate(record)) {
-            is ExecutionCreateResult.Created -> {
-                audit(fromState, terminalState, transitionType)
-                ActionBusResult.Completed(created.record.result!!)
-            }
-            is ExecutionCreateResult.Conflict -> ActionBusResult.Rejected(created.error)
-            is ExecutionCreateResult.ExistingRunning -> ActionBusResult.Rejected(
-                ActionError(ActionErrorCode.EXECUTION_CONFLICT, "动作已在执行"),
-            )
-            is ExecutionCreateResult.ExistingTerminal -> ActionBusResult.Completed(created.record.result!!)
-        }
-    }
-
-    private fun createRecord(
-        command: ActionCommand,
-        state: ActionExecutionState,
-        started: Boolean,
-    ): ActionExecutionRecord {
-        val now = clock.now()
-        return ActionExecutionRecord(
-            command = command,
-            fingerprint = fingerprint(command),
-            state = state,
-            result = null,
-            createdAt = now,
-            startedAt = now.takeIf { started },
-            updatedAt = now,
-            recordVersion = 1,
-        )
-    }
+        transitionType: String,
+        transitionPayload: JsonObject,
+        actorId: String?,
+        audit: AuditAppender,
+    ): ActionBusResult = persistTerminal(
+        current,
+        result,
+        audit,
+        transitionType,
+        transitionPayload,
+        actorId,
+    )
 
     private suspend fun persistEncodingFailure(
-        command: ActionCommand,
         running: ActionExecutionRecord,
         invocation: ActionInvocationResult.OutputEncodingFailed,
-        audit: suspend (ActionExecutionState, ActionExecutionState, String) -> Unit,
+        audit: AuditAppender,
     ): ActionBusResult {
-        if (invocation.executionId != command.executionId || invocation.terminalState != ActionExecutionState.SUCCEEDED) {
-            return ActionBusResult.Rejected(ActionError(ActionErrorCode.PROTOCOL_ERROR, "输出编码失败关联错误"))
+        if (invocation.executionId != running.command.executionId ||
+            invocation.terminalState != ActionExecutionState.SUCCEEDED
+        ) {
+            return protocolError("输出编码失败关联错误")
         }
-        val result: ActionResult<JsonElement> = ActionResult.Success(command.executionId, JsonNull)
-        val persisted = persistTerminal(command, running, result, audit)
-        return if (persisted is ActionBusResult.Completed) {
-            ActionBusResult.OutputEncodingFailed(invocation.executionId, invocation.terminalState, invocation.error)
-        } else {
-            persisted
+        val fact = ExecutionSuccessFact(
+            kind = ExecutionSuccessFact.OUTPUT_ENCODING_FAILED,
+            remoteReference = invocation.remoteReference,
+        )
+        val completedAt = clock.now()
+        return when (val updated = executionStore.updateTerminal(
+            TerminalExecutionUpdate(
+                executionId = running.command.executionId,
+                expectedVersion = running.recordVersion,
+                terminalState = ActionExecutionState.SUCCEEDED,
+                result = null,
+                completedAt = completedAt,
+                successFact = fact,
+            ),
+        )) {
+            is TerminalUpdateResult.Updated -> {
+                audit(
+                    ActionExecutionState.EXECUTING,
+                    ActionExecutionState.SUCCEEDED,
+                    "output_encoding_failed",
+                    buildJsonObject { put("successFact", fact.kind) },
+                    null,
+                )
+                ActionBusResult.OutputEncodingFailed(
+                    invocation.executionId,
+                    invocation.terminalState,
+                    invocation.error,
+                )
+            }
+            is TerminalUpdateResult.ExistingTerminal -> conflict("终态已存在")
+            is TerminalUpdateResult.Conflict -> ActionBusResult.Rejected(updated.error)
         }
     }
 
     private suspend fun persistTerminal(
-        command: ActionCommand,
-        running: ActionExecutionRecord,
+        current: ActionExecutionRecord,
         result: ActionResult<JsonElement>,
-        audit: suspend (ActionExecutionState, ActionExecutionState, String) -> Unit,
+        audit: AuditAppender,
+        transitionType: String = "state_transition",
+        transitionPayload: JsonObject = emptyPayload(),
+        actorId: String? = null,
     ): ActionBusResult {
-        val state = result.terminalState()
-            ?: return ActionBusResult.Rejected(ActionError(ActionErrorCode.PROTOCOL_ERROR, "执行返回了中间结果"))
+        val terminalState = result.terminalState()
+            ?: return persistProtocolFailure(current, "执行返回了中间结果", audit)
+        if (result.executionId() != current.command.executionId) {
+            return persistProtocolFailure(current, "执行结果 executionId 不匹配", audit)
+        }
         val completedAt = clock.now()
         return when (val updated = executionStore.updateTerminal(
-            TerminalExecutionUpdate(command.executionId, running.recordVersion, state, result, completedAt),
+            TerminalExecutionUpdate(
+                current.command.executionId,
+                current.recordVersion,
+                terminalState,
+                result,
+                completedAt,
+            ),
         )) {
             is TerminalUpdateResult.Updated -> {
-                audit(ActionExecutionState.EXECUTING, state, "state_transition")
-                ActionBusResult.Completed(updated.record.result!!)
+                audit(
+                    current.state,
+                    terminalState,
+                    transitionType,
+                    transitionPayload,
+                    actorId,
+                )
+                updated.record.result?.let(ActionBusResult::Completed)
+                    ?: conflict("终态记录缺少普通结果")
             }
-            is TerminalUpdateResult.ExistingTerminal -> ActionBusResult.Completed(updated.record.result!!)
+            is TerminalUpdateResult.ExistingTerminal -> updated.record.result?.let(ActionBusResult::Completed)
+                ?: conflict("终态记录缺少普通结果")
             is TerminalUpdateResult.Conflict -> ActionBusResult.Rejected(updated.error)
+        }
+    }
+
+    /** 输入解码等执行前错误在已落 EXECUTING 后必须收束为 FAILED。 */
+    private suspend fun persistFailureAfterExecutionStart(
+        current: ActionExecutionRecord,
+        error: ActionError,
+        audit: AuditAppender,
+    ): ActionBusResult {
+        val result: ActionResult<JsonElement> = ActionResult.Failure(current.command.executionId, error)
+        val persisted = persistTerminal(current, result, audit)
+        return if (persisted is ActionBusResult.Completed) ActionBusResult.Rejected(error) else persisted
+    }
+
+    /** 协议关联错误隐藏原始异常，并以明确失败终态保存执行事实。 */
+    private suspend fun persistProtocolFailure(
+        current: ActionExecutionRecord,
+        message: String,
+        audit: AuditAppender,
+    ): ActionBusResult {
+        val error = ActionError(ActionErrorCode.PROTOCOL_ERROR, message)
+        return persistFailureAfterExecutionStart(current, error, audit)
+    }
+
+    private suspend fun createValidatingRecord(command: ActionCommand): InitialRecordResult {
+        val now = clock.now()
+        val record = ActionExecutionRecord(
+            command = command,
+            fingerprint = fingerprint(command),
+            state = ActionExecutionState.VALIDATING,
+            result = null,
+            createdAt = now,
+            updatedAt = now,
+            recordVersion = 1,
+        )
+        return when (val created = executionStore.compareAndCreate(record)) {
+            is ExecutionCreateResult.Created -> InitialRecordResult.Created(created.record)
+            is ExecutionCreateResult.Conflict -> InitialRecordResult.Rejected(ActionBusResult.Rejected(created.error))
+            is ExecutionCreateResult.ExistingRunning -> InitialRecordResult.Rejected(conflict("动作已在执行"))
+            is ExecutionCreateResult.ExistingTerminal -> InitialRecordResult.Rejected(
+                created.record.result?.let(ActionBusResult::Completed)
+                    ?: conflict("终态记录缺少结果"),
+            )
+        }
+    }
+
+    private suspend fun advanceState(
+        current: ActionExecutionRecord,
+        state: ActionExecutionState,
+        started: Boolean = false,
+    ): ActionExecutionRecord? {
+        val now = clock.now()
+        return when (val updated = executionStore.updateState(
+            ExecutionStateUpdate(
+                executionId = current.command.executionId,
+                expectedVersion = current.recordVersion,
+                state = state,
+                updatedAt = now,
+                startedAt = now.takeIf { started },
+            ),
+        )) {
+            is ExecutionStateUpdateResult.Updated -> updated.record
+            is ExecutionStateUpdateResult.Conflict -> null
         }
     }
 
@@ -346,6 +501,19 @@ class ApplicationActionBus(
     }
 }
 
+private fun approvalPayload(approval: ActionApproval): JsonObject = buildJsonObject {
+    put("approvalId", approval.approvalId)
+    put("decision", approval.decision.name)
+}
+
+private fun emptyPayload(): JsonObject = buildJsonObject { }
+
+private fun protocolError(message: String): ActionBusResult.Rejected =
+    ActionBusResult.Rejected(ActionError(ActionErrorCode.PROTOCOL_ERROR, message))
+
+private fun conflict(message: String): ActionBusResult.Rejected =
+    ActionBusResult.Rejected(ActionError(ActionErrorCode.EXECUTION_CONFLICT, message))
+
 private fun ActionResult<JsonElement>.terminalState(): ActionExecutionState? = when (this) {
     is ActionResult.Preview, is ActionResult.ApprovalRequired -> null
     is ActionResult.Success -> ActionExecutionState.SUCCEEDED
@@ -353,6 +521,16 @@ private fun ActionResult<JsonElement>.terminalState(): ActionExecutionState? = w
     is ActionResult.Canceled -> ActionExecutionState.CANCELED
     is ActionResult.Expired -> ActionExecutionState.EXPIRED
     is ActionResult.OutcomeUnknown -> ActionExecutionState.OUTCOME_UNKNOWN
+}
+
+private fun ActionResult<JsonElement>.executionId(): String = when (this) {
+    is ActionResult.Preview -> preview.executionId
+    is ActionResult.ApprovalRequired -> executionId
+    is ActionResult.Success -> executionId
+    is ActionResult.Failure -> executionId
+    is ActionResult.Canceled -> executionId
+    is ActionResult.Expired -> executionId
+    is ActionResult.OutcomeUnknown -> executionId
 }
 
 private fun JsonElement.canonicalJson(): String = when (this) {

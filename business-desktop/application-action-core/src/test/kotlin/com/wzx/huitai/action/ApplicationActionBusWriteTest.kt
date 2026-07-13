@@ -9,6 +9,7 @@ import com.wzx.huitai.action.port.ConfirmationDecision
 import com.wzx.huitai.action.port.ApprovalDecision
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -23,6 +24,7 @@ class ApplicationActionBusWriteTest {
         assertIs<ActionResult.Success<JsonElement>>(assertIs<ActionBusResult.Completed>(result).result)
         assertEquals(1, fixture.action.previewCount)
         assertEquals(1, fixture.confirmation.requests)
+        assertEquals(ActionExecutionState.PREVIEWED, fixture.confirmation.stateAtRequest)
         assertEquals(0, fixture.approval.requests)
         assertEquals(1, fixture.action.executeCount)
         assertEquals(
@@ -106,8 +108,11 @@ class ApplicationActionBusWriteTest {
             fixture.audit.events.map { it.fromState to it.toState },
         )
         val approvalEvent = fixture.audit.events.single { it.type == "approval_approved" }
-        assertEquals(null, approvalEvent.actorId)
-        assertEquals("{}", approvalEvent.redactedPayload.toString())
+        assertEquals("secret-actor", approvalEvent.actorId)
+        assertEquals("approval-1", approvalEvent.redactedPayload.getValue("approvalId").jsonPrimitive.content)
+        assertEquals("APPROVED", approvalEvent.redactedPayload.getValue("decision").jsonPrimitive.content)
+        assertEquals(null, approvalEvent.redactedPayload["reason"])
+        assertEquals(ActionExecutionState.WAITING_APPROVAL, fixture.approval.stateAtRequest)
     }
 
     @Test
@@ -144,6 +149,12 @@ class ApplicationActionBusWriteTest {
             assertEquals(0, fixture.action.executeCount)
             assertEquals(state, fixture.store.record?.state)
             assertEquals(false, fixture.audit.events.any { "secret" in it.toString() })
+            val event = fixture.audit.events.single { it.type == "approval_${decision.name.lowercase()}" }
+            assertEquals("secret-actor", event.actorId)
+            assertEquals("approval-1", event.redactedPayload.getValue("approvalId").jsonPrimitive.content)
+            assertEquals(decision.name, event.redactedPayload.getValue("decision").jsonPrimitive.content)
+            assertEquals(null, event.redactedPayload["reason"])
+            assertEquals(ActionExecutionState.WAITING_APPROVAL, fixture.approval.stateAtRequest)
         }
     }
 
@@ -157,6 +168,7 @@ class ApplicationActionBusWriteTest {
         assertEquals(ActionErrorCode.PROTOCOL_ERROR, assertIs<ActionBusResult.Rejected>(result).error.code)
         assertEquals(1, fixture.approval.requests)
         assertEquals(0, fixture.action.executeCount)
+        assertEquals(false, fixture.audit.events.any { it.type.startsWith("approval_") && it.type != "approval_requested" })
     }
 }
 

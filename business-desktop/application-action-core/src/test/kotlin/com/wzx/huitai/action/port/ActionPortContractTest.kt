@@ -637,6 +637,26 @@ class ActionPortContractTest {
             }
         }
 
+        override suspend fun updateState(update: ExecutionStateUpdate): ExecutionStateUpdateResult {
+            val existing = records.getValue(update.executionId)
+            if (existing.isTerminal || existing.recordVersion != update.expectedVersion) {
+                return ExecutionStateUpdateResult.Conflict(
+                    com.wzx.huitai.action.model.ActionError(
+                        ActionErrorCode.EXECUTION_CONFLICT,
+                        "state conflict",
+                    ),
+                )
+            }
+            val updated = existing.copy(
+                state = update.state,
+                startedAt = update.startedAt ?: existing.startedAt,
+                updatedAt = update.updatedAt,
+                recordVersion = existing.recordVersion + 1,
+            )
+            records[update.executionId] = updated
+            return ExecutionStateUpdateResult.Updated(updated)
+        }
+
         override suspend fun updateTerminal(update: TerminalExecutionUpdate): TerminalUpdateResult {
             val existing = records.getValue(update.executionId)
             if (existing.isTerminal) return TerminalUpdateResult.ExistingTerminal(existing)
@@ -651,6 +671,7 @@ class ActionPortContractTest {
             val updated = existing.copy(
                 state = update.terminalState,
                 result = update.result,
+                successFact = update.successFact,
                 completedAt = update.completedAt,
                 updatedAt = update.completedAt,
                 recordVersion = existing.recordVersion + 1,

@@ -35,6 +35,7 @@ data class ExecutionFingerprint(
  * @param updatedAt 最近更新时间。
  * @param recordVersion 乐观并发版本。
  * @param reconciliation 从结果不确定状态收束时的对账来源。
+ * @param successFact 业务成功但普通 JSON 结果不可用时的结构化事实。
  */
 data class ActionExecutionRecord(
     val command: ActionCommand,
@@ -47,6 +48,7 @@ data class ActionExecutionRecord(
     val updatedAt: Instant,
     val recordVersion: Long,
     val reconciliation: ReconciliationProvenance? = null,
+    val successFact: ExecutionSuccessFact? = null,
 ) {
     init {
         validateExecutionState(
@@ -54,6 +56,7 @@ data class ActionExecutionRecord(
             state = state,
             result = result,
             completedAt = completedAt,
+            successFact = successFact,
         )
         require(!updatedAt.isBefore(createdAt)) { "updatedAt 不能早于 createdAt" }
         startedAt?.let {
@@ -74,6 +77,10 @@ data class ActionExecutionRecord(
             }
             require(it.sourceRecordVersion < recordVersion) { "对账来源版本必须早于当前版本" }
             require(completedAt == it.reconciledAt) { "对账完成时间必须与终态完成时间一致" }
+        }
+        successFact?.let {
+            require(state == ActionExecutionState.SUCCEEDED) { "成功事实只能附着在 SUCCEEDED" }
+            require(result == null) { "输出不可用成功事实不能同时伪造普通成功结果" }
         }
     }
 
@@ -106,6 +113,25 @@ data class ActionExecutionRecord(
 }
 
 /**
+ * 业务副作用已成功但 JSON 输出不可用的持久化事实。
+ *
+ * @param kind 稳定事实类型，目前固定为 OUTPUT_ENCODING_FAILED。
+ * @param remoteReference 可用于人工查询的远程引用。
+ */
+data class ExecutionSuccessFact(
+    val kind: String,
+    val remoteReference: String? = null,
+) {
+    init {
+        require(kind == OUTPUT_ENCODING_FAILED) { "不支持的成功事实类型" }
+    }
+
+    companion object {
+        const val OUTPUT_ENCODING_FAILED = "OUTPUT_ENCODING_FAILED"
+    }
+}
+
+/**
  * 已完成对账的结构化来源，用于区分普通最终态和重复对账。
  *
  * @param sourceRecordVersion 被对账的 OUTCOME_UNKNOWN 记录版本。
@@ -128,16 +154,18 @@ data class ReconciliationProvenance(
  * @param terminalState 待写入的终态。
  * @param result 与终态严格对应的精确结果。
  * @param completedAt 终态完成时间。
+ * @param successFact 仅用于表达输出不可编码的成功事实。
  */
 data class TerminalExecutionUpdate(
     val executionId: String,
     val expectedVersion: Long,
     val terminalState: ActionExecutionState,
-    val result: ActionResult<JsonElement>,
+    val result: ActionResult<JsonElement>?,
     val completedAt: Instant,
+    val successFact: ExecutionSuccessFact? = null,
 ) {
     init {
-        validateExecutionState(executionId, terminalState, result, completedAt)
+        validateExecutionState(executionId, terminalState, result, completedAt, successFact)
     }
 }
 
@@ -166,6 +194,30 @@ data class ReconciliationExecutionUpdate(
     }
 }
 
+/**
+ * 以乐观版本保护推进一个非终态执行状态。
+ *
+ * @param executionId 动作执行标识。
+ * @param expectedVersion 期望的当前记录版本。
+ * @param state 待写入的非终态。
+ * @param updatedAt 状态更新时间。
+ * @param startedAt 首次进入 EXECUTING 时的副作用开始时间。
+ */
+data class ExecutionStateUpdate(
+    val executionId: String,
+    val expectedVersion: Long,
+    val state: ActionExecutionState,
+    val updatedAt: Instant,
+    val startedAt: Instant? = null,
+) {
+    init {
+        require(state !in TERMINAL_STATES) { "ExecutionStateUpdate 只能推进非终态" }
+        require(startedAt == null || state == ActionExecutionState.EXECUTING) {
+            "startedAt 只能在 EXECUTING 状态写入"
+        }
+    }
+}
+
 /** 原子创建执行记录的结果。 */
 sealed interface ExecutionCreateResult {
     data class Created(val record: ActionExecutionRecord) : ExecutionCreateResult
@@ -179,6 +231,12 @@ sealed interface TerminalUpdateResult {
     data class Updated(val record: ActionExecutionRecord) : TerminalUpdateResult
     data class ExistingTerminal(val record: ActionExecutionRecord) : TerminalUpdateResult
     data class Conflict(val error: ActionError) : TerminalUpdateResult
+}
+
+/** 非终态乐观推进结果。 */
+sealed interface ExecutionStateUpdateResult {
+    data class Updated(val record: ActionExecutionRecord) : ExecutionStateUpdateResult
+    data class Conflict(val error: ActionError) : ExecutionStateUpdateResult
 }
 
 /** 结果不确定记录的对账更新结果。 */
@@ -196,6 +254,9 @@ interface ActionExecutionStore {
     /** 原子比较并创建运行记录。 */
     suspend fun compareAndCreate(record: ActionExecutionRecord): ExecutionCreateResult
 
+    /** 以版本保护推进一个不携带结果的非终态。 */
+    suspend fun updateState(update: ExecutionStateUpdate): ExecutionStateUpdateResult
+
     /** 以版本保护写入首个结构化终态。 */
     suspend fun updateTerminal(update: TerminalExecutionUpdate): TerminalUpdateResult
 
@@ -211,18 +272,25 @@ private fun validateExecutionState(
     state: ActionExecutionState,
     result: ActionResult<JsonElement>?,
     completedAt: Instant?,
+    successFact: ExecutionSuccessFact?,
 ) {
     val terminalState = result?.terminalStateOrNull()
     if (state in TERMINAL_STATES) {
-        require(result != null) { "终态记录必须包含结果" }
-        require(terminalState != null) { "Preview 或 ApprovalRequired 不能作为持久化终态结果" }
-        require(state == terminalState) { "终态与结果类型不匹配：state=$state, resultState=$terminalState" }
-        require(result.executionId() == executionId) {
-            "结果 executionId 不匹配：expected=$executionId, actual=${result.executionId()}"
+        if (successFact == null) {
+            require(result != null) { "终态记录必须包含结果或成功事实" }
+            require(terminalState != null) { "Preview 或 ApprovalRequired 不能作为持久化终态结果" }
+            require(state == terminalState) { "终态与结果类型不匹配：state=$state, resultState=$terminalState" }
+            require(result.executionId() == executionId) {
+                "结果 executionId 不匹配：expected=$executionId, actual=${result.executionId()}"
+            }
+        } else {
+            require(state == ActionExecutionState.SUCCEEDED) { "成功事实只能对应 SUCCEEDED" }
+            require(result == null) { "成功事实不能与普通结果同时存在" }
         }
         require(completedAt != null) { "终态记录必须包含 completedAt" }
     } else {
         require(result == null) { "非终态记录不能包含结果" }
+        require(successFact == null) { "非终态记录不能包含成功事实" }
         require(completedAt == null) { "非终态记录不能包含 completedAt" }
     }
 }

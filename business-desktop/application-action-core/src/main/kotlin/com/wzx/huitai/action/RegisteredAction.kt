@@ -21,11 +21,13 @@ sealed interface ActionInvocationResult {
      * 业务动作已成功，但成功结果无法编码到 JSON 展示边界。
      *
      * Bus 必须保留 [terminalState] 对应的成功终态，单独记录协议/展示编码错误，绝不能重试 execute。
+     * [remoteReference] 仅供持久化成功事实和人工查询，不进入日志摘要。
      */
     data class OutputEncodingFailed(
         val executionId: String,
         val terminalState: ActionExecutionState,
         val error: ActionError,
+        val remoteReference: String? = null,
     ) : ActionInvocationResult {
         override fun toString(): String =
             "ActionInvocationResult.OutputEncodingFailed(executionId=$executionId, " +
@@ -98,6 +100,7 @@ class RegisteredAction<I : Any, O : Any>(
                 executionId = result.executionId,
                 terminalState = ActionExecutionState.SUCCEEDED,
                 error = ActionError(ActionErrorCode.PROTOCOL_ERROR, "动作输出编码失败"),
+                remoteReference = result.remoteReference,
             )
         }
         else -> ActionInvocationResult.Executed(
