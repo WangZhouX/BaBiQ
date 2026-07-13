@@ -199,6 +199,35 @@ class ApplicationActionBusReadOnlyTest {
         assertEquals(ActionExecutionState.EXECUTING to ActionExecutionState.FAILED,
             fixture.audit.events.last().fromState to fixture.audit.events.last().toState)
     }
+
+    @Test
+    fun `encoding failure correlation errors become outcome unknown`() = runTest {
+        val overrides = listOf<(ActionInvocationResult.OutputEncodingFailed) ->
+            ActionInvocationResult.OutputEncodingFailed>(
+            { it.copy(executionId = "other-execution") },
+            { it.copy(terminalState = ActionExecutionState.FAILED) },
+        )
+
+        overrides.forEach { override ->
+            val fixture = BusFixture(
+                ActionRiskLevel.READ_ONLY,
+                throwingOutputCodec = true,
+                outputEncodingFailureOverride = override,
+            )
+
+            val result = fixture.bus.execute(fixture.command(), fixture.context)
+
+            assertEquals(ActionErrorCode.PROTOCOL_ERROR, assertIs<ActionBusResult.Rejected>(result).error.code)
+            assertEquals(1, fixture.action.executeCount)
+            assertEquals(ActionExecutionState.OUTCOME_UNKNOWN, fixture.store.record?.state)
+            val unknown = assertIs<ActionResult.OutcomeUnknown>(fixture.store.record?.result)
+            assertEquals("execution-1", unknown.executionId)
+            assertEquals(ActionErrorCode.PROTOCOL_ERROR, unknown.error.code)
+            assertEquals(ReconciliationPolicy.MANUAL, unknown.reconciliationPolicy)
+            assertEquals(ActionExecutionState.EXECUTING to ActionExecutionState.OUTCOME_UNKNOWN,
+                fixture.audit.events.last().fromState to fixture.audit.events.last().toState)
+        }
+    }
 }
 
 internal class BusFixture(
@@ -206,6 +235,9 @@ internal class BusFixture(
     private val effectiveRisk: ActionRiskLevel = risk,
     freezeRegistry: Boolean = true,
     throwingOutputCodec: Boolean = false,
+    outputEncodingFailureOverride: ((ActionInvocationResult.OutputEncodingFailed) ->
+        ActionInvocationResult.OutputEncodingFailed)? = null,
+    previewInvocationOverride: ((ActionInvocationResult) -> ActionInvocationResult)? = null,
 ) {
     val identity = ActionIdentityScope(
         desktopInstanceId = "secret-desktop",
@@ -224,6 +256,14 @@ internal class BusFixture(
             action,
             BusInputCodec(),
             if (throwingOutputCodec) ActionOutputCodec<BusOutput> { error("secret-codec") } else BusOutputCodec(),
+            invocationOverride = { invocation ->
+                when {
+                    invocation is ActionInvocationResult.OutputEncodingFailed && outputEncodingFailureOverride != null ->
+                        outputEncodingFailureOverride(invocation)
+                    previewInvocationOverride != null -> previewInvocationOverride(invocation)
+                    else -> invocation
+                }
+            },
         ))
         if (freezeRegistry) freeze()
     }
@@ -271,6 +311,7 @@ internal class BusCountingAction(
     var previewCount = 0
     var executeCount = 0
     var previewExecutionId = "execution-1"
+    var previewResultMode = PreviewResultMode.NORMAL
     var result: ActionResult<BusOutput> = ActionResult.Success(
         "execution-1",
         BusOutput(1),
@@ -279,6 +320,7 @@ internal class BusCountingAction(
 
     override suspend fun preview(input: BusInput, context: ActionContext): ActionPreview {
         previewCount += 1
+        if (previewResultMode == PreviewResultMode.THROW) error("secret-preview-error")
         return ActionPreview(previewExecutionId, "secret-preview")
     }
 
@@ -287,6 +329,8 @@ internal class BusCountingAction(
         return result
     }
 }
+
+internal enum class PreviewResultMode { NORMAL, THROW }
 
 internal class BusInputCodec : ActionInputCodec<BusInput> {
     override fun decode(input: JsonObject): ActionInputDecodeResult<BusInput> = try {

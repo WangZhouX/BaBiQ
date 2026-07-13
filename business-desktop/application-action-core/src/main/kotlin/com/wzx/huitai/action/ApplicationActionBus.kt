@@ -25,6 +25,7 @@ import com.wzx.huitai.action.port.ExecutionSuccessFact
 import com.wzx.huitai.action.port.RiskEvaluation
 import com.wzx.huitai.action.port.TerminalExecutionUpdate
 import com.wzx.huitai.action.port.TerminalUpdateResult
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -59,6 +60,11 @@ private typealias AuditAppender = suspend (
 private sealed interface InitialRecordResult {
     data class Created(val record: ActionExecutionRecord) : InitialRecordResult
     data class Rejected(val result: ActionBusResult) : InitialRecordResult
+}
+
+private sealed interface PreviewAttempt {
+    data class Ready(val preview: com.wzx.huitai.action.model.ActionPreview) : PreviewAttempt
+    data class Failed(val error: ActionError) : PreviewAttempt
 }
 
 /** 用户点击和 Agent 调用共用的应用动作编排入口。 */
@@ -156,7 +162,10 @@ class ApplicationActionBus(
         validating: ActionExecutionRecord,
         audit: AuditAppender,
     ): ActionBusResult {
-        val preview = preview(registered, command, context) ?: return protocolError("动作预览失败或关联错误")
+        val preview = when (val attempt = preview(registered, command, context)) {
+            is PreviewAttempt.Ready -> attempt.preview
+            is PreviewAttempt.Failed -> return persistFailure(validating, attempt.error, audit)
+        }
         val previewed = advanceState(validating, ActionExecutionState.PREVIEWED)
             ?: return conflict("无法持久化预览状态")
         audit(
@@ -170,7 +179,11 @@ class ApplicationActionBus(
         try {
             confirmation.requireExecution(command.executionId)
         } catch (_: IllegalArgumentException) {
-            return protocolError("确认决定 executionId 不匹配")
+            return persistFailure(
+                previewed,
+                ActionError(ActionErrorCode.PROTOCOL_ERROR, "确认决定 executionId 不匹配"),
+                audit,
+            )
         }
         return when (confirmation.decision) {
             ConfirmationDecision.ACCEPTED -> executeAfterGate(
@@ -208,7 +221,10 @@ class ApplicationActionBus(
         validating: ActionExecutionRecord,
         audit: AuditAppender,
     ): ActionBusResult {
-        val preview = preview(registered, command, context) ?: return protocolError("动作预览失败或关联错误")
+        val preview = when (val attempt = preview(registered, command, context)) {
+            is PreviewAttempt.Ready -> attempt.preview
+            is PreviewAttempt.Failed -> return persistFailure(validating, attempt.error, audit)
+        }
         val previewed = advanceState(validating, ActionExecutionState.PREVIEWED)
             ?: return conflict("无法持久化预览状态")
         audit(
@@ -222,7 +238,11 @@ class ApplicationActionBus(
         try {
             confirmation.requireExecution(command.executionId)
         } catch (_: IllegalArgumentException) {
-            return protocolError("确认决定 executionId 不匹配")
+            return persistFailure(
+                previewed,
+                ActionError(ActionErrorCode.PROTOCOL_ERROR, "确认决定 executionId 不匹配"),
+                audit,
+            )
         }
         when (confirmation.decision) {
             ConfirmationDecision.REJECTED -> return finishWithoutExecution(
@@ -256,7 +276,11 @@ class ApplicationActionBus(
         try {
             approval.requireExecution(command.executionId)
         } catch (_: IllegalArgumentException) {
-            return protocolError("审批决定 executionId 不匹配")
+            return persistFailure(
+                waiting,
+                ActionError(ActionErrorCode.PROTOCOL_ERROR, "审批决定 executionId 不匹配"),
+                audit,
+            )
         }
         val payload = approvalPayload(approval)
         return when (approval.decision) {
@@ -294,9 +318,20 @@ class ApplicationActionBus(
         registered: RegisteredAction<*, *>,
         command: ActionCommand,
         context: ActionContext,
-    ) = when (val invocation = registered.invokePreview(command.input, context)) {
-        is ActionInvocationResult.Previewed -> invocation.preview.takeIf { it.executionId == command.executionId }
-        else -> null
+    ): PreviewAttempt = try {
+        when (val invocation = registered.invokePreview(command.input, context)) {
+            is ActionInvocationResult.Previewed -> if (invocation.preview.executionId == command.executionId) {
+                PreviewAttempt.Ready(invocation.preview)
+            } else {
+                PreviewAttempt.Failed(ActionError(ActionErrorCode.PROTOCOL_ERROR, "预览 executionId 不匹配"))
+            }
+            is ActionInvocationResult.Failure -> PreviewAttempt.Failed(invocation.error)
+            else -> PreviewAttempt.Failed(ActionError(ActionErrorCode.PROTOCOL_ERROR, "预览返回了非法结果类型"))
+        }
+    } catch (cancellation: CancellationException) {
+        throw cancellation
+    } catch (_: Exception) {
+        PreviewAttempt.Failed(ActionError(ActionErrorCode.PROTOCOL_ERROR, "动作预览失败"))
     }
 
     private suspend fun executeAfterGate(
@@ -321,8 +356,13 @@ class ApplicationActionBus(
         )
         return when (val invocation = registered.invokeExecute(command.input, context)) {
             is ActionInvocationResult.Executed -> persistTerminal(running, invocation.result, audit)
-            is ActionInvocationResult.Failure -> persistFailureAfterExecutionStart(running, invocation.error, audit)
-            is ActionInvocationResult.OutputEncodingFailed -> persistEncodingFailure(running, invocation, audit)
+            is ActionInvocationResult.Failure -> persistFailure(running, invocation.error, audit)
+            is ActionInvocationResult.OutputEncodingFailed -> persistEncodingFailure(
+                running,
+                invocation,
+                registered.descriptor.reconciliationPolicy,
+                audit,
+            )
             is ActionInvocationResult.Previewed,
             is ActionInvocationResult.Reconciled,
             -> persistProtocolFailure(running, "执行返回了非终态结果", audit)
@@ -348,12 +388,21 @@ class ApplicationActionBus(
     private suspend fun persistEncodingFailure(
         running: ActionExecutionRecord,
         invocation: ActionInvocationResult.OutputEncodingFailed,
+        reconciliationPolicy: com.wzx.huitai.action.model.ReconciliationPolicy,
         audit: AuditAppender,
     ): ActionBusResult {
         if (invocation.executionId != running.command.executionId ||
             invocation.terminalState != ActionExecutionState.SUCCEEDED
         ) {
-            return protocolError("输出编码失败关联错误")
+            val error = ActionError(ActionErrorCode.PROTOCOL_ERROR, "输出编码失败关联错误")
+            val unknown: ActionResult<JsonElement> = ActionResult.OutcomeUnknown(
+                executionId = running.command.executionId,
+                error = error,
+                remoteReference = invocation.remoteReference,
+                reconciliationPolicy = reconciliationPolicy,
+            )
+            val persisted = persistTerminal(running, unknown, audit, "output_encoding_correlation_error")
+            return if (persisted is ActionBusResult.Completed) ActionBusResult.Rejected(error) else persisted
         }
         val fact = ExecutionSuccessFact(
             kind = ExecutionSuccessFact.OUTPUT_ENCODING_FAILED,
@@ -430,7 +479,7 @@ class ApplicationActionBus(
     }
 
     /** 输入解码等执行前错误在已落 EXECUTING 后必须收束为 FAILED。 */
-    private suspend fun persistFailureAfterExecutionStart(
+    private suspend fun persistFailure(
         current: ActionExecutionRecord,
         error: ActionError,
         audit: AuditAppender,
@@ -447,7 +496,7 @@ class ApplicationActionBus(
         audit: AuditAppender,
     ): ActionBusResult {
         val error = ActionError(ActionErrorCode.PROTOCOL_ERROR, message)
-        return persistFailureAfterExecutionStart(current, error, audit)
+        return persistFailure(current, error, audit)
     }
 
     private suspend fun createValidatingRecord(command: ActionCommand): InitialRecordResult {

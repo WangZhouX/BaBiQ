@@ -10,6 +10,7 @@ import com.wzx.huitai.action.port.ApprovalDecision
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -169,6 +170,105 @@ class ApplicationActionBusWriteTest {
         assertEquals(1, fixture.approval.requests)
         assertEquals(0, fixture.action.executeCount)
         assertEquals(false, fixture.audit.events.any { it.type.startsWith("approval_") && it.type != "approval_requested" })
+    }
+
+    @Test
+    fun `preview decode failure terminates validating as failed`() = runTest {
+        val fixture = BusFixture(ActionRiskLevel.REVERSIBLE_WRITE)
+        fixture.commandInput = kotlinx.serialization.json.buildJsonObject { put("invalid", true) }
+
+        val result = fixture.bus.execute(fixture.command(), fixture.context)
+
+        assertFailedAt(fixture, result, ActionExecutionState.VALIDATING)
+        assertEquals(ActionErrorCode.VALIDATION_FAILED, assertIs<ActionBusResult.Rejected>(result).error.code)
+        assertEquals(0, fixture.action.previewCount)
+        assertEquals(0, fixture.confirmation.requests)
+        assertEquals(0, fixture.action.executeCount)
+    }
+
+    @Test
+    fun `preview exception terminates validating as failed`() = runTest {
+        val fixture = BusFixture(ActionRiskLevel.REVERSIBLE_WRITE)
+        fixture.action.previewResultMode = PreviewResultMode.THROW
+
+        val result = fixture.bus.execute(fixture.command(), fixture.context)
+
+        assertFailedAt(fixture, result, ActionExecutionState.VALIDATING)
+        assertEquals(1, fixture.action.previewCount)
+        assertEquals(0, fixture.confirmation.requests)
+        assertEquals(0, fixture.action.executeCount)
+    }
+
+    @Test
+    fun `illegal preview result terminates validating as failed`() = runTest {
+        val fixture = BusFixture(
+            ActionRiskLevel.REVERSIBLE_WRITE,
+            previewInvocationOverride = {
+                if (it is ActionInvocationResult.Previewed) {
+                    ActionInvocationResult.Executed(ActionResult.Canceled("execution-1", "illegal"))
+                } else {
+                    it
+                }
+            },
+        )
+
+        val result = fixture.bus.execute(fixture.command(), fixture.context)
+
+        assertFailedAt(fixture, result, ActionExecutionState.VALIDATING)
+        assertEquals(1, fixture.action.previewCount)
+        assertEquals(0, fixture.confirmation.requests)
+        assertEquals(0, fixture.action.executeCount)
+    }
+
+    @Test
+    fun `preview execution mismatch terminates validating as failed`() = runTest {
+        val fixture = BusFixture(ActionRiskLevel.REVERSIBLE_WRITE)
+        fixture.action.previewExecutionId = "other-execution"
+
+        val result = fixture.bus.execute(fixture.command(), fixture.context)
+
+        assertFailedAt(fixture, result, ActionExecutionState.VALIDATING)
+        assertEquals(1, fixture.action.previewCount)
+        assertEquals(0, fixture.confirmation.requests)
+        assertEquals(0, fixture.action.executeCount)
+    }
+
+    @Test
+    fun `confirmation mismatch terminates previewed as failed`() = runTest {
+        val fixture = BusFixture(ActionRiskLevel.REVERSIBLE_WRITE)
+        fixture.confirmation.response = fixture.confirmation.response.copy(executionId = "other-execution")
+
+        val result = fixture.bus.execute(fixture.command(), fixture.context)
+
+        assertFailedAt(fixture, result, ActionExecutionState.PREVIEWED)
+        assertEquals(1, fixture.confirmation.requests)
+        assertEquals(0, fixture.action.executeCount)
+    }
+
+    @Test
+    fun `approval mismatch terminates waiting approval as failed`() = runTest {
+        val fixture = BusFixture(ActionRiskLevel.HIGH_RISK)
+        fixture.approval.response = fixture.approval.response.copy(executionId = "other-execution")
+
+        val result = fixture.bus.execute(fixture.command(), fixture.context)
+
+        assertFailedAt(fixture, result, ActionExecutionState.WAITING_APPROVAL)
+        assertEquals(1, fixture.approval.requests)
+        assertEquals(0, fixture.action.executeCount)
+        assertEquals(false, fixture.audit.events.any { it.type in setOf("approval_approved", "approval_denied", "approval_expired") })
+    }
+
+    private fun assertFailedAt(
+        fixture: BusFixture,
+        result: ActionBusResult,
+        fromState: ActionExecutionState,
+    ) {
+        assertIs<ActionBusResult.Rejected>(result)
+        assertEquals(ActionExecutionState.FAILED, fixture.store.record?.state)
+        val failure = assertIs<ActionResult.Failure>(fixture.store.record?.result)
+        assertEquals("execution-1", failure.executionId)
+        assertEquals(fromState to ActionExecutionState.FAILED,
+            fixture.audit.events.last().fromState to fixture.audit.events.last().toState)
     }
 }
 
