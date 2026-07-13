@@ -5,12 +5,13 @@ import com.wzx.huitai.action.model.ActionError
 import com.wzx.huitai.action.model.ActionErrorCode
 import com.wzx.huitai.action.model.ActionPreview
 import com.wzx.huitai.action.model.ActionResult
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 
 /** JSON 边界上的动作调用结果。 */
 sealed interface ActionInvocationResult {
     data class Previewed(val preview: ActionPreview) : ActionInvocationResult
-    data class Executed(val result: ActionResult<*>) : ActionInvocationResult
+    data class Executed(val result: ActionResult<JsonElement>) : ActionInvocationResult
     data class Reconciled(val result: ReconciliationResult) : ActionInvocationResult
     data class Failure(val error: ActionError) : ActionInvocationResult
 }
@@ -21,11 +22,13 @@ sealed interface ActionInvocationResult {
  * @param I 解码后的动作输入类型。
  * @param O 动作成功输出类型。
  * @param action 强类型动作实现。
- * @param codec 与动作输入类型配对的 JSON codec。
+ * @param inputCodec 与动作输入类型配对的 JSON codec。
+ * @param outputCodec 与动作输出类型配对的 JSON codec。
  */
 class RegisteredAction<I : Any, O : Any>(
     val action: ApplicationAction<I, O>,
-    val codec: ActionInputCodec<I>,
+    val inputCodec: ActionInputCodec<I>,
+    val outputCodec: ActionOutputCodec<O>,
 ) {
     val descriptor: ActionDescriptor
         get() = action.descriptor
@@ -39,7 +42,7 @@ class RegisteredAction<I : Any, O : Any>(
     /** 解码后执行动作。 */
     suspend fun invokeExecute(input: JsonObject, context: ActionContext): ActionInvocationResult =
         invokeWithDecodedInput(input) { decoded ->
-            ActionInvocationResult.Executed(action.execute(decoded, context))
+            encodeExecutionResult(action.execute(decoded, context))
         }
 
     /** 解码后执行结果对账，不会回退到 execute。 */
@@ -52,10 +55,48 @@ class RegisteredAction<I : Any, O : Any>(
     }
 
     private fun decode(input: JsonObject): ActionInputDecodeResult<I> = try {
-        codec.decode(input)
+        inputCodec.decode(input)
     } catch (_: Exception) {
         ActionInputDecodeResult.Failure(
             ActionError(ActionErrorCode.VALIDATION_FAILED, "动作输入解析失败"),
+        )
+    }
+
+    private fun encodeExecutionResult(result: ActionResult<O>): ActionInvocationResult = try {
+        ActionInvocationResult.Executed(
+            when (result) {
+                is ActionResult.Success -> ActionResult.Success(
+                    executionId = result.executionId,
+                    output = outputCodec.encode(result.output),
+                    redactedOutput = result.redactedOutput?.let(outputCodec::encode),
+                    remoteReference = result.remoteReference,
+                )
+                is ActionResult.Preview -> ActionResult.Preview(result.preview)
+                is ActionResult.ApprovalRequired -> ActionResult.ApprovalRequired(
+                    executionId = result.executionId,
+                    approvalId = result.approvalId,
+                    preview = result.preview,
+                    reason = result.reason,
+                    expiresAtEpochMillis = result.expiresAtEpochMillis,
+                )
+                is ActionResult.Failure -> ActionResult.Failure(
+                    executionId = result.executionId,
+                    error = result.error,
+                    remoteReference = result.remoteReference,
+                )
+                is ActionResult.Canceled -> ActionResult.Canceled(result.executionId, result.reason)
+                is ActionResult.Expired -> ActionResult.Expired(result.executionId, result.reason)
+                is ActionResult.OutcomeUnknown -> ActionResult.OutcomeUnknown(
+                    executionId = result.executionId,
+                    error = result.error,
+                    remoteReference = result.remoteReference,
+                    reconciliationPolicy = result.reconciliationPolicy,
+                )
+            },
+        )
+    } catch (_: Exception) {
+        ActionInvocationResult.Failure(
+            ActionError(ActionErrorCode.PROTOCOL_ERROR, "动作输出编码失败"),
         )
     }
 

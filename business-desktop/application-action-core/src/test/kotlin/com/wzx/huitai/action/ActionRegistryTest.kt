@@ -11,6 +11,7 @@ import com.wzx.huitai.action.model.ActionRiskLevel
 import com.wzx.huitai.action.model.ActionTarget
 import com.wzx.huitai.action.model.ReconciliationPolicy
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
@@ -68,18 +69,20 @@ class ActionRegistryTest {
     @Test
     fun `registered action keeps descriptor action and codec paired`() {
         val action = CountingAction(descriptor("demo.paired", 1))
-        val codec = DemoInputCodec()
-        val registered = RegisteredAction(action, codec)
+        val inputCodec = DemoInputCodec()
+        val outputCodec = DemoOutputCodec()
+        val registered = RegisteredAction(action, inputCodec, outputCodec)
 
         assertSame(action, registered.action)
-        assertSame(codec, registered.codec)
+        assertSame(inputCodec, registered.inputCodec)
+        assertSame(outputCodec, registered.outputCodec)
         assertSame(action.descriptor, registered.descriptor)
     }
 
     @Test
     fun `invalid json returns validation failed before any action method`() = runTest {
         val action = CountingAction(descriptor("demo.validated", 1))
-        val registered = RegisteredAction(action, DemoInputCodec())
+        val registered = RegisteredAction(action, DemoInputCodec(), DemoOutputCodec())
         val context = context()
         val invalidInput = buildJsonObject { put("value", "not-an-integer") }
 
@@ -99,11 +102,14 @@ class ActionRegistryTest {
     @Test
     fun `valid json invokes typed action without unchecked public api`() = runTest {
         val action = CountingAction(descriptor("demo.typed", 1))
-        val registered = RegisteredAction(action, DemoInputCodec())
+        val registered = RegisteredAction(action, DemoInputCodec(), DemoOutputCodec())
         val input = buildJsonObject { put("value", 7) }
 
         assertIs<ActionInvocationResult.Previewed>(registered.invokePreview(input, context()))
-        assertIs<ActionInvocationResult.Executed>(registered.invokeExecute(input, context()))
+        val executed = assertIs<ActionInvocationResult.Executed>(registered.invokeExecute(input, context()))
+        val success = assertIs<ActionResult.Success<JsonElement>>(executed.result)
+        assertEquals(buildJsonObject { put("value", 7); put("secret", "secret-output") }, success.output)
+        assertEquals(buildJsonObject { put("value", 7); put("secret", "redacted-output") }, success.redactedOutput)
         val reconciled = assertIs<ActionInvocationResult.Reconciled>(
             registered.invokeReconcile(input, context(), "remote-1"),
         )
@@ -116,7 +122,11 @@ class ActionRegistryTest {
     @Test
     fun `codec exceptions become validation failure without invoking action`() = runTest {
         val action = CountingAction(descriptor("demo.throwing-codec", 1))
-        val registered = RegisteredAction(action, ActionInputCodec { error("secret-codec-exception") })
+        val registered = RegisteredAction(
+            action,
+            ActionInputCodec { error("secret-codec-exception") },
+            DemoOutputCodec(),
+        )
 
         val invocation = registered.invokeExecute(buildJsonObject { put("value", 7) }, context())
 
@@ -127,16 +137,35 @@ class ActionRegistryTest {
     }
 
     @Test
+    fun `output codec exceptions become redacted protocol failure without reexecuting action`() = runTest {
+        val action = CountingAction(descriptor("demo.throwing-output", 1))
+        val registered = RegisteredAction(
+            action,
+            DemoInputCodec(),
+            ActionOutputCodec<DemoOutput> { error("secret-output-codec-exception") },
+        )
+
+        val invocation = registered.invokeExecute(buildJsonObject { put("value", 7) }, context())
+
+        val failure = assertIs<ActionInvocationResult.Failure>(invocation)
+        assertEquals(ActionErrorCode.PROTOCOL_ERROR, failure.error.code)
+        assertFalse("secret-output-codec-exception" in failure.toString())
+        assertFalse("secret-output" in failure.toString())
+        assertEquals(1, action.executeCount)
+    }
+
+    @Test
     fun `registry boundary summaries do not expose identity or implementations`() {
         val registered = registeredAction("demo.safe-log", 1)
 
         assertFalse("secret" in context().toString())
         assertFalse(registered.action.toString() in registered.toString())
-        assertFalse(registered.codec.toString() in registered.toString())
+        assertFalse(registered.inputCodec.toString() in registered.toString())
+        assertFalse(registered.outputCodec.toString() in registered.toString())
     }
 
-    private fun registeredAction(id: String, version: Int): RegisteredAction<DemoInput, JsonObject> =
-        RegisteredAction(CountingAction(descriptor(id, version)), DemoInputCodec())
+    private fun registeredAction(id: String, version: Int): RegisteredAction<DemoInput, DemoOutput> =
+        RegisteredAction(CountingAction(descriptor(id, version)), DemoInputCodec(), DemoOutputCodec())
 
     private fun descriptor(id: String, version: Int) = ActionDescriptor(
         id = id,
@@ -168,6 +197,8 @@ class ActionRegistryTest {
 
     private data class DemoInput(val value: Int)
 
+    private data class DemoOutput(val value: Int, val secret: String)
+
     private class DemoInputCodec : ActionInputCodec<DemoInput> {
         override fun decode(input: JsonObject): ActionInputDecodeResult<DemoInput> = try {
             ActionInputDecodeResult.Success(DemoInput(input.getValue("value").jsonPrimitive.int))
@@ -178,9 +209,16 @@ class ActionRegistryTest {
         }
     }
 
+    private class DemoOutputCodec : ActionOutputCodec<DemoOutput> {
+        override fun encode(output: DemoOutput): JsonElement = buildJsonObject {
+            put("value", output.value)
+            put("secret", output.secret)
+        }
+    }
+
     private class CountingAction(
         override val descriptor: ActionDescriptor,
-    ) : ApplicationAction<DemoInput, JsonObject> {
+    ) : ApplicationAction<DemoInput, DemoOutput> {
         var previewCount = 0
         var executeCount = 0
         var reconcileCount = 0
@@ -190,11 +228,12 @@ class ActionRegistryTest {
             return ActionPreview("execution-${input.value}", "预览")
         }
 
-        override suspend fun execute(input: DemoInput, context: ActionContext): ActionResult<JsonObject> {
+        override suspend fun execute(input: DemoInput, context: ActionContext): ActionResult<DemoOutput> {
             executeCount += 1
             return ActionResult.Success(
                 executionId = "execution-${input.value}",
-                output = buildJsonObject { put("value", input.value) },
+                output = DemoOutput(input.value, "secret-output"),
+                redactedOutput = DemoOutput(input.value, "redacted-output"),
             )
         }
 

@@ -2,6 +2,7 @@ package com.wzx.huitai.action
 
 import com.wzx.huitai.action.model.ActionError
 import com.wzx.huitai.action.model.ActionErrorCode
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 
 /** JSON 输入解码结果。 */
@@ -31,4 +32,14 @@ sealed interface ActionInputDecodeResult<out I : Any> {
 fun interface ActionInputCodec<I : Any> {
     /** 解码并校验输入，不向调用方抛出原始序列化异常。 */
     fun decode(input: JsonObject): ActionInputDecodeResult<I>
+}
+
+/**
+ * 将强类型动作输出编码为 JSON 安全值。
+ *
+ * @param O 动作成功输出类型。
+ */
+fun interface ActionOutputCodec<O : Any> {
+    /** 编码输出，不得使用 `toString()` 代替结构化 JSON。 */
+    fun encode(output: O): JsonElement
 }
