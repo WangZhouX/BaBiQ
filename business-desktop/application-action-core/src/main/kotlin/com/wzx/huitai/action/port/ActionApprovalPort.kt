@@ -30,6 +30,13 @@ data class ActionApproval(
     val decidedBy: String? = null,
     val reason: String? = null,
 ) {
+    /** 在消费异步审批前校验其仍属于当前 execution。 */
+    fun requireExecution(expectedExecutionId: String) {
+        require(executionId == expectedExecutionId) {
+            "审批决定 executionId 不匹配：expected=$expectedExecutionId, actual=$executionId"
+        }
+    }
+
     /** 日志保留关联和决定，隐藏审批人及原因。 */
     override fun toString(): String =
         "ActionApproval(approvalId=$approvalId, executionId=$executionId, decision=$decision, " +

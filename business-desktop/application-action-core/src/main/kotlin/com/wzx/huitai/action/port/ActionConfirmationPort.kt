@@ -28,6 +28,13 @@ data class ActionConfirmation(
     val decidedAt: Instant,
     val reason: String? = null,
 ) {
+    /** 在消费异步决定前校验其仍属于当前 execution。 */
+    fun requireExecution(expectedExecutionId: String) {
+        require(executionId == expectedExecutionId) {
+            "确认决定 executionId 不匹配：expected=$expectedExecutionId, actual=$executionId"
+        }
+    }
+
     /** 日志保留关联和决定，隐藏原因。 */
     override fun toString(): String =
         "ActionConfirmation(decisionId=$decisionId, executionId=$executionId, decision=$decision, " +

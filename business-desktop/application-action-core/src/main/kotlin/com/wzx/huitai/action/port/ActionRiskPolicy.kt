@@ -18,7 +18,7 @@ class RiskEvaluation private constructor(
     val reasons: List<String>,
 ) {
     init {
-        require(effectiveRisk.ordinal >= baseRisk.ordinal) { "有效风险不能低于动作基础风险" }
+        require(effectiveRisk.severity() >= baseRisk.severity()) { "有效风险不能低于动作基础风险" }
     }
 
     /** 日志保留风险等级和原因数量，隐藏具体原因。 */
@@ -33,10 +33,17 @@ class RiskEvaluation private constructor(
             reasons: List<String> = emptyList(),
         ): RiskEvaluation = RiskEvaluation(
             baseRisk = baseRisk,
-            effectiveRisk = maxOf(baseRisk, proposedRisk, compareBy { it.ordinal }),
+            effectiveRisk = if (proposedRisk.severity() >= baseRisk.severity()) proposedRisk else baseRisk,
             reasons = reasons.toList(),
         )
     }
+}
+
+/** 使用稳定业务顺序比较风险，避免枚举声明顺序改变语义。 */
+private fun ActionRiskLevel.severity(): Int = when (this) {
+    ActionRiskLevel.READ_ONLY -> 0
+    ActionRiskLevel.REVERSIBLE_WRITE -> 1
+    ActionRiskLevel.HIGH_RISK -> 2
 }
 
 /** 桌面动作风险评估策略。 */

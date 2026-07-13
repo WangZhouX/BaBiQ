@@ -21,6 +21,7 @@ import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertSame
@@ -56,6 +57,8 @@ class ActionPortContractTest {
         val confirmationResult = confirmation.request(command, preview, context)
         val approvalResult = approval.request(command, preview, risk, context)
 
+        confirmationResult.requireExecution(command.executionId)
+        approvalResult.requireExecution(command.executionId)
         assertEquals(setOf("ACCEPTED", "REJECTED", "EXPIRED"), ConfirmationDecision.entries.map { it.name }.toSet())
         assertEquals(setOf("APPROVED", "DENIED", "EXPIRED"), ApprovalDecision.entries.map { it.name }.toSet())
         assertFalse((ConfirmationDecision.entries + ApprovalDecision.entries).any {
@@ -69,6 +72,34 @@ class ActionPortContractTest {
         assertEquals(1, approval.requests)
         assertFalse("secret" in confirmationResult.toString())
         assertFalse("secret" in approvalResult.toString())
+    }
+
+    @Test
+    fun `confirmation and approval decisions verify the expected execution on consumption`() {
+        val confirmation = ActionConfirmation(
+            decisionId = "confirmation-1",
+            executionId = "other-execution",
+            decision = ConfirmationDecision.ACCEPTED,
+            decidedAt = NOW,
+        )
+        val approval = ActionApproval(
+            approvalId = "approval-1",
+            executionId = "other-execution",
+            decision = ApprovalDecision.APPROVED,
+            decidedAt = NOW,
+        )
+
+        val confirmationError = assertFailsWith<IllegalArgumentException> {
+            confirmation.requireExecution("execution-1")
+        }
+        val approvalError = assertFailsWith<IllegalArgumentException> {
+            approval.requireExecution("execution-1")
+        }
+
+        assertTrue("execution-1" in confirmationError.message.orEmpty())
+        assertTrue("other-execution" in confirmationError.message.orEmpty())
+        assertTrue("execution-1" in approvalError.message.orEmpty())
+        assertTrue("other-execution" in approvalError.message.orEmpty())
     }
 
     @Test
@@ -94,11 +125,13 @@ class ActionPortContractTest {
         )
         val updated = assertIs<TerminalUpdateResult.Updated>(
             store.updateTerminal(
-                executionId = running.command.executionId,
-                expectedVersion = running.recordVersion,
-                terminalState = ActionExecutionState.SUCCEEDED,
-                result = terminalResult,
-                completedAt = NOW.plusSeconds(2),
+                TerminalExecutionUpdate(
+                    executionId = running.command.executionId,
+                    expectedVersion = running.recordVersion,
+                    terminalState = ActionExecutionState.SUCCEEDED,
+                    result = terminalResult,
+                    completedAt = NOW.plusSeconds(2),
+                ),
             ),
         )
         assertEquals(terminalResult, updated.record.result)
@@ -106,19 +139,295 @@ class ActionPortContractTest {
         assertIs<ExecutionCreateResult.ExistingTerminal>(store.compareAndCreate(running))
         val repeated = assertIs<TerminalUpdateResult.ExistingTerminal>(
             store.updateTerminal(
-                executionId = running.command.executionId,
-                expectedVersion = updated.record.recordVersion,
-                terminalState = ActionExecutionState.FAILED,
-                result = ActionResult.Failure(
-                    running.command.executionId,
-                    com.wzx.huitai.action.model.ActionError(ActionErrorCode.REMOTE_REQUEST_FAILED, "secret-error"),
+                TerminalExecutionUpdate(
+                    executionId = running.command.executionId,
+                    expectedVersion = updated.record.recordVersion,
+                    terminalState = ActionExecutionState.FAILED,
+                    result = failure(running.command.executionId),
+                    completedAt = NOW.plusSeconds(3),
                 ),
-                completedAt = NOW.plusSeconds(3),
             ),
         )
         assertEquals(updated.record, repeated.record)
         assertFalse("secret-input" in updated.record.toString())
         assertFalse("fingerprint-1" in running.fingerprint.toString())
+    }
+
+    @Test
+    fun `execution records enforce result state correlation and timestamp ordering`() {
+        val running = runningRecord(command())
+        val terminal = terminalRecord(ActionExecutionState.SUCCEEDED, success())
+
+        assertFailsWith<IllegalArgumentException> {
+            running.copy(
+                state = ActionExecutionState.SUCCEEDED,
+                result = failure(),
+                completedAt = NOW.plusSeconds(2),
+                updatedAt = NOW.plusSeconds(2),
+            )
+        }
+        assertFailsWith<IllegalArgumentException> {
+            running.copy(
+                state = ActionExecutionState.SUCCEEDED,
+                result = null,
+                completedAt = NOW.plusSeconds(2),
+                updatedAt = NOW.plusSeconds(2),
+            )
+        }
+        assertFailsWith<IllegalArgumentException> { running.copy(result = success()) }
+        assertFailsWith<IllegalArgumentException> {
+            running.copy(
+                state = ActionExecutionState.SUCCEEDED,
+                result = success("other-execution"),
+                completedAt = NOW.plusSeconds(2),
+                updatedAt = NOW.plusSeconds(2),
+            )
+        }
+        assertFailsWith<IllegalArgumentException> {
+            running.copy(state = ActionExecutionState.SUCCEEDED, result = success())
+        }
+        assertFailsWith<IllegalArgumentException> { running.copy(completedAt = NOW.plusSeconds(2)) }
+        assertFailsWith<IllegalArgumentException> { running.copy(startedAt = NOW.minusSeconds(1)) }
+        assertFailsWith<IllegalArgumentException> { running.copy(updatedAt = NOW) }
+        assertFailsWith<IllegalArgumentException> { terminal.copy(completedAt = NOW) }
+        assertFailsWith<IllegalArgumentException> { terminal.copy(updatedAt = NOW.plusSeconds(1)) }
+    }
+
+    @Test
+    fun `execution records use an exhaustive terminal result mapping`() {
+        val validMappings = listOf(
+            ActionExecutionState.SUCCEEDED to success(),
+            ActionExecutionState.FAILED to failure(),
+            ActionExecutionState.CANCELED to canceled(),
+            ActionExecutionState.EXPIRED to expired(),
+            ActionExecutionState.OUTCOME_UNKNOWN to outcomeUnknown(),
+        )
+
+        validMappings.forEach { (state, result) ->
+            val record = terminalRecord(state, result)
+            assertTrue(record.isTerminal)
+            assertEquals(state != ActionExecutionState.OUTCOME_UNKNOWN, record.isFinalTerminal)
+            assertEquals(state == ActionExecutionState.OUTCOME_UNKNOWN, record.needsReconciliation)
+        }
+        validMappings.forEach { (expectedState, result) ->
+            validMappings.map { it.first }.filterNot { it == expectedState }.forEach { wrongState ->
+                assertFailsWith<IllegalArgumentException> { terminalRecord(wrongState, result) }
+            }
+        }
+
+        val nonTerminalResults = listOf<ActionResult<JsonElement>>(
+            ActionResult.Preview(preview()),
+            ActionResult.ApprovalRequired(
+                executionId = "execution-1",
+                approvalId = "approval-1",
+                preview = preview(),
+                reason = "secret-reason",
+                expiresAtEpochMillis = NOW.plusSeconds(30).toEpochMilli(),
+            ),
+        )
+        nonTerminalResults.forEach { result ->
+            validMappings.map { it.first }.forEach { terminalState ->
+                assertFailsWith<IllegalArgumentException> { terminalRecord(terminalState, result) }
+            }
+        }
+    }
+
+    @Test
+    fun `terminal and reconciliation updates reject invalid structured payloads`() {
+        assertFailsWith<IllegalArgumentException> {
+            TerminalExecutionUpdate(
+                executionId = "execution-1",
+                expectedVersion = 1,
+                terminalState = ActionExecutionState.SUCCEEDED,
+                result = failure(),
+                completedAt = NOW,
+            )
+        }
+        assertFailsWith<IllegalArgumentException> {
+            TerminalExecutionUpdate(
+                executionId = "execution-1",
+                expectedVersion = 1,
+                terminalState = ActionExecutionState.EXECUTING,
+                result = success(),
+                completedAt = NOW,
+            )
+        }
+        assertFailsWith<IllegalArgumentException> {
+            TerminalExecutionUpdate(
+                executionId = "execution-1",
+                expectedVersion = 1,
+                terminalState = ActionExecutionState.SUCCEEDED,
+                result = success("other-execution"),
+                completedAt = NOW,
+            )
+        }
+        assertFailsWith<IllegalArgumentException> {
+            ReconciliationExecutionUpdate(
+                executionId = "execution-1",
+                expectedVersion = 1,
+                result = canceled(),
+                completedAt = NOW,
+            )
+        }
+        assertFailsWith<IllegalArgumentException> {
+            ReconciliationExecutionUpdate(
+                executionId = "execution-1",
+                expectedVersion = 1,
+                result = success("other-execution"),
+                completedAt = NOW,
+            )
+        }
+    }
+
+    @Test
+    fun `outcome unknown blocks replay and can be reconciled exactly once`() = runTest {
+        val store = FakeExecutionStore()
+        val running = runningRecord(command())
+        store.compareAndCreate(running)
+        val unknownResult = outcomeUnknown()
+        val unknown = assertIs<TerminalUpdateResult.Updated>(
+            store.updateTerminal(
+                TerminalExecutionUpdate(
+                    executionId = running.command.executionId,
+                    expectedVersion = running.recordVersion,
+                    terminalState = ActionExecutionState.OUTCOME_UNKNOWN,
+                    result = unknownResult,
+                    completedAt = NOW.plusSeconds(2),
+                ),
+            ),
+        ).record
+
+        assertTrue(unknown.isTerminal)
+        assertFalse(unknown.isFinalTerminal)
+        assertTrue(unknown.needsReconciliation)
+        assertIs<ExecutionCreateResult.ExistingTerminal>(store.compareAndCreate(running))
+
+        val reconciledResult = success()
+        val reconciled = assertIs<ReconciliationUpdateResult.Updated>(
+            store.updateReconciliation(
+                ReconciliationExecutionUpdate(
+                    executionId = running.command.executionId,
+                    expectedVersion = unknown.recordVersion,
+                    result = reconciledResult,
+                    completedAt = NOW.plusSeconds(3),
+                ),
+            ),
+        ).record
+        assertEquals(ActionExecutionState.SUCCEEDED, reconciled.state)
+        assertEquals(reconciledResult, reconciled.result)
+        assertTrue(reconciled.isFinalTerminal)
+        assertFalse(reconciled.needsReconciliation)
+        assertEquals(unknown.recordVersion, reconciled.reconciliation?.sourceRecordVersion)
+        assertEquals(NOW.plusSeconds(3), reconciled.reconciliation?.reconciledAt)
+
+        val repeated = assertIs<ReconciliationUpdateResult.ExistingFinal>(
+            store.updateReconciliation(
+                ReconciliationExecutionUpdate(
+                    executionId = running.command.executionId,
+                    expectedVersion = unknown.recordVersion,
+                    result = failure(),
+                    completedAt = NOW.plusSeconds(4),
+                ),
+            ),
+        )
+        assertEquals(reconciled, repeated.record)
+    }
+
+    @Test
+    fun `reconciliation conflicts on version mismatch or non-unknown state`() = runTest {
+        val versionStore = FakeExecutionStore()
+        val running = runningRecord(command())
+        versionStore.compareAndCreate(running)
+        val unknown = assertIs<TerminalUpdateResult.Updated>(
+            versionStore.updateTerminal(
+                TerminalExecutionUpdate(
+                    executionId = running.command.executionId,
+                    expectedVersion = running.recordVersion,
+                    terminalState = ActionExecutionState.OUTCOME_UNKNOWN,
+                    result = outcomeUnknown(),
+                    completedAt = NOW.plusSeconds(2),
+                ),
+            ),
+        ).record
+        assertIs<ReconciliationUpdateResult.Conflict>(
+            versionStore.updateReconciliation(
+                ReconciliationExecutionUpdate(
+                    executionId = running.command.executionId,
+                    expectedVersion = unknown.recordVersion + 1,
+                    result = success(),
+                    completedAt = NOW.plusSeconds(3),
+                ),
+            ),
+        )
+
+        val runningStore = FakeExecutionStore()
+        runningStore.compareAndCreate(running)
+        assertIs<ReconciliationUpdateResult.Conflict>(
+            runningStore.updateReconciliation(
+                ReconciliationExecutionUpdate(
+                    executionId = running.command.executionId,
+                    expectedVersion = running.recordVersion,
+                    result = failure(),
+                    completedAt = NOW.plusSeconds(2),
+                ),
+            ),
+        )
+
+        val finalStore = FakeExecutionStore()
+        finalStore.compareAndCreate(running)
+        val final = assertIs<TerminalUpdateResult.Updated>(
+            finalStore.updateTerminal(
+                TerminalExecutionUpdate(
+                    executionId = running.command.executionId,
+                    expectedVersion = running.recordVersion,
+                    terminalState = ActionExecutionState.FAILED,
+                    result = failure(),
+                    completedAt = NOW.plusSeconds(2),
+                ),
+            ),
+        ).record
+        assertIs<ReconciliationUpdateResult.Conflict>(
+            finalStore.updateReconciliation(
+                ReconciliationExecutionUpdate(
+                    executionId = running.command.executionId,
+                    expectedVersion = final.recordVersion,
+                    result = success(),
+                    completedAt = NOW.plusSeconds(3),
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun `execution records require reconciliation provenance only on final results`() {
+        val provenance = ReconciliationProvenance(
+            sourceRecordVersion = 2,
+            reconciledAt = NOW.plusSeconds(3),
+        )
+
+        assertFailsWith<IllegalArgumentException> {
+            runningRecord(command()).copy(reconciliation = provenance)
+        }
+        assertFailsWith<IllegalArgumentException> {
+            terminalRecord(ActionExecutionState.OUTCOME_UNKNOWN, outcomeUnknown()).copy(
+                reconciliation = provenance,
+            )
+        }
+        assertFailsWith<IllegalArgumentException> {
+            terminalRecord(ActionExecutionState.SUCCEEDED, success()).copy(
+                reconciliation = provenance,
+                completedAt = NOW.plusSeconds(2),
+                updatedAt = NOW.plusSeconds(2),
+            )
+        }
+
+        val reconciled = terminalRecord(ActionExecutionState.FAILED, failure()).copy(
+            completedAt = NOW.plusSeconds(3),
+            updatedAt = NOW.plusSeconds(3),
+            recordVersion = 3,
+            reconciliation = provenance,
+        )
+        assertEquals(provenance, reconciled.reconciliation)
     }
 
     @Test
@@ -143,22 +452,32 @@ class ActionPortContractTest {
     }
 
     @Test
-    fun `risk evaluation can raise but never lower descriptor risk`() {
-        val descriptor = descriptor(ActionRiskLevel.HIGH_RISK)
-        val loweringPolicy = ActionRiskPolicy { current, _, _ ->
-            RiskEvaluation.atLeast(current.riskLevel, ActionRiskLevel.READ_ONLY, listOf("model-proposed-lower"))
-        }
-        val raised = RiskEvaluation.atLeast(
-            ActionRiskLevel.READ_ONLY,
-            ActionRiskLevel.REVERSIBLE_WRITE,
-            listOf("sensitive-field"),
+    fun `risk evaluation uses the explicit business severity table`() {
+        val expected = mapOf(
+            ActionRiskLevel.READ_ONLY to mapOf(
+                ActionRiskLevel.READ_ONLY to ActionRiskLevel.READ_ONLY,
+                ActionRiskLevel.REVERSIBLE_WRITE to ActionRiskLevel.REVERSIBLE_WRITE,
+                ActionRiskLevel.HIGH_RISK to ActionRiskLevel.HIGH_RISK,
+            ),
+            ActionRiskLevel.REVERSIBLE_WRITE to mapOf(
+                ActionRiskLevel.READ_ONLY to ActionRiskLevel.REVERSIBLE_WRITE,
+                ActionRiskLevel.REVERSIBLE_WRITE to ActionRiskLevel.REVERSIBLE_WRITE,
+                ActionRiskLevel.HIGH_RISK to ActionRiskLevel.HIGH_RISK,
+            ),
+            ActionRiskLevel.HIGH_RISK to mapOf(
+                ActionRiskLevel.READ_ONLY to ActionRiskLevel.HIGH_RISK,
+                ActionRiskLevel.REVERSIBLE_WRITE to ActionRiskLevel.HIGH_RISK,
+                ActionRiskLevel.HIGH_RISK to ActionRiskLevel.HIGH_RISK,
+            ),
         )
 
-        val normalized = loweringPolicy.evaluate(descriptor, command(), context())
-
-        assertEquals(ActionRiskLevel.HIGH_RISK, normalized.effectiveRisk)
-        assertEquals(ActionRiskLevel.REVERSIBLE_WRITE, raised.effectiveRisk)
-        assertFalse("model-proposed-lower" in normalized.toString())
+        expected.forEach { (baseRisk, proposedMappings) ->
+            proposedMappings.forEach { (proposedRisk, effectiveRisk) ->
+                val evaluation = RiskEvaluation.atLeast(baseRisk, proposedRisk, listOf("secret-reason"))
+                assertEquals(effectiveRisk, evaluation.effectiveRisk, "$baseRisk + $proposedRisk")
+                assertFalse("secret-reason" in evaluation.toString())
+            }
+        }
     }
 
     @Test
@@ -221,6 +540,52 @@ class ActionPortContractTest {
         recordVersion = 1,
     )
 
+    private fun terminalRecord(
+        state: ActionExecutionState,
+        result: ActionResult<JsonElement>,
+    ) = ActionExecutionRecord(
+        command = command(),
+        fingerprint = ExecutionFingerprint("demo.action", "fingerprint-1"),
+        state = state,
+        result = result,
+        createdAt = NOW,
+        startedAt = NOW.plusSeconds(1),
+        completedAt = NOW.plusSeconds(2),
+        updatedAt = NOW.plusSeconds(2),
+        recordVersion = 2,
+    )
+
+    private fun success(executionId: String = "execution-1"): ActionResult<JsonElement> =
+        ActionResult.Success(
+            executionId = executionId,
+            output = buildJsonObject { put("saved", true) },
+        )
+
+    private fun failure(executionId: String = "execution-1"): ActionResult<JsonElement> =
+        ActionResult.Failure(
+            executionId = executionId,
+            error = com.wzx.huitai.action.model.ActionError(
+                ActionErrorCode.REMOTE_REQUEST_FAILED,
+                "secret-error",
+            ),
+        )
+
+    private fun canceled(executionId: String = "execution-1"): ActionResult<JsonElement> =
+        ActionResult.Canceled(executionId, "secret-cancel-reason")
+
+    private fun expired(executionId: String = "execution-1"): ActionResult<JsonElement> =
+        ActionResult.Expired(executionId, "secret-expiry-reason")
+
+    private fun outcomeUnknown(executionId: String = "execution-1"): ActionResult<JsonElement> =
+        ActionResult.OutcomeUnknown(
+            executionId = executionId,
+            error = com.wzx.huitai.action.model.ActionError(
+                ActionErrorCode.OUTCOME_UNKNOWN,
+                "secret-unknown-error",
+            ),
+            reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
+        )
+
     private class QueueConfirmationPort(private val decision: ActionConfirmation) : ActionConfirmationPort {
         var requests = 0
         override suspend fun request(
@@ -272,16 +637,10 @@ class ActionPortContractTest {
             }
         }
 
-        override suspend fun updateTerminal(
-            executionId: String,
-            expectedVersion: Long,
-            terminalState: ActionExecutionState,
-            result: ActionResult<JsonElement>,
-            completedAt: Instant,
-        ): TerminalUpdateResult {
-            val existing = records.getValue(executionId)
+        override suspend fun updateTerminal(update: TerminalExecutionUpdate): TerminalUpdateResult {
+            val existing = records.getValue(update.executionId)
             if (existing.isTerminal) return TerminalUpdateResult.ExistingTerminal(existing)
-            if (existing.recordVersion != expectedVersion) {
+            if (existing.recordVersion != update.expectedVersion) {
                 return TerminalUpdateResult.Conflict(
                     com.wzx.huitai.action.model.ActionError(
                         ActionErrorCode.EXECUTION_CONFLICT,
@@ -290,14 +649,49 @@ class ActionPortContractTest {
                 )
             }
             val updated = existing.copy(
-                state = terminalState,
-                result = result,
-                completedAt = completedAt,
-                updatedAt = completedAt,
+                state = update.terminalState,
+                result = update.result,
+                completedAt = update.completedAt,
+                updatedAt = update.completedAt,
                 recordVersion = existing.recordVersion + 1,
             )
-            records[executionId] = updated
+            records[update.executionId] = updated
             return TerminalUpdateResult.Updated(updated)
+        }
+
+        override suspend fun updateReconciliation(
+            update: ReconciliationExecutionUpdate,
+        ): ReconciliationUpdateResult {
+            val existing = records.getValue(update.executionId)
+            if (existing.reconciliation?.sourceRecordVersion == update.expectedVersion) {
+                return ReconciliationUpdateResult.ExistingFinal(existing)
+            }
+            if (!existing.needsReconciliation || existing.recordVersion != update.expectedVersion) {
+                return ReconciliationUpdateResult.Conflict(
+                    com.wzx.huitai.action.model.ActionError(
+                        ActionErrorCode.EXECUTION_CONFLICT,
+                        "reconciliation state or version conflict",
+                    ),
+                )
+            }
+            val terminalState = when (update.result) {
+                is ActionResult.Success<*> -> ActionExecutionState.SUCCEEDED
+                is ActionResult.Failure -> ActionExecutionState.FAILED
+                else -> error("ReconciliationExecutionUpdate 已限制结果类型")
+            }
+            val updated = existing.copy(
+                state = terminalState,
+                result = update.result,
+                completedAt = update.completedAt,
+                updatedAt = update.completedAt,
+                recordVersion = existing.recordVersion + 1,
+                reconciliation = ReconciliationProvenance(
+                    sourceRecordVersion = existing.recordVersion,
+                    reconciledAt = update.completedAt,
+                ),
+            )
+            records[update.executionId] = updated
+            return ReconciliationUpdateResult.Updated(updated)
         }
     }
 
