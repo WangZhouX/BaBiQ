@@ -9,7 +9,8 @@ import java.text.Normalizer
 /** 发布页面上下文前执行字段和动作级数据最小化。 */
 class PageContextSanitizer {
     /**
-     * 返回独立的清洗后快照，不修改页面持有的原始不可变状态。
+     * 返回清洗后的不可变数据类视图，不修改页面持有的原始状态。本方法只复制发生清洗的结构，
+     * 不承诺与调用方可变集合完全断开；完整 canonical 深冻结由 [PageContextPublisher] 的编码/解码完成。
      *
      * `SECRET` 和疑似凭证字段会被删除，普通字段结构中的凭证键会被递归剔除，
      * `SENSITIVE` 值与校验消息使用稳定掩码，禁用动作不会暴露不可调用的输入结构。
@@ -53,14 +54,17 @@ class PageContextSanitizer {
         if (CREDENTIAL_MARKERS.any(normalized::contains)) {
             return true
         }
+        val compact = normalized.lowercase().filter(Char::isLetterOrDigit)
+        if (compact in COMPACT_CREDENTIAL_COMPOUNDS) {
+            return true
+        }
         val words = normalized
             .replace(ACRONYM_TO_WORD_BOUNDARY, "$1_$2")
             .replace(LOWER_TO_UPPER_BOUNDARY, "$1_$2")
             .lowercase()
             .split(NON_ALPHANUMERIC)
             .filter(String::isNotBlank)
-        return words.any(CREDENTIAL_WORDS::contains) ||
-            words.windowed(size = 2).any { parts -> parts.joinToString(separator = "") in CREDENTIAL_WORDS }
+        return words.any(CREDENTIAL_WORDS::contains)
     }
 
     companion object {
@@ -77,14 +81,24 @@ class PageContextSanitizer {
             "pwd",
             "token",
             "secret",
-            "key",
             "authorization",
             "bearer",
-            "apikey",
-            "accesskey",
             "credential",
             "credentials",
+        )
+        private val COMPACT_CREDENTIAL_COMPOUNDS = setOf(
+            "apitoken",
+            "idtoken",
+            "accesstoken",
+            "refreshtoken",
+            "bearertoken",
+            "clientsecret",
+            "apikey",
+            "accesskey",
             "privatekey",
+            "secretkey",
+            "signingkey",
+            "encryptionkey",
         )
     }
 }

@@ -30,7 +30,6 @@ class PageContextSanitizerTest {
                 field("api_key", "misclassified-api-key", FieldSensitivity.INTERNAL),
                 field("privateKey", "misclassified-private-key", FieldSensitivity.PUBLIC),
                 field("accessKey", "misclassified-access-key", FieldSensitivity.PUBLIC),
-                field("key", "misclassified-standalone-key", FieldSensitivity.PUBLIC),
                 field("密钥", "misclassified-chinese-key", FieldSensitivity.PUBLIC),
             ),
         )
@@ -44,7 +43,6 @@ class PageContextSanitizerTest {
         assertFalse(serialized.contains("misclassified-api-key"))
         assertFalse(serialized.contains("misclassified-private-key"))
         assertFalse(serialized.contains("misclassified-access-key"))
-        assertFalse(serialized.contains("misclassified-standalone-key"))
         assertFalse(serialized.contains("misclassified-chinese-key"))
     }
 
@@ -107,6 +105,60 @@ class PageContextSanitizerTest {
         assertTrue(serialized.contains("safe-config-value"))
         assertTrue(serialized.contains("nested-visible"))
         assertTrue(serialized.contains("ordinary-visible"))
+    }
+
+    @Test
+    fun `全大写复合凭证精准清理且普通key词保留`() {
+        val nested = JsonObject(
+            linkedMapOf(
+                "APITOKEN" to JsonPrimitive("nested-api-token-uppercase"),
+                "ACCESSTOKEN" to JsonPrimitive("nested-access-token-uppercase"),
+                "REFRESHTOKEN" to JsonPrimitive("nested-refresh-token-uppercase"),
+                "CLIENTSECRET" to JsonPrimitive("nested-client-secret-uppercase"),
+                "IDTOKEN" to JsonPrimitive("nested-id-token-uppercase"),
+                "key" to JsonPrimitive("nested-ordinary-key"),
+                "MONKEY" to JsonPrimitive("nested-ordinary-monkey"),
+            ),
+        )
+        val fields = listOf(
+            field("APITOKEN", "top-api-token-uppercase", FieldSensitivity.PUBLIC),
+            fieldWithMetadata("access-label", "ACCESSTOKEN", "string", "top-access-token-uppercase"),
+            fieldWithMetadata("refresh-type", "普通字段", "REFRESHTOKEN", "top-refresh-token-uppercase"),
+            field("CLIENTSECRET", "top-client-secret-uppercase", FieldSensitivity.INTERNAL),
+            field("IDTOKEN", "top-id-token-uppercase", FieldSensitivity.PUBLIC),
+            field("key", "top-ordinary-key", FieldSensitivity.PUBLIC),
+            field("MONKEY", "top-ordinary-monkey", FieldSensitivity.PUBLIC),
+            FieldContext(
+                id = "config",
+                label = "普通配置",
+                type = "json",
+                value = nested,
+                editable = true,
+                required = false,
+                sensitivity = FieldSensitivity.INTERNAL,
+            ),
+        )
+
+        val sanitized = PageContextSanitizer().sanitize(pageContext(fields = fields))
+        val serialized = Json.encodeToString(sanitized)
+
+        assertEquals(listOf("key", "MONKEY", "config"), sanitized.fields.map(FieldContext::id))
+        listOf(
+            "top-api-token-uppercase",
+            "top-access-token-uppercase",
+            "top-refresh-token-uppercase",
+            "top-client-secret-uppercase",
+            "top-id-token-uppercase",
+            "nested-api-token-uppercase",
+            "nested-access-token-uppercase",
+            "nested-refresh-token-uppercase",
+            "nested-client-secret-uppercase",
+            "nested-id-token-uppercase",
+        ).forEach { credential -> assertFalse(serialized.contains(credential), credential) }
+        assertTrue(serialized.contains("top-ordinary-key"))
+        assertTrue(serialized.contains("top-ordinary-monkey"))
+        assertTrue(serialized.contains("nested-ordinary-key"))
+        assertTrue(serialized.contains("nested-ordinary-monkey"))
     }
 
     @Test
