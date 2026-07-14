@@ -575,7 +575,7 @@ class FormPatchValidatorTest {
         }
         assertEquals(1, applicable.patch.changes.size)
         assertEquals(1, applicable.patch.changes.single().sourceReferences.size)
-        assertTrue(FormPatchValidationResult.Applicable::class.java.isInterface)
+        assertTrue(java.lang.reflect.Modifier.isFinal(FormPatchValidationResult.Applicable::class.java.modifiers))
         assertTrue(FormPatchValidationResult.Applicable::class.java.declaredMethods.none { it.name == "copy" })
     }
 
@@ -887,7 +887,7 @@ class FormPatchValidatorTest {
             ),
         )
 
-        val decoded = Json.decodeFromString<FormPatch>(encoded)
+        val decoded = FormPatchCodec.decode(encoded)
         val decodedChange = decoded.changes.single()
         val decodedObject = decodedChange.newValue as JsonObject
         val decodedArray = decodedObject.getValue("nested") as JsonArray
@@ -932,7 +932,7 @@ class FormPatchValidatorTest {
             """{"pageId":"test-page","baseRevision":7,"changes":[{"fieldId":"title","reason":"reason","confidence":0.8}]}""",
             Json.encodeToString(patch),
         )
-        val decoded = Json.decodeFromString<FormPatch>(Json.encodeToString(patch))
+        val decoded = FormPatchCodec.decode(Json.encodeToString(patch))
         assertNull(decoded.changes.single().previousValue)
         assertNull(decoded.changes.single().newValue)
         assertTrue(decoded.changes.single().sourceReferences.isEmpty())
@@ -943,7 +943,7 @@ class FormPatchValidatorTest {
         val malformed = """{"pageId":" ","baseRevision":7,"changes":[]}"""
 
         assertFailsWith<IllegalArgumentException> {
-            Json.decodeFromString<FormPatch>(malformed)
+            FormPatchCodec.decode(malformed)
         }
     }
 
@@ -962,6 +962,71 @@ class FormPatchValidatorTest {
 
         assertIs<FormPatchValidationResult.Applicable>(result)
         assertEquals(0, permissions.containsAllCalls)
+    }
+
+    @Test
+    fun `page collection cannot elevate permissions while validation inputs are frozen`() {
+        val permissions = mutableSetOf<String>()
+        val fields = PermissionEscalatingFieldsList(
+            values = typedSnapshot().fields.filter { it.id == "title" },
+            onIterator = { permissions += "form.write" },
+        )
+        val snapshot = typedSnapshot().copy(fields = fields)
+
+        val result = typedValidator().validate(
+            patch = patch(changes = listOf(change(fieldId = "title", previousValue = "old", newValue = "new"))),
+            snapshot = snapshot,
+            permissions = permissions,
+        )
+
+        assertRejected(result, FormPatchErrorCode.MISSING_PERMISSION)
+        assertTrue("form.write" in permissions)
+        assertEquals(1, fields.iteratorCalls)
+    }
+
+    @Test
+    fun `applicable is final private constructible and has no data factory surface`() {
+        val type = FormPatchValidationResult.Applicable::class.java
+
+        assertTrue(java.lang.reflect.Modifier.isFinal(type.modifiers))
+        assertTrue(type.declaredConstructors.isNotEmpty())
+        assertTrue(type.declaredConstructors.all { constructor ->
+            java.lang.reflect.Modifier.isPrivate(constructor.modifiers) || constructor.isSynthetic
+        })
+        assertTrue(type.declaredConstructors.none { constructor ->
+            java.lang.reflect.Modifier.isPublic(constructor.modifiers) && !constructor.isSynthetic
+        })
+        assertTrue(type.declaredMethods.none { method ->
+            method.name == "create" ||
+                method.name == "copy" ||
+                method.name.startsWith("component") ||
+                method.name.startsWith("box-") ||
+                method.name.startsWith("constructor-") ||
+                method.name.startsWith("access\$constructor-")
+        })
+        val companionMethods = type.declaredClasses
+            .single { nested -> nested.simpleName == "Companion" }
+            .declaredMethods
+        assertTrue(companionMethods.none { method ->
+            method.parameterTypes.size == 1 && method.parameterTypes.single() == FormPatch::class.java
+        })
+        assertTrue(companionMethods.filterNot { method -> java.lang.reflect.Modifier.isPrivate(method.modifiers) }.all { method ->
+            method.parameterTypes.toSet().containsAll(
+                setOf(
+                    FormPatch::class.java,
+                    PageContextSnapshot::class.java,
+                    Set::class.java,
+                    List::class.java,
+                ),
+            )
+        })
+        assertIs<FormPatchValidationResult.Applicable>(
+            typedValidator().validate(
+                patch = patch(changes = listOf(change(fieldId = "title", previousValue = "old", newValue = "new"))),
+                snapshot = typedSnapshot(),
+                permissions = setOf("form.write"),
+            ),
+        )
     }
 
     @Test
@@ -1111,6 +1176,81 @@ class FormPatchValidatorTest {
         }
         assertFailsWith<IllegalArgumentException> {
             FormPatch("page", 1, listOf(FieldChange("field", JsonNull, tooManyNodes, "reason", 0.8)))
+        }
+    }
+
+    @Test
+    fun `public form models reject oversized collections before iterator or copy`() {
+        val changes = OversizedCollection(
+            declaredSize = TEST_MAX_PATCH_CHANGES + 1,
+            value = change(),
+        )
+        val sources = OversizedCollection(
+            declaredSize = TEST_MAX_SOURCE_REFERENCES + 1,
+            value = SourceReference("user-input", "source-1"),
+        )
+
+        assertFailsWith<IllegalArgumentException> { FormPatch("test-page", 7, changes) }
+        assertFailsWith<IllegalArgumentException> {
+            FieldChange("title", JsonNull, JsonPrimitive("new"), "reason", 0.8, sources)
+        }
+        assertEquals(0, changes.iteratorCalls)
+        assertEquals(0, sources.iteratorCalls)
+    }
+
+    @Test
+    fun `custom decoders reject the first over limit item before decoding it`() {
+        val changes = (0 until TEST_MAX_PATCH_CHANGES).joinToString(",") { index ->
+            """{"fieldId":"field-$index","reason":"reason","confidence":0.8}"""
+        }
+        val patchRaw =
+            """{"pageId":"test-page","baseRevision":7,"changes":[$changes,{"malformed":true}]}"""
+        val sources = (0 until TEST_MAX_SOURCE_REFERENCES).joinToString(",") { index ->
+            """{"type":"user-input","id":"source-$index"}"""
+        }
+        val changeRaw =
+            """{"fieldId":"title","reason":"reason","confidence":0.8,"sourceReferences":[$sources,{"type":"missing-id"}]}"""
+
+        val patchError = assertFailsWith<IllegalArgumentException> {
+            // 该用例刻意直达模型 serializer，验证 surrogate 内部也会在第 257 项前拒绝。
+            Json.decodeFromString<FormPatch>(patchRaw)
+        }
+        val changeError = assertFailsWith<IllegalArgumentException> {
+            Json.decodeFromString<FieldChange>(changeRaw)
+        }
+
+        assertTrue(patchError.message.orEmpty().contains("表单补丁字段变更数量超限"))
+        assertTrue(changeError.message.orEmpty().contains("字段建议来源数量超限"))
+    }
+
+    @Test
+    fun `protocol codec rejects oversized raw input before invoking decoder`() {
+        var decoderCalls = 0
+        val oversizedRaw = "x".repeat(TEST_MAX_PATCH_BYTES + 1)
+
+        assertFailsWith<IllegalArgumentException> {
+            FormPatchCodec.decode(oversizedRaw) {
+                decoderCalls += 1
+                patch()
+            }
+        }
+
+        assertEquals(0, decoderCalls)
+    }
+
+    @Test
+    fun `cancellation from canonical freeze and page snapshot propagates`() {
+        assertFailsWith<CancellationException> {
+            canonicalizeJsonElement(JsonObject(CancelingJsonMap()))
+        }
+        val snapshot = typedSnapshot().copy(fields = CancelingFieldsList(typedSnapshot().fields.first()))
+
+        assertFailsWith<CancellationException> {
+            typedValidator().validate(
+                patch = patch(changes = listOf(change(fieldId = "title", previousValue = "old", newValue = "new"))),
+                snapshot = snapshot,
+                permissions = setOf("form.write"),
+            )
         }
     }
 
@@ -1339,6 +1479,49 @@ class FormPatchValidatorTest {
         }
     }
 
+    private class PermissionEscalatingFieldsList(
+        private val values: List<FieldContext>,
+        private val onIterator: () -> Unit,
+    ) : AbstractList<FieldContext>() {
+        var iteratorCalls: Int = 0
+            private set
+
+        override val size: Int get() = values.size
+        override fun get(index: Int): FieldContext = values[index]
+        override fun iterator(): Iterator<FieldContext> {
+            iteratorCalls += 1
+            onIterator()
+            return values.iterator()
+        }
+    }
+
+    private class OversizedCollection<T>(
+        private val declaredSize: Int,
+        private val value: T,
+    ) : AbstractCollection<T>() {
+        var iteratorCalls: Int = 0
+            private set
+
+        override val size: Int get() = declaredSize
+        override fun iterator(): Iterator<T> {
+            iteratorCalls += 1
+            throw AssertionError("oversized collection must be rejected before iterator")
+        }
+    }
+
+    private class CancelingFieldsList(
+        private val value: FieldContext,
+    ) : AbstractList<FieldContext>() {
+        override val size: Int get() = 1
+        override fun get(index: Int): FieldContext = value
+        override fun iterator(): Iterator<FieldContext> = throw CancellationException("cancel-page")
+    }
+
+    private class CancelingJsonMap : AbstractMap<String, kotlinx.serialization.json.JsonElement>() {
+        override val entries: Set<Map.Entry<String, kotlinx.serialization.json.JsonElement>>
+            get() = throw CancellationException("cancel-json")
+    }
+
     private class MutatingFieldsList(
         initial: List<FieldContext>,
         private val replacement: List<FieldContext>,
@@ -1383,5 +1566,6 @@ class FormPatchValidatorTest {
         const val TEST_MAX_PATCH_BYTES = 128 * 1024
         const val TEST_MAX_JSON_DEPTH = 32
         const val TEST_MAX_JSON_NODES = 10_000
+        const val TEST_MAX_SOURCE_REFERENCES = 64
     }
 }

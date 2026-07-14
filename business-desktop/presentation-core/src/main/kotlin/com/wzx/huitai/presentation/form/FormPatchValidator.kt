@@ -45,9 +45,34 @@ data class FormPatchError(
 
 /** 表单补丁验证结果；拒绝分支不能携带可应用补丁。 */
 sealed interface FormPatchValidationResult {
-    /** 只暴露验证通过事实；具体实现由 validator 私有持有。 */
-    sealed interface Applicable : FormPatchValidationResult {
-        val patch: FormPatch
+    /** final + private constructor 保证成功事实只能由完整验证算法创建。 */
+    class Applicable private constructor(
+        val patch: FormPatch,
+    ) : FormPatchValidationResult {
+        companion object {
+            /** 同模块调用也必须提交全部验证事实；唯一入口自身执行完整算法。 */
+            internal fun validate(
+                patch: FormPatch,
+                snapshot: PageContextSnapshot,
+                permissions: Set<String>,
+                definitions: List<FormFieldDefinition>,
+                businessRules: List<FormBusinessRule>,
+            ): FormPatchValidationResult {
+                val frozenDefinitions = immutableList(definitions.map(FormFieldDefinition::frozenCopy))
+                val definitionsById = immutableMap(frozenDefinitions.associateBy(FormFieldDefinition::fieldId))
+                require(definitionsById.size == frozenDefinitions.size) { "字段定义标识必须唯一" }
+                return validateFormPatch(
+                    patch = patch,
+                    snapshot = snapshot,
+                    permissions = permissions,
+                    definitionsById = definitionsById,
+                    businessRules = immutableList(businessRules),
+                    onApplicable = ::Applicable,
+                )
+            }
+        }
+
+        override fun toString(): String = "Applicable(changeCount=${patch.changes.size})"
     }
 
     /** 所有已发现错误的脱敏集合。 */
@@ -73,11 +98,12 @@ class FormPatchValidator(
     businessRules: List<FormBusinessRule> = emptyList(),
 ) {
     private val frozenDefinitions = immutableList(definitions.map(FormFieldDefinition::frozenCopy))
-    private val definitionsById = immutableMap(frozenDefinitions.associateBy(FormFieldDefinition::fieldId))
     private val businessRules = immutableList(businessRules)
 
     init {
-        require(definitionsById.size == frozenDefinitions.size) { "字段定义标识必须唯一" }
+        require(frozenDefinitions.map(FormFieldDefinition::fieldId).distinct().size == frozenDefinitions.size) {
+            "字段定义标识必须唯一"
+        }
     }
 
     /**
@@ -91,137 +117,146 @@ class FormPatchValidator(
         patch: FormPatch,
         snapshot: PageContextSnapshot,
         permissions: Set<String>,
-    ): FormPatchValidationResult {
-        val canonicalPatch = canonicalizePatch(patch)
-            ?: return FormPatchValidationResult.Rejected(
-                listOf(FormPatchError(FormPatchErrorCode.INVALID_PATCH_ENCODING)),
-            )
-        val frozenInput = try {
-            FrozenValidationInput(
-                snapshot = snapshot.frozenCopy(),
-                permissions = immutableSet(permissions),
-            )
-        } catch (_: Exception) {
-            return FormPatchValidationResult.Rejected(
-                listOf(FormPatchError(FormPatchErrorCode.INVALID_PAGE_CONTEXT)),
-            )
-        }
-        val frozenSnapshot = frozenInput.snapshot
-        val frozenPermissions = frozenInput.permissions
-        if (canonicalPatch.pageId != frozenSnapshot.pageId) {
-            return FormPatchValidationResult.Rejected(listOf(FormPatchError(FormPatchErrorCode.PAGE_MISMATCH)))
-        }
-        if (canonicalPatch.baseRevision != frozenSnapshot.revision) {
-            return FormPatchValidationResult.Rejected(listOf(FormPatchError(FormPatchErrorCode.CONTEXT_STALE)))
-        }
-        if (!frozenSnapshot.hasValidFieldIdentity()) {
-            return FormPatchValidationResult.Rejected(
-                listOf(FormPatchError(FormPatchErrorCode.INVALID_PAGE_CONTEXT)),
-            )
-        }
-
-        val errors = mutableListOf<FormPatchError>()
-        val duplicateIds = canonicalPatch.changes.groupingBy(FieldChange::fieldId).eachCount()
-            .filterValues { it > 1 }
-            .keys
-        duplicateIds.forEach { fieldId ->
-            errors += FormPatchError(FormPatchErrorCode.DUPLICATE_FIELD, fieldId)
-        }
-
-        val snapshotFields = frozenSnapshot.fields.associateBy { it.id }
-        val structurallyValidChanges = mutableListOf<FieldChange>()
-        canonicalPatch.changes
-            .filterNot { it.fieldId in duplicateIds }
-            .forEach { change ->
-                val errorCountBeforeChange = errors.size
-                val definition = definitionsById[change.fieldId]
-                val field = snapshotFields[change.fieldId]
-                if (definition == null || field == null) {
-                    errors += FormPatchError(FormPatchErrorCode.UNKNOWN_FIELD, change.fieldId)
-                    return@forEach
-                }
-                if (!frozenPermissions.containsAll(definition.requiredPermissions)) {
-                    errors += FormPatchError(FormPatchErrorCode.MISSING_PERMISSION, change.fieldId)
-                }
-                if (!field.editable) {
-                    errors += FormPatchError(FormPatchErrorCode.FIELD_READ_ONLY, change.fieldId)
-                }
-                if (!change.previousValue.structurallyEquals(field.value)) {
-                    errors += FormPatchError(FormPatchErrorCode.PREVIOUS_VALUE_MISMATCH, change.fieldId)
-                }
-                val snapshotType = FormFieldType.fromWireName(field.type)
-                if (snapshotType == null || snapshotType != definition.type) {
-                    errors += FormPatchError(FormPatchErrorCode.FIELD_TYPE_MISMATCH, change.fieldId)
-                    return@forEach
-                }
-                if (field.required && change.newValue.isAbsent()) {
-                    errors += FormPatchError(FormPatchErrorCode.REQUIRED_VALUE_MISSING, change.fieldId)
-                } else if (!definition.type.accepts(change.newValue, definition)) {
-                    errors += FormPatchError(FormPatchErrorCode.INVALID_FIELD_VALUE, change.fieldId)
-                }
-                if (errors.size == errorCountBeforeChange) {
-                    structurallyValidChanges += change
-                }
-            }
-
-        val candidateValues = snapshotFields.mapValues { (_, field) -> canonicalizeJsonElement(field.value) }.toMutableMap()
-        structurallyValidChanges.forEach { change -> candidateValues[change.fieldId] = change.newValue }
-        val ruleContext = FormBusinessRuleContext(
-            pageId = canonicalPatch.pageId,
-            baseRevision = canonicalPatch.baseRevision,
-            candidateValues = immutableMap(candidateValues),
-            definitions = definitionsById,
-        )
-        val ruleErrors = businessRules.flatMap { rule ->
-            try {
-                val violations = immutableList(rule.validate(ruleContext))
-                if (violations.any { violation ->
-                        !violation.ruleId.isSafeStableIdentifier() ||
-                            (violation.fieldId != null &&
-                                (violation.fieldId !in definitionsById || violation.fieldId !in snapshotFields))
-                    }
-                ) {
-                    listOf(FormPatchError(FormPatchErrorCode.BUSINESS_RULE_FAILURE))
-                } else {
-                    violations.map { violation ->
-                        FormPatchError(
-                            code = FormPatchErrorCode.BUSINESS_RULE_VIOLATION,
-                            fieldId = violation.fieldId,
-                            ruleId = violation.ruleId,
-                        )
-                    }
-                }
-            } catch (error: CancellationException) {
-                throw error
-            } catch (_: Exception) {
-                listOf(FormPatchError(FormPatchErrorCode.BUSINESS_RULE_FAILURE))
-            }
-        }
-        val allErrors = errors + ruleErrors
-        return if (allErrors.isEmpty()) {
-            ApplicableResult(canonicalPatch)
-        } else {
-            FormPatchValidationResult.Rejected(allErrors)
-        }
-    }
-
-    /** 防止模块内其他调用方绕过 validator 伪造 Applicable。 */
-    private class ApplicableResult(
-        override val patch: FormPatch,
-    ) : FormPatchValidationResult.Applicable {
-        override fun equals(other: Any?): Boolean =
-            other is FormPatchValidationResult.Applicable && patch == other.patch
-
-        override fun hashCode(): Int = patch.hashCode()
-
-        override fun toString(): String = "Applicable(changeCount=${patch.changes.size})"
-    }
+    ): FormPatchValidationResult = FormPatchValidationResult.Applicable.validate(
+        patch = patch,
+        snapshot = snapshot,
+        permissions = permissions,
+        definitions = frozenDefinitions,
+        businessRules = businessRules,
+    )
 }
 
-private data class FrozenValidationInput(
-    val snapshot: PageContextSnapshot,
-    val permissions: Set<String>,
-)
+/** 完整验证算法是 Applicable 私有构造器的唯一调用链。 */
+private fun validateFormPatch(
+    patch: FormPatch,
+    snapshot: PageContextSnapshot,
+    permissions: Set<String>,
+    definitionsById: Map<String, FormFieldDefinition>,
+    businessRules: List<FormBusinessRule>,
+    onApplicable: (FormPatch) -> FormPatchValidationResult.Applicable,
+): FormPatchValidationResult {
+    val canonicalPatch = canonicalizePatch(patch)
+        ?: return FormPatchValidationResult.Rejected(
+            listOf(FormPatchError(FormPatchErrorCode.INVALID_PATCH_ENCODING)),
+        )
+    val frozenPermissions = try {
+        immutableSet(permissions)
+    } catch (error: CancellationException) {
+        throw error
+    } catch (_: Exception) {
+        return FormPatchValidationResult.Rejected(
+            listOf(FormPatchError(FormPatchErrorCode.INVALID_PAGE_CONTEXT)),
+        )
+    }
+    val frozenSnapshot = try {
+        snapshot.frozenCopy()
+    } catch (error: CancellationException) {
+        throw error
+    } catch (_: Exception) {
+        return FormPatchValidationResult.Rejected(
+            listOf(FormPatchError(FormPatchErrorCode.INVALID_PAGE_CONTEXT)),
+        )
+    }
+    /*
+     * 两个外部集合无法形成真正原子快照。授权事实必须优先冻结：页面迭代器即使回写调用方权限，
+     * 也不能提升本轮 frozenPermissions；后续所有阶段只读取彼此独立的只读副本。
+     */
+    if (canonicalPatch.pageId != frozenSnapshot.pageId) {
+        return FormPatchValidationResult.Rejected(listOf(FormPatchError(FormPatchErrorCode.PAGE_MISMATCH)))
+    }
+    if (canonicalPatch.baseRevision != frozenSnapshot.revision) {
+        return FormPatchValidationResult.Rejected(listOf(FormPatchError(FormPatchErrorCode.CONTEXT_STALE)))
+    }
+    if (!frozenSnapshot.hasValidFieldIdentity()) {
+        return FormPatchValidationResult.Rejected(
+            listOf(FormPatchError(FormPatchErrorCode.INVALID_PAGE_CONTEXT)),
+        )
+    }
+
+    val errors = mutableListOf<FormPatchError>()
+    val duplicateIds = canonicalPatch.changes.groupingBy(FieldChange::fieldId).eachCount()
+        .filterValues { it > 1 }
+        .keys
+    duplicateIds.forEach { fieldId ->
+        errors += FormPatchError(FormPatchErrorCode.DUPLICATE_FIELD, fieldId)
+    }
+
+    val snapshotFields = frozenSnapshot.fields.associateBy { it.id }
+    val structurallyValidChanges = mutableListOf<FieldChange>()
+    canonicalPatch.changes
+        .filterNot { it.fieldId in duplicateIds }
+        .forEach { change ->
+            val errorCountBeforeChange = errors.size
+            val definition = definitionsById[change.fieldId]
+            val field = snapshotFields[change.fieldId]
+            if (definition == null || field == null) {
+                errors += FormPatchError(FormPatchErrorCode.UNKNOWN_FIELD, change.fieldId)
+                return@forEach
+            }
+            if (!frozenPermissions.containsAll(definition.requiredPermissions)) {
+                errors += FormPatchError(FormPatchErrorCode.MISSING_PERMISSION, change.fieldId)
+            }
+            if (!field.editable) {
+                errors += FormPatchError(FormPatchErrorCode.FIELD_READ_ONLY, change.fieldId)
+            }
+            if (!change.previousValue.structurallyEquals(field.value)) {
+                errors += FormPatchError(FormPatchErrorCode.PREVIOUS_VALUE_MISMATCH, change.fieldId)
+            }
+            val snapshotType = FormFieldType.fromWireName(field.type)
+            if (snapshotType == null || snapshotType != definition.type) {
+                errors += FormPatchError(FormPatchErrorCode.FIELD_TYPE_MISMATCH, change.fieldId)
+                return@forEach
+            }
+            if (field.required && change.newValue.isAbsent()) {
+                errors += FormPatchError(FormPatchErrorCode.REQUIRED_VALUE_MISSING, change.fieldId)
+            } else if (!definition.type.accepts(change.newValue, definition)) {
+                errors += FormPatchError(FormPatchErrorCode.INVALID_FIELD_VALUE, change.fieldId)
+            }
+            if (errors.size == errorCountBeforeChange) {
+                structurallyValidChanges += change
+            }
+        }
+
+    val candidateValues = snapshotFields.mapValues { (_, field) -> canonicalizeJsonElement(field.value) }.toMutableMap()
+    structurallyValidChanges.forEach { change -> candidateValues[change.fieldId] = change.newValue }
+    val ruleContext = FormBusinessRuleContext(
+        pageId = canonicalPatch.pageId,
+        baseRevision = canonicalPatch.baseRevision,
+        candidateValues = immutableMap(candidateValues),
+        definitions = definitionsById,
+    )
+    val ruleErrors = businessRules.flatMap { rule ->
+        try {
+            val violations = immutableList(rule.validate(ruleContext))
+            if (violations.any { violation ->
+                    !violation.ruleId.isSafeStableIdentifier() ||
+                        (violation.fieldId != null &&
+                            (violation.fieldId !in definitionsById || violation.fieldId !in snapshotFields))
+                }
+            ) {
+                listOf(FormPatchError(FormPatchErrorCode.BUSINESS_RULE_FAILURE))
+            } else {
+                violations.map { violation ->
+                    FormPatchError(
+                        code = FormPatchErrorCode.BUSINESS_RULE_VIOLATION,
+                        fieldId = violation.fieldId,
+                        ruleId = violation.ruleId,
+                    )
+                }
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            listOf(FormPatchError(FormPatchErrorCode.BUSINESS_RULE_FAILURE))
+        }
+    }
+    val allErrors = errors + ruleErrors
+    return if (allErrors.isEmpty()) {
+        onApplicable(canonicalPatch)
+    } else {
+        FormPatchValidationResult.Rejected(allErrors)
+    }
+}
 
 private fun kotlinx.serialization.json.JsonElement?.isAbsent(): Boolean =
     this == null || this == kotlinx.serialization.json.JsonNull

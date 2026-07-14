@@ -1,13 +1,18 @@
 package com.wzx.huitai.presentation.form
 
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.encoding.CompositeDecoder
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
-import kotlinx.serialization.encodeToString
+import kotlinx.serialization.encoding.decodeStructure
+import kotlinx.serialization.encoding.encodeCollection
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -15,6 +20,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import java.nio.charset.StandardCharsets
 import java.util.Collections
+import java.util.concurrent.CancellationException
 
 /**
  * 表单建议所引用的通用来源。
@@ -71,7 +77,11 @@ class FieldChange private constructor(
         newValue = freezeJsonElement(newValue),
         reason = reason,
         confidence = confidence,
-        sourceReferences = immutableList(sourceReferences),
+        sourceReferences = immutableCappedList(
+            values = sourceReferences,
+            maxSize = FIELD_CHANGE_MAX_SOURCE_REFERENCES,
+            limitMessage = "字段建议来源数量超限",
+        ),
     )
 
     init {
@@ -125,7 +135,11 @@ class FormPatch private constructor(
     ) : this(
         pageId = pageId,
         baseRevision = baseRevision,
-        changes = immutableList(changes),
+        changes = immutableCappedList(
+            values = changes,
+            maxSize = FORM_PATCH_MAX_CHANGES,
+            limitMessage = "表单补丁字段变更数量超限",
+        ),
     )
 
     init {
@@ -154,6 +168,8 @@ class FormPatch private constructor(
 /** 通过协议序列化生成不共享调用方集合或 JSON backing 的表单补丁。 */
 internal fun canonicalizePatch(patch: FormPatch): FormPatch? = try {
     freezePatch(Json.decodeFromString<FormPatch>(Json.encodeToString(patch)))
+} catch (error: CancellationException) {
+    throw error
 } catch (_: Exception) {
     null
 }
@@ -161,6 +177,8 @@ internal fun canonicalizePatch(patch: FormPatch): FormPatch? = try {
 /** 通过同一协议边界深冻结单个字段建议。 */
 internal fun canonicalizeFieldChange(change: FieldChange): FieldChange? = try {
     freezeFieldChange(Json.decodeFromString<FieldChange>(Json.encodeToString(change)))
+} catch (error: CancellationException) {
+    throw error
 } catch (_: Exception) {
     null
 }
@@ -168,6 +186,8 @@ internal fun canonicalizeFieldChange(change: FieldChange): FieldChange? = try {
 /** 深拷贝页面 JSON 值，避免规则接触页面快照的集合 backing。 */
 internal fun canonicalizeJsonElement(value: JsonElement?): JsonElement? = try {
     freezeJsonElement(value)
+} catch (error: CancellationException) {
+    throw error
 } catch (_: Exception) {
     null
 }
@@ -198,8 +218,26 @@ internal fun <T> immutableList(values: Collection<T>): List<T> {
     return Collections.unmodifiableList(snapshot)
 }
 
-private const val MAX_PATCH_CHANGES = 256
-private const val MAX_PATCH_BYTES = 128 * 1024
+private fun <T> immutableCappedList(
+    values: Collection<T>,
+    maxSize: Int,
+    limitMessage: String,
+): List<T> {
+    val declaredSize = values.size
+    require(declaredSize <= maxSize) { limitMessage }
+    val snapshot = ArrayList<T>(declaredSize)
+    val iterator = values.iterator()
+    while (iterator.hasNext()) {
+        require(snapshot.size < maxSize) { limitMessage }
+        snapshot += iterator.next()
+    }
+    require(snapshot.size == declaredSize) { "集合快照不一致" }
+    return Collections.unmodifiableList(snapshot)
+}
+
+internal const val FORM_PATCH_MAX_CHANGES = 256
+internal const val FORM_PATCH_MAX_BYTES = 128 * 1024
+internal const val FIELD_CHANGE_MAX_SOURCE_REFERENCES = 64
 private const val MAX_JSON_DEPTH = 32
 private const val MAX_JSON_NODES = 10_000
 
@@ -238,6 +276,7 @@ private data class FieldChangeWire(
     val newValue: JsonElement? = null,
     val reason: String,
     val confidence: Double,
+    @Serializable(with = SourceReferenceListSerializer::class)
     val sourceReferences: List<SourceReference> = emptyList(),
 )
 
@@ -246,8 +285,59 @@ private data class FieldChangeWire(
 private data class FormPatchWire(
     val pageId: String,
     val baseRevision: Long,
+    @Serializable(with = FormPatchChangesSerializer::class)
     val changes: List<FieldChange>,
 )
+
+private object SourceReferenceListSerializer : CappedListSerializer<SourceReference>(
+    elementSerializer = SourceReference.serializer(),
+    maxSize = FIELD_CHANGE_MAX_SOURCE_REFERENCES,
+    limitMessage = "字段建议来源数量超限",
+)
+
+private object FormPatchChangesSerializer : CappedListSerializer<FieldChange>(
+    elementSerializer = FieldChange.serializer(),
+    maxSize = FORM_PATCH_MAX_CHANGES,
+    limitMessage = "表单补丁字段变更数量超限",
+)
+
+/** 集合协议在读取元素前检查声明大小，并在非顺序 decoder 中于首个超限 index 前拒绝。 */
+private abstract class CappedListSerializer<T>(
+    private val elementSerializer: KSerializer<T>,
+    private val maxSize: Int,
+    private val limitMessage: String,
+) : KSerializer<List<T>> {
+    override val descriptor: SerialDescriptor = ListSerializer(elementSerializer).descriptor
+
+    override fun serialize(encoder: Encoder, value: List<T>) {
+        require(value.size <= maxSize) { limitMessage }
+        encoder.encodeCollection(descriptor, value.size) {
+            value.forEachIndexed { index, element ->
+                encodeSerializableElement(descriptor, index, elementSerializer, element)
+            }
+        }
+    }
+
+    @OptIn(ExperimentalSerializationApi::class)
+    override fun deserialize(decoder: Decoder): List<T> = decoder.decodeStructure(descriptor) {
+        val values = ArrayList<T>()
+        if (decodeSequentially()) {
+            val declaredSize = decodeCollectionSize(descriptor)
+            require(declaredSize in 0..maxSize) { limitMessage }
+            repeat(declaredSize) { index ->
+                values += decodeSerializableElement(descriptor, index, elementSerializer)
+            }
+        } else {
+            while (true) {
+                val index = decodeElementIndex(descriptor)
+                if (index == CompositeDecoder.DECODE_DONE) break
+                require(index in 0 until maxSize && values.size < maxSize) { limitMessage }
+                values += decodeSerializableElement(descriptor, index, elementSerializer)
+            }
+        }
+        immutableList(values)
+    }
+}
 
 private fun FieldChange.toWire(): FieldChangeWire = FieldChangeWire(
     fieldId = fieldId,
@@ -285,10 +375,10 @@ private fun validatePatchBudget(
     baseRevision: Long,
     changes: List<FieldChange>,
 ) {
-    require(changes.size <= MAX_PATCH_CHANGES) { "表单补丁字段变更数量超限" }
+    require(changes.size <= FORM_PATCH_MAX_CHANGES) { "表单补丁字段变更数量超限" }
 
     var nodes = 0
-    val rawBytes = CappedUtf8Counter(MAX_PATCH_BYTES)
+    val rawBytes = CappedUtf8Counter(FORM_PATCH_MAX_BYTES)
     rawBytes.add(pageId)
     changes.forEach { change ->
         rawBytes.add(change.fieldId)
@@ -307,7 +397,7 @@ private fun validatePatchBudget(
         FormPatchWire.serializer(),
         FormPatchWire(pageId = pageId, baseRevision = baseRevision, changes = changes),
     )
-    require(encoded.toByteArray(StandardCharsets.UTF_8).size <= MAX_PATCH_BYTES) {
+    require(encoded.toByteArray(StandardCharsets.UTF_8).size <= FORM_PATCH_MAX_BYTES) {
         "表单补丁协议大小超限"
     }
 }
@@ -343,7 +433,7 @@ private fun inspectJson(
 /** 单次遍历同时校验并冻结 JSON，避免在不可信 backing 上产生检查与复制的时间差。 */
 private class JsonFreezer {
     private var nodes: Int = 0
-    private val rawBytes = CappedUtf8Counter(MAX_PATCH_BYTES)
+    private val rawBytes = CappedUtf8Counter(FORM_PATCH_MAX_BYTES)
 
     fun freeze(value: JsonElement, depth: Int): JsonElement {
         require(depth <= MAX_JSON_DEPTH) { "表单补丁 JSON 深度超限" }
@@ -392,4 +482,9 @@ private class CappedUtf8Counter(
             index += 1
         }
     }
+}
+
+/** 在进入 JSON parser 前执行 FormPatch 原始协议 UTF-8 大小检查。 */
+internal fun requireFormPatchRawBudget(raw: String) {
+    CappedUtf8Counter(FORM_PATCH_MAX_BYTES).add(raw)
 }
