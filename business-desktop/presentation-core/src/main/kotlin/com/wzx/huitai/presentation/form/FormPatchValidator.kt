@@ -1,6 +1,10 @@
 package com.wzx.huitai.presentation.form
 
 import com.wzx.huitai.presentation.context.PageContextSnapshot
+import com.wzx.huitai.presentation.context.AvailableAction
+import com.wzx.huitai.presentation.context.FieldContext
+import com.wzx.huitai.presentation.context.SelectionContext
+import com.wzx.huitai.presentation.context.ValidationSummary
 import java.util.Collections
 import java.util.concurrent.CancellationException
 
@@ -92,13 +96,25 @@ class FormPatchValidator(
             ?: return FormPatchValidationResult.Rejected(
                 listOf(FormPatchError(FormPatchErrorCode.INVALID_PATCH_ENCODING)),
             )
-        if (canonicalPatch.pageId != snapshot.pageId) {
+        val frozenInput = try {
+            FrozenValidationInput(
+                snapshot = snapshot.frozenCopy(),
+                permissions = immutableSet(permissions),
+            )
+        } catch (_: Exception) {
+            return FormPatchValidationResult.Rejected(
+                listOf(FormPatchError(FormPatchErrorCode.INVALID_PAGE_CONTEXT)),
+            )
+        }
+        val frozenSnapshot = frozenInput.snapshot
+        val frozenPermissions = frozenInput.permissions
+        if (canonicalPatch.pageId != frozenSnapshot.pageId) {
             return FormPatchValidationResult.Rejected(listOf(FormPatchError(FormPatchErrorCode.PAGE_MISMATCH)))
         }
-        if (canonicalPatch.baseRevision != snapshot.revision) {
+        if (canonicalPatch.baseRevision != frozenSnapshot.revision) {
             return FormPatchValidationResult.Rejected(listOf(FormPatchError(FormPatchErrorCode.CONTEXT_STALE)))
         }
-        if (!snapshot.hasValidFieldIdentity()) {
+        if (!frozenSnapshot.hasValidFieldIdentity()) {
             return FormPatchValidationResult.Rejected(
                 listOf(FormPatchError(FormPatchErrorCode.INVALID_PAGE_CONTEXT)),
             )
@@ -112,7 +128,7 @@ class FormPatchValidator(
             errors += FormPatchError(FormPatchErrorCode.DUPLICATE_FIELD, fieldId)
         }
 
-        val snapshotFields = snapshot.fields.associateBy { it.id }
+        val snapshotFields = frozenSnapshot.fields.associateBy { it.id }
         val structurallyValidChanges = mutableListOf<FieldChange>()
         canonicalPatch.changes
             .filterNot { it.fieldId in duplicateIds }
@@ -124,7 +140,7 @@ class FormPatchValidator(
                     errors += FormPatchError(FormPatchErrorCode.UNKNOWN_FIELD, change.fieldId)
                     return@forEach
                 }
-                if (!permissions.containsAll(definition.requiredPermissions)) {
+                if (!frozenPermissions.containsAll(definition.requiredPermissions)) {
                     errors += FormPatchError(FormPatchErrorCode.MISSING_PERMISSION, change.fieldId)
                 }
                 if (!field.editable) {
@@ -158,10 +174,11 @@ class FormPatchValidator(
         )
         val ruleErrors = businessRules.flatMap { rule ->
             try {
-                val violations = rule.validate(ruleContext)
+                val violations = immutableList(rule.validate(ruleContext))
                 if (violations.any { violation ->
                         !violation.ruleId.isSafeStableIdentifier() ||
-                            (violation.fieldId != null && violation.fieldId !in definitionsById)
+                            (violation.fieldId != null &&
+                                (violation.fieldId !in definitionsById || violation.fieldId !in snapshotFields))
                     }
                 ) {
                     listOf(FormPatchError(FormPatchErrorCode.BUSINESS_RULE_FAILURE))
@@ -201,6 +218,11 @@ class FormPatchValidator(
     }
 }
 
+private data class FrozenValidationInput(
+    val snapshot: PageContextSnapshot,
+    val permissions: Set<String>,
+)
+
 private fun kotlinx.serialization.json.JsonElement?.isAbsent(): Boolean =
     this == null || this == kotlinx.serialization.json.JsonNull
 
@@ -210,6 +232,44 @@ private fun kotlinx.serialization.json.JsonElement?.structurallyEquals(
 
 private fun <K, V> immutableMap(values: Map<K, V>): Map<K, V> =
     Collections.unmodifiableMap(LinkedHashMap(values))
+
+private fun <T> immutableSet(values: Set<T>): Set<T> {
+    val snapshot = LinkedHashSet<T>()
+    values.forEach(snapshot::add)
+    return Collections.unmodifiableSet(snapshot)
+}
+
+/** 校验入口一次性冻结完整页面事实，后续阶段不再读取调用方持有的集合或 JSON backing。 */
+private fun PageContextSnapshot.frozenCopy(): PageContextSnapshot = PageContextSnapshot(
+    snapshotId = snapshotId,
+    pageId = pageId,
+    pageTitle = pageTitle,
+    route = route,
+    revision = revision,
+    mode = mode,
+    entityReferences = immutableList(entityReferences.map { reference -> reference.copy() }),
+    fields = immutableList(fields.map(FieldContext::frozenCopy)),
+    availableActions = immutableList(availableActions.map(AvailableAction::frozenCopy)),
+    validationSummary = validationSummary.frozenCopy(),
+    selection = selection?.frozenCopy(),
+)
+
+private fun FieldContext.frozenCopy(): FieldContext = copy(
+    value = freezeJsonElement(value),
+    validationErrors = immutableList(validationErrors),
+)
+
+private fun AvailableAction.frozenCopy(): AvailableAction = copy(
+    inputSchema = inputSchema?.let { schema -> freezeJsonElement(schema) as kotlinx.serialization.json.JsonObject },
+)
+
+private fun ValidationSummary.frozenCopy(): ValidationSummary = copy(
+    messages = immutableList(messages),
+)
+
+private fun SelectionContext.frozenCopy(): SelectionContext = copy(
+    ids = immutableList(ids),
+)
 
 private fun PageContextSnapshot.hasValidFieldIdentity(): Boolean {
     val ids = fields.map { it.id }

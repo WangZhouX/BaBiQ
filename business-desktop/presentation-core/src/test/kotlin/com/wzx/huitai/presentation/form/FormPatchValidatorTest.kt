@@ -12,6 +12,9 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -865,6 +868,240 @@ class FormPatchValidatorTest {
         assertEquals("raw-secret", error.message)
     }
 
+    @Test
+    fun `decoded form patch deeply freezes every collection and json backing`() {
+        val encoded = Json.encodeToString(
+            FormPatch(
+                pageId = "test-page",
+                baseRevision = 7,
+                changes = listOf(
+                    FieldChange(
+                        fieldId = "title",
+                        previousValue = JsonObject(mapOf("nested" to JsonArray(listOf(JsonPrimitive("before"))))),
+                        newValue = JsonObject(mapOf("nested" to JsonArray(listOf(JsonPrimitive("after"))))),
+                        reason = "decoded",
+                        confidence = 0.8,
+                        sourceReferences = listOf(SourceReference("user-input", "source-1")),
+                    ),
+                ),
+            ),
+        )
+
+        val decoded = Json.decodeFromString<FormPatch>(encoded)
+        val decodedChange = decoded.changes.single()
+        val decodedObject = decodedChange.newValue as JsonObject
+        val decodedArray = decodedObject.getValue("nested") as JsonArray
+
+        assertMutationBlocked { (decoded.changes as MutableList).clear() }
+        assertMutationBlocked { (decodedChange.sourceReferences as MutableList).clear() }
+        assertMutationBlocked { (decodedObject.entries as MutableSet).clear() }
+        assertMutationBlocked {
+            (decodedObject.entries.single() as MutableMap.MutableEntry).setValue(JsonPrimitive("mutated"))
+        }
+        assertMutationBlocked { (decodedArray.iterator() as MutableIterator).remove() }
+    }
+
+    @Test
+    fun `decoded malformed form patch is rejected at the protocol boundary`() {
+        val malformed = """{"pageId":" ","baseRevision":7,"changes":[]}"""
+
+        assertFailsWith<IllegalArgumentException> {
+            Json.decodeFromString<FormPatch>(malformed)
+        }
+    }
+
+    @Test
+    fun `validator freezes permissions before permission checks`() {
+        val permissions = MutatingContainsAllSet(
+            initial = setOf("form.write"),
+            replacement = emptySet(),
+        )
+
+        val result = typedValidator().validate(
+            patch = patch(changes = listOf(change(fieldId = "title", previousValue = "old", newValue = "new"))),
+            snapshot = typedSnapshot(),
+            permissions = permissions,
+        )
+
+        assertIs<FormPatchValidationResult.Applicable>(result)
+        assertEquals(0, permissions.containsAllCalls)
+    }
+
+    @Test
+    fun `validator freezes page fields and nested values before validation stages`() {
+        val nestedBacking = mutableListOf<kotlinx.serialization.json.JsonElement>(JsonPrimitive("before"))
+        val mutatingFields = MutatingFieldsList(
+            initial = listOf(
+                FieldContext(
+                    id = "payload",
+                    label = "Payload",
+                    type = "string",
+                    value = JsonObject(mapOf("nested" to JsonArray(nestedBacking))),
+                    editable = true,
+                    required = false,
+                    sensitivity = FieldSensitivity.INTERNAL,
+                ),
+                FieldContext(
+                    id = "trigger",
+                    label = "Trigger",
+                    type = "string",
+                    value = JsonPrimitive("before"),
+                    editable = true,
+                    required = false,
+                    sensitivity = FieldSensitivity.INTERNAL,
+                ),
+            ),
+            replacement = emptyList(),
+            onSecondRead = { nestedBacking += JsonPrimitive("mutated") },
+        )
+        val snapshot = PageContextSnapshot(
+            snapshotId = "snapshot-1",
+            pageId = "test-page",
+            pageTitle = "Test",
+            route = "/test",
+            revision = 7,
+            mode = PageMode.EDIT,
+            fields = mutatingFields,
+            validationSummary = ValidationSummary(true),
+        )
+        val observed = mutableListOf<String>()
+        val validator = FormPatchValidator(
+            definitions = listOf(
+                FormFieldDefinition("payload", FormFieldType.STRING),
+                FormFieldDefinition("trigger", FormFieldType.STRING),
+            ),
+            businessRules = listOf(FormBusinessRule { context ->
+                observed += context.candidateValues.getValue("payload").toString()
+                emptyList()
+            }),
+        )
+
+        val result = validator.validate(
+            patch = FormPatch(
+                "test-page",
+                7,
+                listOf(FieldChange("trigger", JsonPrimitive("before"), JsonPrimitive("after"), "reason", 0.8)),
+            ),
+            snapshot = snapshot,
+            permissions = emptySet(),
+        )
+
+        assertIs<FormPatchValidationResult.Applicable>(result)
+        assertEquals(1, mutatingFields.iteratorCalls)
+        assertTrue(observed.single().contains("before"))
+        assertFalse(observed.single().contains("mutated"))
+    }
+
+    @Test
+    fun `validator freezes page json in one pass without a check copy race`() {
+        val mutatingBacking = MutatingJsonMap(
+            initial = mapOf("nested" to JsonPrimitive("before")),
+            replacement = mapOf("nested" to JsonPrimitive("mutated")),
+        )
+        val snapshot = PageContextSnapshot(
+            snapshotId = "snapshot-1",
+            pageId = "test-page",
+            pageTitle = "Test",
+            route = "/test",
+            revision = 7,
+            mode = PageMode.EDIT,
+            fields = listOf(
+                FieldContext(
+                    id = "payload",
+                    label = "Payload",
+                    type = "string",
+                    value = JsonObject(mutatingBacking),
+                    editable = true,
+                    required = false,
+                    sensitivity = FieldSensitivity.INTERNAL,
+                ),
+                FieldContext(
+                    id = "trigger",
+                    label = "Trigger",
+                    type = "string",
+                    value = JsonPrimitive("before"),
+                    editable = true,
+                    required = false,
+                    sensitivity = FieldSensitivity.INTERNAL,
+                ),
+            ),
+            validationSummary = ValidationSummary(true),
+        )
+        val observed = mutableListOf<String>()
+        val validator = FormPatchValidator(
+            definitions = listOf(
+                FormFieldDefinition("payload", FormFieldType.STRING),
+                FormFieldDefinition("trigger", FormFieldType.STRING),
+            ),
+            businessRules = listOf(FormBusinessRule { context ->
+                observed += context.candidateValues.getValue("payload").toString()
+                emptyList()
+            }),
+        )
+
+        val result = validator.validate(
+            patch = FormPatch(
+                "test-page",
+                7,
+                listOf(FieldChange("trigger", JsonPrimitive("before"), JsonPrimitive("after"), "reason", 0.8)),
+            ),
+            snapshot = snapshot,
+            permissions = emptySet(),
+        )
+
+        assertIs<FormPatchValidationResult.Applicable>(result)
+        assertEquals(1, mutatingBacking.entriesReads)
+        assertTrue(observed.single().contains("before"))
+        assertFalse(observed.single().contains("mutated"))
+    }
+
+    @Test
+    fun `patch budget rejects excessive changes bytes depth and nodes`() {
+        val tooManyChanges = List(TEST_MAX_PATCH_CHANGES + 1) { index ->
+            FieldChange("field-$index", JsonNull, JsonPrimitive("new"), "reason", 0.8)
+        }
+        val oversizedValue = JsonPrimitive("x".repeat(TEST_MAX_PATCH_BYTES))
+        var deepValue: kotlinx.serialization.json.JsonElement = JsonPrimitive("leaf")
+        repeat(TEST_MAX_JSON_DEPTH + 1) { deepValue = JsonArray(listOf(deepValue)) }
+        val tooManyNodes = JsonArray(List(TEST_MAX_JSON_NODES + 1) { JsonPrimitive(0) })
+
+        assertFailsWith<IllegalArgumentException> { FormPatch("page", 1, tooManyChanges) }
+        assertFailsWith<IllegalArgumentException> {
+            FormPatch("page", 1, listOf(FieldChange("field", JsonNull, oversizedValue, "reason", 0.8)))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            FormPatch("page", 1, listOf(FieldChange("field", JsonNull, deepValue, "reason", 0.8)))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            FormPatch("page", 1, listOf(FieldChange("field", JsonNull, tooManyNodes, "reason", 0.8)))
+        }
+    }
+
+    @Test
+    fun `rule field id absent from current snapshot becomes sanitized failure`() {
+        val validator = FormPatchValidator(
+            definitions = listOf(
+                FormFieldDefinition("title", FormFieldType.STRING),
+                FormFieldDefinition("definition-only", FormFieldType.STRING),
+            ),
+            businessRules = listOf(FormBusinessRule {
+                listOf(FormBusinessRuleViolation("invalid-scope", "definition-only"))
+            }),
+        )
+        val snapshot = typedSnapshot().copy(fields = typedSnapshot().fields.filter { it.id == "title" })
+
+        val rejection = assertIs<FormPatchValidationResult.Rejected>(
+            validator.validate(
+                FormPatch("test-page", 7, listOf(FieldChange("title", JsonPrimitive("old"), JsonPrimitive("new"), "reason", 0.8))),
+                snapshot,
+                emptySet(),
+            ),
+        )
+
+        assertEquals(listOf(FormPatchErrorCode.BUSINESS_RULE_FAILURE), rejection.errors.map(FormPatchError::code))
+        assertTrue(rejection.errors.all { it.fieldId == null && it.ruleId == null })
+    }
+
     private fun validator(): FormPatchValidator = FormPatchValidator(
         definitions = listOf(
             FormFieldDefinition(
@@ -1045,5 +1282,69 @@ class FormPatchValidatorTest {
         } catch (_: ClassCastException) {
             // JsonObject/JsonArray does not implement mutable collection interfaces.
         }
+    }
+
+    private class MutatingContainsAllSet(
+        initial: Set<String>,
+        private val replacement: Set<String>,
+    ) : AbstractSet<String>() {
+        private var delegate = initial
+        var containsAllCalls: Int = 0
+            private set
+
+        override val size: Int get() = delegate.size
+        override fun iterator(): Iterator<String> = delegate.iterator()
+        override fun containsAll(elements: Collection<String>): Boolean {
+            containsAllCalls += 1
+            val result = delegate.containsAll(elements)
+            delegate = replacement
+            return result
+        }
+    }
+
+    private class MutatingFieldsList(
+        initial: List<FieldContext>,
+        private val replacement: List<FieldContext>,
+        private val onSecondRead: () -> Unit,
+    ) : AbstractList<FieldContext>() {
+        private var delegate = initial
+        var iteratorCalls: Int = 0
+            private set
+
+        override val size: Int get() = delegate.size
+        override fun get(index: Int): FieldContext = delegate[index]
+        override fun iterator(): Iterator<FieldContext> {
+            iteratorCalls += 1
+            val current = delegate
+            if (iteratorCalls == 2) {
+                onSecondRead()
+                delegate = replacement
+            }
+            return current.iterator()
+        }
+    }
+
+    private class MutatingJsonMap(
+        initial: Map<String, kotlinx.serialization.json.JsonElement>,
+        private val replacement: Map<String, kotlinx.serialization.json.JsonElement>,
+    ) : AbstractMap<String, kotlinx.serialization.json.JsonElement>() {
+        private var current = initial
+        var entriesReads: Int = 0
+            private set
+
+        override val entries: Set<Map.Entry<String, kotlinx.serialization.json.JsonElement>>
+            get() {
+                entriesReads += 1
+                val snapshot = current.entries
+                current = replacement
+                return snapshot
+            }
+    }
+
+    private companion object {
+        const val TEST_MAX_PATCH_CHANGES = 256
+        const val TEST_MAX_PATCH_BYTES = 128 * 1024
+        const val TEST_MAX_JSON_DEPTH = 32
+        const val TEST_MAX_JSON_NODES = 10_000
     }
 }
