@@ -19,6 +19,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import kotlinx.coroutines.CancellationException
 
 class FormPatchValidatorTest {
     @Test
@@ -553,6 +554,317 @@ class FormPatchValidatorTest {
         assertIs<FormPatchValidationResult.Applicable>(valid)
     }
 
+    @Test
+    fun `applicable patch collections cannot be modified through jvm mutable casts`() {
+        val result = typedValidator().validate(
+            patch = patch(changes = listOf(change(fieldId = "title", previousValue = "old", newValue = "new"))),
+            snapshot = typedSnapshot(),
+            permissions = setOf("form.write"),
+        )
+        val applicable = assertIs<FormPatchValidationResult.Applicable>(result)
+        val changes = applicable.patch.changes as MutableList<FieldChange>
+        val sources = applicable.patch.changes.single().sourceReferences as MutableList<SourceReference>
+
+        assertFailsWith<UnsupportedOperationException> { changes.clear() }
+        assertFailsWith<UnsupportedOperationException> { changes += change(fieldId = "unknown") }
+        assertFailsWith<UnsupportedOperationException> {
+            sources += SourceReference(type = "user-input", id = "late-source")
+        }
+        assertEquals(1, applicable.patch.changes.size)
+        assertEquals(1, applicable.patch.changes.single().sourceReferences.size)
+        assertTrue(FormPatchValidationResult.Applicable::class.java.isInterface)
+        assertTrue(FormPatchValidationResult.Applicable::class.java.declaredMethods.none { it.name == "copy" })
+    }
+
+    @Test
+    fun `suggestion state pending changes cannot be modified through jvm mutable cast`() {
+        val state = SuggestionState(
+            pageId = "test-page",
+            baseRevision = 7,
+            pendingChanges = listOf(change()),
+        )
+        val pending = state.pendingChanges as MutableList<FieldChange>
+
+        assertFailsWith<UnsupportedOperationException> { pending.clear() }
+        assertFailsWith<UnsupportedOperationException> { pending += change(newValue = "late") }
+        assertEquals(1, state.pendingChanges.size)
+    }
+
+    @Test
+    fun `direct form models freeze caller collections at construction`() {
+        val jsonBacking = mutableMapOf<String, kotlinx.serialization.json.JsonElement>(
+            "nested" to JsonArray(mutableListOf(JsonPrimitive("before"))),
+        )
+        val sourceBacking = mutableListOf(SourceReference(type = "user-input", id = "source-1"))
+        val change = FieldChange(
+            fieldId = "title",
+            previousValue = JsonPrimitive("old"),
+            newValue = JsonObject(jsonBacking),
+            reason = "reason",
+            confidence = 0.8,
+            sourceReferences = sourceBacking,
+        )
+        val changesBacking = mutableListOf(change)
+        val patch = FormPatch(pageId = "test-page", baseRevision = 7, changes = changesBacking)
+
+        sourceBacking += SourceReference(type = "user-input", id = "source-2")
+        changesBacking += change(fieldId = "status")
+        jsonBacking["nested"] = JsonPrimitive("mutated")
+
+        assertEquals(1, change.sourceReferences.size)
+        assertEquals(1, patch.changes.size)
+        assertTrue("before" in change.newValue.toString())
+        assertFailsWith<UnsupportedOperationException> {
+            (change.sourceReferences as MutableList).clear()
+        }
+        assertFailsWith<UnsupportedOperationException> {
+            (patch.changes as MutableList).clear()
+        }
+    }
+
+    @Test
+    fun `rejected errors cannot be modified through jvm mutable cast`() {
+        val rejected = assertIs<FormPatchValidationResult.Rejected>(
+            typedValidator().validate(
+                patch(
+                    changes = listOf(
+                        changeElement("title", "old", JsonPrimitive(true)),
+                        change("status", "draft", "unknown"),
+                    ),
+                ),
+                typedSnapshot(),
+                setOf("form.write"),
+            ),
+        )
+        val errors = rejected.errors as MutableList<FormPatchError>
+        val originalSize = rejected.errors.size
+
+        assertFailsWith<UnsupportedOperationException> { errors.clear() }
+        assertFailsWith<UnsupportedOperationException> {
+            errors += FormPatchError(FormPatchErrorCode.INVALID_PATCH_ENCODING)
+        }
+        assertEquals(originalSize, rejected.errors.size)
+    }
+
+    @Test
+    fun `rules cannot mutate candidate definitions or definition sets`() {
+        val observations = mutableListOf<String>()
+        val mutatingRule = FormBusinessRule { context ->
+            assertFailsWith<UnsupportedOperationException> {
+                (context.candidateValues as MutableMap).clear()
+            }
+            assertFailsWith<UnsupportedOperationException> {
+                (context.definitions as MutableMap).clear()
+            }
+            val definition = context.definitions.getValue("status")
+            assertFailsWith<UnsupportedOperationException> {
+                (definition.requiredPermissions as MutableSet).clear()
+            }
+            assertFailsWith<UnsupportedOperationException> {
+                (definition.enumAllowedValues as MutableSet).add("injected")
+            }
+            emptyList()
+        }
+        val observingRule = FormBusinessRule { context ->
+            observations += context.candidateValues.getValue("status").toString()
+            observations += context.definitions.getValue("status").requiredPermissions.single()
+            observations += context.definitions.getValue("status").enumAllowedValues.sorted().joinToString()
+            emptyList()
+        }
+        val validator = typedValidator(rules = listOf(mutatingRule, observingRule))
+
+        val first = validator.validate(
+            patch = patch(changes = listOf(change(fieldId = "status", previousValue = "draft", newValue = "active"))),
+            snapshot = typedSnapshot(),
+            permissions = setOf("form.write"),
+        )
+        val second = validator.validate(
+            patch = patch(changes = listOf(change(fieldId = "status", previousValue = "draft", newValue = "active"))),
+            snapshot = typedSnapshot(),
+            permissions = setOf("form.write"),
+        )
+
+        assertIs<FormPatchValidationResult.Applicable>(first)
+        assertIs<FormPatchValidationResult.Applicable>(second)
+        assertEquals(listOf("\"active\"", "form.write", "active, draft", "\"active\"", "form.write", "active, draft"), observations)
+    }
+
+    @Test
+    @Suppress("UNCHECKED_CAST")
+    fun `rule candidate json backings cannot mutate later rules or later validations`() {
+        val snapshotBacking = mutableMapOf<String, kotlinx.serialization.json.JsonElement>(
+            "nested" to JsonArray(mutableListOf(JsonPrimitive("before"))),
+        )
+        val observed = mutableListOf<String>()
+        val mutatingRule = FormBusinessRule { context ->
+            val candidate = context.candidateValues.getValue("payloadObject") as JsonObject
+            assertMutationBlocked { (candidate as Any as MutableMap<String, kotlinx.serialization.json.JsonElement>).clear() }
+            assertMutationBlocked { (candidate.entries as MutableSet).clear() }
+            assertMutationBlocked {
+                (candidate.entries.single() as MutableMap.MutableEntry).setValue(JsonPrimitive("mutated"))
+            }
+            val nested = candidate.getValue("nested") as JsonArray
+            assertMutationBlocked { (nested as Any as MutableList<kotlinx.serialization.json.JsonElement>).clear() }
+            assertMutationBlocked { (nested.iterator() as MutableIterator).remove() }
+            emptyList()
+        }
+        val observingRule = FormBusinessRule { context ->
+            observed += context.candidateValues.getValue("payloadObject").toString()
+            emptyList()
+        }
+        val validator = FormPatchValidator(
+            definitions = listOf(
+                FormFieldDefinition("payloadObject", FormFieldType.STRING),
+                FormFieldDefinition("trigger", FormFieldType.STRING),
+            ),
+            businessRules = listOf(mutatingRule, observingRule),
+        )
+        val snapshot = freezeSnapshot(
+            objectValue = JsonObject(snapshotBacking),
+            arrayValue = JsonArray(listOf(JsonPrimitive("unused"))),
+        ).copy(
+            fields = listOf(
+                freezeSnapshot(
+                    objectValue = JsonObject(snapshotBacking),
+                    arrayValue = JsonArray(listOf(JsonPrimitive("unused"))),
+                ).fields.first(),
+                FieldContext(
+                    id = "trigger",
+                    label = "Trigger",
+                    type = "string",
+                    value = JsonPrimitive("before"),
+                    editable = true,
+                    required = false,
+                    sensitivity = FieldSensitivity.INTERNAL,
+                ),
+            ),
+        )
+        val patch = FormPatch(
+            pageId = "freeze-page",
+            baseRevision = 3,
+            changes = listOf(FieldChange("trigger", JsonPrimitive("before"), JsonPrimitive("after"), "freeze", 0.8)),
+        )
+
+        assertIs<FormPatchValidationResult.Applicable>(validator.validate(patch, snapshot, emptySet()))
+        assertIs<FormPatchValidationResult.Applicable>(validator.validate(patch, snapshot, emptySet()))
+        assertEquals(2, observed.size)
+        assertTrue(observed.all { "before" in it })
+    }
+
+    @Test
+    fun `duplicate or blank snapshot field ids reject invalid page context`() {
+        val duplicateSnapshot = typedSnapshot().copy(
+            fields = typedSnapshot().fields + typedSnapshot().fields.first().copy(label = "Duplicate"),
+        )
+        val blankSnapshot = typedSnapshot().copy(
+            fields = typedSnapshot().fields.mapIndexed { index, field ->
+                if (index == 0) field.copy(id = "  ") else field
+            },
+        )
+
+        val duplicateResult = typedValidator().validate(
+            patch = patch(changes = listOf(change(fieldId = "title", previousValue = "old", newValue = "new"))),
+            snapshot = duplicateSnapshot,
+            permissions = setOf("form.write"),
+        )
+        val blankResult = typedValidator().validate(
+            patch = patch(changes = listOf(change(fieldId = "title", previousValue = "old", newValue = "new"))),
+            snapshot = blankSnapshot,
+            permissions = setOf("form.write"),
+        )
+
+        assertRejected(duplicateResult, FormPatchErrorCode.INVALID_PAGE_CONTEXT)
+        assertRejected(blankResult, FormPatchErrorCode.INVALID_PAGE_CONTEXT)
+    }
+
+    @Test
+    fun `model boundary rejects blank oversized and controlled identifiers without raw diagnostics`() {
+        val controlled = "raw\u0000secret"
+        val oversized = "x".repeat(257)
+
+        listOf<() -> Unit>(
+            { SourceReference(type = " ", id = "source") },
+            { SourceReference(type = "user-input", id = controlled) },
+            { SourceReference(type = oversized, id = "source") },
+            { SourceReference(type = "user-input", id = "source", label = controlled) },
+            { FieldChange(" ", JsonNull, JsonPrimitive("new"), "reason", 0.8) },
+            { FieldChange("field", JsonNull, JsonPrimitive("new"), " ", 0.8) },
+            { FieldChange(controlled, JsonNull, JsonPrimitive("new"), "reason", 0.8) },
+            { FieldChange("field", JsonNull, JsonPrimitive("new"), controlled, 0.8) },
+            { FieldChange("field", JsonNull, JsonPrimitive("new"), "x".repeat(4_001), 0.8) },
+            { FormPatch(" ", 1, listOf(change())) },
+            { FormPatch(controlled, 1, listOf(change())) },
+            { FormPatch("page", 1, emptyList()) },
+            { SuggestionState(" ", 1) },
+        ).forEach { constructor ->
+            val error = assertFailsWith<IllegalArgumentException> { constructor() }
+            assertFalse(controlled in error.message.orEmpty())
+            assertFalse(oversized in error.message.orEmpty())
+        }
+
+        val safeSource = SourceReference(type = "user-input", id = "raw-id", label = "raw-label")
+        assertFalse("raw-id" in safeSource.toString())
+        assertFalse("raw-label" in safeSource.toString())
+        assertFalse("raw\u0000secret" in FormPatchError(FormPatchErrorCode.UNKNOWN_FIELD, controlled, controlled).toString())
+    }
+
+    @Test
+    fun `stable identifiers allow common uuid dotted colon slash and dash forms`() {
+        val stableId = "scope/123e4567-e89b-12d3-a456-426614174000:v1.field"
+        val source = SourceReference(type = "external.record/v1", id = stableId)
+        val change = FieldChange(stableId, JsonNull, JsonPrimitive("new"), "normal\nreason", 0.8, listOf(source))
+        val patch = FormPatch("page/$stableId", 1, listOf(change))
+
+        assertEquals(stableId, patch.changes.single().fieldId)
+    }
+
+    @Test
+    fun `untrusted rule outputs become sanitized failures and later rules continue`() {
+        val laterRuleRuns = mutableListOf<Boolean>()
+        val invalidRules = listOf<FormBusinessRule>(
+            FormBusinessRule { listOf(FormBusinessRuleViolation(ruleId = " ")) },
+            FormBusinessRule { listOf(FormBusinessRuleViolation(ruleId = "x".repeat(257))) },
+            FormBusinessRule { listOf(FormBusinessRuleViolation(ruleId = "raw\u0000secret")) },
+            FormBusinessRule { listOf(FormBusinessRuleViolation(ruleId = "valid-rule", fieldId = "unknown-field")) },
+        )
+        val validator = typedValidator(
+            rules = invalidRules + FormBusinessRule {
+                laterRuleRuns += true
+                emptyList()
+            },
+        )
+
+        val result = validator.validate(
+            patch = patch(changes = listOf(change(fieldId = "title", previousValue = "old", newValue = "new"))),
+            snapshot = typedSnapshot(),
+            permissions = setOf("form.write"),
+        )
+
+        val rejection = assertIs<FormPatchValidationResult.Rejected>(result)
+        assertEquals(4, rejection.errors.count { it.code == FormPatchErrorCode.BUSINESS_RULE_FAILURE })
+        assertTrue(rejection.errors.none { it.ruleId != null || it.fieldId != null })
+        assertEquals(listOf(true), laterRuleRuns)
+        assertFalse("unknown-field" in rejection.toString())
+        assertFalse("raw" in rejection.toString())
+    }
+
+    @Test
+    fun `rule cancellation propagates instead of becoming a business rule failure`() {
+        val validator = typedValidator(
+            rules = listOf(FormBusinessRule { throw CancellationException("raw-secret") }),
+        )
+
+        val error = assertFailsWith<CancellationException> {
+            validator.validate(
+                patch = patch(changes = listOf(change(fieldId = "title", previousValue = "old", newValue = "new"))),
+                snapshot = typedSnapshot(),
+                permissions = setOf("form.write"),
+            )
+        }
+
+        assertEquals("raw-secret", error.message)
+    }
+
     private fun validator(): FormPatchValidator = FormPatchValidator(
         definitions = listOf(
             FormFieldDefinition(
@@ -722,5 +1034,16 @@ class FormPatchValidatorTest {
         val rejection = assertIs<FormPatchValidationResult.Rejected>(result)
         assertTrue(rejection.errors.any { it.code == expectedCode })
         return rejection
+    }
+
+    private fun assertMutationBlocked(block: () -> Unit) {
+        try {
+            block()
+            throw AssertionError("mutation unexpectedly succeeded")
+        } catch (_: UnsupportedOperationException) {
+            // JVM unmodifiable collection wrapper.
+        } catch (_: ClassCastException) {
+            // JsonObject/JsonArray does not implement mutable collection interfaces.
+        }
     }
 }

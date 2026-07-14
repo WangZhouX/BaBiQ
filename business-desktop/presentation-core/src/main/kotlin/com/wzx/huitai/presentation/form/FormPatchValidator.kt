@@ -1,6 +1,8 @@
 package com.wzx.huitai.presentation.form
 
 import com.wzx.huitai.presentation.context.PageContextSnapshot
+import java.util.Collections
+import java.util.concurrent.CancellationException
 
 /** 表单补丁拒绝原因；错误只描述类别，不携带字段原值。 */
 enum class FormPatchErrorCode {
@@ -17,6 +19,7 @@ enum class FormPatchErrorCode {
     BUSINESS_RULE_VIOLATION,
     BUSINESS_RULE_FAILURE,
     INVALID_PATCH_ENCODING,
+    INVALID_PAGE_CONTEXT,
 }
 
 /**
@@ -32,16 +35,27 @@ data class FormPatchError(
     val ruleId: String? = null,
 ) {
     /** ruleId 属于注入数据，默认诊断只保留稳定错误码和字段范围。 */
-    override fun toString(): String = "FormPatchError(code=$code, fieldId=$fieldId)"
+    override fun toString(): String =
+        "FormPatchError(code=$code, hasField=${fieldId != null}, hasRule=${ruleId != null})"
 }
 
 /** 表单补丁验证结果；拒绝分支不能携带可应用补丁。 */
 sealed interface FormPatchValidationResult {
-    /** 只有全部检查通过时才返回原始补丁。 */
-    data class Applicable(val patch: FormPatch) : FormPatchValidationResult
+    /** 只暴露验证通过事实；具体实现由 validator 私有持有。 */
+    sealed interface Applicable : FormPatchValidationResult {
+        val patch: FormPatch
+    }
 
     /** 所有已发现错误的脱敏集合。 */
-    data class Rejected(val errors: List<FormPatchError>) : FormPatchValidationResult
+    class Rejected(errors: Collection<FormPatchError>) : FormPatchValidationResult {
+        val errors: List<FormPatchError> = immutableList(errors)
+
+        override fun equals(other: Any?): Boolean = other is Rejected && errors == other.errors
+
+        override fun hashCode(): Int = errors.hashCode()
+
+        override fun toString(): String = "Rejected(errorCount=${errors.size})"
+    }
 }
 
 /**
@@ -54,9 +68,9 @@ class FormPatchValidator(
     definitions: List<FormFieldDefinition>,
     businessRules: List<FormBusinessRule> = emptyList(),
 ) {
-    private val frozenDefinitions = definitions.map(FormFieldDefinition::frozenCopy)
-    private val definitionsById = frozenDefinitions.associateBy(FormFieldDefinition::fieldId)
-    private val businessRules = businessRules.toList()
+    private val frozenDefinitions = immutableList(definitions.map(FormFieldDefinition::frozenCopy))
+    private val definitionsById = immutableMap(frozenDefinitions.associateBy(FormFieldDefinition::fieldId))
+    private val businessRules = immutableList(businessRules)
 
     init {
         require(definitionsById.size == frozenDefinitions.size) { "字段定义标识必须唯一" }
@@ -83,6 +97,11 @@ class FormPatchValidator(
         }
         if (canonicalPatch.baseRevision != snapshot.revision) {
             return FormPatchValidationResult.Rejected(listOf(FormPatchError(FormPatchErrorCode.CONTEXT_STALE)))
+        }
+        if (!snapshot.hasValidFieldIdentity()) {
+            return FormPatchValidationResult.Rejected(
+                listOf(FormPatchError(FormPatchErrorCode.INVALID_PAGE_CONTEXT)),
+            )
         }
 
         val errors = mutableListOf<FormPatchError>()
@@ -129,33 +148,56 @@ class FormPatchValidator(
                 }
             }
 
-        val candidateValues = snapshotFields.mapValues { (_, field) -> field.value }.toMutableMap()
+        val candidateValues = snapshotFields.mapValues { (_, field) -> canonicalizeJsonElement(field.value) }.toMutableMap()
         structurallyValidChanges.forEach { change -> candidateValues[change.fieldId] = change.newValue }
         val ruleContext = FormBusinessRuleContext(
             pageId = canonicalPatch.pageId,
             baseRevision = canonicalPatch.baseRevision,
-            candidateValues = candidateValues.toMap(),
-            definitions = definitionsById.toMap(),
+            candidateValues = immutableMap(candidateValues),
+            definitions = definitionsById,
         )
         val ruleErrors = businessRules.flatMap { rule ->
             try {
-                rule.validate(ruleContext).map { violation ->
-                    FormPatchError(
-                        code = FormPatchErrorCode.BUSINESS_RULE_VIOLATION,
-                        fieldId = violation.fieldId,
-                        ruleId = violation.ruleId,
-                    )
+                val violations = rule.validate(ruleContext)
+                if (violations.any { violation ->
+                        !violation.ruleId.isSafeStableIdentifier() ||
+                            (violation.fieldId != null && violation.fieldId !in definitionsById)
+                    }
+                ) {
+                    listOf(FormPatchError(FormPatchErrorCode.BUSINESS_RULE_FAILURE))
+                } else {
+                    violations.map { violation ->
+                        FormPatchError(
+                            code = FormPatchErrorCode.BUSINESS_RULE_VIOLATION,
+                            fieldId = violation.fieldId,
+                            ruleId = violation.ruleId,
+                        )
+                    }
                 }
+            } catch (error: CancellationException) {
+                throw error
             } catch (_: Exception) {
                 listOf(FormPatchError(FormPatchErrorCode.BUSINESS_RULE_FAILURE))
             }
         }
         val allErrors = errors + ruleErrors
         return if (allErrors.isEmpty()) {
-            FormPatchValidationResult.Applicable(canonicalPatch)
+            ApplicableResult(canonicalPatch)
         } else {
             FormPatchValidationResult.Rejected(allErrors)
         }
+    }
+
+    /** 防止模块内其他调用方绕过 validator 伪造 Applicable。 */
+    private class ApplicableResult(
+        override val patch: FormPatch,
+    ) : FormPatchValidationResult.Applicable {
+        override fun equals(other: Any?): Boolean =
+            other is FormPatchValidationResult.Applicable && patch == other.patch
+
+        override fun hashCode(): Int = patch.hashCode()
+
+        override fun toString(): String = "Applicable(changeCount=${patch.changes.size})"
     }
 }
 
@@ -165,3 +207,11 @@ private fun kotlinx.serialization.json.JsonElement?.isAbsent(): Boolean =
 private fun kotlinx.serialization.json.JsonElement?.structurallyEquals(
     other: kotlinx.serialization.json.JsonElement?,
 ): Boolean = (isAbsent() && other.isAbsent()) || this == other
+
+private fun <K, V> immutableMap(values: Map<K, V>): Map<K, V> =
+    Collections.unmodifiableMap(LinkedHashMap(values))
+
+private fun PageContextSnapshot.hasValidFieldIdentity(): Boolean {
+    val ids = fields.map { it.id }
+    return ids.all(String::isSafeStableIdentifier) && ids.distinct().size == ids.size
+}

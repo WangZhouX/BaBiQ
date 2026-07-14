@@ -10,6 +10,7 @@ import java.math.BigDecimal
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
+import java.util.Collections
 
 /**
  * 表单字段支持的通用强类型。
@@ -90,7 +91,11 @@ data class FormFieldDefinition(
     val enumAllowedValues: Set<String> = emptySet(),
 ) {
     init {
-        require(fieldId.isNotBlank()) { "字段标识不能为空" }
+        requireSafeIdentifier(fieldId, "字段定义标识格式无效")
+        require(requiredPermissions.all(String::isSafeStableIdentifier)) { "字段权限标识格式无效" }
+        require(enumAllowedValues.all { it.length <= MAX_STABLE_IDENTIFIER_LENGTH && it.none(Char::isISOControl) }) {
+            "枚举值格式无效"
+        }
         require(type == FormFieldType.ENUM || enumAllowedValues.isEmpty()) {
             "只有 enum 字段可以声明允许值"
         }
@@ -104,6 +109,6 @@ data class FormFieldDefinition(
 internal fun FormFieldDefinition.frozenCopy(): FormFieldDefinition = FormFieldDefinition(
     fieldId = fieldId,
     type = type,
-    requiredPermissions = requiredPermissions.toSet(),
-    enumAllowedValues = enumAllowedValues.toSet(),
+    requiredPermissions = Collections.unmodifiableSet(LinkedHashSet(requiredPermissions)),
+    enumAllowedValues = Collections.unmodifiableSet(LinkedHashSet(enumAllowedValues)),
 )

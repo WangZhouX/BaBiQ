@@ -32,11 +32,12 @@ data class FormBusinessRuleViolation(
     val fieldId: String? = null,
 ) {
     init {
-        require(ruleId.isNotBlank()) { "业务规则标识不能为空" }
+        requireSafeIdentifier(ruleId, "业务规则标识格式无效")
+        require(fieldId == null || fieldId.isSafeStableIdentifier()) { "业务规则字段标识格式无效" }
     }
 
     /** 规则标识来自注入代码，默认诊断仅输出关联范围。 */
-    override fun toString(): String = "FormBusinessRuleViolation(fieldId=$fieldId)"
+    override fun toString(): String = "FormBusinessRuleViolation(hasField=${fieldId != null})"
 }
 
 /** 由具体业务表单注入的无副作用校验规则。 */

@@ -12,11 +12,14 @@ class SuggestionState(
     val baseRevision: Long,
     pendingChanges: List<FieldChange> = emptyList(),
 ) {
-    val pendingChanges: List<FieldChange> = pendingChanges.map { change ->
-        canonicalizeFieldChange(change) ?: throw IllegalArgumentException("字段建议无法安全冻结")
-    }
+    val pendingChanges: List<FieldChange> = immutableList(
+        pendingChanges.map { change ->
+            canonicalizeFieldChange(change) ?: throw IllegalArgumentException("字段建议无法安全冻结")
+        },
+    )
 
     init {
+        requireSafeIdentifier(pageId, "建议页面标识格式无效")
         require(pendingChanges.map(FieldChange::fieldId).distinct().size == pendingChanges.size) {
             "待处理建议的字段标识必须唯一"
         }
