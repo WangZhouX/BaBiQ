@@ -2,10 +2,16 @@ package com.wzx.huitai.presentation.context
 
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -24,6 +30,7 @@ class PageContextSanitizerTest {
                 field("api_key", "misclassified-api-key", FieldSensitivity.INTERNAL),
                 field("privateKey", "misclassified-private-key", FieldSensitivity.PUBLIC),
                 field("accessKey", "misclassified-access-key", FieldSensitivity.PUBLIC),
+                field("key", "misclassified-standalone-key", FieldSensitivity.PUBLIC),
                 field("密钥", "misclassified-chinese-key", FieldSensitivity.PUBLIC),
             ),
         )
@@ -37,7 +44,69 @@ class PageContextSanitizerTest {
         assertFalse(serialized.contains("misclassified-api-key"))
         assertFalse(serialized.contains("misclassified-private-key"))
         assertFalse(serialized.contains("misclassified-access-key"))
+        assertFalse(serialized.contains("misclassified-standalone-key"))
         assertFalse(serialized.contains("misclassified-chinese-key"))
+    }
+
+    @Test
+    fun `凭证元数据和嵌套JSON凭证键不会进入清洗结果`() {
+        val nestedItems = JsonArray(
+            listOf(
+                JsonObject(
+                    linkedMapOf(
+                        "IDToken" to JsonPrimitive("nested-id-token"),
+                        "visible" to JsonPrimitive("nested-visible"),
+                    ),
+                ),
+            ),
+        )
+        val config = JsonObject(
+            linkedMapOf(
+                "apiToken" to JsonPrimitive("nested-api-token"),
+                "authorization" to JsonPrimitive("nested-authorization"),
+                "items" to nestedItems,
+                "safe" to JsonPrimitive("safe-config-value"),
+            ),
+        )
+        val credentialFields = listOf(
+            field("APIToken", "top-api-token", FieldSensitivity.PUBLIC),
+            field("IDToken", "top-id-token", FieldSensitivity.PUBLIC),
+            field("authorization", "top-authorization", FieldSensitivity.INTERNAL),
+            fieldWithMetadata("field-label-password", "密码", "string", "chinese-password"),
+            fieldWithMetadata("field-label-token", "令牌", "string", "chinese-token"),
+            fieldWithMetadata("field-label-key", "密钥", "string", "chinese-key"),
+            fieldWithMetadata("field-type-bearer", "普通字段", "bearer", "top-bearer"),
+            FieldContext(
+                id = "config",
+                label = "普通配置",
+                type = "json",
+                value = config,
+                editable = true,
+                required = false,
+                sensitivity = FieldSensitivity.INTERNAL,
+            ),
+            field("monkey", "ordinary-visible", FieldSensitivity.PUBLIC),
+        )
+
+        val sanitized = PageContextSanitizer().sanitize(pageContext(fields = credentialFields))
+        val serialized = Json.encodeToString(sanitized)
+
+        assertEquals(listOf("config", "monkey"), sanitized.fields.map(FieldContext::id))
+        listOf(
+            "top-api-token",
+            "top-id-token",
+            "top-authorization",
+            "chinese-password",
+            "chinese-token",
+            "chinese-key",
+            "top-bearer",
+            "nested-api-token",
+            "nested-id-token",
+            "nested-authorization",
+        ).forEach { credential -> assertFalse(serialized.contains(credential), credential) }
+        assertTrue(serialized.contains("safe-config-value"))
+        assertTrue(serialized.contains("nested-visible"))
+        assertTrue(serialized.contains("ordinary-visible"))
     }
 
     @Test
@@ -106,20 +175,79 @@ class PageContextSanitizerTest {
     }
 
     @Test
-    fun `catalog和context序号必须对同一发布器严格递增`() {
+    fun `catalog允许持平但不得回退且context必须严格递增`() {
         val publisher = publisher()
 
-        publisher.publish(pageContext(), catalogEpoch = 1, contextSequence = 1)
+        publisher.publish(pageContext(), catalogEpoch = 3, contextSequence = 5)
+
+        val unchangedCatalog = publisher.publish(pageContext(), catalogEpoch = 3, contextSequence = 6)
+        assertEquals(3, unchangedCatalog.catalogEpoch)
+        assertEquals(6, unchangedCatalog.contextSequence)
 
         assertFailsWith<NonMonotonicPageContextSequenceException> {
-            publisher.publish(pageContext(), catalogEpoch = 1, contextSequence = 2)
+            publisher.publish(pageContext(), catalogEpoch = 2, contextSequence = 7)
         }
         assertFailsWith<NonMonotonicPageContextSequenceException> {
-            publisher.publish(pageContext(), catalogEpoch = 2, contextSequence = 1)
+            publisher.publish(pageContext(), catalogEpoch = 4, contextSequence = 6)
         }
-        val next = publisher.publish(pageContext(), catalogEpoch = 2, contextSequence = 2)
-        assertEquals(2, next.catalogEpoch)
-        assertEquals(2, next.contextSequence)
+        val next = publisher.publish(pageContext(), catalogEpoch = 3, contextSequence = 7)
+        assertEquals(3, next.catalogEpoch)
+        assertEquals(7, next.contextSequence)
+    }
+
+    @Test
+    fun `并发发布相同context序号时最多提交一次`() {
+        val publisher = publisher()
+        publisher.publish(pageContext(), catalogEpoch = 3, contextSequence = 5)
+        val start = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+
+        try {
+            val futures = List(2) {
+                executor.submit<Result<PublishedPageContext>> {
+                    start.await()
+                    runCatching {
+                        publisher.publish(pageContext(), catalogEpoch = 3, contextSequence = 6)
+                    }
+                }
+            }
+            start.countDown()
+            val results = futures.map { it.get(5, TimeUnit.SECONDS) }
+
+            assertEquals(1, results.count(Result<PublishedPageContext>::isSuccess))
+            assertEquals(
+                1,
+                results.count { result -> result.exceptionOrNull() is NonMonotonicPageContextSequenceException },
+            )
+            assertEquals(7, publisher.publish(pageContext(), catalogEpoch = 3, contextSequence = 7).contextSequence)
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `envelope创建失败不消耗catalog和context序号`() {
+        var generatedAtCalls = 0
+        val publisher = PageContextPublisher(
+            identity = TrustedPageContextIdentity(
+                desktopInstanceId = "desktop-1",
+                authSessionId = "auth-1",
+                identityEpoch = 1,
+            ),
+            generatedAt = {
+                generatedAtCalls += 1
+                if (generatedAtCalls == 1) error("clock unavailable")
+                "2026-07-14T00:00:00Z"
+            },
+        )
+
+        assertFailsWith<IllegalStateException> {
+            publisher.publish(pageContext(), catalogEpoch = 3, contextSequence = 5)
+        }
+
+        val retried = publisher.publish(pageContext(), catalogEpoch = 3, contextSequence = 5)
+        assertEquals(3, retried.catalogEpoch)
+        assertEquals(5, retried.contextSequence)
     }
 
     @Test
@@ -147,6 +275,63 @@ class PageContextSanitizerTest {
                 .publish(draft, catalogEpoch = 1, contextSequence = 1)
         }
         assertEquals("不会计入大小的秘密", draft.fields.last().value?.toString()?.trim('"'))
+    }
+
+    @Test
+    fun `发布结果深度冻结且大小绑定同一canonical payload`() {
+        val nestedObjectBacking = linkedMapOf<String, JsonElement>(
+            "safe" to JsonPrimitive("before"),
+        )
+        val nestedArrayBacking = mutableListOf<JsonElement>(
+            JsonObject(nestedObjectBacking),
+        )
+        val mutableFields = mutableListOf(
+            FieldContext(
+                id = "config",
+                label = "配置",
+                type = "json",
+                value = JsonArray(nestedArrayBacking),
+                editable = true,
+                required = false,
+                sensitivity = FieldSensitivity.INTERNAL,
+            ),
+        )
+        val mutableReferences = mutableListOf(EntityReference("demo", "entity-1", "原实体"))
+        val mutableActions = mutableListOf(AvailableAction("save", "保存", "保存数据", true))
+        val mutableValidation = mutableListOf("原校验")
+        val mutableSelectionIds = mutableListOf("row-1")
+        val draft = PageContextSnapshot(
+            snapshotId = "snapshot-1",
+            pageId = "page-1",
+            pageTitle = "测试页面",
+            route = "/test",
+            revision = 1,
+            mode = PageMode.EDIT,
+            entityReferences = mutableReferences,
+            fields = mutableFields,
+            availableActions = mutableActions,
+            validationSummary = ValidationSummary(true, mutableValidation),
+            selection = SelectionContext("row", mutableSelectionIds, "当前行"),
+        )
+        val published = publisher().publish(draft, catalogEpoch = 1, contextSequence = 1)
+        val canonicalBefore = Json.encodeToString(published.payload)
+
+        nestedObjectBacking["safe"] = JsonPrimitive("after")
+        nestedArrayBacking += JsonPrimitive("late-array-value")
+        mutableFields.clear()
+        mutableReferences += EntityReference("demo", "entity-2", "新实体")
+        mutableActions.clear()
+        mutableValidation += "新校验"
+        mutableSelectionIds += "row-2"
+
+        val canonicalAfter = Json.encodeToString(published.payload)
+        assertEquals(canonicalBefore, canonicalAfter)
+        assertEquals(canonicalBefore.toByteArray(StandardCharsets.UTF_8).size, published.payloadSize)
+        assertFalse(canonicalAfter.contains("after"))
+        assertFalse(canonicalAfter.contains("late-array-value"))
+        assertFalse(canonicalAfter.contains("entity-2"))
+        assertFalse(canonicalAfter.contains("新校验"))
+        assertFalse(canonicalAfter.contains("row-2"))
     }
 
     private fun publisher(maxPayloadBytes: Int = 128 * 1024): PageContextPublisher =
@@ -192,5 +377,20 @@ class PageContextSanitizerTest {
         required = false,
         validationErrors = errors,
         sensitivity = sensitivity,
+    )
+
+    private fun fieldWithMetadata(
+        id: String,
+        label: String,
+        type: String,
+        value: String,
+    ): FieldContext = FieldContext(
+        id = id,
+        label = label,
+        type = type,
+        value = JsonPrimitive(value),
+        editable = true,
+        required = false,
+        sensitivity = FieldSensitivity.PUBLIC,
     )
 }

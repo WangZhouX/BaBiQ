@@ -7,9 +7,11 @@ import com.wzx.huitai.presentation.context.PageMode
 import com.wzx.huitai.presentation.context.ValidationSummary
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.json.JsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotSame
 
 class BusinessScreenContractTest {
@@ -28,6 +30,7 @@ class BusinessScreenContractTest {
         screen.dispatch(TestEvent.Replace("after"))
 
         val exposed: StateFlow<TestState> = screen.state
+        assertFalse(exposed is MutableStateFlow<*>)
         assertEquals(firstReduction, secondReduction)
         assertEquals(TestState(value = "before", revision = 1), initial)
         assertNotSame(initial, exposed.value)
@@ -66,7 +69,7 @@ class BusinessScreenContractTest {
     ) : BusinessScreenContract<TestState, TestEvent>, AgentAwareScreen {
         private val mutableState = MutableStateFlow(initial)
 
-        override val state: StateFlow<TestState> = mutableState
+        override val state: StateFlow<TestState> = mutableState.asStateFlow()
 
         override fun dispatch(event: TestEvent) {
             mutableState.value = reducer.reduce(mutableState.value, event)
