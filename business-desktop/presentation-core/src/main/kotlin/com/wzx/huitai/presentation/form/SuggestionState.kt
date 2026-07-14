@@ -12,15 +12,11 @@ class SuggestionState(
     val baseRevision: Long,
     pendingChanges: List<FieldChange> = emptyList(),
 ) {
-    val pendingChanges: List<FieldChange> = immutableList(
-        pendingChanges.map { change ->
-            canonicalizeFieldChange(change) ?: throw IllegalArgumentException("字段建议无法安全冻结")
-        },
-    )
+    val pendingChanges: List<FieldChange> = snapshotPendingChanges(pendingChanges)
 
     init {
         requireSafeIdentifier(pageId, "建议页面标识格式无效")
-        require(pendingChanges.map(FieldChange::fieldId).distinct().size == pendingChanges.size) {
+        require(this.pendingChanges.map(FieldChange::fieldId).distinct().size == this.pendingChanges.size) {
             "待处理建议的字段标识必须唯一"
         }
     }
@@ -82,4 +78,19 @@ class SuggestionState(
 
     private fun copyWith(changes: List<FieldChange>): SuggestionState =
         SuggestionState(pageId = pageId, baseRevision = baseRevision, pendingChanges = changes)
+}
+
+/** 在任何复制前拒绝超限列表，并仅遍历调用方集合一次。 */
+private fun snapshotPendingChanges(changes: List<FieldChange>): List<FieldChange> {
+    val declaredSize = changes.size
+    require(declaredSize <= FORM_PATCH_MAX_CHANGES) { "待处理建议数量超限" }
+    val snapshot = ArrayList<FieldChange>(declaredSize)
+    val iterator = changes.iterator()
+    while (iterator.hasNext()) {
+        require(snapshot.size < FORM_PATCH_MAX_CHANGES) { "待处理建议数量超限" }
+        snapshot += canonicalizeFieldChange(iterator.next())
+            ?: throw IllegalArgumentException("字段建议无法安全冻结")
+    }
+    require(snapshot.size == declaredSize) { "待处理建议快照不一致" }
+    return immutableList(snapshot)
 }

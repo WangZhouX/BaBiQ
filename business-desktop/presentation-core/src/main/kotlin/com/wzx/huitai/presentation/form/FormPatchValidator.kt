@@ -45,12 +45,16 @@ data class FormPatchError(
 
 /** 表单补丁验证结果；拒绝分支不能携带可应用补丁。 */
 sealed interface FormPatchValidationResult {
-    /** final + private constructor 保证成功事实只能由完整验证算法创建。 */
+    /**
+     * 仅证明补丁对传入的页面、权限、定义和规则事实通过校验，不是授权能力。
+     * 下游执行前仍必须按当前认证身份和页面 revision 重新校验。
+     */
     class Applicable private constructor(
         val patch: FormPatch,
     ) : FormPatchValidationResult {
         companion object {
             /** 同模块调用也必须提交全部验证事实；唯一入口自身执行完整算法。 */
+            @JvmSynthetic
             internal fun validate(
                 patch: FormPatch,
                 snapshot: PageContextSnapshot,
@@ -225,29 +229,54 @@ private fun validateFormPatch(
         candidateValues = immutableMap(candidateValues),
         definitions = definitionsById,
     )
-    val ruleErrors = businessRules.flatMap { rule ->
+    val ruleErrors = mutableListOf<FormPatchError>()
+    businessRules.forEachIndexed { ruleIndex, rule ->
+        if (ruleErrors.size >= MAX_RULE_VIOLATIONS_TOTAL) return@forEachIndexed
         try {
-            val violations = immutableList(rule.validate(ruleContext))
+            val violations = snapshotRuleViolations(rule.validate(ruleContext))
             if (violations.any { violation ->
                     !violation.ruleId.isSafeStableIdentifier() ||
                         (violation.fieldId != null &&
                             (violation.fieldId !in definitionsById || violation.fieldId !in snapshotFields))
                 }
             ) {
-                listOf(FormPatchError(FormPatchErrorCode.BUSINESS_RULE_FAILURE))
+                ruleErrors += FormPatchError(FormPatchErrorCode.BUSINESS_RULE_FAILURE)
             } else {
-                violations.map { violation ->
-                    FormPatchError(
-                        code = FormPatchErrorCode.BUSINESS_RULE_VIOLATION,
-                        fieldId = violation.fieldId,
-                        ruleId = violation.ruleId,
-                    )
+                val remaining = MAX_RULE_VIOLATIONS_TOTAL - ruleErrors.size
+                if (violations.size > remaining) {
+                    if (remaining > 0) {
+                        ruleErrors += violations.take(remaining - 1).map { violation ->
+                            FormPatchError(
+                                code = FormPatchErrorCode.BUSINESS_RULE_VIOLATION,
+                                fieldId = violation.fieldId,
+                                ruleId = violation.ruleId,
+                            )
+                        }
+                        ruleErrors += FormPatchError(FormPatchErrorCode.BUSINESS_RULE_FAILURE)
+                    }
+                } else {
+                    if (violations.size == remaining && remaining > 0 && ruleIndex < businessRules.lastIndex) {
+                        ruleErrors += violations.take(remaining - 1).map { violation ->
+                            FormPatchError(
+                                code = FormPatchErrorCode.BUSINESS_RULE_VIOLATION,
+                                fieldId = violation.fieldId,
+                                ruleId = violation.ruleId,
+                            )
+                        }
+                        ruleErrors += FormPatchError(FormPatchErrorCode.BUSINESS_RULE_FAILURE)
+                    } else {
+                        ruleErrors += violations.map { violation -> FormPatchError(
+                            code = FormPatchErrorCode.BUSINESS_RULE_VIOLATION,
+                            fieldId = violation.fieldId,
+                            ruleId = violation.ruleId,
+                        ) }
+                    }
                 }
             }
         } catch (error: CancellationException) {
             throw error
         } catch (_: Exception) {
-            listOf(FormPatchError(FormPatchErrorCode.BUSINESS_RULE_FAILURE))
+            ruleErrors += FormPatchError(FormPatchErrorCode.BUSINESS_RULE_FAILURE)
         }
     }
     val allErrors = errors + ruleErrors
@@ -256,6 +285,25 @@ private fun validateFormPatch(
     } else {
         FormPatchValidationResult.Rejected(allErrors)
     }
+}
+
+private const val MAX_RULE_VIOLATIONS_PER_RULE = 64
+private const val MAX_RULE_VIOLATIONS_TOTAL = 256
+
+/** 在复制前检查声明数量，并用单次有界遍历冻结规则输出。 */
+private fun snapshotRuleViolations(
+    violations: List<FormBusinessRuleViolation>,
+): List<FormBusinessRuleViolation> {
+    val declaredSize = violations.size
+    require(declaredSize <= MAX_RULE_VIOLATIONS_PER_RULE) { "业务规则结果数量超限" }
+    val snapshot = ArrayList<FormBusinessRuleViolation>(declaredSize)
+    val iterator = violations.iterator()
+    while (iterator.hasNext()) {
+        require(snapshot.size < MAX_RULE_VIOLATIONS_PER_RULE) { "业务规则结果数量超限" }
+        snapshot += iterator.next()
+    }
+    require(snapshot.size == declaredSize) { "业务规则结果快照不一致" }
+    return immutableList(snapshot)
 }
 
 private fun kotlinx.serialization.json.JsonElement?.isAbsent(): Boolean =

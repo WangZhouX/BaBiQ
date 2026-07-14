@@ -360,6 +360,57 @@ class FormPatchValidatorTest {
     }
 
     @Test
+    fun `business rule violations are bounded per rule and in total`() {
+        val oversized = OversizedList(
+            declaredSize = TEST_MAX_RULE_VIOLATIONS_PER_RULE + 1,
+            value = FormBusinessRuleViolation("oversized-rule", "title"),
+        )
+        var laterRuleRuns = 0
+        val perRuleValidator = typedValidator(
+            rules = listOf(
+                FormBusinessRule { oversized },
+                FormBusinessRule {
+                    laterRuleRuns += 1
+                    emptyList()
+                },
+            ),
+        )
+
+        val perRuleResult = assertIs<FormPatchValidationResult.Rejected>(
+            perRuleValidator.validate(
+                patch(changes = listOf(change(fieldId = "title", previousValue = "old", newValue = "new"))),
+                typedSnapshot(),
+                setOf("form.write"),
+            ),
+        )
+
+        assertEquals(listOf(FormPatchErrorCode.BUSINESS_RULE_FAILURE), perRuleResult.errors.map(FormPatchError::code))
+        assertEquals(0, oversized.iteratorCalls)
+        assertEquals(0, oversized.getCalls)
+        assertEquals(1, laterRuleRuns)
+
+        val totalValidator = typedValidator(
+            rules = List(5) { ruleIndex ->
+                FormBusinessRule {
+                    List(TEST_MAX_RULE_VIOLATIONS_PER_RULE) { violationIndex ->
+                        FormBusinessRuleViolation("rule-$ruleIndex-$violationIndex", "title")
+                    }
+                }
+            },
+        )
+        val totalResult = assertIs<FormPatchValidationResult.Rejected>(
+            totalValidator.validate(
+                patch(changes = listOf(change(fieldId = "title", previousValue = "old", newValue = "new"))),
+                typedSnapshot(),
+                setOf("form.write"),
+            ),
+        )
+
+        assertTrue(totalResult.errors.size <= TEST_MAX_RULE_VIOLATIONS_TOTAL)
+        assertTrue(totalResult.errors.any { it.code == FormPatchErrorCode.BUSINESS_RULE_FAILURE })
+    }
+
+    @Test
     fun suggestion_state_replaces_by_field_removes_after_user_edit_and_builds_scoped_patches() {
         val first = change(fieldId = "title", previousValue = "old", newValue = "first")
         val replacement = change(fieldId = "title", previousValue = "old", newValue = "second")
@@ -396,6 +447,28 @@ class FormPatchValidatorTest {
 
         callerOwned += change(fieldId = "amount")
 
+        assertEquals(listOf("title"), state.pendingChanges.map(FieldChange::fieldId))
+    }
+
+    @Test
+    fun `suggestion state checks size before copy and freezes a flipping list once`() {
+        val oversized = OversizedList(
+            declaredSize = TEST_MAX_PATCH_CHANGES + 1,
+            value = change(fieldId = "title"),
+        )
+        assertFailsWith<IllegalArgumentException> {
+            SuggestionState("test-page", 7, oversized)
+        }
+        assertEquals(0, oversized.iteratorCalls)
+        assertEquals(0, oversized.getCalls)
+
+        val flipping = FlippingList(
+            initial = listOf(change(fieldId = "title")),
+            replacement = listOf(change(fieldId = "title"), change(fieldId = "title", newValue = "mutated")),
+        )
+        val state = SuggestionState("test-page", 7, flipping)
+
+        assertEquals(1, flipping.iteratorCalls)
         assertEquals(listOf("title"), state.pendingChanges.map(FieldChange::fieldId))
     }
 
@@ -1239,6 +1312,82 @@ class FormPatchValidatorTest {
     }
 
     @Test
+    fun `protocol codec rejects deep raw json before recursive parser`() {
+        val deepRaw = buildString {
+            append("""{"pageId":"test-page","baseRevision":7,"changes":[{"fieldId":"title","newValue":""")
+            repeat(20_000) { append('[') }
+            append('0')
+            repeat(20_000) { append(']') }
+            append(""","reason":"reason","confidence":0.8}]}""")
+        }
+
+        val error = assertFailsWith<IllegalArgumentException> { FormPatchCodec.decode(deepRaw) }
+
+        assertTrue(error.message.orEmpty().contains("深度"))
+    }
+
+    @Test
+    fun `protocol codec rejects duplicate members at every form patch object level`() {
+        val duplicatePayloads = listOf(
+            """{"pageId":"first","pageId":"second","baseRevision":7,"changes":[{"fieldId":"title","reason":"reason","confidence":0.8}]}""",
+            """{"pageId":"test-page","baseRevision":7,"changes":[],"changes":[{"fieldId":"title","reason":"reason","confidence":0.8}]}""",
+            """{"pageId":"test-page","baseRevision":7,"changes":[{"fieldId":"title","fieldId":"other","reason":"reason","confidence":0.8}]}""",
+            """{"pageId":"test-page","baseRevision":7,"changes":[{"fieldId":"title","reason":"reason","confidence":0.8,"sourceReferences":[{"type":"user-input","type":"other","id":"source-1"}]}]}""",
+            """{"pageId":"test-page","baseRevision":7,"changes":[{"fieldId":"title","reason":"reason","confidence":0.8,"sourceReferences":[{"type":"user-input","id":"source-1","id":"source-2"}]}]}""",
+        )
+
+        duplicatePayloads.forEach { raw ->
+            var decoderCalls = 0
+            val error = assertFailsWith<IllegalArgumentException> {
+                FormPatchCodec.decode(raw) {
+                    decoderCalls += 1
+                    patch()
+                }
+            }
+            assertTrue(error.message.orEmpty().contains("重复"))
+            assertEquals(0, decoderCalls)
+        }
+    }
+
+    @Test
+    fun `protocol preflight accepts escaped strings mixed structures and repeated keys in different objects`() {
+        val raw = """{"pageId":"test-page","baseRevision":7,"changes":[{"fieldId":"title","newValue":{"text":"literal } ] { [ quote \" slash \\ unicode \u4F60\u597D","items":[{"same":"one"},{"same":"two"}]},"reason":"line\nreason","confidence":0.8,"sourceReferences":[{"type":"user-input","id":"source-1"},{"type":"external-record","id":"source-2"}]}]}"""
+
+        val decoded = FormPatchCodec.decode(raw)
+
+        assertEquals("test-page", decoded.pageId)
+        assertEquals(2, decoded.changes.single().sourceReferences.size)
+        assertTrue(decoded.changes.single().newValue.toString().contains("你好"))
+    }
+
+    @Test
+    fun `protocol preflight rejects malformed json before invoking decoder`() {
+        val malformedPayloads = listOf(
+            """{"pageId":"test-page",}""",
+            """{"pageId" "test-page"}""",
+            """{"pageId":"test-page" "baseRevision":7}""",
+            """{"pageId":"\q"}""",
+            """{"pageId":"\uZZZZ"}""",
+            """{"baseRevision":01}""",
+            """{"baseRevision":1.}""",
+            """{"baseRevision":1e}""",
+            """[1,]""",
+            """{}{}""",
+        )
+
+        malformedPayloads.forEach { raw ->
+            var decoderCalls = 0
+            assertFailsWith<IllegalArgumentException> {
+                FormPatchCodec.decode(raw) {
+                    decoderCalls += 1
+                    patch()
+                }
+            }
+            assertEquals(0, decoderCalls)
+        }
+    }
+
+    @Test
     fun `cancellation from canonical freeze and page snapshot propagates`() {
         assertFailsWith<CancellationException> {
             canonicalizeJsonElement(JsonObject(CancelingJsonMap()))
@@ -1509,6 +1658,41 @@ class FormPatchValidatorTest {
         }
     }
 
+    private class OversizedList<T>(
+        private val declaredSize: Int,
+        private val value: T,
+    ) : AbstractList<T>() {
+        var iteratorCalls: Int = 0
+            private set
+        var getCalls: Int = 0
+            private set
+
+        override val size: Int get() = declaredSize
+        override fun get(index: Int): T {
+            getCalls += 1
+            throw AssertionError("oversized list must be rejected before copy")
+        }
+        override fun iterator(): Iterator<T> {
+            iteratorCalls += 1
+            throw AssertionError("oversized list must be rejected before iterator")
+        }
+    }
+
+    private class FlippingList<T>(
+        private val initial: List<T>,
+        private val replacement: List<T>,
+    ) : AbstractList<T>() {
+        var iteratorCalls: Int = 0
+            private set
+
+        override val size: Int get() = initial.size
+        override fun get(index: Int): T = initial[index]
+        override fun iterator(): Iterator<T> {
+            iteratorCalls += 1
+            return if (iteratorCalls == 1) initial.iterator() else replacement.iterator()
+        }
+    }
+
     private class CancelingFieldsList(
         private val value: FieldContext,
     ) : AbstractList<FieldContext>() {
@@ -1567,5 +1751,7 @@ class FormPatchValidatorTest {
         const val TEST_MAX_JSON_DEPTH = 32
         const val TEST_MAX_JSON_NODES = 10_000
         const val TEST_MAX_SOURCE_REFERENCES = 64
+        const val TEST_MAX_RULE_VIOLATIONS_PER_RULE = 64
+        const val TEST_MAX_RULE_VIOLATIONS_TOTAL = 256
     }
 }
