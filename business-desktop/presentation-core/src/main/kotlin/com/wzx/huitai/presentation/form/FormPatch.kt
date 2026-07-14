@@ -1,6 +1,7 @@
 package com.wzx.huitai.presentation.form
 
 import kotlinx.serialization.KSerializer
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.descriptors.SerialDescriptor
@@ -230,6 +231,7 @@ internal object FormPatchSerializer : KSerializer<FormPatch> {
 }
 
 @Serializable
+@SerialName("com.wzx.huitai.presentation.form.FieldChange")
 private data class FieldChangeWire(
     val fieldId: String,
     val previousValue: JsonElement? = null,
@@ -240,6 +242,7 @@ private data class FieldChangeWire(
 )
 
 @Serializable
+@SerialName("com.wzx.huitai.presentation.form.FormPatch")
 private data class FormPatchWire(
     val pageId: String,
     val baseRevision: Long,

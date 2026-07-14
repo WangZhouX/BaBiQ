@@ -901,6 +901,43 @@ class FormPatchValidatorTest {
         assertMutationBlocked { (decodedArray.iterator() as MutableIterator).remove() }
     }
 
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+    @Test
+    fun `custom serializers preserve public descriptor names and wire defaults`() {
+        assertEquals(
+            "com.wzx.huitai.presentation.form.FieldChange",
+            FieldChange.serializer().descriptor.serialName,
+        )
+        assertEquals(
+            "com.wzx.huitai.presentation.form.FormPatch",
+            FormPatch.serializer().descriptor.serialName,
+        )
+
+        val change = FieldChange(
+            fieldId = "title",
+            reason = "reason",
+            confidence = 0.8,
+        )
+        val patch = FormPatch(
+            pageId = "test-page",
+            baseRevision = 7,
+            changes = listOf(change),
+        )
+
+        assertEquals(
+            """{"fieldId":"title","reason":"reason","confidence":0.8}""",
+            Json.encodeToString(change),
+        )
+        assertEquals(
+            """{"pageId":"test-page","baseRevision":7,"changes":[{"fieldId":"title","reason":"reason","confidence":0.8}]}""",
+            Json.encodeToString(patch),
+        )
+        val decoded = Json.decodeFromString<FormPatch>(Json.encodeToString(patch))
+        assertNull(decoded.changes.single().previousValue)
+        assertNull(decoded.changes.single().newValue)
+        assertTrue(decoded.changes.single().sourceReferences.isEmpty())
+    }
+
     @Test
     fun `decoded malformed form patch is rejected at the protocol boundary`() {
         val malformed = """{"pageId":" ","baseRevision":7,"changes":[]}"""
