@@ -25,7 +25,8 @@ object FormPatchCodec {
     }
 }
 
-private const val FORM_PATCH_MAX_RAW_DEPTH = 32
+// 原始协议还包含 FormPatch 对象、changes 数组和 FieldChange 对象三层固定容器。
+private const val FORM_PATCH_MAX_RAW_DEPTH = 32 + 3
 
 /** 在递归 JSON parser 前，用迭代状态机校验结构深度和对象成员唯一性。 */
 private class JsonPreflightScanner(

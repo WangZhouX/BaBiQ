@@ -1327,6 +1327,33 @@ class FormPatchValidatorTest {
     }
 
     @Test
+    fun `protocol codec preserves the model json depth boundary`() {
+        var maxDepthValue: kotlinx.serialization.json.JsonElement = JsonPrimitive("leaf")
+        repeat(TEST_MAX_JSON_DEPTH) { maxDepthValue = JsonArray(listOf(maxDepthValue)) }
+        val maxDepthPatch = FormPatch(
+            pageId = "test-page",
+            baseRevision = 7,
+            changes = listOf(
+                FieldChange(
+                    fieldId = "title",
+                    previousValue = maxDepthValue,
+                    newValue = maxDepthValue,
+                    reason = "depth-boundary",
+                    confidence = 0.8,
+                ),
+            ),
+        )
+        val encoded = Json.encodeToString(maxDepthPatch)
+
+        assertEquals(maxDepthPatch, FormPatchCodec.decode(encoded))
+
+        val oneLevelTooDeepRaw = encoded.replaceFirst("\"previousValue\":", "\"previousValue\":[")
+            .replaceFirst(",\"newValue\":", "],\"newValue\":")
+        val error = assertFailsWith<IllegalArgumentException> { FormPatchCodec.decode(oneLevelTooDeepRaw) }
+        assertTrue(error.message.orEmpty().contains("深度"))
+    }
+
+    @Test
     fun `protocol codec rejects duplicate members at every form patch object level`() {
         val duplicatePayloads = listOf(
             """{"pageId":"first","pageId":"second","baseRevision":7,"changes":[{"fieldId":"title","reason":"reason","confidence":0.8}]}""",
