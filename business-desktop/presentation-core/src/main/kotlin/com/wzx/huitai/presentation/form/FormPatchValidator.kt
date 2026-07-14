@@ -16,6 +16,7 @@ enum class FormPatchErrorCode {
     INVALID_FIELD_VALUE,
     BUSINESS_RULE_VIOLATION,
     BUSINESS_RULE_FAILURE,
+    INVALID_PATCH_ENCODING,
 }
 
 /**
@@ -51,12 +52,14 @@ sealed interface FormPatchValidationResult {
  */
 class FormPatchValidator(
     definitions: List<FormFieldDefinition>,
-    private val businessRules: List<FormBusinessRule> = emptyList(),
+    businessRules: List<FormBusinessRule> = emptyList(),
 ) {
-    private val definitionsById = definitions.associateBy(FormFieldDefinition::fieldId)
+    private val frozenDefinitions = definitions.map(FormFieldDefinition::frozenCopy)
+    private val definitionsById = frozenDefinitions.associateBy(FormFieldDefinition::fieldId)
+    private val businessRules = businessRules.toList()
 
     init {
-        require(definitionsById.size == definitions.size) { "字段定义标识必须唯一" }
+        require(definitionsById.size == frozenDefinitions.size) { "字段定义标识必须唯一" }
     }
 
     /**
@@ -71,15 +74,19 @@ class FormPatchValidator(
         snapshot: PageContextSnapshot,
         permissions: Set<String>,
     ): FormPatchValidationResult {
-        if (patch.pageId != snapshot.pageId) {
+        val canonicalPatch = canonicalizePatch(patch)
+            ?: return FormPatchValidationResult.Rejected(
+                listOf(FormPatchError(FormPatchErrorCode.INVALID_PATCH_ENCODING)),
+            )
+        if (canonicalPatch.pageId != snapshot.pageId) {
             return FormPatchValidationResult.Rejected(listOf(FormPatchError(FormPatchErrorCode.PAGE_MISMATCH)))
         }
-        if (patch.baseRevision != snapshot.revision) {
+        if (canonicalPatch.baseRevision != snapshot.revision) {
             return FormPatchValidationResult.Rejected(listOf(FormPatchError(FormPatchErrorCode.CONTEXT_STALE)))
         }
 
         val errors = mutableListOf<FormPatchError>()
-        val duplicateIds = patch.changes.groupingBy(FieldChange::fieldId).eachCount()
+        val duplicateIds = canonicalPatch.changes.groupingBy(FieldChange::fieldId).eachCount()
             .filterValues { it > 1 }
             .keys
         duplicateIds.forEach { fieldId ->
@@ -88,7 +95,7 @@ class FormPatchValidator(
 
         val snapshotFields = snapshot.fields.associateBy { it.id }
         val structurallyValidChanges = mutableListOf<FieldChange>()
-        patch.changes
+        canonicalPatch.changes
             .filterNot { it.fieldId in duplicateIds }
             .forEach { change ->
                 val errorCountBeforeChange = errors.size
@@ -125,8 +132,8 @@ class FormPatchValidator(
         val candidateValues = snapshotFields.mapValues { (_, field) -> field.value }.toMutableMap()
         structurallyValidChanges.forEach { change -> candidateValues[change.fieldId] = change.newValue }
         val ruleContext = FormBusinessRuleContext(
-            pageId = patch.pageId,
-            baseRevision = patch.baseRevision,
+            pageId = canonicalPatch.pageId,
+            baseRevision = canonicalPatch.baseRevision,
             candidateValues = candidateValues.toMap(),
             definitions = definitionsById.toMap(),
         )
@@ -145,7 +152,7 @@ class FormPatchValidator(
         }
         val allErrors = errors + ruleErrors
         return if (allErrors.isEmpty()) {
-            FormPatchValidationResult.Applicable(patch)
+            FormPatchValidationResult.Applicable(canonicalPatch)
         } else {
             FormPatchValidationResult.Rejected(allErrors)
         }

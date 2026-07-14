@@ -12,7 +12,9 @@ class SuggestionState(
     val baseRevision: Long,
     pendingChanges: List<FieldChange> = emptyList(),
 ) {
-    val pendingChanges: List<FieldChange> = pendingChanges.toList()
+    val pendingChanges: List<FieldChange> = pendingChanges.map { change ->
+        canonicalizeFieldChange(change) ?: throw IllegalArgumentException("字段建议无法安全冻结")
+    }
 
     init {
         require(pendingChanges.map(FieldChange::fieldId).distinct().size == pendingChanges.size) {
@@ -26,11 +28,13 @@ class SuggestionState(
      * @param change 新的字段建议。
      */
     fun withSuggestion(change: FieldChange): SuggestionState {
-        val index = pendingChanges.indexOfFirst { it.fieldId == change.fieldId }
+        val canonicalChange = canonicalizeFieldChange(change)
+            ?: throw IllegalArgumentException("字段建议无法安全冻结")
+        val index = pendingChanges.indexOfFirst { it.fieldId == canonicalChange.fieldId }
         val nextChanges = if (index < 0) {
-            pendingChanges + change
+            pendingChanges + canonicalChange
         } else {
-            pendingChanges.toMutableList().also { it[index] = change }
+            pendingChanges.toMutableList().also { it[index] = canonicalChange }
         }
         return copyWith(nextChanges)
     }

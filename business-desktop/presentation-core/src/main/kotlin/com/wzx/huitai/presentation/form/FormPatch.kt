@@ -1,6 +1,9 @@
 package com.wzx.huitai.presentation.form
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 
 /**
@@ -63,4 +66,18 @@ data class FormPatch(
     /** 避免日志通过集合默认实现间接输出字段原值。 */
     override fun toString(): String =
         "FormPatch(pageId=$pageId, baseRevision=$baseRevision, changeCount=${changes.size})"
+}
+
+/** 通过协议序列化生成不共享调用方集合或 JSON backing 的表单补丁。 */
+internal fun canonicalizePatch(patch: FormPatch): FormPatch? = try {
+    Json.decodeFromString<FormPatch>(Json.encodeToString(patch))
+} catch (_: Exception) {
+    null
+}
+
+/** 通过同一协议边界深冻结单个字段建议。 */
+internal fun canonicalizeFieldChange(change: FieldChange): FieldChange? = try {
+    Json.decodeFromString<FieldChange>(Json.encodeToString(change))
+} catch (_: Exception) {
+    null
 }

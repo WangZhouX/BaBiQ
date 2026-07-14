@@ -99,3 +99,11 @@ data class FormFieldDefinition(
         }
     }
 }
+
+/** 冻结调用方可变权限集合和 enum 值集合。 */
+internal fun FormFieldDefinition.frozenCopy(): FormFieldDefinition = FormFieldDefinition(
+    fieldId = fieldId,
+    type = type,
+    requiredPermissions = requiredPermissions.toSet(),
+    enumAllowedValues = enumAllowedValues.toSet(),
+)

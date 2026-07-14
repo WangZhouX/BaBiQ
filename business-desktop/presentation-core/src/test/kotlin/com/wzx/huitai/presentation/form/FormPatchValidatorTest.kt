@@ -7,6 +7,8 @@ import com.wzx.huitai.presentation.context.PageMode
 import com.wzx.huitai.presentation.context.ValidationSummary
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -15,7 +17,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
-import kotlin.test.assertSame
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
@@ -154,7 +155,7 @@ class FormPatchValidatorTest {
         )
 
         val applicable = assertIs<FormPatchValidationResult.Applicable>(result)
-        assertSame(patch, applicable.patch)
+        assertEquals(patch, applicable.patch)
         assertEquals("user supplied source", applicable.patch.changes.first().reason)
         assertEquals(0.9, applicable.patch.changes.first().confidence)
         assertEquals(listOf(source), applicable.patch.changes.first().sourceReferences)
@@ -394,6 +395,164 @@ class FormPatchValidatorTest {
         assertEquals(listOf("title"), state.pendingChanges.map(FieldChange::fieldId))
     }
 
+    @Test
+    fun `applicable patch deeply freezes caller owned changes references and json backings`() {
+        val previousBacking = mutableMapOf<String, kotlinx.serialization.json.JsonElement>(
+            "value" to JsonPrimitive("before"),
+        )
+        val sourceBacking = mutableListOf(SourceReference(type = "user-input", id = "source-1"))
+        val arrayPreviousBacking = mutableListOf<kotlinx.serialization.json.JsonElement>(JsonPrimitive("array-before"))
+        val changesBacking = mutableListOf(
+            FieldChange(
+                fieldId = "payloadObject",
+                previousValue = JsonObject(previousBacking),
+                newValue = JsonPrimitive("after-object"),
+                reason = "freeze",
+                confidence = 0.8,
+                sourceReferences = sourceBacking,
+            ),
+            FieldChange(
+                fieldId = "payloadArray",
+                previousValue = JsonArray(arrayPreviousBacking),
+                newValue = JsonPrimitive("after-array"),
+                reason = "freeze",
+                confidence = 0.8,
+                sourceReferences = sourceBacking,
+            ),
+        )
+        val patch = FormPatch(pageId = "freeze-page", baseRevision = 3, changes = changesBacking)
+        val snapshot = freezeSnapshot(
+            objectValue = JsonObject(previousBacking),
+            arrayValue = JsonArray(arrayPreviousBacking),
+        )
+        val validator = FormPatchValidator(
+            definitions = listOf(
+                FormFieldDefinition("payloadObject", FormFieldType.STRING),
+                FormFieldDefinition("payloadArray", FormFieldType.STRING),
+            ),
+        )
+
+        val applicable = assertIs<FormPatchValidationResult.Applicable>(
+            validator.validate(patch, snapshot, emptySet()),
+        )
+        changesBacking += change(fieldId = "unknown")
+        changesBacking += change(fieldId = "payloadObject")
+        sourceBacking += SourceReference(type = "external-record", id = "source-2")
+        previousBacking["value"] = JsonPrimitive("mutated-before")
+        arrayPreviousBacking += JsonPrimitive("mutated-array")
+
+        assertEquals(2, applicable.patch.changes.size)
+        assertEquals(listOf(SourceReference(type = "user-input", id = "source-1")), applicable.patch.changes.first().sourceReferences)
+        assertEquals(JsonObject(mapOf("value" to JsonPrimitive("before"))), applicable.patch.changes.first().previousValue)
+        assertEquals(JsonArray(listOf(JsonPrimitive("array-before"))), applicable.patch.changes.last().previousValue)
+    }
+
+    @Test
+    fun `canonical patch deeply freezes object and array new value backings`() {
+        val objectBacking = mutableMapOf<String, kotlinx.serialization.json.JsonElement>(
+            "value" to JsonPrimitive("object-new"),
+        )
+        val arrayBacking = mutableListOf<kotlinx.serialization.json.JsonElement>(JsonPrimitive("array-new"))
+        val patch = FormPatch(
+            pageId = "freeze-page",
+            baseRevision = 3,
+            changes = listOf(
+                FieldChange("object", JsonNull, JsonObject(objectBacking), "freeze", 0.8),
+                FieldChange("array", JsonNull, JsonArray(arrayBacking), "freeze", 0.8),
+            ),
+        )
+
+        val canonical = requireNotNull(canonicalizePatch(patch))
+        objectBacking["value"] = JsonPrimitive("mutated-object")
+        arrayBacking += JsonPrimitive("mutated-array")
+
+        assertEquals(JsonObject(mapOf("value" to JsonPrimitive("object-new"))), canonical.changes.first().newValue)
+        assertEquals(JsonArray(listOf(JsonPrimitive("array-new"))), canonical.changes.last().newValue)
+    }
+
+    @Test
+    fun `suggestion state deeply freezes field changes on construction and replacement`() {
+        val firstSourceBacking = mutableListOf(SourceReference(type = "user-input", id = "source-1"))
+        val firstJsonBacking = mutableMapOf<String, kotlinx.serialization.json.JsonElement>(
+            "value" to JsonPrimitive("first"),
+        )
+        val first = FieldChange(
+            fieldId = "payload",
+            previousValue = JsonNull,
+            newValue = JsonObject(firstJsonBacking),
+            reason = "first",
+            confidence = 0.7,
+            sourceReferences = firstSourceBacking,
+        )
+        val state = SuggestionState(pageId = "freeze-page", baseRevision = 3, pendingChanges = listOf(first))
+
+        firstSourceBacking += SourceReference(type = "external-record", id = "source-2")
+        firstJsonBacking["value"] = JsonPrimitive("mutated-first")
+
+        val replacementSourceBacking = mutableListOf(SourceReference(type = "user-input", id = "source-3"))
+        val replacementJsonBacking = mutableListOf<kotlinx.serialization.json.JsonElement>(JsonPrimitive("replacement"))
+        val replacement = FieldChange(
+            fieldId = "payload",
+            previousValue = JsonNull,
+            newValue = JsonArray(replacementJsonBacking),
+            reason = "replacement",
+            confidence = 0.9,
+            sourceReferences = replacementSourceBacking,
+        )
+        val replaced = state.withSuggestion(replacement)
+
+        replacementSourceBacking += SourceReference(type = "external-record", id = "source-4")
+        replacementJsonBacking += JsonPrimitive("mutated-replacement")
+
+        assertEquals(JsonObject(mapOf("value" to JsonPrimitive("first"))), state.patchForAll()?.changes?.single()?.newValue)
+        assertEquals(1, state.pendingChanges.single().sourceReferences.size)
+        assertEquals(JsonArray(listOf(JsonPrimitive("replacement"))), replaced.patchForAll()?.changes?.single()?.newValue)
+        assertEquals(1, replaced.pendingChanges.single().sourceReferences.size)
+    }
+
+    @Test
+    fun `validator snapshots mutable definitions permissions enum values and rule list`() {
+        val permissions = mutableSetOf("form.write")
+        val enumValues = mutableSetOf("draft", "active")
+        val definitions = mutableListOf(
+            FormFieldDefinition(
+                fieldId = "status",
+                type = FormFieldType.ENUM,
+                requiredPermissions = permissions,
+                enumAllowedValues = enumValues,
+            ),
+        )
+        val rules = mutableListOf<FormBusinessRule>()
+        val validator = FormPatchValidator(definitions = definitions, businessRules = rules)
+
+        permissions.clear()
+        enumValues += "injected"
+        definitions.clear()
+        rules += FormBusinessRule {
+            listOf(FormBusinessRuleViolation(ruleId = "late-rule", fieldId = "status"))
+        }
+
+        val missingPermission = validator.validate(
+            patch = patch(changes = listOf(change(fieldId = "status", previousValue = "draft", newValue = "active"))),
+            snapshot = typedSnapshot(),
+            permissions = emptySet(),
+        )
+        val injectedEnum = validator.validate(
+            patch = patch(changes = listOf(change(fieldId = "status", previousValue = "draft", newValue = "injected"))),
+            snapshot = typedSnapshot(),
+            permissions = setOf("form.write"),
+        )
+        val valid = validator.validate(
+            patch = patch(changes = listOf(change(fieldId = "status", previousValue = "draft", newValue = "active"))),
+            snapshot = typedSnapshot(),
+            permissions = setOf("form.write"),
+        )
+
+        assertRejected(missingPermission, FormPatchErrorCode.MISSING_PERMISSION)
+        assertRejected(injectedEnum, FormPatchErrorCode.INVALID_FIELD_VALUE)
+        assertIs<FormPatchValidationResult.Applicable>(valid)
+    }
+
     private fun validator(): FormPatchValidator = FormPatchValidator(
         definitions = listOf(
             FormFieldDefinition(
@@ -503,6 +662,39 @@ class FormPatchValidatorTest {
             field("amount", "decimal", "1.00", required = true),
             field("effectiveDate", "date", "2026-07-13", required = true),
             field("status", "enum", "draft", required = true),
+        ),
+        validationSummary = ValidationSummary(valid = true),
+    )
+
+    private fun freezeSnapshot(
+        objectValue: kotlinx.serialization.json.JsonElement,
+        arrayValue: kotlinx.serialization.json.JsonElement,
+    ): PageContextSnapshot = PageContextSnapshot(
+        snapshotId = "snapshot-3",
+        pageId = "freeze-page",
+        pageTitle = "Freeze page",
+        route = "/freeze",
+        revision = 3,
+        mode = PageMode.EDIT,
+        fields = listOf(
+            FieldContext(
+                id = "payloadObject",
+                label = "Payload object",
+                type = "string",
+                value = objectValue,
+                editable = true,
+                required = false,
+                sensitivity = FieldSensitivity.INTERNAL,
+            ),
+            FieldContext(
+                id = "payloadArray",
+                label = "Payload array",
+                type = "string",
+                value = arrayValue,
+                editable = true,
+                required = false,
+                sensitivity = FieldSensitivity.INTERNAL,
+            ),
         ),
         validationSummary = ValidationSummary(valid = true),
     )
