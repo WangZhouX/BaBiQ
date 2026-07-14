@@ -730,6 +730,207 @@ class ActionReconciliationTest {
     }
 
     @Test
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun `renew永久挂起时heartbeat加五秒必须停止本地owner且不提交终态`() = runTest {
+        val fixture = reconciliationFixture(ReconciliationPolicy.QUERY_REMOTE)
+        fixture.action.reconcileEntered = CompletableDeferred()
+        fixture.action.reconcileRelease = CompletableDeferred()
+        fixture.store.blockRenew = true
+        fixture.store.renewEntered = CompletableDeferred()
+
+        val owner = async { fixture.bus.execute(fixture.command(), fixture.context) }
+        fixture.action.reconcileEntered!!.await()
+        testScheduler.advanceTimeBy(ReconciliationTimingPolicy.HEARTBEAT_INTERVAL.toMillis())
+        testScheduler.runCurrent()
+        fixture.store.renewEntered!!.await()
+
+        testScheduler.advanceTimeBy(4_999)
+        testScheduler.runCurrent()
+        assertFalse(owner.isCompleted)
+
+        testScheduler.advanceTimeBy(1)
+        testScheduler.runCurrent()
+        assertTrue(owner.isCompleted)
+        val rejected = assertIs<ActionBusResult.Rejected>(owner.await())
+
+        assertEquals(ActionErrorCode.EXECUTION_CONFLICT, rejected.error.code)
+        assertTrue(rejected.error.details.toString().contains("reconciliation_renew_timeout"))
+        assertEquals(0, fixture.action.activeReconcileCount)
+        assertEquals(ActionExecutionState.OUTCOME_UNKNOWN, fixture.store.record?.state)
+        assertNull(fixture.store.record?.reconciliation)
+        kotlin.test.assertNotNull(fixture.store.record?.reconciliationClaim)
+        assertEquals(listOf("reconciliation_attempt"), fixture.audit.events.map { it.type })
+    }
+
+    @Test
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun `renew和远程清理共用五秒交接预算且不串联等待`() = runTest {
+        val fixture = reconciliationFixture(ReconciliationPolicy.QUERY_REMOTE)
+        fixture.action.reconcileEntered = CompletableDeferred()
+        fixture.action.reconcileRelease = CompletableDeferred()
+        fixture.action.reconcileCancellationCleanupDelayMillis = 10_000
+        fixture.action.reconcileCleanupEntered = CompletableDeferred()
+        fixture.store.blockRenew = true
+        fixture.store.renewEntered = CompletableDeferred()
+
+        val owner = async { fixture.bus.execute(fixture.command(), fixture.context) }
+        fixture.action.reconcileEntered!!.await()
+        testScheduler.advanceTimeBy(ReconciliationTimingPolicy.HEARTBEAT_INTERVAL.toMillis())
+        testScheduler.runCurrent()
+        fixture.store.renewEntered!!.await()
+
+        testScheduler.advanceTimeBy(4_999)
+        testScheduler.runCurrent()
+        assertFalse(owner.isCompleted)
+
+        testScheduler.advanceTimeBy(1)
+        testScheduler.runCurrent()
+        assertTrue(owner.isCompleted)
+        val rejected = assertIs<ActionBusResult.Rejected>(owner.await())
+
+        assertEquals(ActionErrorCode.EXECUTION_CONFLICT, rejected.error.code)
+        assertTrue(rejected.error.details.toString().contains("reconciliation_renew_timeout"))
+        fixture.action.reconcileCleanupEntered!!.await()
+        assertEquals(ActionExecutionState.OUTCOME_UNKNOWN, fixture.store.record?.state)
+        assertNull(fixture.store.record?.reconciliation)
+        kotlin.test.assertNotNull(fixture.store.record?.reconciliationClaim)
+        assertEquals(listOf("reconciliation_attempt"), fixture.audit.events.map { it.type })
+
+        testScheduler.advanceTimeBy(10_000)
+        testScheduler.runCurrent()
+        assertEquals(0, fixture.action.activeReconcileCount)
+    }
+
+    @Test
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun `内部对账超时后release永久挂起最多再等待五秒并返回诊断UNKNOWN`() = runTest {
+        val fixture = reconciliationFixture(ReconciliationPolicy.QUERY_REMOTE)
+        fixture.action.reconcileEntered = CompletableDeferred()
+        fixture.action.reconcileRelease = CompletableDeferred()
+        fixture.store.blockRelease = true
+        fixture.store.releaseEntered = CompletableDeferred()
+
+        val owner = async { fixture.bus.execute(fixture.command(), fixture.context) }
+        fixture.action.reconcileEntered!!.await()
+        testScheduler.advanceTimeBy(ReconciliationTimingPolicy.RECONCILIATION_TIMEOUT.toMillis())
+        testScheduler.runCurrent()
+        fixture.store.releaseEntered!!.await()
+
+        testScheduler.advanceTimeBy(4_999)
+        testScheduler.runCurrent()
+        assertFalse(owner.isCompleted)
+
+        testScheduler.advanceTimeBy(1)
+        testScheduler.runCurrent()
+        assertTrue(owner.isCompleted)
+        val unknown = assertIs<ActionResult.OutcomeUnknown>(
+            assertIs<ActionBusResult.Completed>(owner.await()).result,
+        )
+
+        assertTrue(unknown.error.details.toString().contains("reconciliation_release_timeout"))
+        assertEquals(0, fixture.action.activeReconcileCount)
+        assertEquals(ActionExecutionState.OUTCOME_UNKNOWN, fixture.store.record?.state)
+        assertNull(fixture.store.record?.reconciliation)
+        kotlin.test.assertNotNull(fixture.store.record?.reconciliationClaim)
+        assertEquals(
+            listOf("reconciliation_attempt", "reconciliation_claim_renewed"),
+            fixture.audit.events.map { it.type },
+        )
+    }
+
+    @Test
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun `内部超时的远程清理与release共用五秒交接预算`() = runTest {
+        val fixture = reconciliationFixture(ReconciliationPolicy.QUERY_REMOTE)
+        fixture.action.reconcileEntered = CompletableDeferred()
+        fixture.action.reconcileRelease = CompletableDeferred()
+        fixture.action.reconcileCancellationCleanupDelayMillis = 4_000
+        fixture.action.reconcileCleanupEntered = CompletableDeferred()
+        fixture.store.blockRelease = true
+        fixture.store.releaseEntered = CompletableDeferred()
+
+        val owner = async { fixture.bus.execute(fixture.command(), fixture.context) }
+        fixture.action.reconcileEntered!!.await()
+        testScheduler.advanceTimeBy(ReconciliationTimingPolicy.RECONCILIATION_TIMEOUT.toMillis())
+        testScheduler.runCurrent()
+        fixture.action.reconcileCleanupEntered!!.await()
+
+        testScheduler.advanceTimeBy(3_999)
+        testScheduler.runCurrent()
+        assertFalse(owner.isCompleted)
+
+        testScheduler.advanceTimeBy(1)
+        testScheduler.runCurrent()
+        fixture.store.releaseEntered!!.await()
+        assertFalse(owner.isCompleted)
+
+        testScheduler.advanceTimeBy(999)
+        testScheduler.runCurrent()
+        assertFalse(owner.isCompleted)
+
+        testScheduler.advanceTimeBy(1)
+        testScheduler.runCurrent()
+        assertTrue(owner.isCompleted)
+        val unknown = assertIs<ActionResult.OutcomeUnknown>(
+            assertIs<ActionBusResult.Completed>(owner.await()).result,
+        )
+
+        assertTrue(unknown.error.details.toString().contains("reconciliation_release_timeout"))
+        assertEquals(0, fixture.action.activeReconcileCount)
+        assertEquals(ActionExecutionState.OUTCOME_UNKNOWN, fixture.store.record?.state)
+        assertNull(fixture.store.record?.reconciliation)
+        kotlin.test.assertNotNull(fixture.store.record?.reconciliationClaim)
+        assertEquals(
+            listOf("reconciliation_attempt", "reconciliation_claim_renewed"),
+            fixture.audit.events.map { it.type },
+        )
+    }
+
+    @Test
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun `fencing后的远程取消清理超过五秒时返回诊断冲突且绝不final`() = runTest {
+        val fixture = reconciliationFixture(ReconciliationPolicy.QUERY_REMOTE)
+        fixture.action.reconcileEntered = CompletableDeferred()
+        fixture.action.reconcileRelease = CompletableDeferred()
+        fixture.action.reconcileCancellationCleanupDelayMillis = 10_000
+        fixture.action.reconcileCleanupEntered = CompletableDeferred()
+        fixture.store.renewOverride = { _, _ ->
+            com.wzx.huitai.action.port.ReconciliationRenewResult.Conflict(
+                ActionError(ActionErrorCode.EXECUTION_CONFLICT, "renew conflict"),
+            )
+        }
+
+        val owner = async { fixture.bus.execute(fixture.command(), fixture.context) }
+        fixture.action.reconcileEntered!!.await()
+        testScheduler.advanceTimeBy(ReconciliationTimingPolicy.HEARTBEAT_INTERVAL.toMillis())
+        testScheduler.runCurrent()
+        fixture.action.reconcileCleanupEntered!!.await()
+        assertFalse(owner.isCompleted)
+
+        testScheduler.advanceTimeBy(4_999)
+        testScheduler.runCurrent()
+        assertFalse(owner.isCompleted)
+
+        testScheduler.advanceTimeBy(1)
+        testScheduler.runCurrent()
+        assertTrue(owner.isCompleted)
+        val rejected = assertIs<ActionBusResult.Rejected>(owner.await())
+
+        assertEquals(ActionErrorCode.EXECUTION_CONFLICT, rejected.error.code)
+        assertTrue(rejected.error.details.toString().contains("reconciliation_cleanup_timeout"))
+        assertEquals(ActionExecutionState.OUTCOME_UNKNOWN, fixture.store.record?.state)
+        assertNull(fixture.store.record?.reconciliation)
+        kotlin.test.assertNotNull(fixture.store.record?.reconciliationClaim)
+        val recordAtReturn = fixture.store.record
+        val auditsAtReturn = fixture.audit.events.toList()
+        testScheduler.advanceTimeBy(5_000)
+        testScheduler.runCurrent()
+        assertEquals(0, fixture.action.activeReconcileCount)
+        assertEquals(recordAtReturn, fixture.store.record)
+        assertEquals(auditsAtReturn, fixture.audit.events)
+    }
+
+    @Test
     fun `claim owner由冻结桌面实例和session派生且日志不泄露`() = runTest {
         suspend fun claimedOwner(sessionId: String): Pair<String, String> {
             val identity = busIdentity(

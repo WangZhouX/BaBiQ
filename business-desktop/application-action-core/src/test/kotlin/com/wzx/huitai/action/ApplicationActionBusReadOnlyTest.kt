@@ -36,11 +36,15 @@ import com.wzx.huitai.action.port.ReconciliationUpdateResult
 import com.wzx.huitai.action.port.RiskEvaluation
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -624,6 +628,8 @@ internal class BusCountingAction(
     var previewResultMode = PreviewResultMode.NORMAL
     var executeFailure: Throwable? = null
     var reconcileFailure: Throwable? = null
+    var reconcileCancellationCleanupDelayMillis = 0L
+    var reconcileCleanupEntered: CompletableDeferred<Unit>? = null
     var previewEntered: CompletableDeferred<Unit>? = null
     var executeEntered: CompletableDeferred<Unit>? = null
     var reconcileEntered: CompletableDeferred<Unit>? = null
@@ -672,6 +678,12 @@ internal class BusCountingAction(
             reconcileFailure?.let { throw it }
             return reconciliationResult
         } finally {
+            if (!currentCoroutineContext().isActive && reconcileCancellationCleanupDelayMillis > 0) {
+                withContext(NonCancellable) {
+                    reconcileCleanupEntered?.complete(Unit)
+                    delay(reconcileCancellationCleanupDelayMillis)
+                }
+            }
             activeReconcileCount -= 1
         }
     }
@@ -752,6 +764,10 @@ internal class BusExecutionStore : ActionExecutionStore {
     var preparedStateBeforeAuditFailure: ActionExecutionState? = null
     var existingTerminalResult: ActionResult<JsonElement>? = null
     var existingTerminalOnTransitionTo: ActionExecutionState? = null
+    var blockRenew = false
+    var renewEntered: CompletableDeferred<Unit>? = null
+    var blockRelease = false
+    var releaseEntered: CompletableDeferred<Unit>? = null
     var renewOverride: ((
         com.wzx.huitai.action.port.ReconciliationRenewRequest,
         ActionExecutionRecord,
@@ -977,6 +993,8 @@ internal class BusExecutionStore : ActionExecutionStore {
     override suspend fun renewReconciliation(
         request: com.wzx.huitai.action.port.ReconciliationRenewRequest,
     ): com.wzx.huitai.action.port.ReconciliationRenewResult {
+        renewEntered?.complete(Unit)
+        if (blockRenew) awaitCancellation()
         val current = record ?: return com.wzx.huitai.action.port.ReconciliationRenewResult.Conflict(
             ActionError(ActionErrorCode.EXECUTION_CONFLICT, "missing"),
         )
@@ -1018,6 +1036,8 @@ internal class BusExecutionStore : ActionExecutionStore {
     override suspend fun releaseReconciliation(
         request: com.wzx.huitai.action.port.ReconciliationReleaseRequest,
     ): com.wzx.huitai.action.port.ReconciliationReleaseResult {
+        releaseEntered?.complete(Unit)
+        if (blockRelease) awaitCancellation()
         val current = record ?: return com.wzx.huitai.action.port.ReconciliationReleaseResult.Conflict(
             ActionError(ActionErrorCode.EXECUTION_CONFLICT, "missing"),
         )

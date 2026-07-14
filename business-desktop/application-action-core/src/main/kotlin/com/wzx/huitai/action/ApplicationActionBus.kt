@@ -30,10 +30,14 @@ import com.wzx.huitai.action.port.ReconciliationReleaseResult
 import com.wzx.huitai.action.port.ReconciliationUpdateResult
 import com.wzx.huitai.action.port.RiskEvaluation
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
@@ -124,6 +128,12 @@ private sealed interface ReconciliationLoopResult {
     data class Invocation(val outcome: ReconciliationInvocationOutcome) : ReconciliationLoopResult
     data class Fenced(val result: ActionBusResult) : ReconciliationLoopResult
     data object TimedOut : ReconciliationLoopResult
+}
+
+/** 非取消交接返回成功值或结构化失败，调用方决定恢复语义。 */
+private sealed interface BoundedHandoffResult<out T> {
+    data class Success<T>(val value: T) : BoundedHandoffResult<T>
+    data class Failure(val failure: Throwable) : BoundedHandoffResult<Nothing>
 }
 
 /** Bus 与注册动作之间的模块内部调用边界，生产实现只做直接委派。 */
@@ -298,7 +308,8 @@ class ApplicationActionBus internal constructor(
         }
         return coroutineScope {
             val latestClaim = AtomicReference(initialClaim)
-            val remote = async {
+            val remoteScope = CoroutineScope(currentCoroutineContext().minusKey(Job) + SupervisorJob())
+            val remote = remoteScope.async {
                 try {
                     ReconciliationInvocationOutcome.Completed(
                         actionInvoker.reconcile(
@@ -337,26 +348,9 @@ class ApplicationActionBus internal constructor(
                         if (remainingMillis <= 0) {
                             return@withTimeoutOrNull ReconciliationLoopResult.TimedOut
                         }
-                        when (val renewed = renewReconciliation(latestClaim)) {
-                            is ReconciliationRenewResult.Renewed -> Unit
-                            is ReconciliationRenewResult.ExistingClaim -> {
-                                return@withTimeoutOrNull ReconciliationLoopResult.Fenced(
-                                    ActionBusResult.InProgress(
-                                        renewed.record.command.executionId,
-                                        ActionExecutionState.OUTCOME_UNKNOWN,
-                                    ),
-                                )
-                            }
-                            is ReconciliationRenewResult.ExistingFinal -> {
-                                return@withTimeoutOrNull ReconciliationLoopResult.Fenced(
-                                    existingTerminal(renewed.record),
-                                )
-                            }
-                            is ReconciliationRenewResult.Conflict -> {
-                                return@withTimeoutOrNull ReconciliationLoopResult.Fenced(
-                                    ActionBusResult.Rejected(renewed.error),
-                                )
-                            }
+                        val fencing = renewOrFenceReconciliation(latestClaim, remote)
+                        if (fencing != null) {
+                            return@withTimeoutOrNull fencing
                         }
                     }
                     error("heartbeat 循环必须通过显式分支退出")
@@ -374,13 +368,25 @@ class ApplicationActionBus internal constructor(
                         }
                     }
                     is ReconciliationLoopResult.Fenced -> {
-                        remote.cancelAndJoin()
                         return@coroutineScope loopResult.result
                     }
                     ReconciliationLoopResult.TimedOut -> {
-                        remote.cancelAndJoin()
-                        return@coroutineScope withContext(NonCancellable) {
-                            releaseReconciliation(latestClaim.get(), "timeout", existingTerminal(unknown))
+                        remote.cancel()
+                        var handoffStage = "reconciliation_cleanup_timeout"
+                        return@coroutineScope when (val handoff = boundedNonCancellableHandoff {
+                            remote.cancelAndJoin()
+                            handoffStage = "reconciliation_release_timeout"
+                            releaseReconciliation(
+                                latestClaim.get(),
+                                "timeout",
+                                existingTerminal(unknown),
+                            )
+                        }) {
+                            is BoundedHandoffResult.Success -> handoff.value
+                            is BoundedHandoffResult.Failure -> unknownDiagnostic(
+                                unknown,
+                                handoffStage,
+                            )
                         }
                     }
                 }
@@ -481,6 +487,8 @@ class ApplicationActionBus internal constructor(
                 remote.cancel()
                 releaseReconciliationAfterCancellation(remote, latestClaim.get(), cancellation)
                 throw (cancellation.cause as? CancellationException ?: cancellation)
+            } finally {
+                remoteScope.coroutineContext[Job]?.cancel()
             }
         }
     }
@@ -509,38 +517,89 @@ class ApplicationActionBus internal constructor(
             )
         }
 
-    /** 使用当前最新 token/version 原子续租；即使外部取消到达也先取得确定持久化结果。 */
+    /** 续租与 fencing 清理共享同一个 5 秒交接预算，避免阶段串联放大等待。 */
+    private suspend fun renewOrFenceReconciliation(
+        latestClaim: AtomicReference<ActionExecutionRecord>,
+        remote: kotlinx.coroutines.Deferred<*>,
+    ): ReconciliationLoopResult.Fenced? {
+        var handoffStage = "reconciliation_renew_timeout"
+        val handoff = boundedNonCancellableHandoff {
+            val renewed = renewReconciliation(latestClaim)
+            val result = when (renewed) {
+                is ReconciliationRenewResult.Renewed -> null
+                is ReconciliationRenewResult.ExistingClaim -> ActionBusResult.InProgress(
+                    renewed.record.command.executionId,
+                    ActionExecutionState.OUTCOME_UNKNOWN,
+                )
+                is ReconciliationRenewResult.ExistingFinal -> existingTerminal(renewed.record)
+                is ReconciliationRenewResult.Conflict -> ActionBusResult.Rejected(renewed.error)
+            }
+            if (result != null) {
+                handoffStage = "reconciliation_cleanup_timeout"
+                remote.cancelAndJoin()
+            }
+            result
+        }
+        return when (handoff) {
+            is BoundedHandoffResult.Success -> handoff.value?.let(ReconciliationLoopResult::Fenced)
+            is BoundedHandoffResult.Failure -> {
+                remote.cancel()
+                ReconciliationLoopResult.Fenced(
+                    handoffDiagnostic(
+                        code = ActionErrorCode.EXECUTION_CONFLICT,
+                        stage = handoffStage,
+                    ),
+                )
+            }
+        }
+    }
+
+    /** 使用当前最新 token/version 原子续租。 */
     private suspend fun renewReconciliation(
         latestClaim: AtomicReference<ActionExecutionRecord>,
-    ): ReconciliationRenewResult = withContext(NonCancellable) {
+    ): ReconciliationRenewResult {
         val claimed = latestClaim.get()
         val now = clock.now()
         val token = claimed.reconciliationClaim?.claimToken
-            ?: return@withContext ReconciliationRenewResult.Conflict(
+        val renewed = if (token == null) {
+            ReconciliationRenewResult.Conflict(
                 ActionError(ActionErrorCode.EXECUTION_CONFLICT, "对账 renew claim 缺失"),
             )
-        val renewed = executionStore.renewReconciliation(
-            ReconciliationRenewRequest(
-                executionId = claimed.command.executionId,
-                expectedVersion = claimed.recordVersion,
-                claimToken = token,
-                now = now,
-                leaseDuration = ReconciliationTimingPolicy.CLAIM_LEASE,
-                audit = auditDraft(
-                    claimed.command.executionId,
-                    ActionExecutionState.OUTCOME_UNKNOWN,
-                    ActionExecutionState.OUTCOME_UNKNOWN,
-                    "reconciliation_claim_renewed",
-                    buildJsonObject { },
-                    null,
-                    now,
+        } else {
+            executionStore.renewReconciliation(
+                ReconciliationRenewRequest(
+                    executionId = claimed.command.executionId,
+                    expectedVersion = claimed.recordVersion,
+                    claimToken = token,
+                    now = now,
+                    leaseDuration = ReconciliationTimingPolicy.CLAIM_LEASE,
+                    audit = auditDraft(
+                        claimed.command.executionId,
+                        ActionExecutionState.OUTCOME_UNKNOWN,
+                        ActionExecutionState.OUTCOME_UNKNOWN,
+                        "reconciliation_claim_renewed",
+                        buildJsonObject { },
+                        null,
+                        now,
+                    ),
                 ),
-            ),
-        )
-        if (renewed is ReconciliationRenewResult.Renewed) {
-            latestClaim.set(renewed.record)
+            )
         }
-        renewed
+        if (renewed is ReconciliationRenewResult.Renewed) latestClaim.set(renewed.record)
+        return renewed
+    }
+
+    /** 所有 NonCancellable 持久化/清理交接统一在固定上限内成功或结构化失败。 */
+    private suspend fun <T> boundedNonCancellableHandoff(
+        handoff: suspend () -> T,
+    ): BoundedHandoffResult<T> = try {
+        BoundedHandoffResult.Success(
+            withContext(NonCancellable) {
+                withTimeout(CANCELLATION_HANDOFF_TIMEOUT_MILLIS) { handoff() }
+            },
+        )
+    } catch (failure: Throwable) {
+        BoundedHandoffResult.Failure(failure)
     }
 
     /** 取消必须传播；远程停止或 release 失败作为 suppressed 保留，续租租约继续承担恢复边界。 */
@@ -549,19 +608,15 @@ class ApplicationActionBus internal constructor(
         claimed: ActionExecutionRecord,
         cancellation: CancellationException,
     ) {
-        val handoffFailure = try {
-            withContext(NonCancellable) {
-                withTimeout(CANCELLATION_HANDOFF_TIMEOUT_MILLIS) {
-                    remote.cancelAndJoin()
-                    val released = releaseReconciliation(claimed, "canceled", existingTerminal(claimed))
-                    if (released is ActionBusResult.Rejected) {
-                        throw IllegalStateException("对账取消释放失败: ${released.error.code}")
-                    }
-                }
+        val handoffFailure = when (val handoff = boundedNonCancellableHandoff {
+            remote.cancelAndJoin()
+            val released = releaseReconciliation(claimed, "canceled", existingTerminal(claimed))
+            if (released is ActionBusResult.Rejected) {
+                throw IllegalStateException("对账取消释放失败: ${released.error.code}")
             }
-            null
-        } catch (failure: Throwable) {
-            failure
+        }) {
+            is BoundedHandoffResult.Success -> null
+            is BoundedHandoffResult.Failure -> handoff.failure
         }
         if (handoffFailure != null && handoffFailure !== cancellation) {
             val visited = java.util.Collections.newSetFromMap(
@@ -1172,6 +1227,33 @@ private fun existingTerminal(record: ActionExecutionRecord): ActionBusResult = w
     )
     else -> conflict("终态记录缺少事实")
 }
+
+/** 返回带安全 stage 的 UNKNOWN，保留持久 claim 等待租约接管。 */
+private fun unknownDiagnostic(
+    unknown: ActionExecutionRecord,
+    stage: String,
+): ActionBusResult.Completed {
+    val stored = unknown.result as ActionResult.OutcomeUnknown
+    return ActionBusResult.Completed(
+        stored.copy(
+            error = stored.error.copy(
+                details = buildJsonObject { put("stage", stage) },
+            ),
+        ),
+    )
+}
+
+/** 构造不含底层异常文本的结构化 handoff 诊断。 */
+private fun handoffDiagnostic(
+    code: ActionErrorCode,
+    stage: String,
+): ActionBusResult.Rejected = ActionBusResult.Rejected(
+    ActionError(
+        code = code,
+        message = "对账交接未在时限内完成",
+        details = buildJsonObject { put("stage", stage) },
+    ),
+)
 
 private fun emptyPayload(): JsonObject = buildJsonObject { }
 
