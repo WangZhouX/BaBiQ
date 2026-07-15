@@ -18,6 +18,11 @@ import kotlinx.coroutines.sync.withLock
 class InMemoryConfirmationPort(decisions: List<ActionConfirmation> = emptyList()) : ActionConfirmationPort {
     private val mutex = Mutex()
     private val decisionsByExecution = decisions.associateByTo(mutableMapOf()) { it.executionId }
+
+    /**
+     * 与本 demo 适配器的进程/测试生命周期同长，永久阻止同一 execution 注入第二个确认事实。
+     * 生产环境由后续 Compose/SQLite 适配器以持久确认事实替换，不在此处清理 tombstone。
+     */
     private val terminalExecutionIds = decisionsByExecution.keys.toMutableSet()
 
     init {

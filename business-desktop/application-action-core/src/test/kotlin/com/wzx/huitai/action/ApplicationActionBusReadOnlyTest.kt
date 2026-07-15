@@ -242,6 +242,45 @@ class ApplicationActionBusReadOnlyTest {
     }
 
     @Test
+    fun `风险策略异常安全收口失败而取消异常传播且不创建执行`() = runTest {
+        val failedFixture = BusFixture(
+            risk = ActionRiskLevel.READ_ONLY,
+            riskEvaluationProvider = { throw IllegalStateException("secret-risk") },
+        )
+
+        val failed = assertIs<ActionBusResult.Rejected>(
+            failedFixture.bus.execute(failedFixture.command(), failedFixture.context),
+        )
+
+        assertEquals(ActionErrorCode.PROTOCOL_ERROR, failed.error.code)
+        assertEquals("风险策略评估失败", failed.error.message)
+        assertEquals(ActionExecutionState.FAILED, failedFixture.store.record?.state)
+        assertEquals("risk_evaluation_failed", failedFixture.audit.events.last().type)
+        assertEquals(0, failedFixture.action.previewCount)
+        assertEquals(0, failedFixture.confirmation.requests)
+        assertEquals(0, failedFixture.approval.requests)
+        assertEquals(0, failedFixture.action.executeCount)
+
+        val canceledFixture = BusFixture(
+            risk = ActionRiskLevel.READ_ONLY,
+            riskEvaluationProvider = { throw CancellationException("cancel-risk") },
+        )
+
+        assertEquals(
+            "cancel-risk",
+            assertFailsWith<CancellationException> {
+                canceledFixture.bus.execute(canceledFixture.command(), canceledFixture.context)
+            }.message,
+        )
+        assertNull(canceledFixture.store.record)
+        assertEquals(emptyList(), canceledFixture.audit.events)
+        assertEquals(0, canceledFixture.action.previewCount)
+        assertEquals(0, canceledFixture.confirmation.requests)
+        assertEquals(0, canceledFixture.approval.requests)
+        assertEquals(0, canceledFixture.action.executeCount)
+    }
+
+    @Test
     fun `atomic transition failure keeps prior state and audit unchanged`() = runTest {
         val fixture = BusFixture(ActionRiskLevel.READ_ONLY)
         fixture.store.failTransitionTo = ActionExecutionState.EXECUTING

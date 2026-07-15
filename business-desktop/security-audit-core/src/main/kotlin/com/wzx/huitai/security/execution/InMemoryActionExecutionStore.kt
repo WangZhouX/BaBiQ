@@ -24,10 +24,11 @@ import com.wzx.huitai.action.port.ReconciliationUpdateResult
 import com.wzx.huitai.security.audit.AuditRedactor
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import java.util.Collections
 
 /**
@@ -44,7 +45,9 @@ class InMemoryActionExecutionStore(
     private val auditEvents = mutableMapOf<String, MutableList<ActionAuditEvent>>()
 
     /** 查询当前不可变记录快照。 */
-    override suspend fun find(executionId: String): ActionExecutionRecord? = mutex.withLock { records[executionId] }
+    override suspend fun find(executionId: String): ActionExecutionRecord? = mutex.withLock {
+        records[executionId]?.snapshot()
+    }
 
     /** 返回指定 execution 的不可修改审计快照，供测试和演示展示。 */
     suspend fun events(executionId: String): List<ActionAuditEvent> = mutex.withLock {
@@ -56,24 +59,25 @@ class InMemoryActionExecutionStore(
         record: ActionExecutionRecord,
         audit: ActionAuditDraft,
     ): ExecutionCreateResult = mutex.withLock {
-        require(audit.executionId == record.command.executionId) { "创建审计 executionId 不匹配" }
+        validateCreateAudit(record, audit)
         val existing = records[record.command.executionId]
         if (existing == null) {
             val frozen = record.freeze()
             val event = prepareAudit(audit)
             commit(frozen, event)
-            return@withLock ExecutionCreateResult.Created(frozen)
+            return@withLock ExecutionCreateResult.Created(frozen.snapshot())
         }
         if (existing.binding != record.binding) return@withLock createConflict("execution binding conflict")
-        if (existing.isTerminal) ExecutionCreateResult.ExistingTerminal(existing)
-        else ExecutionCreateResult.ExistingRunning(existing)
+        if (existing.isTerminal) ExecutionCreateResult.ExistingTerminal(existing.snapshot())
+        else ExecutionCreateResult.ExistingRunning(existing.snapshot())
     }
 
     /** 原子乐观迁移；任何既有终态都原样获胜。 */
     override suspend fun transition(update: ExecutionTransition): ExecutionTransitionResult = mutex.withLock {
+        validateTransitionAudit(update)
         val existing = records[update.executionId]
             ?: return@withLock transitionConflict("execution not found")
-        if (existing.isTerminal) return@withLock ExecutionTransitionResult.ExistingTerminal(existing)
+        if (existing.isTerminal) return@withLock ExecutionTransitionResult.ExistingTerminal(existing.snapshot())
         if (existing.recordVersion != update.expectedVersion || update.audit.fromState != existing.state) {
             return@withLock transitionConflict("transition state or version conflict")
         }
@@ -88,16 +92,17 @@ class InMemoryActionExecutionStore(
         )
         val event = prepareAudit(update.audit)
         commit(updated, event)
-        ExecutionTransitionResult.Updated(updated)
+        ExecutionTransitionResult.Updated(updated.snapshot())
     }
 
     /** 仅由当前 claim token/version 将 OUTCOME_UNKNOWN 原子收束为最终成功或失败。 */
     override suspend fun updateReconciliation(
         update: ReconciliationExecutionUpdate,
     ): ReconciliationUpdateResult = mutex.withLock {
+        validateReconciliationAudit(update)
         val existing = records[update.executionId]
             ?: return@withLock reconciliationConflict("execution not found")
-        if (existing.isFinalTerminal) return@withLock ReconciliationUpdateResult.ExistingFinal(existing)
+        if (existing.isFinalTerminal) return@withLock ReconciliationUpdateResult.ExistingFinal(existing.snapshot())
         if (!existing.needsReconciliation || existing.recordVersion != update.expectedVersion ||
             existing.reconciliationClaim?.claimToken != update.claimToken
         ) {
@@ -120,18 +125,19 @@ class InMemoryActionExecutionStore(
         )
         val event = prepareAudit(update.audit)
         commit(updated, event)
-        ReconciliationUpdateResult.Updated(updated)
+        ReconciliationUpdateResult.Updated(updated.snapshot())
     }
 
     /** 原子取得或在到期边界接管对账租约，并一起追加 attempt 审计。 */
     override suspend fun claimReconciliation(request: ReconciliationClaimRequest): ReconciliationClaimResult =
         mutex.withLock {
+            validateAuditTime(request.audit, request.now, "claim")
             val existing = records[request.executionId]
                 ?: return@withLock claimConflict("execution not found")
-            if (existing.isFinalTerminal) return@withLock ReconciliationClaimResult.ExistingFinal(existing)
+            if (existing.isFinalTerminal) return@withLock ReconciliationClaimResult.ExistingFinal(existing.snapshot())
             existing.reconciliationClaim?.let { active ->
                 if (request.now.isBefore(active.expiresAt)) {
-                    return@withLock ReconciliationClaimResult.ExistingClaim(existing)
+                    return@withLock ReconciliationClaimResult.ExistingClaim(existing.snapshot())
                 }
             }
             if (!existing.needsReconciliation || existing.recordVersion != request.expectedVersion) {
@@ -149,17 +155,20 @@ class InMemoryActionExecutionStore(
             )
             val event = prepareAudit(request.audit)
             commit(claimed, event)
-            ReconciliationClaimResult.Claimed(claimed)
+            ReconciliationClaimResult.Claimed(claimed.snapshot())
         }
 
     /** 仅当前 token/version owner 可以原子续租。 */
     override suspend fun renewReconciliation(request: ReconciliationRenewRequest): ReconciliationRenewResult =
         mutex.withLock {
+            validateAuditTime(request.audit, request.now, "renew")
             val existing = records[request.executionId]
                 ?: return@withLock renewConflict("execution not found")
-            if (existing.isFinalTerminal) return@withLock ReconciliationRenewResult.ExistingFinal(existing)
+            if (existing.isFinalTerminal) return@withLock ReconciliationRenewResult.ExistingFinal(existing.snapshot())
             val claim = existing.reconciliationClaim ?: return@withLock renewConflict("claim missing")
-            if (claim.claimToken != request.claimToken) return@withLock ReconciliationRenewResult.ExistingClaim(existing)
+            if (claim.claimToken != request.claimToken) {
+                return@withLock ReconciliationRenewResult.ExistingClaim(existing.snapshot())
+            }
             if (!existing.needsReconciliation || existing.recordVersion != request.expectedVersion) {
                 return@withLock renewConflict("reconciliation renew state or version conflict")
             }
@@ -174,15 +183,16 @@ class InMemoryActionExecutionStore(
             }
             val event = prepareAudit(request.audit)
             commit(renewed, event)
-            ReconciliationRenewResult.Renewed(renewed)
+            ReconciliationRenewResult.Renewed(renewed.snapshot())
         }
 
     /** 仅当前 token/version owner 可以释放未收束 claim。 */
     override suspend fun releaseReconciliation(request: ReconciliationReleaseRequest): ReconciliationReleaseResult =
         mutex.withLock {
+            validateAuditTime(request.audit, request.releasedAt, "release")
             val existing = records[request.executionId]
                 ?: return@withLock releaseConflict("execution not found")
-            if (existing.isFinalTerminal) return@withLock ReconciliationReleaseResult.ExistingFinal(existing)
+            if (existing.isFinalTerminal) return@withLock ReconciliationReleaseResult.ExistingFinal(existing.snapshot())
             if (!existing.needsReconciliation || existing.recordVersion != request.expectedVersion ||
                 existing.reconciliationClaim?.claimToken != request.claimToken
             ) {
@@ -195,7 +205,7 @@ class InMemoryActionExecutionStore(
             )
             val event = prepareAudit(request.audit)
             commit(released, event)
-            ReconciliationReleaseResult.Released(released)
+            ReconciliationReleaseResult.Released(released.snapshot())
         }
 
     /** 在不修改 backing state 的前提下完整构造脱敏审计事件。 */
@@ -219,11 +229,48 @@ class InMemoryActionExecutionStore(
         auditEvents.getOrPut(event.executionId) { mutableListOf() }.add(event)
     }
 
+    /** 创建记录、状态和首条审计必须描述同一个原子业务事实。 */
+    private fun validateCreateAudit(record: ActionExecutionRecord, audit: ActionAuditDraft) {
+        require(audit.executionId == record.command.executionId) { "创建审计 executionId 不匹配" }
+        require(audit.fromState == ActionExecutionState.RECEIVED) { "创建审计必须源自 RECEIVED" }
+        require(audit.toState == record.state) { "创建审计目标状态与记录不匹配" }
+        require(record.createdAt == record.updatedAt) { "创建记录的 createdAt 与 updatedAt 必须一致" }
+        require(audit.occurredAt == record.createdAt) { "创建审计时间与记录创建时间不匹配" }
+    }
+
+    /** 普通迁移的目标状态、事件时间和终态完成时间必须一致。 */
+    private fun validateTransitionAudit(update: ExecutionTransition) {
+        require(update.audit.toState == update.state) { "迁移审计目标状态与更新不匹配" }
+        validateAuditTime(update.audit, update.updatedAt, "迁移")
+        if (update.state.isPersistedTerminal()) {
+            require(update.completedAt == update.updatedAt) { "终态 completedAt 与 updatedAt 必须一致" }
+        }
+    }
+
+    /** 最终对账的审计状态和时间必须与最终业务更新完全一致。 */
+    private fun validateReconciliationAudit(update: ReconciliationExecutionUpdate) {
+        val state = if (update.result is ActionResult.Failure) {
+            ActionExecutionState.FAILED
+        } else {
+            ActionExecutionState.SUCCEEDED
+        }
+        require(update.audit.toState == state) { "最终对账审计目标状态与结果不匹配" }
+        validateAuditTime(update.audit, update.completedAt, "最终对账")
+    }
+
+    /** 审计发生时间必须使用同一原子请求携带的业务时间。 */
+    private fun validateAuditTime(audit: ActionAuditDraft, businessTime: java.time.Instant, operation: String) {
+        require(audit.occurredAt == businessTime) { "$operation 审计时间与业务时间不匹配" }
+    }
+
     /** 对命令、预览和结果中的 JSON 做序列化边界复制，切断调用方可变 Map 引用。 */
     private fun ActionExecutionRecord.freeze(): ActionExecutionRecord = copy(
         command = command.copy(input = freezeJson(command.input) as JsonObject),
         result = result?.freeze(),
     )
+
+    /** 每次越过公开端口边界都重新深冻结，调用方永不持有内部记录对象。 */
+    private fun ActionExecutionRecord.snapshot(): ActionExecutionRecord = freeze()
 
     /** 穷举复制所有结果分支，避免终态输出继续持有外部 JSON 容器。 */
     @Suppress("UNCHECKED_CAST")
@@ -245,24 +292,34 @@ class InMemoryActionExecutionStore(
     /** 复制预览的输入、变化值和警告列表。 */
     private fun com.wzx.huitai.action.model.ActionPreview.freeze() = copy(
         redactedInput = freezeJson(redactedInput) as JsonObject,
-        changes = changes.map { change ->
+        changes = Collections.unmodifiableList(changes.map { change ->
             change.copy(
                 before = change.before?.let(::freezeJson),
                 after = change.after?.let(::freezeJson),
             )
-        },
-        warnings = warnings.toList(),
+        }),
+        warnings = Collections.unmodifiableList(warnings.toList()),
     )
 
-    /** 通过 JSON 编解码创建独立树，避免暴露输入树的任何可变容器。 */
-    private fun freezeJson(value: JsonElement): JsonElement = JSON.parseToJsonElement(
-        JSON.encodeToString(JsonElement.serializer(), value),
-    )
-
-    private companion object {
-        val JSON = Json { encodeDefaults = true }
+    /** 递归复制 JSON，并用 JVM 不可修改容器封住 entries/iterator 等旁路。 */
+    private fun freezeJson(value: JsonElement): JsonElement = when (value) {
+        JsonNull -> JsonNull
+        is JsonPrimitive -> value
+        is JsonObject -> JsonObject(Collections.unmodifiableMap(
+            value.entries.associateTo(linkedMapOf()) { (key, child) -> key to freezeJson(child) },
+        ))
+        is JsonArray -> JsonArray(Collections.unmodifiableList(value.map(::freezeJson)))
     }
 }
+
+/** Store 防御校验使用的持久终态集合。 */
+private fun ActionExecutionState.isPersistedTerminal(): Boolean = this in setOf(
+    ActionExecutionState.SUCCEEDED,
+    ActionExecutionState.FAILED,
+    ActionExecutionState.CANCELED,
+    ActionExecutionState.EXPIRED,
+    ActionExecutionState.OUTCOME_UNKNOWN,
+)
 
 /** 构造不包含底层异常或业务值的稳定执行冲突。 */
 private fun error(message: String) = ActionError(ActionErrorCode.EXECUTION_CONFLICT, message)

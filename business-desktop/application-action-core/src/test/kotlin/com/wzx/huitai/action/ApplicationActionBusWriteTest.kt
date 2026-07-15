@@ -16,6 +16,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.put
+import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -366,6 +367,54 @@ class ApplicationActionBusWriteTest {
         assertEquals(1, fixture.approval.requests)
         assertEquals(0, fixture.action.executeCount)
         assertEquals(false, fixture.audit.events.any { it.type in setOf("approval_approved", "approval_denied", "approval_expired") })
+    }
+
+    @Test
+    fun `确认决定早于预览或晚于接收时间均协议失败且不执行`() = runTest {
+        listOf(
+            Instant.parse("2026-07-14T00:00:00Z"),
+            Instant.parse("2026-07-14T00:01:40Z"),
+        ).forEach { decidedAt ->
+            val fixture = BusFixture(
+                risk = ActionRiskLevel.REVERSIBLE_WRITE,
+                clock = BusClock(initialSeconds = 0),
+            )
+            fixture.confirmation.response = fixture.confirmation.response.copy(decidedAt = decidedAt)
+
+            val result = fixture.bus.execute(fixture.command(), fixture.context)
+
+            assertFailedAt(fixture, result, ActionExecutionState.PREVIEWED)
+            assertEquals(ActionErrorCode.PROTOCOL_ERROR, assertIs<ActionBusResult.Rejected>(result).error.code)
+            assertEquals(0, fixture.action.executeCount)
+            assertEquals(false, fixture.audit.events.any { it.type.startsWith("confirmation_") })
+        }
+    }
+
+    @Test
+    fun `批准人空白或审批时间越界均协议失败且不执行`() = runTest {
+        listOf(
+            "" to Instant.parse("2026-07-14T00:00:03Z"),
+            "   " to Instant.parse("2026-07-14T00:00:03Z"),
+            "secret-actor" to Instant.parse("2026-07-14T00:00:01Z"),
+            "secret-actor" to Instant.parse("2026-07-14T00:01:40Z"),
+        ).forEach { (decidedBy, decidedAt) ->
+            val fixture = BusFixture(
+                risk = ActionRiskLevel.HIGH_RISK,
+                clock = BusClock(initialSeconds = 0),
+            )
+            fixture.approval.response = fixture.approval.response.copy(
+                decision = ApprovalDecision.APPROVED,
+                decidedAt = decidedAt,
+                decidedBy = decidedBy,
+            )
+
+            val result = fixture.bus.execute(fixture.command(), fixture.context)
+
+            assertFailedAt(fixture, result, ActionExecutionState.WAITING_APPROVAL)
+            assertEquals(ActionErrorCode.PROTOCOL_ERROR, assertIs<ActionBusResult.Rejected>(result).error.code)
+            assertEquals(0, fixture.action.executeCount)
+            assertEquals(false, fixture.audit.events.any { it.type == "approval_approved" })
+        }
     }
 
     @Test

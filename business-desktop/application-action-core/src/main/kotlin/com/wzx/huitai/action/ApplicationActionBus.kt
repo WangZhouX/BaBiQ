@@ -233,7 +233,21 @@ class ApplicationActionBus internal constructor(
         executionCoordinator.inspectExisting(command)?.let { existing ->
             return existingStartResult(existing, context, registered)
         }
-        val risk = riskPolicy.evaluate(registered.descriptor, command, context)
+        val risk = try {
+            riskPolicy.evaluate(registered.descriptor, command, context)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Throwable) {
+            val validating = when (val start = executionCoordinator.begin(command, ActionRiskLevel.HIGH_RISK)) {
+                is ActionExecutionStart.New -> start.record
+                else -> return existingStartResult(start, context, registered)
+            }
+            return persistFailure(
+                current = validating,
+                error = ActionError(ActionErrorCode.PROTOCOL_ERROR, "风险策略评估失败"),
+                transitionType = "risk_evaluation_failed",
+            )
+        }
         val beginRisk = if (risk.baseRisk == registered.descriptor.riskLevel) {
             risk.effectiveRisk
         } else {
@@ -734,12 +748,21 @@ class ApplicationActionBus internal constructor(
                 ActionError(ActionErrorCode.REMOTE_REQUEST_FAILED, "确认请求失败"),
             )
         }
+        val confirmationReceivedAt = clock.now()
         try {
             confirmation.requireExecution(command.executionId)
         } catch (_: IllegalArgumentException) {
             return persistFailure(
                 previewed,
                 ActionError(ActionErrorCode.PROTOCOL_ERROR, "确认决定 executionId 不匹配"),
+            )
+        }
+        if (confirmation.decidedAt.isBefore(previewed.updatedAt) ||
+            confirmation.decidedAt.isAfter(confirmationReceivedAt)
+        ) {
+            return persistFailure(
+                previewed,
+                ActionError(ActionErrorCode.PROTOCOL_ERROR, "确认决定时间无效"),
             )
         }
         return when (confirmation.decision) {
@@ -801,12 +824,21 @@ class ApplicationActionBus internal constructor(
                 ActionError(ActionErrorCode.REMOTE_REQUEST_FAILED, "确认请求失败"),
             )
         }
+        val confirmationReceivedAt = clock.now()
         try {
             confirmation.requireExecution(command.executionId)
         } catch (_: IllegalArgumentException) {
             return persistFailure(
                 previewed,
                 ActionError(ActionErrorCode.PROTOCOL_ERROR, "确认决定 executionId 不匹配"),
+            )
+        }
+        if (confirmation.decidedAt.isBefore(previewed.updatedAt) ||
+            confirmation.decidedAt.isAfter(confirmationReceivedAt)
+        ) {
+            return persistFailure(
+                previewed,
+                ActionError(ActionErrorCode.PROTOCOL_ERROR, "确认决定时间无效"),
             )
         }
         when (confirmation.decision) {
@@ -848,12 +880,21 @@ class ApplicationActionBus internal constructor(
                 ActionError(ActionErrorCode.REMOTE_REQUEST_FAILED, "审批请求失败"),
             )
         }
+        val approvalReceivedAt = clock.now()
         try {
             approval.requireExecution(command.executionId)
         } catch (_: IllegalArgumentException) {
             return persistFailure(
                 waiting,
                 ActionError(ActionErrorCode.PROTOCOL_ERROR, "审批决定 executionId 不匹配"),
+            )
+        }
+        if (approval.decidedAt.isBefore(requestedAt) || approval.decidedAt.isAfter(approvalReceivedAt) ||
+            approval.decision == ApprovalDecision.APPROVED && approval.decidedBy.isNullOrBlank()
+        ) {
+            return persistFailure(
+                waiting,
+                ActionError(ActionErrorCode.PROTOCOL_ERROR, "审批决定无效"),
             )
         }
         return when (approval.decision) {

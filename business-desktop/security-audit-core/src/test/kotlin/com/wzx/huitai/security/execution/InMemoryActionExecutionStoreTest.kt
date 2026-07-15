@@ -27,9 +27,12 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.put
 import java.time.Duration
 import java.time.Instant
@@ -37,10 +40,187 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
+import kotlin.test.assertNotSame
 import kotlin.test.assertNull
-import kotlin.test.assertSame
+import kotlin.test.assertTrue
 
 class InMemoryActionExecutionStoreTest {
+    @Test
+    fun `Created和find返回独立深不可变命令快照且攻击不改变存储事实`() = runTest {
+        val input = buildJsonObject {
+            put("nested", buildJsonObject { put("value", "original") })
+            put("items", buildJsonArray { add(buildJsonObject { put("value", "original") }) })
+        }
+        val original = runningRecord()
+        val record = original.copy(command = original.command.copy(input = input))
+        val store = InMemoryActionExecutionStore()
+
+        val created = assertIs<ExecutionCreateResult.Created>(store.compareAndCreate(record, audit())).record
+        assertObjectRemovalBlocked(assertIs<JsonObject>(created.command.input["nested"]))
+        assertArrayRemovalBlocked(assertIs<JsonArray>(created.command.input["items"]))
+
+        val found = store.find("execution-1")!!
+        assertNotSame(created, found)
+        assertNotSame(created.command.input, found.command.input)
+        assertObjectRemovalBlocked(assertIs<JsonObject>(found.command.input["nested"]))
+        assertArrayRemovalBlocked(assertIs<JsonArray>(found.command.input["items"]))
+
+        val persisted = store.find("execution-1")!!
+        assertEquals(input, persisted.command.input)
+        assertNotSame(found, persisted)
+        assertNotSame(found.command.input, persisted.command.input)
+    }
+
+    @Test
+    fun `Updated和ExistingTerminal返回独立深不可变终态快照且攻击不改变存储事实`() = runTest {
+        val successStore = InMemoryActionExecutionStore()
+        val running = runningRecord()
+        successStore.compareAndCreate(running, audit())
+        val output = buildJsonObject {
+            put("nested", buildJsonObject { put("saved", true) })
+            put("items", buildJsonArray { add(buildJsonObject { put("saved", true) }) })
+        }
+        val redactedOutput = buildJsonObject { put("nested", buildJsonObject { put("saved", "masked") }) }
+        val success: ActionResult<JsonElement> = ActionResult.Success(
+            executionId = "execution-1",
+            output = output,
+            redactedOutput = redactedOutput,
+        )
+
+        val updated = assertIs<ExecutionTransitionResult.Updated>(
+            successStore.transition(transition(running, ActionExecutionState.SUCCEEDED, success)),
+        ).record
+        val updatedSuccess = assertIs<ActionResult.Success<JsonElement>>(updated.result)
+        assertObjectRemovalBlocked(assertIs<JsonObject>(updatedSuccess.output)["nested"] as JsonObject)
+        assertArrayRemovalBlocked(assertIs<JsonObject>(updatedSuccess.output)["items"] as JsonArray)
+        assertObjectRemovalBlocked(assertIs<JsonObject>(updatedSuccess.redactedOutput)["nested"] as JsonObject)
+
+        val replay = assertIs<ExecutionCreateResult.ExistingTerminal>(
+            successStore.compareAndCreate(running, audit()),
+        ).record
+        assertNotSame(updated, replay)
+        assertNotSame(updated.result, replay.result)
+        val replaySuccess = assertIs<ActionResult.Success<JsonElement>>(replay.result)
+        assertObjectRemovalBlocked(assertIs<JsonObject>(replaySuccess.output)["nested"] as JsonObject)
+        assertEquals(success, successStore.find("execution-1")!!.result)
+
+        val failureStore = InMemoryActionExecutionStore()
+        failureStore.compareAndCreate(running, audit())
+        val details = buildJsonObject { put("nested", buildJsonObject { put("reason", "original") }) }
+        val failure: ActionResult<JsonElement> = ActionResult.Failure(
+            "execution-1",
+            ActionError(ActionErrorCode.REMOTE_REQUEST_FAILED, "failed", details),
+        )
+        val failureRecord = assertIs<ExecutionTransitionResult.Updated>(
+            failureStore.transition(transition(running, ActionExecutionState.FAILED, failure)),
+        ).record
+        val failureReplay = assertIs<ExecutionCreateResult.ExistingTerminal>(
+            failureStore.compareAndCreate(running, audit()),
+        ).record
+        assertNotSame(failureRecord, failureReplay)
+        val replayFailure = assertIs<ActionResult.Failure>(failureReplay.result)
+        assertObjectRemovalBlocked(replayFailure.error.details!!["nested"] as JsonObject)
+        assertEquals(failure, failureStore.find("execution-1")!!.result)
+    }
+
+    @Test
+    fun `创建和普通迁移拒绝审计状态时间错配且不改变记录事件`() = runTest {
+        val validCreateAudit = audit()
+        listOf(
+            validCreateAudit.copy(fromState = null),
+            validCreateAudit.copy(toState = ActionExecutionState.VALIDATING),
+            validCreateAudit.copy(occurredAt = NOW.plusSeconds(1)),
+        ).forEach { mismatchedAudit ->
+            val store = InMemoryActionExecutionStore()
+
+            assertStoreMutationRejected {
+                store.compareAndCreate(runningRecord(), mismatchedAudit)
+            }
+            assertNull(store.find("execution-1"))
+            assertEquals(emptyList(), store.events("execution-1"))
+        }
+
+        val store = InMemoryActionExecutionStore()
+        val running = runningRecord()
+        store.compareAndCreate(running, audit())
+        val recordBefore = store.find("execution-1")
+        val eventsBefore = store.events("execution-1")
+        val success: ActionResult<JsonElement> = ActionResult.Success(
+            "execution-1",
+            buildJsonObject { put("saved", true) },
+        )
+        val valid = transition(running, ActionExecutionState.SUCCEEDED, success)
+        val mismatchedTransitions: List<suspend () -> Any?> = listOf(
+            { store.transition(valid.copy(audit = valid.audit.copy(toState = ActionExecutionState.FAILED))) },
+            { store.transition(valid.copy(audit = valid.audit.copy(occurredAt = valid.updatedAt.plusSeconds(1)))) },
+            { store.transition(valid.copy(completedAt = valid.updatedAt.plusSeconds(1))) },
+        )
+        mismatchedTransitions.forEach { mutate ->
+            assertStoreMutationRejected(mutate)
+            assertEquals(recordBefore, store.find("execution-1"))
+            assertEquals(eventsBefore, store.events("execution-1"))
+        }
+    }
+
+    @Test
+    fun `对账更新与claim续租释放拒绝审计业务时间错配且不改变记录事件`() = runTest {
+        suspend fun assertRollback(
+            prepare: suspend (InMemoryActionExecutionStore) -> ActionExecutionRecord,
+            mutate: suspend (InMemoryActionExecutionStore, ActionExecutionRecord) -> Any?,
+        ) {
+            val store = InMemoryActionExecutionStore()
+            val current = prepare(store)
+            val recordBefore = store.find("execution-1")
+            val eventsBefore = store.events("execution-1")
+
+            assertStoreMutationRejected { mutate(store, current) }
+            assertEquals(recordBefore, store.find("execution-1"))
+            assertEquals(eventsBefore, store.events("execution-1"))
+        }
+
+        assertRollback(
+            prepare = { installUnknown(it) },
+            mutate = { store, unknown ->
+                val request = claimRequest(unknown, "token-1", NOW.plusSeconds(3))
+                store.claimReconciliation(
+                    request.copy(audit = request.audit.copy(occurredAt = request.now.plusSeconds(1))),
+                )
+            },
+        )
+        listOf("renew", "release", "final").forEach { operation ->
+            assertRollback(
+                prepare = { store ->
+                    val unknown = installUnknown(store)
+                    assertIs<ReconciliationClaimResult.Claimed>(
+                        store.claimReconciliation(claimRequest(unknown, "token-1", NOW.plusSeconds(3))),
+                    ).record
+                },
+                mutate = { store, claimed ->
+                    when (operation) {
+                        "renew" -> {
+                            val request = renewRequest(claimed, "token-1")
+                            store.renewReconciliation(
+                                request.copy(audit = request.audit.copy(occurredAt = request.now.plusSeconds(1))),
+                            )
+                        }
+                        "release" -> {
+                            val request = releaseRequest(claimed, "token-1")
+                            store.releaseReconciliation(
+                                request.copy(audit = request.audit.copy(occurredAt = request.releasedAt.plusSeconds(1))),
+                            )
+                        }
+                        else -> {
+                            val update = finalUpdate(claimed, "token-1")
+                            store.updateReconciliation(
+                                update.copy(audit = update.audit.copy(occurredAt = update.completedAt.plusSeconds(1))),
+                            )
+                        }
+                    }
+                },
+            )
+        }
+    }
+
     @Test
     fun `并发compareAndCreate仅创建一次其余返回同一运行记录`() = runTest {
         val store = InMemoryActionExecutionStore()
@@ -90,7 +270,9 @@ class InMemoryActionExecutionStoreTest {
             ),
         )
 
-        assertSame(terminal.result, assertIs<ExecutionTransitionResult.ExistingTerminal>(late).record.result)
+        val replayed = assertIs<ExecutionTransitionResult.ExistingTerminal>(late).record.result
+        assertEquals(terminal.result, replayed)
+        assertNotSame(terminal.result, replayed)
         assertEquals(terminal, store.find("execution-1"))
         assertIs<ExecutionCreateResult.ExistingTerminal>(store.compareAndCreate(record, audit()))
     }
@@ -204,7 +386,7 @@ class InMemoryActionExecutionStoreTest {
             running,
             ActionExecutionState.SUCCEEDED,
             ActionResult.Success("execution-1", buildJsonObject { put("saved", true) }),
-        ).copy(audit = poisonAudit(running.state, ActionExecutionState.SUCCEEDED))
+        ).let { it.copy(audit = poisonAudit(running.state, ActionExecutionState.SUCCEEDED, at = it.updatedAt)) }
 
         assertFailsWith<IllegalStateException> { transitionStore.transition(update) }
         assertEquals(running, transitionStore.find("execution-1"))
@@ -229,12 +411,14 @@ class InMemoryActionExecutionStoreTest {
         assertUnknownMutationRollback(
             prepare = { _, unknown -> unknown },
             mutate = { store, unknown ->
+                val request = claimRequest(unknown, "token-1", NOW.plusSeconds(3))
                 store.claimReconciliation(
-                    claimRequest(unknown, "token-1", NOW.plusSeconds(3)).copy(
+                    request.copy(
                         audit = poisonAudit(
                             ActionExecutionState.OUTCOME_UNKNOWN,
                             ActionExecutionState.OUTCOME_UNKNOWN,
                             "reconciliation_attempt",
+                            request.now,
                         ),
                     ),
                 )
@@ -249,22 +433,26 @@ class InMemoryActionExecutionStoreTest {
                 },
                 mutate = { store, claimed ->
                     if (operation == "renew") {
+                        val request = renewRequest(claimed, "token-1")
                         store.renewReconciliation(
-                            renewRequest(claimed, "token-1").copy(
+                            request.copy(
                                 audit = poisonAudit(
                                     ActionExecutionState.OUTCOME_UNKNOWN,
                                     ActionExecutionState.OUTCOME_UNKNOWN,
                                     "reconciliation_claim_renewed",
+                                    request.now,
                                 ),
                             ),
                         )
                     } else {
+                        val request = releaseRequest(claimed, "token-1")
                         store.releaseReconciliation(
-                            releaseRequest(claimed, "token-1").copy(
+                            request.copy(
                                 audit = poisonAudit(
                                     ActionExecutionState.OUTCOME_UNKNOWN,
                                     ActionExecutionState.OUTCOME_UNKNOWN,
                                     "reconciliation_result",
+                                    request.releasedAt,
                                 ),
                             ),
                         )
@@ -282,11 +470,13 @@ class InMemoryActionExecutionStoreTest {
             store.claimReconciliation(claimRequest(unknown, "token-1", NOW.plusSeconds(3))),
         ).record
         val eventsBefore = store.events("execution-1")
-        val update = finalUpdate(claimed, "token-1").copy(
+        val validUpdate = finalUpdate(claimed, "token-1")
+        val update = validUpdate.copy(
             audit = poisonAudit(
                 ActionExecutionState.OUTCOME_UNKNOWN,
                 ActionExecutionState.SUCCEEDED,
                 "reconciliation_result",
+                validUpdate.completedAt,
             ),
         )
 
@@ -405,7 +595,7 @@ class InMemoryActionExecutionStoreTest {
     )
 
     private fun audit(
-        from: ActionExecutionState? = null,
+        from: ActionExecutionState? = ActionExecutionState.RECEIVED,
         to: ActionExecutionState = ActionExecutionState.EXECUTING,
         at: Instant = NOW,
     ) = ActionAuditDraft(
@@ -419,16 +609,53 @@ class InMemoryActionExecutionStoreTest {
     )
 
     private fun poisonAudit(
-        from: ActionExecutionState? = null,
+        from: ActionExecutionState? = ActionExecutionState.RECEIVED,
         to: ActionExecutionState = ActionExecutionState.EXECUTING,
         type: String = "state_transition",
-    ) = audit(from, to).copy(
+        at: Instant = NOW,
+    ) = audit(from, to, at).copy(
         type = type,
         redactedPayload = JsonObject(object : AbstractMap<String, JsonElement>() {
             override val entries: Set<Map.Entry<String, JsonElement>>
                 get() = error("audit-redaction-failure")
         }),
     )
+
+    private fun assertObjectRemovalBlocked(value: JsonObject) {
+        assertFailsWith<UnsupportedOperationException> {
+            val iterator = value.entries.iterator()
+            iterator.next()
+            @Suppress("UNCHECKED_CAST")
+            (iterator as MutableIterator<Map.Entry<String, JsonElement>>).remove()
+        }
+    }
+
+    private fun assertArrayRemovalBlocked(value: JsonArray) {
+        assertFailsWith<UnsupportedOperationException> {
+            val iterator = value.iterator()
+            iterator.next()
+            @Suppress("UNCHECKED_CAST")
+            (iterator as MutableIterator<JsonElement>).remove()
+        }
+    }
+
+    private suspend fun assertStoreMutationRejected(mutation: suspend () -> Any?) {
+        val rejected = try {
+            when (mutation()) {
+                is ExecutionCreateResult.Conflict,
+                is ExecutionTransitionResult.Conflict,
+                is ReconciliationUpdateResult.Conflict,
+                is ReconciliationClaimResult.Conflict,
+                is ReconciliationRenewResult.Conflict,
+                is ReconciliationReleaseResult.Conflict,
+                -> true
+                else -> false
+            }
+        } catch (_: IllegalArgumentException) {
+            true
+        }
+        assertTrue(rejected, "审计状态或时间错配必须被拒绝")
+    }
 
     private companion object {
         val NOW: Instant = Instant.parse("2026-07-14T00:00:00Z")
