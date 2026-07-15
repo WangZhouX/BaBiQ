@@ -41,7 +41,7 @@ class TokenRefreshCoordinator(
     private val refreshOperation: suspend (refreshToken: String) -> TokenRefreshResult,
 ) {
     private val mutex = Mutex()
-    private var inFlight: Deferred<RefreshExecution>? = null
+    private val inFlight = mutableMapOf<RefreshBoundary, Deferred<RefreshExecution>>()
 
     suspend fun refreshOnce(): TokenRefreshResult = coordinateRefresh(expectedIdentity = null)
 
@@ -57,12 +57,16 @@ class TokenRefreshCoordinator(
         }
 
         val decision = mutex.withLock {
-            val activeRefresh = inFlight
+            val ownerIdentity = expectedIdentity
+                ?: sessionManager.requestIdentitySnapshot()
+                ?: return@withLock RefreshDecision.Immediate(TokenRefreshResult.AuthenticationExpired)
+            val boundary = ownerIdentity.toBoundary()
+            val activeRefresh = inFlight[boundary]
             if (activeRefresh != null) {
                 RefreshDecision.Await(activeRefresh)
             } else {
-                expectedIdentity.immediateResultOrNull()?.let(RefreshDecision::Immediate)
-                    ?: createRefresh(expectedIdentity).also { created -> inFlight = created }
+                ownerIdentity.immediateResultOrNull()?.let(RefreshDecision::Immediate)
+                    ?: createRefresh(boundary, ownerIdentity).also { created -> inFlight[boundary] = created }
                         .let(RefreshDecision::Await)
             }
         }
@@ -79,7 +83,8 @@ class TokenRefreshCoordinator(
     }
 
     private fun createRefresh(
-        expectedIdentity: AuthenticatedRequestIdentity?,
+        boundary: RefreshBoundary,
+        expectedIdentity: AuthenticatedRequestIdentity,
     ): Deferred<RefreshExecution> {
         lateinit var created: Deferred<RefreshExecution>
         created = refreshScope.async(
@@ -102,7 +107,7 @@ class TokenRefreshCoordinator(
             } finally {
                 withContext(NonCancellable) {
                     mutex.withLock {
-                        if (inFlight === created) inFlight = null
+                        if (inFlight[boundary] === created) inFlight.remove(boundary)
                     }
                 }
             }
@@ -111,15 +116,10 @@ class TokenRefreshCoordinator(
     }
 
     private suspend fun executeRefresh(
-        expectedIdentity: AuthenticatedRequestIdentity?,
+        expectedIdentity: AuthenticatedRequestIdentity,
     ): TokenRefreshResult {
-        val startIdentity = if (expectedIdentity == null) {
-            sessionManager.requestIdentitySnapshot()
-                ?: return TokenRefreshResult.AuthenticationExpired
-        } else {
-            expectedIdentity.immediateResultOrNull()?.let { return it }
-            expectedIdentity
-        }
+        expectedIdentity.immediateResultOrNull()?.let { return it }
+        val startIdentity = expectedIdentity
         val refreshToken = sessionManager.refreshTokenIfCurrent(startIdentity)
         if (refreshToken == null) {
             return startIdentity.immediateResultOrNull()
@@ -188,6 +188,9 @@ class TokenRefreshCoordinator(
     private fun AuthenticatedRequestIdentity.hasSameBoundary(other: AuthenticatedRequestIdentity): Boolean =
         authSessionId == other.authSessionId && identityEpoch == other.identityEpoch
 
+    private fun AuthenticatedRequestIdentity.toBoundary() =
+        RefreshBoundary(authSessionId = authSessionId, identityEpoch = identityEpoch)
+
     private class RefreshContext(
         val coordinator: TokenRefreshCoordinator,
     ) : AbstractCoroutineContextElement(Key) {
@@ -205,4 +208,9 @@ class TokenRefreshCoordinator(
 
         data class Await(val refresh: Deferred<RefreshExecution>) : RefreshDecision
     }
+
+    private data class RefreshBoundary(
+        val authSessionId: String,
+        val identityEpoch: Long,
+    )
 }

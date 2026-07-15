@@ -232,6 +232,67 @@ class HuitaiHttpClientTest {
     }
 
     @Test
+    fun `HTTP 200 auth-expired envelope refreshes and replays SAFE request`() = runTest {
+        listOf(401, 499).forEach { envelopeCode ->
+            val refreshCalls = AtomicInteger()
+            val fixture = fixture(
+                refreshScope = backgroundScope,
+                outcomes = listOf(
+                    authExpiredEnvelopeResponse(envelopeCode),
+                    jsonResponse(SUCCESS_JSON),
+                ),
+                refreshCalls = refreshCalls,
+            )
+
+            assertIs<HuitaiResponse.Success>(fixture.client.send(request(ActionReplayPolicy.SAFE)))
+            assertEquals(1, refreshCalls.get(), "envelope $envelopeCode")
+            assertEquals(2, fixture.transport.requests.size, "envelope $envelopeCode")
+            assertEquals("Bearer access-refreshed", fixture.transport.requests.last().headers[HttpHeaders.Authorization])
+        }
+    }
+
+    @Test
+    fun `HTTP 200 auth-expired envelope refreshes but never replays unsafe request`() = runTest {
+        listOf(401, 499).forEach { envelopeCode ->
+            val refreshCalls = AtomicInteger()
+            val fixture = fixture(
+                refreshScope = backgroundScope,
+                outcomes = listOf(authExpiredEnvelopeResponse(envelopeCode)),
+                refreshCalls = refreshCalls,
+            )
+
+            val failure = assertIs<HuitaiResponse.Failure>(
+                fixture.client.send(request(ActionReplayPolicy.NEVER)),
+            )
+
+            assertEquals(ActionErrorCode.AUTH_EXPIRED, failure.errorCode)
+            assertEquals(1, refreshCalls.get(), "envelope $envelopeCode")
+            assertEquals(1, fixture.transport.requests.size, "envelope $envelopeCode")
+        }
+    }
+
+    @Test
+    fun `second HTTP 200 auth-expired envelope expires session without third request`() = runTest {
+        listOf(401, 499).forEach { envelopeCode ->
+            val fixture = fixture(
+                refreshScope = backgroundScope,
+                outcomes = listOf(
+                    authExpiredResponse(401),
+                    authExpiredEnvelopeResponse(envelopeCode),
+                ),
+            )
+
+            val failure = assertIs<HuitaiResponse.Failure>(
+                fixture.client.send(request(ActionReplayPolicy.SAFE)),
+            )
+
+            assertEquals(ActionErrorCode.AUTH_EXPIRED, failure.errorCode)
+            assertEquals(AuthenticationState.EXPIRED, fixture.manager.state.value)
+            assertEquals(2, fixture.transport.requests.size)
+        }
+    }
+
+    @Test
     fun `unsafe and invalid keyed requests never replay after received auth expiry`() = runTest {
         val requests = listOf(
             request(ActionReplayPolicy.NEVER),
@@ -553,6 +614,12 @@ class HuitaiHttpClientTest {
         httpStatus = status,
         headers = mapOf(HttpHeaders.ContentType to listOf("application/json")),
         body = """{"code":$status,"msg":"authentication expired","data":null}""".encodeToByteArray(),
+    )
+
+    private fun authExpiredEnvelopeResponse(code: Int) = HuitaiTransportOutcome.ResponseReceived(
+        httpStatus = 200,
+        headers = mapOf(HttpHeaders.ContentType to listOf("application/json")),
+        body = """{"code":$code,"msg":"authentication expired","data":null}""".encodeToByteArray(),
     )
 
     private companion object {

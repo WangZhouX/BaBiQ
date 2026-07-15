@@ -332,6 +332,27 @@ class RequestReplayDecisionTest {
     }
 
     @Test
+    fun `trusted envelope auth expiry signal follows the same replay policy without changing HTTP status`() {
+        val safe = request(replayPolicy = ActionReplayPolicy.SAFE)
+        val envelopeExpiry = HuitaiTransportOutcome.ResponseReceived(
+            httpStatus = 200,
+            authenticationExpiredObserved = true,
+            authenticationRefreshCompleted = true,
+        )
+
+        assertIs<RequestReplayDecision.Replay>(
+            RequestReplayDecision.decide(safe, envelopeExpiry),
+        )
+        assertEquals(200, envelopeExpiry.httpStatus)
+        assertIs<RequestReplayDecision.AuthExpiredNoReplay>(
+            RequestReplayDecision.decide(
+                request(ActionReplayPolicy.NEVER),
+                envelopeExpiry,
+            ),
+        )
+    }
+
+    @Test
     fun `received auth expiry never replays unsafe requests`() {
         val unsafeRequests = listOf(
             request(replayPolicy = ActionReplayPolicy.NEVER),

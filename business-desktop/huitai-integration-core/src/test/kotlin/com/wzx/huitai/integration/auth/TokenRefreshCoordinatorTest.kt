@@ -104,6 +104,90 @@ class TokenRefreshCoordinatorTest {
     }
 
     @Test
+    fun `new session refresh starts without waiting for old session in-flight refresh`() = runTest {
+        val persistence = RefreshCredentialPersistence()
+        val sessionSequence = AtomicInteger()
+        val manager = AuthSessionManager(
+            credentialPersistence = persistence,
+            authSessionIdFactory = { "auth-session-${sessionSequence.incrementAndGet()}" },
+        )
+        manager.login(
+            userId = USER_ID,
+            tenantId = TENANT_ID,
+            platformId = PLATFORM_ID,
+            roles = ROLES,
+            permissions = PERMISSIONS,
+            authenticatedAt = AUTHENTICATED_AT,
+            tokens = tokenSet("session-a"),
+        )
+        val identityA = assertNotNull(manager.requestIdentitySnapshot())
+        val operationAStarted = CompletableDeferred<Unit>()
+        val releaseOperationA = CompletableDeferred<Unit>()
+        val operationBStarted = CompletableDeferred<Unit>()
+        val operationCalls = AtomicInteger()
+        val coordinator = TokenRefreshCoordinator(manager, backgroundScope) {
+            when (operationCalls.incrementAndGet()) {
+                1 -> {
+                    operationAStarted.complete(Unit)
+                    releaseOperationA.await()
+                    refreshedResult("stale-a")
+                }
+
+                2 -> {
+                    operationBStarted.complete(Unit)
+                    TokenRefreshResult.Refreshed(
+                        userId = "user-b",
+                        tenantId = "tenant-b",
+                        platformId = PLATFORM_ID,
+                        roles = ROLES,
+                        permissions = PERMISSIONS,
+                        authenticatedAt = AUTHENTICATED_AT.plusSeconds(120),
+                        tokens = tokenSet("refreshed-b"),
+                    )
+                }
+
+                else -> error("unexpected refresh operation")
+            }
+        }
+        val refreshA = async { coordinator.refreshOnce(identityA) }
+        operationAStarted.await()
+
+        manager.logout()
+        manager.login(
+            userId = "user-b",
+            tenantId = "tenant-b",
+            platformId = PLATFORM_ID,
+            roles = ROLES,
+            permissions = PERMISSIONS,
+            authenticatedAt = AUTHENTICATED_AT.plusSeconds(60),
+            tokens = tokenSet("session-b"),
+        )
+        val identityB = assertNotNull(manager.requestIdentitySnapshot())
+        val refreshB = async { coordinator.refreshOnce(identityB) }
+
+        withTimeout(1_000) { operationBStarted.await() }
+        assertEquals(
+            TokenRefreshResult.Refreshed(
+                userId = "user-b",
+                tenantId = "tenant-b",
+                platformId = PLATFORM_ID,
+                roles = ROLES,
+                permissions = PERMISSIONS,
+                authenticatedAt = AUTHENTICATED_AT.plusSeconds(120),
+                tokens = tokenSet("refreshed-b"),
+            ),
+            refreshB.await(),
+        )
+        releaseOperationA.complete(Unit)
+
+        assertSame(TokenRefreshResult.Stale, refreshA.await())
+        assertEquals(2, operationCalls.get())
+        assertEquals("user-b", manager.identity.value?.userId)
+        assertEquals("tenant-b", manager.requestIdentitySnapshot()?.tenantId)
+        assertEquals("access-refreshed-b", manager.requestIdentitySnapshot()?.accessToken)
+    }
+
+    @Test
     fun `shared refresh failure expires authentication and reaches every waiter`() = runTest {
         val persistence = RefreshCredentialPersistence()
         val manager = authenticatedManager(persistence)

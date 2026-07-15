@@ -37,7 +37,9 @@ sealed interface RequestReplayDecision {
         private fun HuitaiRequest.afterResponse(
             outcome: HuitaiTransportOutcome.ResponseReceived,
         ): RequestReplayDecision {
-            if (outcome.httpStatus !in AUTH_EXPIRED_STATUSES) return NoReplay
+            if (!outcome.authenticationExpiredObserved && outcome.httpStatus !in AUTH_EXPIRED_STATUSES) {
+                return NoReplay
+            }
             if (!outcome.authenticationRefreshCompleted) return NoReplay
             return if (isReplaySafe()) Replay else AuthExpiredNoReplay
         }

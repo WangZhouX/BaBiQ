@@ -38,7 +38,7 @@ class HuitaiHttpClient(
             )
             return decoded
         }
-        if (outcome.httpStatus !in AUTH_EXPIRED_STATUSES) return decoded
+        if (!decoded.isAuthenticationExpired() && outcome.httpStatus !in AUTH_EXPIRED_STATUSES) return decoded
 
         when (val refreshResult = refreshSafely(requestIdentity)) {
             TokenRefreshResult.AuthenticationExpired,
@@ -174,6 +174,7 @@ class HuitaiHttpClient(
             httpStatus = httpStatus,
             headers = headers,
             body = body,
+            authenticationExpiredObserved = true,
             authenticationRefreshCompleted = true,
         )
 

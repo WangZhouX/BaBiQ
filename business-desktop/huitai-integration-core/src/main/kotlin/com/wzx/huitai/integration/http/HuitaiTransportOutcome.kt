@@ -10,6 +10,7 @@ sealed interface HuitaiTransportOutcome {
         val httpStatus: Int,
         headers: Map<String, List<String>> = emptyMap(),
         body: ByteArray = byteArrayOf(),
+        val authenticationExpiredObserved: Boolean = false,
         val authenticationRefreshCompleted: Boolean = false,
     ) : HuitaiTransportOutcome {
         val headers: Map<String, List<String>> = Collections.unmodifiableMap(
@@ -30,12 +31,14 @@ sealed interface HuitaiTransportOutcome {
                 httpStatus == other.httpStatus &&
                 headers == other.headers &&
                 bodyBytes.contentEquals(other.bodyBytes) &&
+                authenticationExpiredObserved == other.authenticationExpiredObserved &&
                 authenticationRefreshCompleted == other.authenticationRefreshCompleted
 
         override fun hashCode(): Int {
             var result = httpStatus
             result = 31 * result + headers.hashCode()
             result = 31 * result + bodyBytes.contentHashCode()
+            result = 31 * result + authenticationExpiredObserved.hashCode()
             result = 31 * result + authenticationRefreshCompleted.hashCode()
             return result
         }
@@ -43,6 +46,7 @@ sealed interface HuitaiTransportOutcome {
         override fun toString(): String =
             "ResponseReceived(httpStatus=$httpStatus, headers=[REDACTED], " +
                 "body=[REDACTED:${bodyBytes.size} bytes], " +
+                "authenticationExpiredObserved=$authenticationExpiredObserved, " +
                 "authenticationRefreshCompleted=$authenticationRefreshCompleted)"
     }
 
