@@ -65,13 +65,32 @@ class InMemoryActionAuditPortTest {
         assertEquals(listOf(1L), port.events("execution-1").map { it.sequence })
     }
 
+    @Test
+    fun `全量事件保持跨execution真实追加顺序`() = runTest {
+        val port = InMemoryActionAuditPort()
+        port.append(event("execution-a", sequence = 1, to = ActionExecutionState.VALIDATING))
+        port.append(event("execution-b", sequence = 1, to = ActionExecutionState.VALIDATING))
+        port.append(event(
+            "execution-a",
+            sequence = 2,
+            from = ActionExecutionState.VALIDATING,
+            to = ActionExecutionState.EXECUTING,
+        ))
+
+        assertEquals(
+            listOf("execution-a" to 1L, "execution-b" to 1L, "execution-a" to 2L),
+            port.events().map { it.executionId to it.sequence },
+        )
+    }
+
     private fun event(
+        executionId: String = "execution-1",
         sequence: Long,
         from: ActionExecutionState? = null,
         to: ActionExecutionState,
         payload: kotlinx.serialization.json.JsonObject = auditPayload("token-secret"),
     ) = ActionAuditEvent(
-        executionId = "execution-1",
+        executionId = executionId,
         sequence = sequence,
         fromState = from,
         toState = to,

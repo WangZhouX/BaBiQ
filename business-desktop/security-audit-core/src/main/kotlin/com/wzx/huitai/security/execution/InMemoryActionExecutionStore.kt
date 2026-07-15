@@ -60,8 +60,8 @@ class InMemoryActionExecutionStore(
         val existing = records[record.command.executionId]
         if (existing == null) {
             val frozen = record.freeze()
-            records[record.command.executionId] = frozen
-            appendAudit(audit)
+            val event = prepareAudit(audit)
+            commit(frozen, event)
             return@withLock ExecutionCreateResult.Created(frozen)
         }
         if (existing.binding != record.binding) return@withLock createConflict("execution binding conflict")
@@ -86,8 +86,8 @@ class InMemoryActionExecutionStore(
             updatedAt = update.updatedAt,
             recordVersion = existing.recordVersion + 1,
         )
-        records[update.executionId] = updated
-        appendAudit(update.audit)
+        val event = prepareAudit(update.audit)
+        commit(updated, event)
         ExecutionTransitionResult.Updated(updated)
     }
 
@@ -118,8 +118,8 @@ class InMemoryActionExecutionStore(
             reconciliation = ReconciliationProvenance(existing.recordVersion, update.completedAt),
             reconciliationClaim = null,
         )
-        records[update.executionId] = updated
-        appendAudit(update.audit)
+        val event = prepareAudit(update.audit)
+        commit(updated, event)
         ReconciliationUpdateResult.Updated(updated)
     }
 
@@ -147,8 +147,8 @@ class InMemoryActionExecutionStore(
                     request.expiresAt,
                 ),
             )
-            records[request.executionId] = claimed
-            appendAudit(request.audit)
+            val event = prepareAudit(request.audit)
+            commit(claimed, event)
             ReconciliationClaimResult.Claimed(claimed)
         }
 
@@ -172,8 +172,8 @@ class InMemoryActionExecutionStore(
             } catch (_: IllegalArgumentException) {
                 return@withLock renewConflict("reconciliation renew time conflict")
             }
-            records[request.executionId] = renewed
-            appendAudit(request.audit)
+            val event = prepareAudit(request.audit)
+            commit(renewed, event)
             ReconciliationRenewResult.Renewed(renewed)
         }
 
@@ -193,15 +193,15 @@ class InMemoryActionExecutionStore(
                 recordVersion = existing.recordVersion + 1,
                 reconciliationClaim = null,
             )
-            records[request.executionId] = released
-            appendAudit(request.audit)
+            val event = prepareAudit(request.audit)
+            commit(released, event)
             ReconciliationReleaseResult.Released(released)
         }
 
-    /** 在锁内分配 execution 内严格递增序号并追加不可变事件。 */
-    private fun appendAudit(draft: ActionAuditDraft) {
-        val events = auditEvents.getOrPut(draft.executionId) { mutableListOf() }
-        events += ActionAuditEvent(
+    /** 在不修改 backing state 的前提下完整构造脱敏审计事件。 */
+    private fun prepareAudit(draft: ActionAuditDraft): ActionAuditEvent {
+        val events = auditEvents[draft.executionId].orEmpty()
+        return ActionAuditEvent(
             executionId = draft.executionId,
             sequence = (events.lastOrNull()?.sequence ?: 0L) + 1,
             fromState = draft.fromState,
@@ -211,6 +211,12 @@ class InMemoryActionExecutionStore(
             actorId = draft.actorId,
             occurredAt = draft.occurredAt,
         )
+    }
+
+    /** 新记录和已构造事件在同一 Mutex 临界区内一次提交。 */
+    private fun commit(record: ActionExecutionRecord, event: ActionAuditEvent) {
+        records[record.command.executionId] = record
+        auditEvents.getOrPut(event.executionId) { mutableListOf() }.add(event)
     }
 
     /** 对命令、预览和结果中的 JSON 做序列化边界复制，切断调用方可变 Map 引用。 */

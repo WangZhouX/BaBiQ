@@ -17,11 +17,11 @@ import kotlinx.coroutines.sync.withLock
  */
 class InMemoryConfirmationPort(decisions: List<ActionConfirmation> = emptyList()) : ActionConfirmationPort {
     private val mutex = Mutex()
-    private val queued = ArrayDeque(decisions)
-    private val seenExecutionIds = decisions.map { it.executionId }.toMutableSet()
+    private val decisionsByExecution = decisions.associateByTo(mutableMapOf()) { it.executionId }
+    private val terminalExecutionIds = decisionsByExecution.keys.toMutableSet()
 
     init {
-        require(seenExecutionIds.size == decisions.size) { "同一 execution 不能有多个确认决定" }
+        require(decisionsByExecution.size == decisions.size) { "同一 execution 不能有多个确认决定" }
         decisions.forEach(::validateDecision)
     }
 
@@ -33,8 +33,8 @@ class InMemoryConfirmationPort(decisions: List<ActionConfirmation> = emptyList()
     suspend fun enqueue(decision: ActionConfirmation) {
         mutex.withLock {
             validateDecision(decision)
-            require(seenExecutionIds.add(decision.executionId)) { "同一 execution 不能追加第二个确认决定" }
-            queued.addLast(decision)
+            require(terminalExecutionIds.add(decision.executionId)) { "同一 execution 不能追加第二个确认决定" }
+            decisionsByExecution[decision.executionId] = decision
         }
     }
 
@@ -45,9 +45,7 @@ class InMemoryConfirmationPort(decisions: List<ActionConfirmation> = emptyList()
         context: ActionContext,
     ): ActionConfirmation = mutex.withLock {
         require(preview.executionId == command.executionId) { "确认预览 executionId 不匹配" }
-        val decision = queued.firstOrNull() ?: error("当前 execution 没有待消费确认决定")
-        require(decision.executionId == command.executionId) { "确认决定 executionId 不匹配" }
-        queued.removeFirst()
+        decisionsByExecution.remove(command.executionId) ?: error("当前 execution 没有待消费确认决定")
     }
 
     /** 校验单次确认决定具备可审计的非空标识。 */

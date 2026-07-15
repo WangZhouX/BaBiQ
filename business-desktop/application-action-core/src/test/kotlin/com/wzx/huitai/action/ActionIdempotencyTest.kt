@@ -256,8 +256,12 @@ class ActionIdempotencyTest {
         val fixture = BusFixture(ActionRiskLevel.READ_ONLY)
         val store = RaceWindowStore()
         val clock = ActionClock { NOW }
-        val first = async { ActionExecutionCoordinator(store, clock).begin(fixture.command()) }
-        val second = async { ActionExecutionCoordinator(store, clock).begin(fixture.command()) }
+        val first = async {
+            ActionExecutionCoordinator(store, clock).begin(fixture.command(), ActionRiskLevel.READ_ONLY)
+        }
+        val second = async {
+            ActionExecutionCoordinator(store, clock).begin(fixture.command(), ActionRiskLevel.READ_ONLY)
+        }
 
         val starts = listOf(first.await(), second.await())
 
@@ -343,6 +347,7 @@ class ActionIdempotencyTest {
             pageId = command.pageId,
             contextRevision = command.contextRevision,
         ),
+        riskLevel = ActionRiskLevel.READ_ONLY,
         state = state,
         result = null,
         createdAt = NOW,

@@ -17,6 +17,7 @@ class InMemoryActionAuditPort(
 ) : ActionAuditPort {
     private val mutex = Mutex()
     private val eventsByExecution = mutableMapOf<String, MutableList<ActionAuditEvent>>()
+    private val globalEvents = mutableListOf<ActionAuditEvent>()
 
     /** 追加调用方已分配序号的事件，并强制 execution 内从 1 连续递增。 */
     override suspend fun append(event: ActionAuditEvent) {
@@ -51,9 +52,9 @@ class InMemoryActionAuditPort(
         Collections.unmodifiableList(eventsByExecution[executionId].orEmpty().toList())
     }
 
-    /** 返回所有 execution 的不可修改快照，按追加时间不作跨 execution 排序承诺。 */
+    /** 返回所有 execution 按真实追加先后排列的不可修改快照。 */
     suspend fun events(): List<ActionAuditEvent> = mutex.withLock {
-        Collections.unmodifiableList(eventsByExecution.values.flatten().toList())
+        Collections.unmodifiableList(globalEvents.toList())
     }
 
     /** 锁内校验序号并追加，任何失败都不会改变历史。 */
@@ -64,5 +65,6 @@ class InMemoryActionAuditPort(
         val expected = (events.lastOrNull()?.sequence ?: 0L) + 1
         require(event.sequence == expected) { "审计序号必须连续递增" }
         events += event
+        globalEvents += event
     }
 }

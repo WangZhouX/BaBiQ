@@ -1123,6 +1123,7 @@ class ActionPortContractTest {
     private fun runningRecord(command: ActionCommand) = ActionExecutionRecord(
         command = command,
         binding = binding(command),
+        riskLevel = ActionRiskLevel.HIGH_RISK,
         state = ActionExecutionState.EXECUTING,
         result = null,
         createdAt = NOW,
@@ -1161,6 +1162,7 @@ class ActionPortContractTest {
     ) = ActionExecutionRecord(
         command = command(),
         binding = binding(command()),
+        riskLevel = ActionRiskLevel.HIGH_RISK,
         state = state,
         result = result,
         createdAt = NOW,

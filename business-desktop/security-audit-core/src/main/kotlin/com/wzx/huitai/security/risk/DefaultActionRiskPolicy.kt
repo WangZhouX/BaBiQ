@@ -51,7 +51,11 @@ class DefaultActionRiskPolicy : ActionRiskPolicy {
             operation.lowercase() in WRITE_OPERATIONS -> ActionRiskLevel.REVERSIBLE_WRITE
             else -> ActionRiskLevel.READ_ONLY
         }
-        return RiskEvaluation.atLeast(descriptor.riskLevel, proposed, reasons)
+        return if (UNKNOWN_OPERATION_REASON in reasons) {
+            RiskEvaluation.deny(descriptor.riskLevel, proposed, reasons)
+        } else {
+            RiskEvaluation.atLeast(descriptor.riskLevel, proposed, reasons)
+        }
     }
 
     /** 递归检查输入字段名，避免仅检查顶层时漏掉嵌套敏感写入。 */

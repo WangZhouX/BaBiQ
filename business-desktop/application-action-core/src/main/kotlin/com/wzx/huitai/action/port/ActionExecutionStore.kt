@@ -6,6 +6,7 @@ import com.wzx.huitai.action.model.ActionExecutionState
 import com.wzx.huitai.action.model.ActionIdentityScope
 import com.wzx.huitai.action.model.ActionOrigin
 import com.wzx.huitai.action.model.ActionResult
+import com.wzx.huitai.action.model.ActionRiskLevel
 import kotlinx.serialization.json.JsonElement
 import java.time.Duration
 import java.time.Instant
@@ -42,6 +43,7 @@ data class ExecutionBinding(
  *
  * @param command 创建执行时冻结的命令。
  * @param binding execution 的完整冻结绑定。
+ * @param riskLevel 创建 execution 时冻结的有效风险。
  * @param state 当前执行状态。
  * @param result JSON 安全的精确终态结果。
  * @param createdAt 记录创建时间。
@@ -56,6 +58,7 @@ data class ExecutionBinding(
 data class ActionExecutionRecord(
     val command: ActionCommand,
     val binding: ExecutionBinding,
+    val riskLevel: ActionRiskLevel,
     val state: ActionExecutionState,
     val result: ActionResult<JsonElement>?,
     val createdAt: Instant,

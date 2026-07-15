@@ -12,6 +12,7 @@ import java.nio.charset.StandardCharsets
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class AuditRedactorTest {
@@ -79,5 +80,32 @@ class AuditRedactorTest {
 
         assertTrue(redacted.toString().toByteArray(StandardCharsets.UTF_8).size <= 512)
         assertTrue(AuditRedactor.TRUNCATED in redacted.toString())
+    }
+
+    @Test
+    fun `返回的嵌套对象和数组backing均不可通过强制转换修改`() {
+        val redacted = AuditRedactor().redact(
+            buildJsonObject {
+                put("nested", buildJsonObject { put("value", "before") })
+                put("items", buildJsonArray { add(JsonPrimitive("before")) })
+            },
+        )
+        val nested = redacted.getValue("nested").jsonObject
+        val items = redacted.getValue("items").jsonArray
+
+        assertIteratorRemoveRejected(redacted.entries.iterator())
+        assertIteratorRemoveRejected(nested.entries.iterator())
+        assertIteratorRemoveRejected(items.iterator())
+        assertEquals("before", nested.getValue("value").jsonPrimitive.content)
+        assertEquals("before", items[0].jsonPrimitive.content)
+    }
+
+    /** 通过公开 iterator 到达真实 backing，验证 remove 被 JVM 不可修改集合拒绝。 */
+    private fun <T> assertIteratorRemoveRejected(iterator: Iterator<T>) {
+        iterator.next()
+        assertFailsWith<UnsupportedOperationException> {
+            @Suppress("UNCHECKED_CAST")
+            (iterator as MutableIterator<T>).remove()
+        }
     }
 }

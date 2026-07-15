@@ -8,6 +8,7 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import java.nio.charset.StandardCharsets
+import java.util.Collections
 
 /**
  * 动作审计 JSON 的递归脱敏器。
@@ -39,7 +40,7 @@ class AuditRedactor(
         return if (encoded.toByteArray(StandardCharsets.UTF_8).size <= maxOutputBytes) {
             redacted
         } else {
-            JsonObject(mapOf(OUTPUT_TRUNCATED_FIELD to JsonPrimitive(TRUNCATED)))
+            JsonObject(Collections.unmodifiableMap(mapOf(OUTPUT_TRUNCATED_FIELD to JsonPrimitive(TRUNCATED))))
         }
     }
 
@@ -71,14 +72,14 @@ class AuditRedactor(
             }
         }
         if (source.size > MAX_CONTAINER_ENTRIES) result[CONTAINER_TRUNCATED_FIELD] = JsonPrimitive(TRUNCATED)
-        return JsonObject(result)
+        return JsonObject(Collections.unmodifiableMap(result))
     }
 
     /** 复制数组并限制单个容器元素数量。 */
     private fun redactArray(source: JsonArray, depth: Int): JsonArray {
         val values = source.take(MAX_CONTAINER_ENTRIES).map { redactElement(it, depth + 1) }.toMutableList()
         if (source.size > MAX_CONTAINER_ENTRIES) values += JsonPrimitive(TRUNCATED)
-        return JsonArray(values)
+        return JsonArray(Collections.unmodifiableList(values))
     }
 
     /** 限制普通字符串长度，避免二次序列化形成无界内存或审计载荷。 */

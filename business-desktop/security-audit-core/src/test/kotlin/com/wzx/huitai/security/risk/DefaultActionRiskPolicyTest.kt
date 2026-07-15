@@ -23,6 +23,7 @@ class DefaultActionRiskPolicyTest {
         val result = policy.evaluate(descriptor(operation = "teleport"), command(), context())
 
         assertEquals(ActionRiskLevel.HIGH_RISK, result.effectiveRisk)
+        assertTrue(result.isDenied)
         assertTrue(result.reasons.contains("UNKNOWN_OPERATION"))
     }
 
@@ -64,6 +65,7 @@ class DefaultActionRiskPolicyTest {
         val result = policy.evaluate(descriptor(operation = "query"), command(), context())
 
         assertEquals(ActionRiskLevel.READ_ONLY, result.effectiveRisk)
+        assertTrue(result.isAllowed)
         assertTrue(result.reasons.isEmpty())
     }
 

@@ -2,6 +2,7 @@ package com.wzx.huitai.action
 
 import com.wzx.huitai.action.model.ActionCommand
 import com.wzx.huitai.action.model.ActionExecutionState
+import com.wzx.huitai.action.model.ActionRiskLevel
 import com.wzx.huitai.action.port.ActionAuditDraft
 import com.wzx.huitai.action.port.ActionClock
 import com.wzx.huitai.action.port.ActionExecutionRecord
@@ -70,12 +71,13 @@ class ActionExecutionCoordinator internal constructor(
      *
      * @param command 用户点击或 Agent 调用冻结的动作命令，原始输入只参与本地摘要计算，不写入审计载荷。
      */
-    suspend fun begin(command: ActionCommand): ActionExecutionStart {
+    suspend fun begin(command: ActionCommand, risk: ActionRiskLevel): ActionExecutionStart {
         return serialized(command.executionId) {
             val now = clock.now()
             val record = ActionExecutionRecord(
                 command = command,
                 binding = binding(command),
+                riskLevel = risk,
                 state = ActionExecutionState.VALIDATING,
                 result = null,
                 createdAt = now,
@@ -87,7 +89,7 @@ class ActionExecutionCoordinator internal constructor(
                 fromState = ActionExecutionState.RECEIVED,
                 toState = ActionExecutionState.VALIDATING,
                 type = command.origin.name.lowercase(),
-                redactedPayload = JsonObject(emptyMap()),
+                redactedPayload = ActionAuditPayloadBuilder.build(command, risk, now),
                 actorId = null,
                 occurredAt = now,
             )

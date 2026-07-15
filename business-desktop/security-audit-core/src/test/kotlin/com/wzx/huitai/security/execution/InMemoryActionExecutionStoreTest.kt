@@ -35,6 +35,7 @@ import java.time.Duration
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertSame
@@ -186,6 +187,114 @@ class InMemoryActionExecutionStoreTest {
         assertEquals("before", store.find("execution-1")!!.command.input["value"].toString().trim('"'))
     }
 
+    @Test
+    fun `create和普通终态审计构造失败时记录与事件均不提交`() = runTest {
+        val createStore = InMemoryActionExecutionStore()
+        assertFailsWith<IllegalStateException> {
+            createStore.compareAndCreate(runningRecord(), poisonAudit())
+        }
+        assertNull(createStore.find("execution-1"))
+        assertEquals(emptyList(), createStore.events("execution-1"))
+
+        val transitionStore = InMemoryActionExecutionStore()
+        val running = runningRecord()
+        transitionStore.compareAndCreate(running, audit())
+        val eventsBefore = transitionStore.events("execution-1")
+        val update = transition(
+            running,
+            ActionExecutionState.SUCCEEDED,
+            ActionResult.Success("execution-1", buildJsonObject { put("saved", true) }),
+        ).copy(audit = poisonAudit(running.state, ActionExecutionState.SUCCEEDED))
+
+        assertFailsWith<IllegalStateException> { transitionStore.transition(update) }
+        assertEquals(running, transitionStore.find("execution-1"))
+        assertEquals(eventsBefore, transitionStore.events("execution-1"))
+    }
+
+    @Test
+    fun `claim续租释放审计构造失败时租约版本与事件均不提交`() = runTest {
+        suspend fun assertUnknownMutationRollback(
+            prepare: suspend (InMemoryActionExecutionStore, ActionExecutionRecord) -> ActionExecutionRecord,
+            mutate: suspend (InMemoryActionExecutionStore, ActionExecutionRecord) -> Unit,
+        ) {
+            val store = InMemoryActionExecutionStore()
+            val current = prepare(store, installUnknown(store))
+            val eventsBefore = store.events("execution-1")
+
+            assertFailsWith<IllegalStateException> { mutate(store, current) }
+            assertEquals(current, store.find("execution-1"))
+            assertEquals(eventsBefore, store.events("execution-1"))
+        }
+
+        assertUnknownMutationRollback(
+            prepare = { _, unknown -> unknown },
+            mutate = { store, unknown ->
+                store.claimReconciliation(
+                    claimRequest(unknown, "token-1", NOW.plusSeconds(3)).copy(
+                        audit = poisonAudit(
+                            ActionExecutionState.OUTCOME_UNKNOWN,
+                            ActionExecutionState.OUTCOME_UNKNOWN,
+                            "reconciliation_attempt",
+                        ),
+                    ),
+                )
+            },
+        )
+        listOf("renew", "release").forEach { operation ->
+            assertUnknownMutationRollback(
+                prepare = { store, unknown ->
+                    assertIs<ReconciliationClaimResult.Claimed>(
+                        store.claimReconciliation(claimRequest(unknown, "token-1", NOW.plusSeconds(3))),
+                    ).record
+                },
+                mutate = { store, claimed ->
+                    if (operation == "renew") {
+                        store.renewReconciliation(
+                            renewRequest(claimed, "token-1").copy(
+                                audit = poisonAudit(
+                                    ActionExecutionState.OUTCOME_UNKNOWN,
+                                    ActionExecutionState.OUTCOME_UNKNOWN,
+                                    "reconciliation_claim_renewed",
+                                ),
+                            ),
+                        )
+                    } else {
+                        store.releaseReconciliation(
+                            releaseRequest(claimed, "token-1").copy(
+                                audit = poisonAudit(
+                                    ActionExecutionState.OUTCOME_UNKNOWN,
+                                    ActionExecutionState.OUTCOME_UNKNOWN,
+                                    "reconciliation_result",
+                                ),
+                            ),
+                        )
+                    }
+                },
+            )
+        }
+    }
+
+    @Test
+    fun `最终对账审计构造失败时UNKNOWN事实与claim均不提交`() = runTest {
+        val store = InMemoryActionExecutionStore()
+        val unknown = installUnknown(store)
+        val claimed = assertIs<ReconciliationClaimResult.Claimed>(
+            store.claimReconciliation(claimRequest(unknown, "token-1", NOW.plusSeconds(3))),
+        ).record
+        val eventsBefore = store.events("execution-1")
+        val update = finalUpdate(claimed, "token-1").copy(
+            audit = poisonAudit(
+                ActionExecutionState.OUTCOME_UNKNOWN,
+                ActionExecutionState.SUCCEEDED,
+                "reconciliation_result",
+            ),
+        )
+
+        assertFailsWith<IllegalStateException> { store.updateReconciliation(update) }
+        assertEquals(claimed, store.find("execution-1"))
+        assertEquals(eventsBefore, store.events("execution-1"))
+    }
+
     private suspend fun installUnknown(store: InMemoryActionExecutionStore): ActionExecutionRecord {
         val running = runningRecord()
         store.compareAndCreate(running, audit())
@@ -204,6 +313,7 @@ class InMemoryActionExecutionStoreTest {
         return ActionExecutionRecord(
             command = command,
             binding = binding(command),
+            riskLevel = com.wzx.huitai.action.model.ActionRiskLevel.REVERSIBLE_WRITE,
             state = ActionExecutionState.EXECUTING,
             result = null,
             createdAt = NOW,
@@ -306,6 +416,18 @@ class InMemoryActionExecutionStoreTest {
         redactedPayload = buildJsonObject { },
         actorId = null,
         occurredAt = at,
+    )
+
+    private fun poisonAudit(
+        from: ActionExecutionState? = null,
+        to: ActionExecutionState = ActionExecutionState.EXECUTING,
+        type: String = "state_transition",
+    ) = audit(from, to).copy(
+        type = type,
+        redactedPayload = JsonObject(object : AbstractMap<String, JsonElement>() {
+            override val entries: Set<Map.Entry<String, JsonElement>>
+                get() = error("audit-redaction-failure")
+        }),
     )
 
     private companion object {

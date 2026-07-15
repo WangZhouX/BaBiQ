@@ -62,6 +62,18 @@ import kotlin.test.assertNull
 import kotlin.test.assertFalse
 
 class ApplicationActionBusReadOnlyTest {
+    private companion object {
+        val AUDIT_SCHEMA_FIELDS = setOf(
+            "executionId", "actionId", "actionVersion", "origin",
+            "threadId", "turnId", "toolCallId",
+            "userId", "tenantId", "platformId", "authSessionId", "desktopInstanceId",
+            "desktopSessionId", "identityEpoch",
+            "pageId", "contextRevision", "risk",
+            "approvalId", "approvalDecision", "approvalActorId",
+            "requestedAt", "decidedAt", "remoteReference", "terminalStatus", "errorCode",
+        )
+    }
+
     @Test
     fun `public bus constructor no longer exposes standalone audit port`() {
         val constructors = ApplicationActionBus::class.java.constructors.toList()
@@ -111,6 +123,65 @@ class ApplicationActionBusReadOnlyTest {
         assertIs<ActionBusResult.Completed>(result)
         assertEquals(listOf(8L, 9L, 10L), fixture.audit.events.map { it.sequence })
         assertEquals(true, fixture.audit.allAppendsSawRecord)
+    }
+
+    @Test
+    fun `真实只读执行链每个审计事件都携带稳定业务schema`() = runTest {
+        val fixture = BusFixture(ActionRiskLevel.READ_ONLY)
+
+        fixture.bus.execute(fixture.command(ActionOrigin.AGENT), fixture.context)
+
+        assertEquals(3, fixture.audit.events.size)
+        fixture.audit.events.forEach { event ->
+            val payload = event.redactedPayload
+            AUDIT_SCHEMA_FIELDS.forEach { field ->
+                kotlin.test.assertNotNull(payload[field], "${event.type} 缺少 $field")
+            }
+            assertEquals("execution-1", payload.getValue("executionId").jsonPrimitive.content)
+            assertEquals("demo.action", payload.getValue("actionId").jsonPrimitive.content)
+            assertEquals(1, payload.getValue("actionVersion").jsonPrimitive.int)
+            assertEquals("agent", payload.getValue("origin").jsonPrimitive.content)
+            assertEquals("secret-user", payload.getValue("userId").jsonPrimitive.content)
+            assertEquals("secret-tenant", payload.getValue("tenantId").jsonPrimitive.content)
+            assertEquals("secret-platform", payload.getValue("platformId").jsonPrimitive.content)
+            assertEquals("secret-auth", payload.getValue("authSessionId").jsonPrimitive.content)
+            assertEquals("secret-desktop", payload.getValue("desktopInstanceId").jsonPrimitive.content)
+            assertEquals("page-1", payload.getValue("pageId").jsonPrimitive.content)
+            assertEquals(7, payload.getValue("contextRevision").jsonPrimitive.int)
+            assertEquals("read_only", payload.getValue("risk").jsonPrimitive.content)
+        }
+        assertEquals(
+            "succeeded",
+            fixture.audit.events.last().redactedPayload.getValue("terminalStatus").jsonPrimitive.content,
+        )
+        assertEquals(
+            "remote-1",
+            fixture.audit.events.last().redactedPayload.getValue("remoteReference").jsonPrimitive.content,
+        )
+    }
+
+    @Test
+    fun `迁移附加字段不能覆盖审计身份动作风险和时间`() {
+        val fixture = BusFixture(ActionRiskLevel.READ_ONLY)
+        val occurredAt = Instant.parse("2026-07-14T00:00:03Z")
+        val payload = ActionAuditPayloadBuilder.build(
+            command = fixture.command(ActionOrigin.AGENT),
+            risk = ActionRiskLevel.READ_ONLY,
+            occurredAt = occurredAt,
+            details = buildJsonObject {
+                put("executionId", "forged-execution")
+                put("userId", "forged-user")
+                put("risk", "high_risk")
+                put("occurredAt", "forged-time")
+                put("safeDetail", true)
+            },
+        )
+
+        assertEquals("execution-1", payload.getValue("executionId").jsonPrimitive.content)
+        assertEquals("secret-user", payload.getValue("userId").jsonPrimitive.content)
+        assertEquals("read_only", payload.getValue("risk").jsonPrimitive.content)
+        assertEquals(occurredAt.toString(), payload.getValue("occurredAt").jsonPrimitive.content)
+        assertEquals(true, payload.getValue("safeDetail").jsonPrimitive.content.toBoolean())
     }
 
     @Test
@@ -383,6 +454,40 @@ class ApplicationActionBusReadOnlyTest {
     }
 
     @Test
+    fun `风险策略明确拒绝后即使预置批准也不会预览审批或执行`() = runTest {
+        val fixture = BusFixture(
+            risk = ActionRiskLevel.HIGH_RISK,
+            riskEvaluation = RiskEvaluation.deny(
+                baseRisk = ActionRiskLevel.HIGH_RISK,
+                reasons = listOf("UNKNOWN_OPERATION"),
+            ),
+        )
+        fixture.confirmation.response = ActionConfirmation(
+            decisionId = "confirmation-approved",
+            executionId = "execution-1",
+            decision = ConfirmationDecision.ACCEPTED,
+            decidedAt = Instant.parse("2026-07-14T00:00:01Z"),
+        )
+        fixture.approval.response = ActionApproval(
+            approvalId = "approval-approved",
+            executionId = "execution-1",
+            decision = ApprovalDecision.APPROVED,
+            decidedAt = Instant.parse("2026-07-14T00:00:02Z"),
+            decidedBy = "reviewer-1",
+        )
+
+        val result = fixture.bus.execute(fixture.command(ActionOrigin.AGENT), fixture.context)
+
+        assertEquals(ActionErrorCode.PERMISSION_DENIED, assertIs<ActionBusResult.Rejected>(result).error.code)
+        assertEquals(ActionExecutionState.FAILED, fixture.store.record?.state)
+        assertEquals(0, fixture.action.previewCount)
+        assertEquals(0, fixture.confirmation.requests)
+        assertEquals(0, fixture.approval.requests)
+        assertEquals(0, fixture.action.executeCount)
+        assertEquals("risk_denied", fixture.audit.events.last().type)
+    }
+
+    @Test
     fun `all terminal result execution mismatches become audited protocol failure`() = runTest {
         val results = listOf<ActionResult<BusOutput>>(
             ActionResult.Success("other-execution", BusOutput(1)),
@@ -498,6 +603,7 @@ class ApplicationActionBusReadOnlyTest {
 internal class BusFixture(
     risk: ActionRiskLevel,
     private val effectiveRisk: ActionRiskLevel = risk,
+    private val riskEvaluation: RiskEvaluation? = null,
     freezeRegistry: Boolean = true,
     registerAction: Boolean = true,
     throwingOutputCodec: Boolean = false,
@@ -568,7 +674,7 @@ internal class BusFixture(
         get() = ApplicationActionBus(
             registry = registry,
             riskPolicy = ActionRiskPolicy { descriptor, _, _ ->
-                RiskEvaluation.atLeast(descriptor.riskLevel, effectiveRisk)
+                riskEvaluation ?: RiskEvaluation.atLeast(descriptor.riskLevel, effectiveRisk)
             },
             confirmationPort = confirmation,
             approvalPort = approval,
@@ -892,6 +998,7 @@ internal class BusExecutionStore : ActionExecutionStore {
         record = ActionExecutionRecord(
             command = command,
             binding = command.bindingForStore(),
+            riskLevel = ActionRiskLevel.READ_ONLY,
             state = state,
             result = result,
             successFact = successFact,

@@ -229,7 +229,13 @@ class ApplicationActionBus internal constructor(
         contextValidator.validate(registered.descriptor, command, context)?.let {
             return ActionBusResult.Rejected(it)
         }
-        val validating = when (val start = executionCoordinator.begin(command)) {
+        val risk = riskPolicy.evaluate(registered.descriptor, command, context)
+        val beginRisk = if (risk.baseRisk == registered.descriptor.riskLevel) {
+            risk.effectiveRisk
+        } else {
+            registered.descriptor.riskLevel
+        }
+        val validating = when (val start = executionCoordinator.begin(command, beginRisk)) {
             is ActionExecutionStart.New -> start.record
             is ActionExecutionStart.ExistingRunning -> return ActionBusResult.InProgress(
                 executionId = start.record.command.executionId,
@@ -239,11 +245,17 @@ class ApplicationActionBus internal constructor(
             is ActionExecutionStart.NeedsReconciliation -> return reconcile(start.record, context, registered)
             is ActionExecutionStart.Conflict -> return ActionBusResult.Rejected(start.error)
         }
-        val risk = riskPolicy.evaluate(registered.descriptor, command, context)
         if (risk.baseRisk != registered.descriptor.riskLevel) {
             return persistFailure(
                 validating,
                 ActionError(ActionErrorCode.PROTOCOL_ERROR, "风险评估基础等级不一致"),
+            )
+        }
+        if (risk.isDenied) {
+            return persistFailure(
+                current = validating,
+                error = ActionError(ActionErrorCode.PERMISSION_DENIED, "动作风险策略拒绝执行"),
+                transitionType = "risk_denied",
             )
         }
         return when (risk.effectiveRisk) {
@@ -466,13 +478,18 @@ class ApplicationActionBus internal constructor(
                         successFact = successFact,
                         completedAt = completedAt,
                         audit = auditDraft(
-                            executionId = claimed.command.executionId,
+                            claimed,
                             fromState = ActionExecutionState.OUTCOME_UNKNOWN,
                             toState = terminalState,
                             type = "reconciliation_result",
                             payload = buildJsonObject { put("confirmed", true) },
                             actorId = null,
                             occurredAt = completedAt,
+                            result = result,
+                            error = when (result) {
+                                is ActionResult.Failure -> result.error
+                                else -> null
+                            },
                         ),
                     )
                 } catch (_: IllegalArgumentException) {
@@ -506,7 +523,7 @@ class ApplicationActionBus internal constructor(
                 now = now,
                 leaseDuration = ReconciliationTimingPolicy.CLAIM_LEASE,
                 audit = auditDraft(
-                    current.command.executionId,
+                    current,
                     ActionExecutionState.OUTCOME_UNKNOWN,
                     ActionExecutionState.OUTCOME_UNKNOWN,
                     "reconciliation_attempt",
@@ -574,7 +591,7 @@ class ApplicationActionBus internal constructor(
                     now = now,
                     leaseDuration = ReconciliationTimingPolicy.CLAIM_LEASE,
                     audit = auditDraft(
-                        claimed.command.executionId,
+                        claimed,
                         ActionExecutionState.OUTCOME_UNKNOWN,
                         ActionExecutionState.OUTCOME_UNKNOWN,
                         "reconciliation_claim_renewed",
@@ -653,7 +670,7 @@ class ApplicationActionBus internal constructor(
                 claimToken = token,
                 releasedAt = now,
                 audit = auditDraft(
-                    claimed.command.executionId,
+                    claimed,
                     ActionExecutionState.OUTCOME_UNKNOWN,
                     ActionExecutionState.OUTCOME_UNKNOWN,
                     "reconciliation_result",
@@ -1035,7 +1052,7 @@ class ApplicationActionBus internal constructor(
                 updatedAt = completedAt,
                 completedAt = completedAt,
                 audit = auditDraft(
-                    running.command.executionId,
+                    running,
                     ActionExecutionState.EXECUTING,
                     ActionExecutionState.SUCCEEDED,
                     "output_encoding_failed",
@@ -1073,13 +1090,14 @@ class ApplicationActionBus internal constructor(
                 updatedAt = completedAt,
                 completedAt = completedAt,
                 audit = auditDraft(
-                    current.command.executionId,
+                    current,
                     current.state,
                     terminalState,
                     transitionType,
                     transitionPayload,
                     actorId,
                     completedAt,
+                    result,
                 ),
             ),
         )) {
@@ -1094,9 +1112,10 @@ class ApplicationActionBus internal constructor(
     private suspend fun persistFailure(
         current: ActionExecutionRecord,
         error: ActionError,
+        transitionType: String = "state_transition",
     ): ActionBusResult {
         val result: ActionResult<JsonElement> = ActionResult.Failure(current.command.executionId, error)
-        return persistLocalErrorTerminal(current, result, error)
+        return persistLocalErrorTerminal(current, result, error, transitionType)
     }
 
     /** 仅当本地终态成功写入时返回局部错误；已有终态必须原样获胜。 */
@@ -1104,6 +1123,7 @@ class ApplicationActionBus internal constructor(
         current: ActionExecutionRecord,
         result: ActionResult<JsonElement>,
         localError: ActionError,
+        transitionType: String = "state_transition",
     ): ActionBusResult {
         val terminalState = result.terminalState() ?: return protocolError("局部错误终态无效")
         val completedAt = clock.now()
@@ -1116,13 +1136,15 @@ class ApplicationActionBus internal constructor(
                 updatedAt = completedAt,
                 completedAt = completedAt,
                 audit = auditDraft(
-                    current.command.executionId,
+                    current,
                     current.state,
                     terminalState,
-                    "state_transition",
+                    transitionType,
                     emptyPayload(),
                     null,
                     completedAt,
+                    result,
+                    localError,
                 ),
             ),
         )) {
@@ -1158,7 +1180,7 @@ class ApplicationActionBus internal constructor(
                 updatedAt = now,
                 startedAt = now.takeIf { started },
                 audit = auditDraft(
-                    current.command.executionId,
+                    current,
                     current.state,
                     state,
                     transitionType,
@@ -1186,22 +1208,34 @@ class ApplicationActionBus internal constructor(
 private fun approvalPayload(approval: ActionApproval): JsonObject = buildJsonObject {
     put("approvalId", approval.approvalId)
     put("decision", approval.decision.name)
+    put("decidedAt", approval.decidedAt.toString())
 }
 
 private fun auditDraft(
-    executionId: String,
+    record: ActionExecutionRecord,
     fromState: ActionExecutionState,
     toState: ActionExecutionState,
     type: String,
     payload: JsonObject,
     actorId: String?,
     occurredAt: java.time.Instant,
+    result: ActionResult<JsonElement>? = null,
+    error: ActionError? = null,
 ): ActionAuditDraft = ActionAuditDraft(
-    executionId = executionId,
+    executionId = record.command.executionId,
     fromState = fromState,
     toState = toState,
     type = type,
-    redactedPayload = payload,
+    redactedPayload = ActionAuditPayloadBuilder.build(
+        command = record.command,
+        risk = record.riskLevel,
+        occurredAt = occurredAt,
+        details = payload,
+        approvalActorId = actorId,
+        result = result,
+        terminalState = toState.takeIf { result != null || error != null },
+        error = error,
+    ),
     actorId = actorId,
     occurredAt = occurredAt,
 )

@@ -12,6 +12,8 @@ import com.wzx.huitai.action.port.ApprovalDecision
 import com.wzx.huitai.action.port.ConfirmationDecision
 import com.wzx.huitai.action.port.RiskEvaluation
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.serialization.json.buildJsonObject
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -82,6 +84,65 @@ class ApprovalAdapterTest {
 
         assertFailsWith<IllegalArgumentException> {
             approvals.enqueue(approval("execution-a", ApprovalDecision.APPROVED))
+        }
+    }
+
+    @Test
+    fun `确认和审批可按execution乱序消费且错误execution不会阻塞或偷取消费`() = runTest {
+        val confirmations = InMemoryConfirmationPort(
+            listOf(
+                confirmation("execution-a", ConfirmationDecision.ACCEPTED),
+                confirmation("execution-b", ConfirmationDecision.REJECTED),
+            ),
+        )
+        assertFailsWith<IllegalStateException> {
+            confirmations.request(command("execution-missing"), preview("execution-missing"), context())
+        }
+        assertEquals(
+            ConfirmationDecision.REJECTED,
+            confirmations.request(command("execution-b"), preview("execution-b"), context()).decision,
+        )
+        assertEquals(
+            ConfirmationDecision.ACCEPTED,
+            confirmations.request(command("execution-a"), preview("execution-a"), context()).decision,
+        )
+
+        val approvals = InMemoryApprovalPort(
+            listOf(
+                approval("execution-a", ApprovalDecision.APPROVED),
+                approval("execution-b", ApprovalDecision.DENIED),
+            ),
+        )
+        assertEquals(
+            ApprovalDecision.DENIED,
+            approvals.request(command("execution-b"), preview("execution-b"), risk(), context()).decision,
+        )
+        assertEquals(
+            ApprovalDecision.APPROVED,
+            approvals.request(command("execution-a"), preview("execution-a"), risk(), context()).decision,
+        )
+    }
+
+    @Test
+    fun `并发execution各自仅消费一次独立审批决定`() = runTest {
+        val approvals = InMemoryApprovalPort(
+            (1..32).map { approval("execution-$it", ApprovalDecision.APPROVED) },
+        )
+
+        val consumed = (32 downTo 1).map { index ->
+            async {
+                approvals.request(
+                    command("execution-$index"),
+                    preview("execution-$index"),
+                    risk(),
+                    context(),
+                ).executionId
+            }
+        }.awaitAll()
+
+        assertEquals((1..32).map { "execution-$it" }.toSet(), consumed.toSet())
+        assertFailsWith<IllegalStateException> {
+            approvals.request(command("execution-1"), preview("execution-1"), risk(), context())
         }
     }
 
