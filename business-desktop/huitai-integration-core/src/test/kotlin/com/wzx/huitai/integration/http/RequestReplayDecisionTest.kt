@@ -92,6 +92,57 @@ class RequestReplayDecisionTest {
     }
 
     @Test
+    fun `request rejects invalid HTTP header names`() {
+        listOf("", " ", "Bad Header", "Bad:Header", "Bad\r\nHeader", "非ASCII").forEach { name ->
+            assertFailsWith<IllegalArgumentException>(name) {
+                request(
+                    replayPolicy = ActionReplayPolicy.NEVER,
+                    headers = mapOf(name to "value"),
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `request rejects CRLF in HTTP header values`() {
+        listOf("value\rspoofed", "value\nspoofed", "value\r\nInjected: true").forEach { value ->
+            assertFailsWith<IllegalArgumentException>(value) {
+                request(
+                    replayPolicy = ActionReplayPolicy.NEVER,
+                    headers = mapOf("X-Custom-Header" to value),
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `request preserves valid custom HTTP headers`() {
+        val headers = mapOf(
+            "X-Custom-Header" to "custom-value",
+            "traceparent" to "00-trace-parent-01",
+        )
+
+        val request = request(
+            replayPolicy = ActionReplayPolicy.NEVER,
+            headers = headers,
+        )
+
+        assertEquals(headers, request.headers)
+    }
+
+    @Test
+    fun `response received refresh marker defaults false and preserves explicit true`() {
+        assertFalse(HuitaiTransportOutcome.ResponseReceived(httpStatus = 401).authenticationRefreshCompleted)
+        assertEquals(
+            true,
+            HuitaiTransportOutcome.ResponseReceived(
+                httpStatus = 401,
+                authenticationRefreshCompleted = true,
+            ).authenticationRefreshCompleted,
+        )
+    }
+
+    @Test
     fun `NotSent retries without reconciliation for every replay policy`() {
         ActionReplayPolicy.entries.forEach { replayPolicy ->
             val decision = RequestReplayDecision.decide(

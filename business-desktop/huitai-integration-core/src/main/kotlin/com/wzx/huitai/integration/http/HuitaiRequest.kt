@@ -28,6 +28,10 @@ class HuitaiRequest(
             "relativePath must start with exactly one /"
         }
         require('#' !in relativePath) { "relativePath must not contain a fragment" }
+        headers.forEach { (name, value) ->
+            require(METHOD_TOKEN.matches(name)) { "header name must be a valid HTTP token" }
+            require('\r' !in value && '\n' !in value) { "header value must not contain CR or LF" }
+        }
     }
 
     internal fun hasAttachedIdempotencyKey(): Boolean {

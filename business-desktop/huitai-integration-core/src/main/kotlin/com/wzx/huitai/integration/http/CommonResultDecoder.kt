@@ -7,6 +7,9 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import java.nio.ByteBuffer
+import java.nio.charset.CodingErrorAction
+import java.nio.charset.StandardCharsets
 
 /** 将 HTTP 响应解码为统一成功、二进制或结构化失败结果。 */
 class CommonResultDecoder(
@@ -24,7 +27,14 @@ class CommonResultDecoder(
             return HuitaiResponse.Failure(ActionErrorCode.PROTOCOL_ERROR)
         }
 
-        val text = body.toString(Charsets.UTF_8).trim()
+        val text = body.decodeStrictUtf8()?.trim()
+        if (text == null) {
+            return if (contentType.isBinaryContentType()) {
+                HuitaiResponse.Binary(contentType = contentType, body = body)
+            } else {
+                HuitaiResponse.Failure(ActionErrorCode.PROTOCOL_ERROR)
+            }
+        }
         val envelope = decodeEnvelope(text)
         if (envelope != null) {
             return envelope.toResponse()
@@ -91,6 +101,14 @@ class CommonResultDecoder(
         this?.substringBefore(';')?.trim()?.lowercase()
 
     private fun String.isJsonShaped(): Boolean = startsWith('{') || startsWith('[')
+
+    private fun ByteArray.decodeStrictUtf8(): String? = runCatching {
+        StandardCharsets.UTF_8.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT)
+            .decode(ByteBuffer.wrap(this))
+            .toString()
+    }.getOrNull()
 
     private companion object {
         const val SUCCESS_CODE = "200"

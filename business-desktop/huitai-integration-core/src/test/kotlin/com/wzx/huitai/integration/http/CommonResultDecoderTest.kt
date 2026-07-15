@@ -158,6 +158,33 @@ class CommonResultDecoderTest {
     }
 
     @Test
+    fun `invalid UTF-8 blob remains binary even when its first byte is an opening brace`() {
+        val bytes = byteArrayOf(0x7b, 0xc3.toByte(), 0x28, 0x00)
+
+        val response = decoder.decode(
+            httpStatus = 200,
+            contentType = "application/octet-stream",
+            body = bytes,
+        )
+
+        assertContentEquals(bytes, assertIs<HuitaiResponse.Binary>(response).body)
+    }
+
+    @Test
+    fun `invalid UTF-8 declared JSON is a protocol failure`() {
+        val response = decoder.decode(
+            httpStatus = 200,
+            contentType = "application/json",
+            body = byteArrayOf(0x7b, 0xc3.toByte(), 0x28, 0x00),
+        )
+
+        assertEquals(
+            ActionErrorCode.PROTOCOL_ERROR,
+            assertIs<HuitaiResponse.Failure>(response).errorCode,
+        )
+    }
+
+    @Test
     fun `response model strings redact data messages and binary body`() {
         val secret = "top-secret-token"
         val result = CommonResult(
