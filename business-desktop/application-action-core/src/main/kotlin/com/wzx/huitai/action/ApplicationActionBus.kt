@@ -495,7 +495,7 @@ class ApplicationActionBus internal constructor(
                         )
                     }
                 }
-                val completedAt = clock.now()
+                val completedAt = maxOf(clock.now(), claimed.updatedAt)
                 val terminalState = result?.terminalState() ?: ActionExecutionState.SUCCEEDED
                 val update = try {
                     ReconciliationExecutionUpdate(
@@ -541,7 +541,7 @@ class ApplicationActionBus internal constructor(
     /** 原子取得跨进程唯一 claim，并将 attempt 审计和版本更新一起持久化。 */
     private suspend fun claimReconciliation(unknown: ActionExecutionRecord): ReconciliationClaimResult =
         executionCoordinator.claimReconciliation(unknown) { current ->
-            val now = clock.now()
+            val now = maxOf(clock.now(), current.updatedAt)
             val takeover = current.reconciliationClaim?.let { !now.isBefore(it.expiresAt) } == true
             ReconciliationClaimRequest(
                 executionId = current.command.executionId,
@@ -604,7 +604,7 @@ class ApplicationActionBus internal constructor(
         latestClaim: AtomicReference<ActionExecutionRecord>,
     ): ReconciliationRenewResult {
         val claimed = latestClaim.get()
-        val now = clock.now()
+        val now = maxOf(clock.now(), claimed.updatedAt.plusNanos(1))
         val token = claimed.reconciliationClaim?.claimToken
         val renewed = if (token == null) {
             ReconciliationRenewResult.Conflict(
@@ -688,7 +688,7 @@ class ApplicationActionBus internal constructor(
         outcome: String,
         result: ActionBusResult,
     ): ActionBusResult {
-        val now = clock.now()
+        val now = maxOf(clock.now(), claimed.updatedAt)
         val token = claimed.reconciliationClaim?.claimToken
             ?: return conflict("对账 claim 缺失")
         return when (val released = executionStore.releaseReconciliation(

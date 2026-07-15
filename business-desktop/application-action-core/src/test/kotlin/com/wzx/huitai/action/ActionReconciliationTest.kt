@@ -71,6 +71,53 @@ class ActionReconciliationTest {
     }
 
     @Test
+    fun `持久UNKNOWN时间领先当前时钟时对账全链时间不回退`() = runTest {
+        val fixture = reconciliationFixture(ReconciliationPolicy.QUERY_REMOTE)
+        val persistedUpdatedAt = fixture.store.record!!.updatedAt
+        fixture.action.reconciliationResult = ReconciliationResult.Succeeded(
+            remoteReference = "remote-confirmed",
+            executionId = "execution-1",
+        )
+
+        val result = fixture.bus.execute(fixture.command(), fixture.context)
+
+        assertIs<ActionBusResult.SuccessWithoutOutput>(result)
+        assertEquals(ActionExecutionState.SUCCEEDED, fixture.store.record?.state)
+        assertTrue(!fixture.store.record!!.updatedAt.isBefore(persistedUpdatedAt))
+        assertTrue(!fixture.store.record!!.completedAt!!.isBefore(persistedUpdatedAt))
+        assertTrue(fixture.audit.events.all { !it.occurredAt.isBefore(persistedUpdatedAt) })
+    }
+
+    @Test
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun `时钟落后或相等时heartbeat续租仍严格延长租约`() = runTest {
+        val clock = BusClock(autoAdvance = false)
+        val fixture = BusFixture(
+            risk = ActionRiskLevel.REVERSIBLE_WRITE,
+            reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
+            clock = clock,
+        )
+        val unknown: ActionResult<JsonElement> = ActionResult.OutcomeUnknown(
+            executionId = "execution-1",
+            error = ActionError(ActionErrorCode.OUTCOME_UNKNOWN, "远程响应丢失"),
+            reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
+        )
+        fixture.store.installExistingTerminal(fixture.command(), result = unknown)
+        fixture.action.reconcileEntered = CompletableDeferred()
+        fixture.action.reconcileRelease = CompletableDeferred()
+
+        val owner = async { fixture.bus.execute(fixture.command(), fixture.context) }
+        fixture.action.reconcileEntered!!.await()
+        val originalExpiresAt = fixture.store.record!!.reconciliationClaim!!.expiresAt
+
+        testScheduler.advanceTimeBy(ReconciliationTimingPolicy.HEARTBEAT_INTERVAL.toMillis())
+        testScheduler.runCurrent()
+
+        assertTrue(fixture.store.record!!.reconciliationClaim!!.expiresAt.isAfter(originalExpiresAt))
+        owner.cancel()
+    }
+
+    @Test
     fun `远程查询确认失败后精确保存失败结果且不执行动作`() = runTest {
         val fixture = reconciliationFixture(ReconciliationPolicy.QUERY_REMOTE)
         val error = ActionError(ActionErrorCode.REMOTE_REQUEST_FAILED, "远程查询确认失败")

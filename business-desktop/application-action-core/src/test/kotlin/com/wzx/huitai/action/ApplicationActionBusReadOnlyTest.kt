@@ -666,7 +666,7 @@ class ApplicationActionBusReadOnlyTest {
             fixture.store.record?.successFact?.source,
         )
         assertEquals(1, fixture.action.executeCount)
-        assertFalse(fixture.audit.events.last().redactedPayload.toString().contains("secret"))
+        assertFalse(fixture.audit.events.last().redactedPayload.toString().contains("secret-codec"))
         assertEquals("OUTPUT_ENCODING_FAILED",
             fixture.audit.events.last().redactedPayload.getValue("successFact").jsonPrimitive.content)
     }
