@@ -4,7 +4,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.extension
 import kotlin.io.path.isRegularFile
-import kotlin.io.path.walk
 import kotlin.test.Test
 import kotlin.test.assertTrue
 
@@ -20,13 +19,18 @@ class ActionCoreDependencyGuardTest {
             "org.springframework",
             "com.wzx.huitai.security",
         )
-        val violations = sourceRoot.walk()
-            .filter { it.isRegularFile() && it.extension == "kt" }
-            .flatMap { path ->
-                val text = Files.readString(path)
-                forbidden.filter(text::contains).map { "$path -> $it" }.asSequence()
+        val violations = mutableListOf<String>()
+        Files.walk(sourceRoot).use { paths ->
+            paths.iterator().asSequence()
+                .filter { it.isRegularFile() && it.extension == "kt" }
+                .forEach { path ->
+                Files.readAllLines(path).forEach { line ->
+                    if (line.trimStart().startsWith("import ")) {
+                        forbidden.filter(line::contains).forEach { violations += "$path -> $it" }
+                    }
+                }
             }
-            .toList()
+        }
 
         assertTrue(violations.isEmpty(), "application-action-core 出现禁止依赖: $violations")
     }

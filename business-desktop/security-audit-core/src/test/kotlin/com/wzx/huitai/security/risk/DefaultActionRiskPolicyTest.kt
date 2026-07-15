@@ -67,13 +67,28 @@ class DefaultActionRiskPolicyTest {
         assertTrue(result.reasons.isEmpty())
     }
 
+    @Test
+    fun `动作标题和标识中的提交发送删除用语同样按高风险处理`() {
+        listOf("提交资料", "send-notification", "delete-record").forEach { wording ->
+            val result = policy.evaluate(
+                descriptor(operation = "save", title = wording, id = "demo.$wording"),
+                command(),
+                context(),
+            )
+
+            assertEquals(ActionRiskLevel.HIGH_RISK, result.effectiveRisk, message = wording)
+        }
+    }
+
     private fun descriptor(
         risk: ActionRiskLevel = ActionRiskLevel.READ_ONLY,
         operation: String,
+        title: String = "演示操作",
+        id: String = "demo.$operation",
     ) = ActionDescriptor(
-        id = "demo.$operation",
+        id = id,
         version = 1,
-        title = "演示操作",
+        title = title,
         description = "框架风险策略测试",
         inputSchema = buildJsonObject { put("type", "object") },
         riskLevel = risk,

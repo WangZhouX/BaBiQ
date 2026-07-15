@@ -19,6 +19,12 @@ import kotlinx.coroutines.sync.withLock
 class InMemoryApprovalPort(decisions: List<ActionApproval> = emptyList()) : ActionApprovalPort {
     private val mutex = Mutex()
     private val queued = ArrayDeque(decisions)
+    private val seenExecutionIds = decisions.map { it.executionId }.toMutableSet()
+
+    init {
+        require(seenExecutionIds.size == decisions.size) { "同一 execution 不能有多个审批决定" }
+        decisions.forEach(::validateDecision)
+    }
 
     /**
      * 追加一个仅供后续单个 execution 消费的审批决定。
@@ -26,7 +32,11 @@ class InMemoryApprovalPort(decisions: List<ActionApproval> = emptyList()) : Acti
      * @param decision 与具体 execution 绑定的决定。
      */
     suspend fun enqueue(decision: ActionApproval) {
-        mutex.withLock { queued.addLast(decision) }
+        mutex.withLock {
+            validateDecision(decision)
+            require(seenExecutionIds.add(decision.executionId)) { "同一 execution 不能追加第二个审批决定" }
+            queued.addLast(decision)
+        }
     }
 
     /** 严格消费队首决定；空队列或 execution 不匹配均拒绝。 */
@@ -40,5 +50,10 @@ class InMemoryApprovalPort(decisions: List<ActionApproval> = emptyList()) : Acti
         val decision = queued.firstOrNull() ?: error("当前 execution 没有待消费审批决定")
         require(decision.executionId == command.executionId) { "审批决定 executionId 不匹配" }
         queued.removeFirst()
+    }
+
+    private fun validateDecision(decision: ActionApproval) {
+        require(decision.approvalId.isNotBlank()) { "审批决定 id 不能为空" }
+        require(decision.executionId.isNotBlank()) { "审批 executionId 不能为空" }
     }
 }

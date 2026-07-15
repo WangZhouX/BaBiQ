@@ -28,9 +28,15 @@ class DefaultActionRiskPolicy : ActionRiskPolicy {
         context: ActionContext,
     ): RiskEvaluation {
         val operation = descriptor.target.operation.trim()
+        val descriptorText = listOf(
+            descriptor.id,
+            descriptor.title,
+            descriptor.description,
+            descriptor.target.operation,
+        ).joinToString(" ")
         val reasons = mutableListOf<String>()
         val proposed = when {
-            HIGH_RISK_OPERATION.containsMatchIn(operation) -> {
+            HIGH_RISK_OPERATION.containsMatchIn(descriptorText) -> {
                 reasons += HIGH_RISK_OPERATION_REASON
                 ActionRiskLevel.HIGH_RISK
             }

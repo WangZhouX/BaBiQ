@@ -66,6 +66,25 @@ class ApprovalAdapterTest {
         assertFalse(InMemoryApprovalPort::class.java.methods.any { it.name in forbidden })
     }
 
+    @Test
+    fun `同一execution不能排队或追加第二个终态决定`() = runTest {
+        assertFailsWith<IllegalArgumentException> {
+            InMemoryConfirmationPort(
+                listOf(
+                    confirmation("execution-a", ConfirmationDecision.REJECTED),
+                    confirmation("execution-a", ConfirmationDecision.ACCEPTED),
+                ),
+            )
+        }
+        val approvals = InMemoryApprovalPort(
+            listOf(approval("execution-a", ApprovalDecision.DENIED)),
+        )
+
+        assertFailsWith<IllegalArgumentException> {
+            approvals.enqueue(approval("execution-a", ApprovalDecision.APPROVED))
+        }
+    }
+
     private fun confirmation(executionId: String, decision: ConfirmationDecision) = ActionConfirmation(
         decisionId = "confirmation-$executionId",
         executionId = executionId,

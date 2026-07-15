@@ -27,6 +27,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.time.Duration
@@ -149,6 +151,39 @@ class InMemoryActionExecutionStoreTest {
         assertIs<ReconciliationReleaseResult.Released>(
             store.releaseReconciliation(releaseRequest(renewed, "token-2")),
         )
+    }
+
+    @Test
+    fun `存储边界重新脱敏审计载荷且快照不可修改`() = runTest {
+        val store = InMemoryActionExecutionStore()
+        val rawToken = "raw-token-must-not-survive"
+        val draft = audit().copy(
+            redactedPayload = buildJsonObject { put("accessToken", rawToken) },
+        )
+
+        store.compareAndCreate(runningRecord(), draft)
+
+        val events = store.events("execution-1")
+        assertEquals("[REDACTED]", events.single().redactedPayload["accessToken"].toString().trim('"'))
+        kotlin.test.assertFalse(rawToken in events.toString())
+        kotlin.test.assertFailsWith<UnsupportedOperationException> {
+            @Suppress("UNCHECKED_CAST")
+            (events as MutableList<com.wzx.huitai.action.port.ActionAuditEvent>).clear()
+        }
+    }
+
+    @Test
+    fun `输入JsonObject的外部可变map不能改变已存储记录`() = runTest {
+        val values = mutableMapOf<String, JsonElement>("value" to JsonPrimitive("before"))
+        val original = runningRecord()
+        val command = original.command.copy(input = JsonObject(values))
+        val record = original.copy(command = command, binding = original.binding)
+        val store = InMemoryActionExecutionStore()
+
+        store.compareAndCreate(record, audit())
+        values["value"] = JsonPrimitive("after")
+
+        assertEquals("before", store.find("execution-1")!!.command.input["value"].toString().trim('"'))
     }
 
     private suspend fun installUnknown(store: InMemoryActionExecutionStore): ActionExecutionRecord {

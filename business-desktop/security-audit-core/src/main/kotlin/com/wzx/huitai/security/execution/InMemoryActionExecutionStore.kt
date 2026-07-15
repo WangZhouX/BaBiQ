@@ -21,8 +21,13 @@ import com.wzx.huitai.action.port.ReconciliationReleaseResult
 import com.wzx.huitai.action.port.ReconciliationRenewRequest
 import com.wzx.huitai.action.port.ReconciliationRenewResult
 import com.wzx.huitai.action.port.ReconciliationUpdateResult
+import com.wzx.huitai.security.audit.AuditRedactor
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import java.util.Collections
 
 /**
@@ -31,7 +36,9 @@ import java.util.Collections
  * 所有记录与审计序号在同一 [Mutex] 中比较和提交，调用方只能得到不可变快照，
  * 不暴露内部可变 Map/List。持久 SQLite 适配器将在后续任务替换本实现。
  */
-class InMemoryActionExecutionStore : ActionExecutionStore {
+class InMemoryActionExecutionStore(
+    private val redactor: AuditRedactor = AuditRedactor(),
+) : ActionExecutionStore {
     private val mutex = Mutex()
     private val records = mutableMapOf<String, ActionExecutionRecord>()
     private val auditEvents = mutableMapOf<String, MutableList<ActionAuditEvent>>()
@@ -52,9 +59,10 @@ class InMemoryActionExecutionStore : ActionExecutionStore {
         require(audit.executionId == record.command.executionId) { "创建审计 executionId 不匹配" }
         val existing = records[record.command.executionId]
         if (existing == null) {
-            records[record.command.executionId] = record
+            val frozen = record.freeze()
+            records[record.command.executionId] = frozen
             appendAudit(audit)
-            return@withLock ExecutionCreateResult.Created(record)
+            return@withLock ExecutionCreateResult.Created(frozen)
         }
         if (existing.binding != record.binding) return@withLock createConflict("execution binding conflict")
         if (existing.isTerminal) ExecutionCreateResult.ExistingTerminal(existing)
@@ -71,7 +79,7 @@ class InMemoryActionExecutionStore : ActionExecutionStore {
         }
         val updated = existing.copy(
             state = update.state,
-            result = update.result,
+            result = update.result?.freeze(),
             successFact = update.successFact,
             startedAt = update.startedAt ?: existing.startedAt,
             completedAt = update.completedAt,
@@ -102,7 +110,7 @@ class InMemoryActionExecutionStore : ActionExecutionStore {
         }
         val updated = existing.copy(
             state = state,
-            result = update.result,
+            result = update.result?.freeze(),
             successFact = update.successFact,
             completedAt = update.completedAt,
             updatedAt = update.completedAt,
@@ -199,10 +207,54 @@ class InMemoryActionExecutionStore : ActionExecutionStore {
             fromState = draft.fromState,
             toState = draft.toState,
             type = draft.type,
-            redactedPayload = draft.redactedPayload,
+            redactedPayload = redactor.redact(draft.redactedPayload),
             actorId = draft.actorId,
             occurredAt = draft.occurredAt,
         )
+    }
+
+    /** 对命令、预览和结果中的 JSON 做序列化边界复制，切断调用方可变 Map 引用。 */
+    private fun ActionExecutionRecord.freeze(): ActionExecutionRecord = copy(
+        command = command.copy(input = freezeJson(command.input) as JsonObject),
+        result = result?.freeze(),
+    )
+
+    /** 穷举复制所有结果分支，避免终态输出继续持有外部 JSON 容器。 */
+    @Suppress("UNCHECKED_CAST")
+    private fun ActionResult<JsonElement>.freeze(): ActionResult<JsonElement> = when (this) {
+        is ActionResult.Preview -> copy(preview = preview.freeze())
+        is ActionResult.ApprovalRequired -> copy(preview = preview.freeze())
+        is ActionResult.Success<*> -> ActionResult.Success(
+            executionId = executionId,
+            output = freezeJson(output as JsonElement),
+            redactedOutput = redactedOutput?.let { freezeJson(it as JsonElement) },
+            remoteReference = remoteReference,
+        )
+        is ActionResult.Failure -> copy(error = error.copy(details = error.details?.let(::freezeJson) as JsonObject?))
+        is ActionResult.Canceled -> copy()
+        is ActionResult.Expired -> copy()
+        is ActionResult.OutcomeUnknown -> copy(error = error.copy(details = error.details?.let(::freezeJson) as JsonObject?))
+    }
+
+    /** 复制预览的输入、变化值和警告列表。 */
+    private fun com.wzx.huitai.action.model.ActionPreview.freeze() = copy(
+        redactedInput = freezeJson(redactedInput) as JsonObject,
+        changes = changes.map { change ->
+            change.copy(
+                before = change.before?.let(::freezeJson),
+                after = change.after?.let(::freezeJson),
+            )
+        },
+        warnings = warnings.toList(),
+    )
+
+    /** 通过 JSON 编解码创建独立树，避免暴露输入树的任何可变容器。 */
+    private fun freezeJson(value: JsonElement): JsonElement = JSON.parseToJsonElement(
+        JSON.encodeToString(JsonElement.serializer(), value),
+    )
+
+    private companion object {
+        val JSON = Json { encodeDefaults = true }
     }
 }
 
