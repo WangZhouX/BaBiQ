@@ -1,0 +1,114 @@
+package com.wzx.huitai.security.approval
+
+import com.wzx.huitai.action.ActionContext
+import com.wzx.huitai.action.model.ActionCommand
+import com.wzx.huitai.action.model.ActionIdentityScope
+import com.wzx.huitai.action.model.ActionOrigin
+import com.wzx.huitai.action.model.ActionPreview
+import com.wzx.huitai.action.model.ActionRiskLevel
+import com.wzx.huitai.action.port.ActionApproval
+import com.wzx.huitai.action.port.ActionConfirmation
+import com.wzx.huitai.action.port.ApprovalDecision
+import com.wzx.huitai.action.port.ConfirmationDecision
+import com.wzx.huitai.action.port.RiskEvaluation
+import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.buildJsonObject
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+
+class ApprovalAdapterTest {
+    @Test
+    fun `确认决定按execution独立消费且不可跨execution复用`() = runTest {
+        val port = InMemoryConfirmationPort(
+            listOf(
+                confirmation("execution-a", ConfirmationDecision.ACCEPTED),
+                confirmation("execution-b", ConfirmationDecision.REJECTED),
+            ),
+        )
+
+        assertEquals(ConfirmationDecision.ACCEPTED, port.request(command("execution-a"), preview("execution-a"), context()).decision)
+        assertEquals(ConfirmationDecision.REJECTED, port.request(command("execution-b"), preview("execution-b"), context()).decision)
+        assertFailsWith<IllegalStateException> {
+            port.request(command("execution-a"), preview("execution-a"), context())
+        }
+    }
+
+    @Test
+    fun `审批拒绝和过期是各execution的终态决定`() = runTest {
+        val port = InMemoryApprovalPort(
+            listOf(
+                approval("execution-denied", ApprovalDecision.DENIED),
+                approval("execution-expired", ApprovalDecision.EXPIRED),
+            ),
+        )
+
+        val denied = port.request(
+            command("execution-denied"), preview("execution-denied"), risk(), context(),
+        )
+        val expired = port.request(
+            command("execution-expired"), preview("execution-expired"), risk(), context(),
+        )
+
+        assertEquals(ApprovalDecision.DENIED, denied.decision)
+        assertEquals(ApprovalDecision.EXPIRED, expired.decision)
+        assertFailsWith<IllegalStateException> {
+            port.request(command("execution-denied"), preview("execution-denied"), risk(), context())
+        }
+    }
+
+    @Test
+    fun `适配器不暴露会话级审批接口`() {
+        val forbidden = setOf("approveSession", "allowAlways", "grantSession", "approveAll")
+
+        assertFalse(InMemoryConfirmationPort::class.java.methods.any { it.name in forbidden })
+        assertFalse(InMemoryApprovalPort::class.java.methods.any { it.name in forbidden })
+    }
+
+    private fun confirmation(executionId: String, decision: ConfirmationDecision) = ActionConfirmation(
+        decisionId = "confirmation-$executionId",
+        executionId = executionId,
+        decision = decision,
+        decidedAt = NOW,
+    )
+
+    private fun approval(executionId: String, decision: ApprovalDecision) = ActionApproval(
+        approvalId = "approval-$executionId",
+        executionId = executionId,
+        decision = decision,
+        decidedAt = NOW,
+        decidedBy = "reviewer-1",
+    )
+
+    private fun command(executionId: String) = ActionCommand(
+        executionId = executionId,
+        actionId = "demo.submit",
+        actionVersion = 1,
+        input = buildJsonObject { },
+        origin = ActionOrigin.AGENT,
+        identityScope = identity(),
+        pageId = "page-1",
+        contextRevision = 1,
+    )
+
+    private fun preview(executionId: String) = ActionPreview(executionId, "预览")
+
+    private fun context() = ActionContext(identity(), "page-1", 1, emptySet())
+
+    private fun identity() = ActionIdentityScope(
+        desktopInstanceId = "desktop-1",
+        desktopSessionId = "desktop-session-1",
+        authSessionId = "auth-1",
+        identityEpoch = 1,
+        userId = "user-1",
+        tenantId = "tenant-1",
+        platformId = "platform-1",
+    )
+
+    private fun risk() = RiskEvaluation.atLeast(ActionRiskLevel.HIGH_RISK, ActionRiskLevel.HIGH_RISK)
+
+    private companion object {
+        val NOW: java.time.Instant = java.time.Instant.parse("2026-07-14T00:00:00Z")
+    }
+}
