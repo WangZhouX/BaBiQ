@@ -52,6 +52,7 @@ class InMemoryApprovalPort(decisions: List<ActionApproval> = emptyList()) : Acti
         queued.removeFirst()
     }
 
+    /** 校验单次审批决定具备可审计的非空标识。 */
     private fun validateDecision(decision: ActionApproval) {
         require(decision.approvalId.isNotBlank()) { "审批决定 id 不能为空" }
         require(decision.executionId.isNotBlank()) { "审批 executionId 不能为空" }

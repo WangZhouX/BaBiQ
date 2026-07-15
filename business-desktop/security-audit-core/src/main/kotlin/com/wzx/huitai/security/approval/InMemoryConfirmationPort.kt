@@ -50,6 +50,7 @@ class InMemoryConfirmationPort(decisions: List<ActionConfirmation> = emptyList()
         queued.removeFirst()
     }
 
+    /** 校验单次确认决定具备可审计的非空标识。 */
     private fun validateDecision(decision: ActionConfirmation) {
         require(decision.decisionId.isNotBlank()) { "确认决定 id 不能为空" }
         require(decision.executionId.isNotBlank()) { "确认 executionId 不能为空" }

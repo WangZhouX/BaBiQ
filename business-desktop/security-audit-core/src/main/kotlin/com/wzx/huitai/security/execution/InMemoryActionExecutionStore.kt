@@ -258,10 +258,23 @@ class InMemoryActionExecutionStore(
     }
 }
 
+/** 构造不包含底层异常或业务值的稳定执行冲突。 */
 private fun error(message: String) = ActionError(ActionErrorCode.EXECUTION_CONFLICT, message)
+
+/** 将稳定冲突映射为创建结果。 */
 private fun createConflict(message: String) = ExecutionCreateResult.Conflict(error(message))
+
+/** 将稳定冲突映射为状态迁移结果。 */
 private fun transitionConflict(message: String) = ExecutionTransitionResult.Conflict(error(message))
+
+/** 将稳定冲突映射为最终对账结果。 */
 private fun reconciliationConflict(message: String) = ReconciliationUpdateResult.Conflict(error(message))
+
+/** 将稳定冲突映射为 claim 结果。 */
 private fun claimConflict(message: String) = ReconciliationClaimResult.Conflict(error(message))
+
+/** 将稳定冲突映射为续租结果。 */
 private fun renewConflict(message: String) = ReconciliationRenewResult.Conflict(error(message))
+
+/** 将稳定冲突映射为释放结果。 */
 private fun releaseConflict(message: String) = ReconciliationReleaseResult.Conflict(error(message))
