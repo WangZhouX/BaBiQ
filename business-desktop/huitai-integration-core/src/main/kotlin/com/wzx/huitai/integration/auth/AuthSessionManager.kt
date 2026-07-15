@@ -23,6 +23,7 @@ class AuthSessionManager(
     // 身份事件体积小且必须非阻塞、不丢失；持久历史由后续 durable audit 承担。
     private val mutableIdentityTransitions =
         MutableSharedFlow<AuthIdentityTransition>(extraBufferCapacity = Int.MAX_VALUE)
+    @Volatile
     private var tokens: AuthTokenSet? = null
     private var identityEpoch: Long = 0
 
@@ -55,7 +56,13 @@ class AuthSessionManager(
             permissions = frozenSet(permissions),
             authenticatedAt = authenticatedAt,
         )
-        credentialPersistence.replace(tokens)
+        mutableState.value = signingIn
+        try {
+            credentialPersistence.replace(tokens)
+        } catch (failure: Throwable) {
+            mutableState.value = previousState
+            throw failure
+        }
         identityEpoch = nextEpoch
         this.tokens = tokens
         mutableIdentity.value = identity
@@ -65,7 +72,7 @@ class AuthSessionManager(
                 previousIdentity = previousIdentity,
                 currentIdentity = identity,
                 identityEpoch = identity.identityEpoch,
-                fromState = previousState,
+                fromState = signingIn,
                 toState = AuthenticationState.AUTHENTICATED,
             ),
         )
@@ -91,12 +98,17 @@ class AuthSessionManager(
         tokens: AuthTokenSet,
     ) = mutex.withLock {
         val previousState = mutableState.value
-        val refreshing = stateMachine.transition(previousState, AuthenticationState.REFRESHING)
-        val authenticated = stateMachine.transition(refreshing, AuthenticationState.AUTHENTICATED)
         val currentIdentity = checkNotNull(mutableIdentity.value) {
             "Authenticated identity is required for refresh"
         }
         val identityChanged = currentIdentity.userId != userId || currentIdentity.tenantId != tenantId
+        val transitionState = if (identityChanged) {
+            AuthenticationState.SWITCHING_TENANT
+        } else {
+            AuthenticationState.REFRESHING
+        }
+        val transitioning = stateMachine.transition(previousState, transitionState)
+        val authenticated = stateMachine.transition(transitioning, AuthenticationState.AUTHENTICATED)
         val nextEpoch = if (identityChanged) identityEpoch + 1 else identityEpoch
         val refreshedIdentity = currentIdentity.copy(
             authSessionId = if (identityChanged) authSessionIdFactory() else currentIdentity.authSessionId,
@@ -110,7 +122,13 @@ class AuthSessionManager(
         )
 
         // 持久化成功才发布新凭据与身份，避免内存和安全存储观察到不同版本。
-        credentialPersistence.replace(tokens)
+        mutableState.value = transitioning
+        try {
+            credentialPersistence.replace(tokens)
+        } catch (failure: Throwable) {
+            mutableState.value = previousState
+            throw failure
+        }
         identityEpoch = nextEpoch
         this.tokens = tokens
         mutableIdentity.value = refreshedIdentity
@@ -120,7 +138,7 @@ class AuthSessionManager(
                 previousIdentity = currentIdentity,
                 currentIdentity = refreshedIdentity,
                 identityEpoch = refreshedIdentity.identityEpoch,
-                fromState = AuthenticationState.REFRESHING,
+                fromState = transitioning,
                 toState = AuthenticationState.AUTHENTICATED,
             ),
         )
@@ -170,12 +188,18 @@ class AuthSessionManager(
             previousIdentity = previousIdentity,
             currentIdentity = null,
             identityEpoch = nextEpoch,
-            fromState = previousState,
+            fromState = transitionSource,
             toState = terminal,
         )
 
         // 清理失败不发布终态，避免持久凭据与公开会话状态相互矛盾。
-        credentialPersistence.clear()
+        mutableState.value = transitionSource
+        try {
+            credentialPersistence.clear()
+        } catch (failure: Throwable) {
+            mutableState.value = previousState
+            throw failure
+        }
         identityEpoch = nextEpoch
         mutableState.value = terminal
         publishTransition(transition)
@@ -184,10 +208,10 @@ class AuthSessionManager(
     }
 
     /** 仅供模块内传输层读取访问 token。 */
-    override suspend fun accessToken(): String? = mutex.withLock { tokens?.accessToken }
+    override suspend fun accessToken(): String? = tokens?.accessToken
 
     /** 仅供模块内刷新协调器读取刷新 token。 */
-    override suspend fun refreshToken(): String? = mutex.withLock { tokens?.refreshToken }
+    override suspend fun refreshToken(): String? = tokens?.refreshToken
 
     /** 非阻塞发布身份事件，避免慢订阅者在认证互斥区内造成全局停顿。 */
     private fun publishTransition(transition: AuthIdentityTransition) {

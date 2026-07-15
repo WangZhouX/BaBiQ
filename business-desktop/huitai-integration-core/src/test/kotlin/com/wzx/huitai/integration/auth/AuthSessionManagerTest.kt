@@ -48,6 +48,30 @@ class AuthSessionManagerTest {
     }
 
     @Test
+    fun `登录持久化期间发布SIGNING_IN但保持身份和token为空`() = runTest {
+        val replaceStarted = CompletableDeferred<Unit>()
+        val replaceRelease = CompletableDeferred<Unit>()
+        val persistence = RecordingCredentialPersistence(
+            replaceStarted = replaceStarted,
+            replaceRelease = replaceRelease,
+        )
+        val manager = AuthSessionManager(persistence)
+        val tokenProvider: AuthTokenProvider = manager
+
+        val login = async {
+            manager.login(tokens = tokenSet("gated-login"), identity = identityArguments)
+        }
+        replaceStarted.await()
+
+        assertEquals(AuthenticationState.SIGNING_IN, manager.state.value)
+        assertNull(manager.identity.value)
+        assertNull(tokenProvider.accessToken())
+        replaceRelease.complete(Unit)
+        login.await()
+        assertEquals(AuthenticationState.AUTHENTICATED, manager.state.value)
+    }
+
+    @Test
     fun `token类型字符串输出不泄露任何原始凭据`() {
         val tokens = AuthTokenSet(
             accessToken = "access-secret",
@@ -79,6 +103,36 @@ class AuthSessionManagerTest {
     }
 
     @Test
+    fun `同身份刷新持久化期间发布REFRESHING并保持旧身份和token`() = runTest {
+        val replaceStarted = CompletableDeferred<Unit>()
+        val replaceRelease = CompletableDeferred<Unit>()
+        val persistence = RecordingCredentialPersistence()
+        val manager = AuthSessionManager(persistence)
+        val oldTokens = tokenSet("old-refresh")
+        manager.login(tokens = oldTokens, identity = identityArguments)
+        val oldIdentity = assertNotNull(manager.identity.value)
+        val transitions = mutableListOf<AuthIdentityTransition>()
+        val collector = launch(start = CoroutineStart.UNDISPATCHED) {
+            manager.identityTransitions.collect { transitions += it }
+        }
+        persistence.replaceStarted = replaceStarted
+        persistence.replaceRelease = replaceRelease
+
+        val refresh = async { refreshWith(manager, tokenSet("new-refresh"), identityArguments) }
+        replaceStarted.await()
+
+        assertEquals(AuthenticationState.REFRESHING, manager.state.value)
+        assertEquals(oldIdentity, manager.identity.value)
+        assertEquals(oldTokens.accessToken, (manager as AuthTokenProvider).accessToken())
+        replaceRelease.complete(Unit)
+        refresh.await()
+        runCurrent()
+        assertEquals(AuthenticationState.AUTHENTICATED, manager.state.value)
+        assertEquals(AuthenticationState.REFRESHING, transitions.last().fromState)
+        collector.cancel()
+    }
+
+    @Test
     fun `刷新发生用户或租户变化时提升epoch并创建新session`() = runTest {
         listOf(
             identityArguments.copy(userId = "user-2"),
@@ -96,6 +150,43 @@ class AuthSessionManagerTest {
             assertNotEquals(initialIdentity.authSessionId, refreshedIdentity.authSessionId)
             assertEquals(changedIdentity.userId, refreshedIdentity.userId)
             assertEquals(changedIdentity.tenantId, refreshedIdentity.tenantId)
+        }
+    }
+
+    @Test
+    fun `用户或租户变化刷新期间发布SWITCHING_TENANT并保持旧身份和token`() = runTest {
+        listOf(
+            identityArguments.copy(userId = "user-2"),
+            identityArguments.copy(tenantId = "tenant-2"),
+        ).forEach { changedIdentity ->
+            val replaceStarted = CompletableDeferred<Unit>()
+            val replaceRelease = CompletableDeferred<Unit>()
+            val persistence = RecordingCredentialPersistence()
+            val manager = AuthSessionManager(persistence)
+            val oldTokens = tokenSet("old-switch")
+            manager.login(tokens = oldTokens, identity = identityArguments)
+            val oldIdentity = assertNotNull(manager.identity.value)
+            val transitions = mutableListOf<AuthIdentityTransition>()
+            val collector = launch(start = CoroutineStart.UNDISPATCHED) {
+                manager.identityTransitions.collect { transitions += it }
+            }
+            persistence.replaceStarted = replaceStarted
+            persistence.replaceRelease = replaceRelease
+
+            val refresh = async { refreshWith(manager, tokenSet("new-switch"), changedIdentity) }
+            replaceStarted.await()
+
+            assertEquals(AuthenticationState.SWITCHING_TENANT, manager.state.value)
+            assertEquals(oldIdentity, manager.identity.value)
+            assertEquals(oldTokens.accessToken, (manager as AuthTokenProvider).accessToken())
+            replaceRelease.complete(Unit)
+            refresh.await()
+            runCurrent()
+            val newIdentity = assertNotNull(manager.identity.value)
+            assertEquals(oldIdentity.identityEpoch + 1, newIdentity.identityEpoch)
+            assertNotEquals(oldIdentity.authSessionId, newIdentity.authSessionId)
+            assertEquals(AuthenticationState.SWITCHING_TENANT, transitions.last().fromState)
+            collector.cancel()
         }
     }
 
@@ -155,6 +246,46 @@ class AuthSessionManagerTest {
         assertEquals(AuthenticationState.MEMBERSHIP_EXPIRED, manager.state.value)
         assertNull(manager.identity.value)
         assertEquals(1, persistence.clearCount)
+    }
+
+    @Test
+    fun `两类失效清理期间发布REFRESHING并保持旧身份和token`() = runTest {
+        val expireAuth: suspend (AuthSessionManager) -> Unit = { manager -> manager.expireAuthentication() }
+        val expireMember: suspend (AuthSessionManager) -> Unit = { manager -> manager.expireMembership() }
+        listOf(
+            expireAuth to AuthenticationState.EXPIRED,
+            expireMember to AuthenticationState.MEMBERSHIP_EXPIRED,
+        ).forEach { (expire, terminalState) ->
+            val clearStarted = CompletableDeferred<Unit>()
+            val clearRelease = CompletableDeferred<Unit>()
+            val persistence = RecordingCredentialPersistence(
+                clearStarted = clearStarted,
+                clearRelease = clearRelease,
+            )
+            val manager = AuthSessionManager(persistence)
+            val oldTokens = tokenSet(terminalState.name)
+            manager.login(tokens = oldTokens, identity = identityArguments)
+            val oldIdentity = assertNotNull(manager.identity.value)
+            val transitions = mutableListOf<AuthIdentityTransition>()
+            val collector = launch(start = CoroutineStart.UNDISPATCHED) {
+                manager.identityTransitions.collect { transitions += it }
+            }
+
+            val expiring = async { expire(manager) }
+            clearStarted.await()
+
+            assertEquals(AuthenticationState.REFRESHING, manager.state.value)
+            assertEquals(oldIdentity, manager.identity.value)
+            assertEquals(oldTokens.accessToken, (manager as AuthTokenProvider).accessToken())
+            clearRelease.complete(Unit)
+            expiring.await()
+            runCurrent()
+            assertEquals(terminalState, manager.state.value)
+            assertNull(manager.identity.value)
+            assertNull((manager as AuthTokenProvider).accessToken())
+            assertEquals(AuthenticationState.REFRESHING, transitions.last().fromState)
+            collector.cancel()
+        }
     }
 
     @Test
@@ -503,6 +634,10 @@ private suspend fun refreshWith(
 private class RecordingCredentialPersistence(
     private val onClear: () -> Unit = {},
     private val loaded: AuthTokenSet? = null,
+    var replaceStarted: CompletableDeferred<Unit>? = null,
+    var replaceRelease: CompletableDeferred<Unit>? = null,
+    var clearStarted: CompletableDeferred<Unit>? = null,
+    var clearRelease: CompletableDeferred<Unit>? = null,
 ) : AuthCredentialPersistencePort {
     var failReplace: Boolean = false
     var failClear: Boolean = false
@@ -517,11 +652,15 @@ private class RecordingCredentialPersistence(
 
     override suspend fun replace(tokens: AuthTokenSet) {
         if (failReplace) error("replace failed")
+        replaceStarted?.complete(Unit)
+        replaceRelease?.await()
         replaced = tokens
     }
 
     override suspend fun clear() {
         if (failClear) error("clear failed")
+        clearStarted?.complete(Unit)
+        clearRelease?.await()
         clearCount += 1
         onClear()
     }
