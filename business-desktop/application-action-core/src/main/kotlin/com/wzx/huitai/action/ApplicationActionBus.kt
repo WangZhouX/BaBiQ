@@ -237,7 +237,7 @@ class ApplicationActionBus internal constructor(
             riskPolicy.evaluate(registered.descriptor, command, context)
         } catch (cancellation: CancellationException) {
             throw cancellation
-        } catch (_: Throwable) {
+        } catch (_: Exception) {
             val validating = when (val start = executionCoordinator.begin(command, ActionRiskLevel.HIGH_RISK)) {
                 is ActionExecutionStart.New -> start.record
                 else -> return existingStartResult(start, context, registered)

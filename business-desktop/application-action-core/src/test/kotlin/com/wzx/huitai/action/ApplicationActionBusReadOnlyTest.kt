@@ -278,6 +278,24 @@ class ApplicationActionBusReadOnlyTest {
         assertEquals(0, canceledFixture.confirmation.requests)
         assertEquals(0, canceledFixture.approval.requests)
         assertEquals(0, canceledFixture.action.executeCount)
+
+        val fatalFixture = BusFixture(
+            risk = ActionRiskLevel.READ_ONLY,
+            riskEvaluationProvider = { throw AssertionError("fatal-risk") },
+        )
+
+        assertEquals(
+            "fatal-risk",
+            assertFailsWith<AssertionError> {
+                fatalFixture.bus.execute(fatalFixture.command(), fatalFixture.context)
+            }.message,
+        )
+        assertNull(fatalFixture.store.record)
+        assertEquals(emptyList(), fatalFixture.audit.events)
+        assertEquals(0, fatalFixture.action.previewCount)
+        assertEquals(0, fatalFixture.confirmation.requests)
+        assertEquals(0, fatalFixture.approval.requests)
+        assertEquals(0, fatalFixture.action.executeCount)
     }
 
     @Test
