@@ -866,6 +866,7 @@ class ApplicationActionBus internal constructor(
                 "approval_approved",
                 actorId = approval.decidedBy,
                 approval = approval,
+                requestedAt = requestedAt,
             )
             ApprovalDecision.DENIED -> finishWithoutExecution(
                 waiting,
@@ -873,6 +874,7 @@ class ApplicationActionBus internal constructor(
                 "approval_denied",
                 actorId = approval.decidedBy,
                 approval = approval,
+                requestedAt = requestedAt,
             )
             ApprovalDecision.EXPIRED -> finishWithoutExecution(
                 waiting,
@@ -880,6 +882,7 @@ class ApplicationActionBus internal constructor(
                 "approval_expired",
                 actorId = approval.decidedBy,
                 approval = approval,
+                requestedAt = requestedAt,
             )
         }
     }

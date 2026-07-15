@@ -199,6 +199,7 @@ class ApplicationActionBusWriteTest {
 
             val requested = fixture.audit.events.single { it.type == "approval_requested" }
             assertEquals(false, requested.redactedPayload.getValue("requestedAt") is JsonNull)
+            val requestedAt = requested.redactedPayload.getValue("requestedAt").jsonPrimitive.content
             assertEquals(
                 "confirmation-1",
                 requested.redactedPayload.getValue("confirmationId").jsonPrimitive.content,
@@ -210,6 +211,7 @@ class ApplicationActionBusWriteTest {
             val decided = fixture.audit.events.single { it.type == "approval_${decision.name.lowercase()}" }
             assertEquals("approval-1", decided.redactedPayload.getValue("approvalId").jsonPrimitive.content)
             assertEquals(decision.name, decided.redactedPayload.getValue("approvalDecision").jsonPrimitive.content)
+            assertEquals(requestedAt, decided.redactedPayload.getValue("requestedAt").jsonPrimitive.content)
             assertEquals(
                 fixture.approval.response.decidedAt.toString(),
                 decided.redactedPayload.getValue("approvalDecidedAt").jsonPrimitive.content,
