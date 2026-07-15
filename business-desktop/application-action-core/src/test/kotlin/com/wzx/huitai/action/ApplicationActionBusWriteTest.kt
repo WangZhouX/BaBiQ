@@ -14,6 +14,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.put
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -42,6 +43,28 @@ class ApplicationActionBusWriteTest {
             ),
             fixture.audit.events.map { it.fromState to it.toState },
         )
+    }
+
+    @Test
+    fun `可逆写确认三种决定都在真实迁移事件中保存完整事实`() = runTest {
+        listOf(
+            ConfirmationDecision.ACCEPTED to "confirmation_accepted",
+            ConfirmationDecision.REJECTED to "confirmation_rejected",
+            ConfirmationDecision.EXPIRED to "confirmation_expired",
+        ).forEach { (decision, eventType) ->
+            val fixture = BusFixture(ActionRiskLevel.REVERSIBLE_WRITE)
+            fixture.confirmation.response = fixture.confirmation.response.copy(decision = decision)
+
+            fixture.bus.execute(fixture.command(ActionOrigin.AGENT), fixture.context)
+
+            val event = fixture.audit.events.single { it.type == eventType }
+            assertEquals("confirmation-1", event.redactedPayload.getValue("confirmationId").jsonPrimitive.content)
+            assertEquals(decision.name, event.redactedPayload.getValue("confirmationDecision").jsonPrimitive.content)
+            assertEquals(
+                fixture.confirmation.response.decidedAt.toString(),
+                event.redactedPayload.getValue("confirmationDecidedAt").jsonPrimitive.content,
+            )
+        }
     }
 
     @Test
@@ -161,9 +184,41 @@ class ApplicationActionBusWriteTest {
         val approvalEvent = fixture.audit.events.single { it.type == "approval_approved" }
         assertEquals("secret-actor", approvalEvent.actorId)
         assertEquals("approval-1", approvalEvent.redactedPayload.getValue("approvalId").jsonPrimitive.content)
-        assertEquals("APPROVED", approvalEvent.redactedPayload.getValue("decision").jsonPrimitive.content)
+        assertEquals("APPROVED", approvalEvent.redactedPayload.getValue("approvalDecision").jsonPrimitive.content)
         assertEquals(null, approvalEvent.redactedPayload["reason"])
         assertEquals(ActionExecutionState.WAITING_APPROVAL, fixture.approval.stateAtRequest)
+    }
+
+    @Test
+    fun `高风险确认审批请求和审批三种决定保存完整真实时间事实`() = runTest {
+        ApprovalDecision.entries.forEach { decision ->
+            val fixture = BusFixture(ActionRiskLevel.HIGH_RISK)
+            fixture.approval.response = fixture.approval.response.copy(decision = decision)
+
+            fixture.bus.execute(fixture.command(ActionOrigin.AGENT), fixture.context)
+
+            val requested = fixture.audit.events.single { it.type == "approval_requested" }
+            assertEquals(false, requested.redactedPayload.getValue("requestedAt") is JsonNull)
+            assertEquals(
+                "confirmation-1",
+                requested.redactedPayload.getValue("confirmationId").jsonPrimitive.content,
+            )
+            assertEquals(
+                ConfirmationDecision.ACCEPTED.name,
+                requested.redactedPayload.getValue("confirmationDecision").jsonPrimitive.content,
+            )
+            val decided = fixture.audit.events.single { it.type == "approval_${decision.name.lowercase()}" }
+            assertEquals("approval-1", decided.redactedPayload.getValue("approvalId").jsonPrimitive.content)
+            assertEquals(decision.name, decided.redactedPayload.getValue("approvalDecision").jsonPrimitive.content)
+            assertEquals(
+                fixture.approval.response.decidedAt.toString(),
+                decided.redactedPayload.getValue("approvalDecidedAt").jsonPrimitive.content,
+            )
+            assertEquals(
+                fixture.approval.response.decidedBy,
+                decided.redactedPayload.getValue("approvalActorId").jsonPrimitive.content,
+            )
+        }
     }
 
     @Test
@@ -203,7 +258,7 @@ class ApplicationActionBusWriteTest {
             val event = fixture.audit.events.single { it.type == "approval_${decision.name.lowercase()}" }
             assertEquals("secret-actor", event.actorId)
             assertEquals("approval-1", event.redactedPayload.getValue("approvalId").jsonPrimitive.content)
-            assertEquals(decision.name, event.redactedPayload.getValue("decision").jsonPrimitive.content)
+            assertEquals(decision.name, event.redactedPayload.getValue("approvalDecision").jsonPrimitive.content)
             assertEquals(null, event.redactedPayload["reason"])
             assertEquals(ActionExecutionState.WAITING_APPROVAL, fixture.approval.stateAtRequest)
         }

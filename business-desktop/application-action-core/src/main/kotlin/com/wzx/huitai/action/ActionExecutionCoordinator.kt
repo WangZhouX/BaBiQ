@@ -111,6 +111,20 @@ class ActionExecutionCoordinator internal constructor(
     }
 
     /**
+     * 在风险策略前快速检查已存在 execution；不存在时返回 null，最终创建仍由 [begin] 原子裁决。
+     */
+    suspend fun inspectExisting(command: ActionCommand): ActionExecutionStart? = serialized(command.executionId) {
+        val existing = executionStore.find(command.executionId) ?: return@serialized null
+        existingStart(binding(command), existing) {
+            when {
+                it.needsReconciliation -> ActionExecutionStart.NeedsReconciliation(it)
+                it.isTerminal -> ActionExecutionStart.ExistingTerminal(it)
+                else -> ActionExecutionStart.ExistingRunning(it)
+            }
+        }
+    }
+
+    /**
      * 串行同 execution 的完整协调片段。
      *
      * @param executionId 需要保护的执行标识。

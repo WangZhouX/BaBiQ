@@ -14,7 +14,7 @@ import kotlinx.coroutines.sync.withLock
  *
  * 每条审批严格绑定一个 execution，拒绝和过期决定消费后不能再次改变。
  *
- * @param decisions 初始审批决定，按入队顺序消费。
+ * @param decisions 初始审批决定，按 executionId 独立消费。
  */
 class InMemoryApprovalPort(decisions: List<ActionApproval> = emptyList()) : ActionApprovalPort {
     private val mutex = Mutex()
@@ -39,7 +39,7 @@ class InMemoryApprovalPort(decisions: List<ActionApproval> = emptyList()) : Acti
         }
     }
 
-    /** 严格消费队首决定；空队列或 execution 不匹配均拒绝。 */
+    /** 按 executionId 原子移除一次性决定；不存在时安全拒绝。 */
     override suspend fun request(
         command: ActionCommand,
         preview: ActionPreview,

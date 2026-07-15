@@ -13,7 +13,7 @@ import kotlinx.coroutines.sync.withLock
  *
  * 决定只能由对应 execution 消费，不提供会话级或永久放行能力。
  *
- * @param decisions 初始确认决定，按入队顺序消费。
+ * @param decisions 初始确认决定，按 executionId 独立消费。
  */
 class InMemoryConfirmationPort(decisions: List<ActionConfirmation> = emptyList()) : ActionConfirmationPort {
     private val mutex = Mutex()
@@ -38,7 +38,7 @@ class InMemoryConfirmationPort(decisions: List<ActionConfirmation> = emptyList()
         }
     }
 
-    /** 严格消费队首决定；空队列或 execution 不匹配均拒绝。 */
+    /** 按 executionId 原子移除一次性决定；不存在时安全拒绝。 */
     override suspend fun request(
         command: ActionCommand,
         preview: ActionPreview,

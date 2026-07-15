@@ -5,6 +5,8 @@ import com.wzx.huitai.action.model.ActionError
 import com.wzx.huitai.action.model.ActionExecutionState
 import com.wzx.huitai.action.model.ActionResult
 import com.wzx.huitai.action.model.ActionRiskLevel
+import com.wzx.huitai.action.port.ActionApproval
+import com.wzx.huitai.action.port.ActionConfirmation
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -20,13 +22,18 @@ internal object ActionAuditPayloadBuilder {
      * @param risk 当前有效风险。
      * @param occurredAt 当前业务事件时间。
      * @param details 当前迁移额外的已脱敏字段。
+     * @param confirmation 当前迁移绑定的真实确认决定。
+     * @param approval 当前迁移绑定的真实审批决定。
+     * @param requestedAt 审批请求的真实业务时间。
      */
     fun build(
         command: ActionCommand,
         risk: ActionRiskLevel,
         occurredAt: Instant,
         details: JsonObject = JsonObject(emptyMap()),
-        approvalActorId: String? = null,
+        confirmation: ActionConfirmation? = null,
+        approval: ActionApproval? = null,
+        requestedAt: Instant? = null,
         result: ActionResult<JsonElement>? = null,
         terminalState: ActionExecutionState? = null,
         error: ActionError? = null,
@@ -49,11 +56,14 @@ internal object ActionAuditPayloadBuilder {
             "pageId" to JsonPrimitive(command.pageId),
             "contextRevision" to JsonPrimitive(command.contextRevision),
             "risk" to JsonPrimitive(risk.name.lowercase()),
-            "approvalId" to (details["approvalId"] ?: JsonNull),
-            "approvalDecision" to (details["decision"] ?: JsonNull),
-            "approvalActorId" to approvalActorId.jsonOrNull(),
-            "requestedAt" to (details["requestedAt"] ?: JsonNull),
-            "decidedAt" to (details["decidedAt"] ?: JsonNull),
+            "confirmationId" to confirmation?.decisionId.jsonOrNull(),
+            "confirmationDecision" to confirmation?.decision?.name.jsonOrNull(),
+            "confirmationDecidedAt" to confirmation?.decidedAt?.toString().jsonOrNull(),
+            "approvalId" to approval?.approvalId.jsonOrNull(),
+            "approvalDecision" to approval?.decision?.name.jsonOrNull(),
+            "approvalActorId" to approval?.decidedBy.jsonOrNull(),
+            "requestedAt" to requestedAt?.toString().jsonOrNull(),
+            "approvalDecidedAt" to approval?.decidedAt?.toString().jsonOrNull(),
             "remoteReference" to result.remoteReference().jsonOrNull(),
             "terminalStatus" to terminalState?.name?.lowercase().jsonOrNull(),
             "errorCode" to (error ?: result.errorOrNull())?.code?.name?.lowercase().jsonOrNull(),
@@ -67,9 +77,13 @@ internal object ActionAuditPayloadBuilder {
 
     private val PROTECTED_FIELDS = setOf(
         "executionId", "actionId", "actionVersion", "origin",
+        "threadId", "turnId", "toolCallId",
         "userId", "tenantId", "platformId", "authSessionId",
         "desktopInstanceId", "desktopSessionId", "identityEpoch",
-        "pageId", "contextRevision", "risk", "occurredAt",
+        "pageId", "contextRevision", "risk",
+        "confirmationId", "confirmationDecision", "confirmationDecidedAt",
+        "approvalId", "approvalDecision", "approvalActorId", "requestedAt", "approvalDecidedAt",
+        "remoteReference", "terminalStatus", "errorCode", "occurredAt",
     )
 }
 

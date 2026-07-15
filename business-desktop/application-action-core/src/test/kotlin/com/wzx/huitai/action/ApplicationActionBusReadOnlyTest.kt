@@ -50,6 +50,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 import java.time.Instant
 import java.nio.charset.StandardCharsets
@@ -69,8 +70,9 @@ class ApplicationActionBusReadOnlyTest {
             "userId", "tenantId", "platformId", "authSessionId", "desktopInstanceId",
             "desktopSessionId", "identityEpoch",
             "pageId", "contextRevision", "risk",
+            "confirmationId", "confirmationDecision", "confirmationDecidedAt",
             "approvalId", "approvalDecision", "approvalActorId",
-            "requestedAt", "decidedAt", "remoteReference", "terminalStatus", "errorCode",
+            "requestedAt", "approvalDecidedAt", "remoteReference", "terminalStatus", "errorCode",
         )
     }
 
@@ -182,6 +184,61 @@ class ApplicationActionBusReadOnlyTest {
         assertEquals("read_only", payload.getValue("risk").jsonPrimitive.content)
         assertEquals(occurredAt.toString(), payload.getValue("occurredAt").jsonPrimitive.content)
         assertEquals(true, payload.getValue("safeDetail").jsonPrimitive.content.toBoolean())
+    }
+
+    @Test
+    fun `迁移附加字段不能覆盖任何稳定审计schema字段`() {
+        val fixture = BusFixture(ActionRiskLevel.READ_ONLY)
+        val occurredAt = Instant.parse("2026-07-14T00:00:03Z")
+
+        AUDIT_SCHEMA_FIELDS.forEach { protectedField ->
+            val payload = ActionAuditPayloadBuilder.build(
+                command = fixture.command(ActionOrigin.AGENT),
+                risk = ActionRiskLevel.READ_ONLY,
+                occurredAt = occurredAt,
+                details = buildJsonObject { put(protectedField, "forged-$protectedField") },
+            )
+
+            assertEquals(
+                false,
+                payload.getValue(protectedField).jsonPrimitive.contentOrNull == "forged-$protectedField",
+                protectedField,
+            )
+        }
+    }
+
+    @Test
+    fun `已存在运行终态和UNKNOWN均精确重放且不再次调用风险策略`() = runTest {
+        val storedResults = listOf<ActionResult<JsonElement>?>(
+            null,
+            ActionResult.Success("execution-1", buildJsonObject { put("saved", true) }),
+            ActionResult.OutcomeUnknown(
+                "execution-1",
+                ActionError(ActionErrorCode.OUTCOME_UNKNOWN, "unknown"),
+                reconciliationPolicy = ReconciliationPolicy.MANUAL,
+            ),
+        )
+        storedResults.forEach { stored ->
+            var riskCalls = 0
+            val fixture = BusFixture(
+                risk = ActionRiskLevel.READ_ONLY,
+                riskEvaluationProvider = {
+                    riskCalls += 1
+                    error("risk-policy-must-not-run")
+                },
+            )
+            if (stored == null) {
+                fixture.store.installExistingRunning(fixture.command())
+            } else {
+                fixture.store.installExistingTerminal(fixture.command(), result = stored)
+            }
+
+            val replay = fixture.bus.execute(fixture.command(), fixture.context)
+
+            assertEquals(0, riskCalls)
+            if (stored == null) assertIs<ActionBusResult.InProgress>(replay)
+            else assertEquals(stored, assertIs<ActionBusResult.Completed>(replay).result)
+        }
     }
 
     @Test
@@ -604,6 +661,7 @@ internal class BusFixture(
     risk: ActionRiskLevel,
     private val effectiveRisk: ActionRiskLevel = risk,
     private val riskEvaluation: RiskEvaluation? = null,
+    private val riskEvaluationProvider: ((ActionDescriptor) -> RiskEvaluation)? = null,
     freezeRegistry: Boolean = true,
     registerAction: Boolean = true,
     throwingOutputCodec: Boolean = false,
@@ -674,7 +732,9 @@ internal class BusFixture(
         get() = ApplicationActionBus(
             registry = registry,
             riskPolicy = ActionRiskPolicy { descriptor, _, _ ->
-                riskEvaluation ?: RiskEvaluation.atLeast(descriptor.riskLevel, effectiveRisk)
+                riskEvaluationProvider?.invoke(descriptor)
+                    ?: riskEvaluation
+                    ?: RiskEvaluation.atLeast(descriptor.riskLevel, effectiveRisk)
             },
             confirmationPort = confirmation,
             approvalPort = approval,
@@ -885,6 +945,20 @@ internal class BusExecutionStore : ActionExecutionStore {
     lateinit var audit: BusAuditPort
 
     override suspend fun find(executionId: String): ActionExecutionRecord? = record
+
+    fun installExistingRunning(command: ActionCommand) {
+        record = ActionExecutionRecord(
+            command = command,
+            binding = command.bindingForStore(),
+            riskLevel = ActionRiskLevel.READ_ONLY,
+            state = ActionExecutionState.EXECUTING,
+            result = null,
+            createdAt = Instant.parse("2026-07-14T00:00:00Z"),
+            startedAt = Instant.parse("2026-07-14T00:00:01Z"),
+            updatedAt = Instant.parse("2026-07-14T00:00:01Z"),
+            recordVersion = 2,
+        )
+    }
 
     override suspend fun compareAndCreate(
         record: ActionExecutionRecord,

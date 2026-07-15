@@ -10,6 +10,7 @@ import com.wzx.huitai.action.port.ActionApproval
 import com.wzx.huitai.action.port.ActionApprovalPort
 import com.wzx.huitai.action.port.ActionAuditDraft
 import com.wzx.huitai.action.port.ActionClock
+import com.wzx.huitai.action.port.ActionConfirmation
 import com.wzx.huitai.action.port.ActionConfirmationPort
 import com.wzx.huitai.action.port.ActionExecutionRecord
 import com.wzx.huitai.action.port.ActionExecutionStore
@@ -229,6 +230,9 @@ class ApplicationActionBus internal constructor(
         contextValidator.validate(registered.descriptor, command, context)?.let {
             return ActionBusResult.Rejected(it)
         }
+        executionCoordinator.inspectExisting(command)?.let { existing ->
+            return existingStartResult(existing, context, registered)
+        }
         val risk = riskPolicy.evaluate(registered.descriptor, command, context)
         val beginRisk = if (risk.baseRisk == registered.descriptor.riskLevel) {
             risk.effectiveRisk
@@ -237,13 +241,7 @@ class ApplicationActionBus internal constructor(
         }
         val validating = when (val start = executionCoordinator.begin(command, beginRisk)) {
             is ActionExecutionStart.New -> start.record
-            is ActionExecutionStart.ExistingRunning -> return ActionBusResult.InProgress(
-                executionId = start.record.command.executionId,
-                state = start.record.state,
-            )
-            is ActionExecutionStart.ExistingTerminal -> return existingTerminal(start.record)
-            is ActionExecutionStart.NeedsReconciliation -> return reconcile(start.record, context, registered)
-            is ActionExecutionStart.Conflict -> return ActionBusResult.Rejected(start.error)
+            else -> return existingStartResult(start, context, registered)
         }
         if (risk.baseRisk != registered.descriptor.riskLevel) {
             return persistFailure(
@@ -281,6 +279,22 @@ class ApplicationActionBus internal constructor(
                 validating,
             )
         }
+    }
+
+    /** 将快速检查和最终 compare-and-create 的 existing 分支统一翻译为 Bus 结果。 */
+    private suspend fun existingStartResult(
+        start: ActionExecutionStart,
+        context: ActionContext,
+        registered: RegisteredAction<*, *>,
+    ): ActionBusResult = when (start) {
+        is ActionExecutionStart.New -> conflict("新 execution 不能作为 existing 重放")
+        is ActionExecutionStart.ExistingRunning -> ActionBusResult.InProgress(
+            executionId = start.record.command.executionId,
+            state = start.record.state,
+        )
+        is ActionExecutionStart.ExistingTerminal -> existingTerminal(start.record)
+        is ActionExecutionStart.NeedsReconciliation -> reconcile(start.record, context, registered)
+        is ActionExecutionStart.Conflict -> ActionBusResult.Rejected(start.error)
     }
 
     /** 按持久化未知结果携带的策略执行一次有界对账。 */
@@ -735,20 +749,20 @@ class ApplicationActionBus internal constructor(
                 context,
                 previewed,
                 effectiveRisk,
+                "confirmation_accepted",
+                confirmation = confirmation,
             )
             ConfirmationDecision.REJECTED -> finishWithoutExecution(
                 previewed,
                 ActionResult.Canceled(command.executionId, "用户拒绝动作预览"),
-                "state_transition",
-                emptyPayload(),
-                null,
+                "confirmation_rejected",
+                confirmation = confirmation,
             )
             ConfirmationDecision.EXPIRED -> finishWithoutExecution(
                 previewed,
                 ActionResult.Expired(command.executionId, "动作预览确认已过期"),
-                "state_transition",
-                emptyPayload(),
-                null,
+                "confirmation_expired",
+                confirmation = confirmation,
             )
         }
     }
@@ -799,23 +813,24 @@ class ApplicationActionBus internal constructor(
             ConfirmationDecision.REJECTED -> return finishWithoutExecution(
                 previewed,
                 ActionResult.Canceled(command.executionId, "用户拒绝动作预览"),
-                "state_transition",
-                emptyPayload(),
-                null,
+                "confirmation_rejected",
+                confirmation = confirmation,
             )
             ConfirmationDecision.EXPIRED -> return finishWithoutExecution(
                 previewed,
                 ActionResult.Expired(command.executionId, "动作预览确认已过期"),
-                "state_transition",
-                emptyPayload(),
-                null,
+                "confirmation_expired",
+                confirmation = confirmation,
             )
             ConfirmationDecision.ACCEPTED -> Unit
         }
+        val requestedAt = clock.now()
         val waiting = when (val advanced = advanceState(
             previewed,
             ActionExecutionState.WAITING_APPROVAL,
             transitionType = "approval_requested",
+            confirmation = confirmation,
+            requestedAt = requestedAt,
         )) {
             is StateAdvanceResult.Advanced -> advanced.record
             is StateAdvanceResult.ExistingTerminal -> return advanced.result
@@ -841,7 +856,6 @@ class ApplicationActionBus internal constructor(
                 ActionError(ActionErrorCode.PROTOCOL_ERROR, "审批决定 executionId 不匹配"),
             )
         }
-        val payload = approvalPayload(approval)
         return when (approval.decision) {
             ApprovalDecision.APPROVED -> executeAfterGate(
                 registered,
@@ -850,22 +864,22 @@ class ApplicationActionBus internal constructor(
                 waiting,
                 risk.effectiveRisk,
                 "approval_approved",
-                payload,
-                approval.decidedBy,
+                actorId = approval.decidedBy,
+                approval = approval,
             )
             ApprovalDecision.DENIED -> finishWithoutExecution(
                 waiting,
                 ActionResult.Canceled(command.executionId, "高风险动作审批被拒绝"),
                 "approval_denied",
-                payload,
-                approval.decidedBy,
+                actorId = approval.decidedBy,
+                approval = approval,
             )
             ApprovalDecision.EXPIRED -> finishWithoutExecution(
                 waiting,
                 ActionResult.Expired(command.executionId, "高风险动作审批已过期"),
                 "approval_expired",
-                payload,
-                approval.decidedBy,
+                actorId = approval.decidedBy,
+                approval = approval,
             )
         }
     }
@@ -899,6 +913,9 @@ class ApplicationActionBus internal constructor(
         transitionType: String = "state_transition",
         transitionPayload: JsonObject = emptyPayload(),
         actorId: String? = null,
+        confirmation: ActionConfirmation? = null,
+        approval: ActionApproval? = null,
+        requestedAt: java.time.Instant? = null,
     ): ActionBusResult {
         val running = when (val advanced = advanceState(
             current,
@@ -907,6 +924,9 @@ class ApplicationActionBus internal constructor(
             transitionType = transitionType,
             transitionPayload = transitionPayload,
             actorId = actorId,
+            confirmation = confirmation,
+            approval = approval,
+            requestedAt = requestedAt,
         )) {
             is StateAdvanceResult.Advanced -> advanced.record
             is StateAdvanceResult.ExistingTerminal -> return advanced.result
@@ -1007,14 +1027,20 @@ class ApplicationActionBus internal constructor(
         current: ActionExecutionRecord,
         result: ActionResult<JsonElement>,
         transitionType: String,
-        transitionPayload: JsonObject,
-        actorId: String?,
+        transitionPayload: JsonObject = emptyPayload(),
+        actorId: String? = null,
+        confirmation: ActionConfirmation? = null,
+        approval: ActionApproval? = null,
+        requestedAt: java.time.Instant? = null,
     ): ActionBusResult = persistTerminal(
         current,
         result,
         transitionType,
         transitionPayload,
         actorId,
+        confirmation,
+        approval,
+        requestedAt,
     )
 
     private suspend fun persistEncodingFailure(
@@ -1074,6 +1100,9 @@ class ApplicationActionBus internal constructor(
         transitionType: String = "state_transition",
         transitionPayload: JsonObject = emptyPayload(),
         actorId: String? = null,
+        confirmation: ActionConfirmation? = null,
+        approval: ActionApproval? = null,
+        requestedAt: java.time.Instant? = null,
     ): ActionBusResult {
         val terminalState = result.terminalState()
             ?: return persistProtocolFailure(current, "执行返回了中间结果")
@@ -1098,6 +1127,9 @@ class ApplicationActionBus internal constructor(
                     actorId,
                     completedAt,
                     result,
+                    confirmation = confirmation,
+                    approval = approval,
+                    requestedAt = requestedAt,
                 ),
             ),
         )) {
@@ -1170,6 +1202,9 @@ class ApplicationActionBus internal constructor(
         transitionType: String = "state_transition",
         transitionPayload: JsonObject = emptyPayload(),
         actorId: String? = null,
+        confirmation: ActionConfirmation? = null,
+        approval: ActionApproval? = null,
+        requestedAt: java.time.Instant? = null,
     ): StateAdvanceResult {
         val now = clock.now()
         return when (val updated = executionStore.transition(
@@ -1187,6 +1222,9 @@ class ApplicationActionBus internal constructor(
                     transitionPayload,
                     actorId,
                     now,
+                    confirmation = confirmation,
+                    approval = approval,
+                    requestedAt = requestedAt,
                 ),
             ),
         )) {
@@ -1205,12 +1243,6 @@ class ApplicationActionBus internal constructor(
     }
 }
 
-private fun approvalPayload(approval: ActionApproval): JsonObject = buildJsonObject {
-    put("approvalId", approval.approvalId)
-    put("decision", approval.decision.name)
-    put("decidedAt", approval.decidedAt.toString())
-}
-
 private fun auditDraft(
     record: ActionExecutionRecord,
     fromState: ActionExecutionState,
@@ -1221,6 +1253,9 @@ private fun auditDraft(
     occurredAt: java.time.Instant,
     result: ActionResult<JsonElement>? = null,
     error: ActionError? = null,
+    confirmation: ActionConfirmation? = null,
+    approval: ActionApproval? = null,
+    requestedAt: java.time.Instant? = null,
 ): ActionAuditDraft = ActionAuditDraft(
     executionId = record.command.executionId,
     fromState = fromState,
@@ -1231,7 +1266,9 @@ private fun auditDraft(
         risk = record.riskLevel,
         occurredAt = occurredAt,
         details = payload,
-        approvalActorId = actorId,
+        confirmation = confirmation,
+        approval = approval,
+        requestedAt = requestedAt,
         result = result,
         terminalState = toState.takeIf { result != null || error != null },
         error = error,
