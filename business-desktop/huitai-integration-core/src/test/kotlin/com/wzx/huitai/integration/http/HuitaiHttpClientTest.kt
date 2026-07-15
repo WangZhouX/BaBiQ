@@ -12,11 +12,13 @@ import com.wzx.huitai.integration.auth.TokenRefreshResult
 import io.ktor.http.HttpHeaders
 import java.time.Instant
 import java.util.ArrayDeque
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.async
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.awaitAll
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
@@ -92,6 +94,123 @@ class HuitaiHttpClientTest {
         assertEquals("Bearer access-initial", fixture.transport.requests[0].headers[HttpHeaders.Authorization])
         assertEquals("Bearer access-refreshed", fixture.transport.requests[1].headers[HttpHeaders.Authorization])
         assertEquals(tokenSet("refreshed"), fixture.persistence.replacements.last())
+    }
+
+    @Test
+    fun `staggered old-token 401 responses reuse one completed refresh`() = runTest {
+        val persistence = ClientCredentialPersistence()
+        val manager = AuthSessionManager(
+            credentialPersistence = persistence,
+            authSessionIdFactory = { "auth-session-1" },
+        )
+        manager.login(
+            userId = USER_ID,
+            tenantId = TENANT_ID,
+            platformId = PLATFORM_ID,
+            roles = setOf("lawyer"),
+            permissions = setOf("case:read"),
+            authenticatedAt = AUTHENTICATED_AT,
+            tokens = tokenSet("initial"),
+        )
+        val oldRequestsStarted = CompletableDeferred<Unit>()
+        val releaseLateOldResponses = CompletableDeferred<Unit>()
+        val firstReplayObserved = CompletableDeferred<Unit>()
+        val transport = StaggeredAuthExpiryTransport(
+            requestCount = 10,
+            oldRequestsStarted = oldRequestsStarted,
+            releaseLateOldResponses = releaseLateOldResponses,
+            firstReplayObserved = firstReplayObserved,
+        )
+        val refreshCalls = AtomicInteger()
+        val coordinator = TokenRefreshCoordinator(manager, backgroundScope) {
+            refreshCalls.incrementAndGet()
+            TokenRefreshResult.Refreshed(
+                userId = USER_ID,
+                tenantId = TENANT_ID,
+                platformId = PLATFORM_ID,
+                roles = setOf("lawyer"),
+                permissions = setOf("case:read"),
+                authenticatedAt = AUTHENTICATED_AT.plusSeconds(60),
+                tokens = tokenSet("refreshed"),
+            )
+        }
+        val client = HuitaiHttpClient(
+            transport = transport,
+            decoder = CommonResultDecoder(),
+            sessionManager = manager,
+            refreshCoordinator = coordinator,
+        )
+        val responses = List(10) {
+            async { client.send(request(ActionReplayPolicy.SAFE)) }
+        }
+        oldRequestsStarted.await()
+
+        firstReplayObserved.await()
+        releaseLateOldResponses.complete(Unit)
+        val completed = responses.awaitAll()
+
+        assertTrue(completed.all { it is HuitaiResponse.Success })
+        assertEquals(1, refreshCalls.get(), "late 401 responses for the old token must reuse the completed refresh")
+        assertEquals(10, transport.oldAuthorizationHeaders.size)
+        assertTrue(transport.oldAuthorizationHeaders.all { it == "Bearer access-initial" })
+        assertEquals(10, transport.replayAuthorizationHeaders.size)
+        assertTrue(transport.replayAuthorizationHeaders.all { it == "Bearer access-refreshed" })
+    }
+
+    @Test
+    fun `late old-session 401 cannot refresh or replay under a newly logged in identity`() = runTest {
+        val persistence = ClientCredentialPersistence()
+        val sessionSequence = AtomicInteger()
+        val manager = AuthSessionManager(
+            credentialPersistence = persistence,
+            authSessionIdFactory = { "auth-session-${sessionSequence.incrementAndGet()}" },
+        )
+        manager.login(
+            userId = USER_ID,
+            tenantId = TENANT_ID,
+            platformId = PLATFORM_ID,
+            roles = setOf("lawyer"),
+            permissions = setOf("case:read"),
+            authenticatedAt = AUTHENTICATED_AT,
+            tokens = tokenSet("old-session"),
+        )
+        val requestStarted = CompletableDeferred<Unit>()
+        val releaseResponse = CompletableDeferred<Unit>()
+        val transport = DelayedAuthExpiryTransport(requestStarted, releaseResponse)
+        val refreshCalls = AtomicInteger()
+        val client = HuitaiHttpClient(
+            transport = transport,
+            decoder = CommonResultDecoder(),
+            sessionManager = manager,
+            refreshCoordinator = TokenRefreshCoordinator(manager, backgroundScope) {
+                refreshCalls.incrementAndGet()
+                TokenRefreshResult.AuthenticationExpired
+            },
+        )
+        val response = async { client.send(request(ActionReplayPolicy.SAFE)) }
+        requestStarted.await()
+
+        manager.logout()
+        manager.login(
+            userId = "user-new",
+            tenantId = "tenant-new",
+            platformId = PLATFORM_ID,
+            roles = setOf("partner"),
+            permissions = setOf("case:write"),
+            authenticatedAt = AUTHENTICATED_AT.plusSeconds(120),
+            tokens = tokenSet("new-session"),
+        )
+        releaseResponse.complete(Unit)
+
+        assertEquals(
+            ActionErrorCode.AUTH_EXPIRED,
+            assertIs<HuitaiResponse.Failure>(response.await()).errorCode,
+        )
+        assertEquals(0, refreshCalls.get())
+        assertEquals(1, transport.callCount.get())
+        assertEquals(AuthenticationState.AUTHENTICATED, manager.state.value)
+        assertEquals("user-new", manager.identity.value?.userId)
+        assertEquals("tenant-new", manager.requestIdentitySnapshot()?.tenantId)
     }
 
     @Test
@@ -470,6 +589,63 @@ private class RecordingTransport(
     override suspend fun send(request: HuitaiRequest): HuitaiTransportOutcome {
         requests += request
         return outcomes.removeFirst()
+    }
+}
+
+private class StaggeredAuthExpiryTransport(
+    private val requestCount: Int,
+    private val oldRequestsStarted: CompletableDeferred<Unit>,
+    private val releaseLateOldResponses: CompletableDeferred<Unit>,
+    private val firstReplayObserved: CompletableDeferred<Unit>,
+) : HuitaiTransport {
+    private val oldRequestOrdinal = AtomicInteger()
+    private val oldRequestCount = AtomicInteger()
+    val oldAuthorizationHeaders = ConcurrentLinkedQueue<String?>()
+    val replayAuthorizationHeaders = ConcurrentLinkedQueue<String?>()
+
+    override suspend fun send(request: HuitaiRequest): HuitaiTransportOutcome {
+        val authorization = request.headers[HttpHeaders.Authorization]
+        return if (authorization == "Bearer access-initial") {
+            oldAuthorizationHeaders += authorization
+            val ordinal = oldRequestOrdinal.incrementAndGet()
+            if (oldRequestCount.incrementAndGet() == requestCount) oldRequestsStarted.complete(Unit)
+            if (ordinal > 1) releaseLateOldResponses.await()
+            authExpiredResponse()
+        } else {
+            replayAuthorizationHeaders += authorization
+            firstReplayObserved.complete(Unit)
+            successResponse()
+        }
+    }
+
+    private fun authExpiredResponse() = HuitaiTransportOutcome.ResponseReceived(
+        httpStatus = 401,
+        headers = mapOf(HttpHeaders.ContentType to listOf("application/json")),
+        body = """{"code":401,"msg":"authentication expired","data":null}""".encodeToByteArray(),
+    )
+
+    private fun successResponse() = HuitaiTransportOutcome.ResponseReceived(
+        httpStatus = 200,
+        headers = mapOf(HttpHeaders.ContentType to listOf("application/json")),
+        body = """{"code":200,"msg":"success","data":{"caseId":"case-1"}}""".encodeToByteArray(),
+    )
+}
+
+private class DelayedAuthExpiryTransport(
+    private val requestStarted: CompletableDeferred<Unit>,
+    private val releaseResponse: CompletableDeferred<Unit>,
+) : HuitaiTransport {
+    val callCount = AtomicInteger()
+
+    override suspend fun send(request: HuitaiRequest): HuitaiTransportOutcome {
+        callCount.incrementAndGet()
+        requestStarted.complete(Unit)
+        releaseResponse.await()
+        return HuitaiTransportOutcome.ResponseReceived(
+            httpStatus = 401,
+            headers = mapOf(HttpHeaders.ContentType to listOf("application/json")),
+            body = """{"code":401,"msg":"authentication expired","data":null}""".encodeToByteArray(),
+        )
     }
 }
 

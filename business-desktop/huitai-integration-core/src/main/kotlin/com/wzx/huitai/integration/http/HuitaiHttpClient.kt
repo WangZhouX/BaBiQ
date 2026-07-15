@@ -21,7 +21,7 @@ class HuitaiHttpClient(
             is HuitaiTransportOutcome.ResponseReceived -> handleReceived(request, first.identity, outcome)
             HuitaiTransportOutcome.NotSent,
             HuitaiTransportOutcome.AmbiguousAfterSend,
-            -> handleTransportDecision(request, outcome)
+            -> handleTransportDecision(request, first.identity, outcome)
         }
     }
 
@@ -40,6 +40,15 @@ class HuitaiHttpClient(
         }
         if (outcome.httpStatus !in AUTH_EXPIRED_STATUSES) return decoded
 
+        val currentIdentity = sessionManager.requestIdentitySnapshot()
+            ?: return failure(ActionErrorCode.AUTH_EXPIRED)
+        if (!currentIdentity.hasSameBoundary(requestIdentity)) {
+            return failure(ActionErrorCode.AUTH_EXPIRED)
+        }
+        if (currentIdentity.accessToken != requestIdentity.accessToken) {
+            return replayAfterRefresh(request, requestIdentity, outcome)
+        }
+
         when (val refreshResult = refreshSafely()) {
             TokenRefreshResult.AuthenticationExpired,
             TokenRefreshResult.Stale,
@@ -48,17 +57,28 @@ class HuitaiHttpClient(
             TokenRefreshResult.MembershipExpired -> return failure(ActionErrorCode.MEMBERSHIP_EXPIRED)
             is TokenRefreshResult.Refreshed -> Unit
         }
+        return replayAfterRefresh(request, requestIdentity, outcome)
+    }
+
+    private suspend fun replayAfterRefresh(
+        request: HuitaiRequest,
+        requestIdentity: AuthenticatedRequestIdentity,
+        outcome: HuitaiTransportOutcome.ResponseReceived,
+    ): HuitaiResponse {
         val refreshedOutcome = outcome.withAuthenticationRefreshCompleted()
         return when (RequestReplayDecision.decide(request, refreshedOutcome)) {
-            RequestReplayDecision.Replay -> sendOnceAndDecode(request)
+            RequestReplayDecision.Replay -> sendOnceAndDecode(request, requestIdentity)
             RequestReplayDecision.AuthExpiredNoReplay,
             RequestReplayDecision.NoReplay,
             -> failure(ActionErrorCode.AUTH_EXPIRED)
 
-            RequestReplayDecision.RetryWithoutReconciliation -> sendOnceAndDecode(request)
+            RequestReplayDecision.RetryWithoutReconciliation -> sendOnceAndDecode(request, requestIdentity)
             is RequestReplayDecision.OutcomeUnknown -> failure(ActionErrorCode.OUTCOME_UNKNOWN)
         }
     }
+
+    private fun AuthenticatedRequestIdentity.hasSameBoundary(other: AuthenticatedRequestIdentity): Boolean =
+        authSessionId == other.authSessionId && identityEpoch == other.identityEpoch
 
     private suspend fun refreshSafely(): TokenRefreshResult = try {
         refreshCoordinator.refreshOnce()
@@ -72,19 +92,23 @@ class HuitaiHttpClient(
 
     private suspend fun handleTransportDecision(
         request: HuitaiRequest,
+        requestIdentity: AuthenticatedRequestIdentity,
         outcome: HuitaiTransportOutcome,
     ): HuitaiResponse = when (RequestReplayDecision.decide(request, outcome)) {
         RequestReplayDecision.Replay,
         RequestReplayDecision.RetryWithoutReconciliation,
-        -> sendOnceAndDecode(request)
+        -> sendOnceAndDecode(request, requestIdentity)
 
         is RequestReplayDecision.OutcomeUnknown -> failure(ActionErrorCode.OUTCOME_UNKNOWN)
         RequestReplayDecision.AuthExpiredNoReplay -> failure(ActionErrorCode.AUTH_EXPIRED)
         RequestReplayDecision.NoReplay -> failure(ActionErrorCode.PROTOCOL_ERROR)
     }
 
-    private suspend fun sendOnceAndDecode(request: HuitaiRequest): HuitaiResponse {
-        val retry = sendAuthenticated(request) ?: return failure(ActionErrorCode.AUTH_EXPIRED)
+    private suspend fun sendOnceAndDecode(
+        request: HuitaiRequest,
+        expectedIdentity: AuthenticatedRequestIdentity,
+    ): HuitaiResponse {
+        val retry = sendAuthenticated(request, expectedIdentity) ?: return failure(ActionErrorCode.AUTH_EXPIRED)
         return when (val retryOutcome = retry.outcome) {
             is HuitaiTransportOutcome.ResponseReceived -> decodeTerminalResponse(retry.identity, retryOutcome)
             HuitaiTransportOutcome.AmbiguousAfterSend -> failure(ActionErrorCode.OUTCOME_UNKNOWN)
@@ -111,8 +135,12 @@ class HuitaiHttpClient(
         return decoded
     }
 
-    private suspend fun sendAuthenticated(request: HuitaiRequest): AuthenticatedTransportAttempt? {
+    private suspend fun sendAuthenticated(
+        request: HuitaiRequest,
+        expectedIdentity: AuthenticatedRequestIdentity? = null,
+    ): AuthenticatedTransportAttempt? {
         val identity = sessionManager.requestIdentitySnapshot() ?: return null
+        if (expectedIdentity != null && !identity.hasSameBoundary(expectedIdentity)) return null
         val headers = LinkedHashMap(request.headers)
         removeHeaderIgnoreCase(headers, HttpHeaders.Authorization)
         removeHeaderIgnoreCase(headers, TENANT_HEADER)
