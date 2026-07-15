@@ -33,7 +33,7 @@ class AuthSessionManager(
             onBufferOverflow = BufferOverflow.DROP_OLDEST,
         )
     @Volatile
-    private var credentialSnapshot = CredentialSnapshot(tokens = null, readable = false)
+    private var credentialSnapshot = CredentialSnapshot(tokens = null, readable = false, requestIdentity = null)
     private var identityEpoch: Long = 0
 
     val state: StateFlow<AuthenticationState> = mutableState.asStateFlow()
@@ -67,7 +67,7 @@ class AuthSessionManager(
         )
         val previousCredentialSnapshot = credentialSnapshot
         mutableState.value = signingIn
-        credentialSnapshot = previousCredentialSnapshot.copy(readable = false)
+        credentialSnapshot = previousCredentialSnapshot.copy(readable = false, requestIdentity = null)
         try {
             credentialPersistence.replace(tokens)
         } catch (failure: Throwable) {
@@ -78,7 +78,11 @@ class AuthSessionManager(
         identityEpoch = nextEpoch
         mutableIdentity.value = identity
         mutableState.value = authenticated
-        credentialSnapshot = CredentialSnapshot(tokens = tokens, readable = true)
+        credentialSnapshot = CredentialSnapshot(
+            tokens = tokens,
+            readable = true,
+            requestIdentity = identity.toRequestIdentity(tokens),
+        )
         publishTransition(
             AuthIdentityTransition(
                 previousIdentity = previousIdentity,
@@ -93,7 +97,7 @@ class AuthSessionManager(
     /** 启动恢复只装载内部凭据，不推断登录状态或身份。 */
     suspend fun restoreCredentials() = mutex.withLock {
         val loaded = credentialPersistence.load()
-        credentialSnapshot = CredentialSnapshot(tokens = loaded, readable = loaded != null)
+        credentialSnapshot = CredentialSnapshot(tokens = loaded, readable = loaded != null, requestIdentity = null)
     }
 
     /**
@@ -110,6 +114,34 @@ class AuthSessionManager(
         authenticatedAt: Instant,
         tokens: AuthTokenSet,
     ) = mutex.withLock {
+        refreshLocked(userId, tenantId, platformId, roles, permissions, authenticatedAt, tokens)
+    }
+
+    internal suspend fun refreshIfCurrent(
+        expectedAuthSessionId: String,
+        expectedIdentityEpoch: Long,
+        userId: String,
+        tenantId: String,
+        platformId: String,
+        roles: Set<String>,
+        permissions: Set<String>,
+        authenticatedAt: Instant,
+        tokens: AuthTokenSet,
+    ): Boolean = mutex.withLock {
+        if (!requestIdentityMatches(expectedAuthSessionId, expectedIdentityEpoch)) return@withLock false
+        refreshLocked(userId, tenantId, platformId, roles, permissions, authenticatedAt, tokens)
+        true
+    }
+
+    private suspend fun refreshLocked(
+        userId: String,
+        tenantId: String,
+        platformId: String,
+        roles: Set<String>,
+        permissions: Set<String>,
+        authenticatedAt: Instant,
+        tokens: AuthTokenSet,
+    ) {
         val previousState = mutableState.value
         val currentIdentity = checkNotNull(mutableIdentity.value) {
             "Authenticated identity is required for refresh"
@@ -137,7 +169,7 @@ class AuthSessionManager(
         // 持久化成功才发布新凭据与身份，避免内存和安全存储观察到不同版本。
         val previousCredentialSnapshot = credentialSnapshot
         mutableState.value = transitioning
-        credentialSnapshot = previousCredentialSnapshot.copy(readable = false)
+        credentialSnapshot = previousCredentialSnapshot.copy(readable = false, requestIdentity = null)
         try {
             credentialPersistence.replace(tokens)
         } catch (failure: Throwable) {
@@ -148,7 +180,11 @@ class AuthSessionManager(
         identityEpoch = nextEpoch
         mutableIdentity.value = refreshedIdentity
         mutableState.value = authenticated
-        credentialSnapshot = CredentialSnapshot(tokens = tokens, readable = true)
+        credentialSnapshot = CredentialSnapshot(
+            tokens = tokens,
+            readable = true,
+            requestIdentity = refreshedIdentity.toRequestIdentity(tokens),
+        )
         publishTransition(
             AuthIdentityTransition(
                 previousIdentity = currentIdentity,
@@ -182,7 +218,7 @@ class AuthSessionManager(
             credentialSnapshot = previousCredentialSnapshot
             throw failure
         }
-        credentialSnapshot = CredentialSnapshot(tokens = null, readable = false)
+        credentialSnapshot = CredentialSnapshot(tokens = null, readable = false, requestIdentity = null)
         identityEpoch = nextEpoch
         mutableState.value = signedOut
         publishTransition(transition)
@@ -195,8 +231,40 @@ class AuthSessionManager(
     /** 将当前认证收束为会员失效，并保留独立终态供 UI 和策略判断。 */
     suspend fun expireMembership() = expire(AuthenticationState.MEMBERSHIP_EXPIRED)
 
+    internal suspend fun expireAuthenticationIfCurrent(
+        expectedAuthSessionId: String,
+        expectedIdentityEpoch: Long,
+    ): Boolean = expireIfCurrent(
+        expectedAuthSessionId,
+        expectedIdentityEpoch,
+        AuthenticationState.EXPIRED,
+    )
+
+    internal suspend fun expireMembershipIfCurrent(
+        expectedAuthSessionId: String,
+        expectedIdentityEpoch: Long,
+    ): Boolean = expireIfCurrent(
+        expectedAuthSessionId,
+        expectedIdentityEpoch,
+        AuthenticationState.MEMBERSHIP_EXPIRED,
+    )
+
+    private suspend fun expireIfCurrent(
+        expectedAuthSessionId: String,
+        expectedIdentityEpoch: Long,
+        targetState: AuthenticationState,
+    ): Boolean = mutex.withLock {
+        if (!requestIdentityMatches(expectedAuthSessionId, expectedIdentityEpoch)) return@withLock false
+        expireLocked(targetState)
+        true
+    }
+
     /** 在同一临界区发布失效事件并完成凭据清理。 */
     private suspend fun expire(targetState: AuthenticationState) = mutex.withLock {
+        expireLocked(targetState)
+    }
+
+    private suspend fun expireLocked(targetState: AuthenticationState) {
         val previousState = mutableState.value
         val previousIdentity = mutableIdentity.value
         val transitionSource = if (previousState == AuthenticationState.AUTHENTICATED) {
@@ -217,7 +285,7 @@ class AuthSessionManager(
         // 清理失败不发布终态，避免持久凭据与公开会话状态相互矛盾。
         val previousCredentialSnapshot = credentialSnapshot
         mutableState.value = transitionSource
-        credentialSnapshot = previousCredentialSnapshot.copy(readable = false)
+        credentialSnapshot = previousCredentialSnapshot.copy(readable = false, requestIdentity = null)
         try {
             credentialPersistence.clear()
         } catch (failure: Throwable) {
@@ -225,7 +293,7 @@ class AuthSessionManager(
             mutableState.value = previousState
             throw failure
         }
-        credentialSnapshot = CredentialSnapshot(tokens = null, readable = false)
+        credentialSnapshot = CredentialSnapshot(tokens = null, readable = false, requestIdentity = null)
         identityEpoch = nextEpoch
         mutableState.value = terminal
         publishTransition(transition)
@@ -238,6 +306,15 @@ class AuthSessionManager(
     /** 仅供模块内刷新协调器读取刷新 token。 */
     override suspend fun refreshToken(): String? = credentialSnapshot.readableTokens()?.refreshToken
 
+    /** 单次 volatile 读取返回与凭据同一提交点安装的认证请求身份。 */
+    internal fun requestIdentitySnapshot(): AuthenticatedRequestIdentity? =
+        credentialSnapshot.requestIdentity
+
+    private fun requestIdentityMatches(authSessionId: String, identityEpoch: Long): Boolean =
+        credentialSnapshot.requestIdentity?.let { identity ->
+            identity.authSessionId == authSessionId && identity.identityEpoch == identityEpoch
+        } == true
+
     /** 非阻塞发布身份事件，避免慢订阅者在认证互斥区内造成全局停顿。 */
     private fun publishTransition(transition: AuthIdentityTransition) {
         mutableIdentityTransitions.tryEmit(transition)
@@ -247,7 +324,28 @@ class AuthSessionManager(
     private data class CredentialSnapshot(
         val tokens: AuthTokenSet?,
         val readable: Boolean,
+        val requestIdentity: AuthenticatedRequestIdentity?,
     ) {
         fun readableTokens(): AuthTokenSet? = tokens?.takeIf { readable }
     }
+
+    private fun AuthIdentitySnapshot.toRequestIdentity(tokens: AuthTokenSet) =
+        AuthenticatedRequestIdentity(
+            accessToken = tokens.accessToken,
+            tenantId = tenantId,
+            authSessionId = authSessionId,
+            identityEpoch = identityEpoch,
+        )
+}
+
+/** 仅在 integration 模块内部原子传递认证请求边界。 */
+internal data class AuthenticatedRequestIdentity(
+    val accessToken: String,
+    val tenantId: String,
+    val authSessionId: String,
+    val identityEpoch: Long,
+) {
+    override fun toString(): String =
+        "AuthenticatedRequestIdentity(accessToken=[REDACTED], tenantId=[REDACTED], " +
+            "authSessionId=[REDACTED], identityEpoch=$identityEpoch)"
 }

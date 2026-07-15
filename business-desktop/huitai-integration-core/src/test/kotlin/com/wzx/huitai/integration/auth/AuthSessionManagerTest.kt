@@ -602,6 +602,65 @@ class AuthSessionManagerTest {
         collector.cancel()
     }
 
+    @Test
+    fun `请求身份快照原子绑定token租户会话和epoch并在过渡态关闭`() = runTest {
+        val persistence = RecordingCredentialPersistence()
+        val manager = AuthSessionManager(persistence)
+
+        assertNull(manager.requestIdentitySnapshot())
+        manager.login(tokens = tokenSet("old"), identity = identityArguments)
+        val oldIdentity = assertNotNull(manager.identity.value)
+        val oldSnapshot = assertNotNull(manager.requestIdentitySnapshot())
+        assertEquals("access-old", oldSnapshot.accessToken)
+        assertEquals(identityArguments.tenantId, oldSnapshot.tenantId)
+        assertEquals(oldIdentity.authSessionId, oldSnapshot.authSessionId)
+        assertEquals(oldIdentity.identityEpoch, oldSnapshot.identityEpoch)
+
+        val replaceStarted = CompletableDeferred<Unit>()
+        val replaceRelease = CompletableDeferred<Unit>()
+        persistence.replaceStarted = replaceStarted
+        persistence.replaceRelease = replaceRelease
+        val changedIdentity = identityArguments.copy(tenantId = "tenant-2")
+        val switching = async {
+            refreshWith(manager, tokenSet("new"), changedIdentity)
+        }
+        replaceStarted.await()
+
+        assertEquals(AuthenticationState.SWITCHING_TENANT, manager.state.value)
+        assertNull(manager.requestIdentitySnapshot())
+        replaceRelease.complete(Unit)
+        switching.await()
+
+        val newIdentity = assertNotNull(manager.identity.value)
+        val newSnapshot = assertNotNull(manager.requestIdentitySnapshot())
+        assertEquals("access-new", newSnapshot.accessToken)
+        assertEquals("tenant-2", newSnapshot.tenantId)
+        assertEquals(newIdentity.authSessionId, newSnapshot.authSessionId)
+        assertEquals(newIdentity.identityEpoch, newSnapshot.identityEpoch)
+
+        manager.logout()
+        assertNull(manager.requestIdentitySnapshot())
+    }
+
+    @Test
+    fun `请求身份快照在刷新替换失败后恢复旧完整边界`() = runTest {
+        val persistence = RecordingCredentialPersistence()
+        val manager = AuthSessionManager(persistence)
+        manager.login(tokens = tokenSet("old"), identity = identityArguments)
+        val before = assertNotNull(manager.requestIdentitySnapshot())
+        persistence.failReplace = true
+
+        assertFailsWith<IllegalStateException> {
+            refreshWith(
+                manager,
+                tokenSet("rejected"),
+                identityArguments.copy(tenantId = "tenant-2"),
+            )
+        }
+
+        assertEquals(before, manager.requestIdentitySnapshot())
+    }
+
     private companion object {
         val identityArguments = IdentityArguments(
             userId = "user-1",
