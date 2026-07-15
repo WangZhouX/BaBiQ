@@ -66,6 +66,7 @@ class AuthSessionManagerTest {
         assertEquals(AuthenticationState.SIGNING_IN, manager.state.value)
         assertNull(manager.identity.value)
         assertNull(tokenProvider.accessToken())
+        assertNull(tokenProvider.refreshToken())
         replaceRelease.complete(Unit)
         login.await()
         assertEquals(AuthenticationState.AUTHENTICATED, manager.state.value)
@@ -123,11 +124,14 @@ class AuthSessionManagerTest {
 
         assertEquals(AuthenticationState.REFRESHING, manager.state.value)
         assertEquals(oldIdentity, manager.identity.value)
-        assertEquals(oldTokens.accessToken, (manager as AuthTokenProvider).accessToken())
+        assertNull((manager as AuthTokenProvider).accessToken())
+        assertNull((manager as AuthTokenProvider).refreshToken())
         replaceRelease.complete(Unit)
         refresh.await()
         runCurrent()
         assertEquals(AuthenticationState.AUTHENTICATED, manager.state.value)
+        assertEquals("access-new-refresh", (manager as AuthTokenProvider).accessToken())
+        assertEquals("refresh-new-refresh", (manager as AuthTokenProvider).refreshToken())
         assertEquals(AuthenticationState.REFRESHING, transitions.last().fromState)
         collector.cancel()
     }
@@ -178,13 +182,16 @@ class AuthSessionManagerTest {
 
             assertEquals(AuthenticationState.SWITCHING_TENANT, manager.state.value)
             assertEquals(oldIdentity, manager.identity.value)
-            assertEquals(oldTokens.accessToken, (manager as AuthTokenProvider).accessToken())
+            assertNull((manager as AuthTokenProvider).accessToken())
+            assertNull((manager as AuthTokenProvider).refreshToken())
             replaceRelease.complete(Unit)
             refresh.await()
             runCurrent()
             val newIdentity = assertNotNull(manager.identity.value)
             assertEquals(oldIdentity.identityEpoch + 1, newIdentity.identityEpoch)
             assertNotEquals(oldIdentity.authSessionId, newIdentity.authSessionId)
+            assertEquals("access-new-switch", (manager as AuthTokenProvider).accessToken())
+            assertEquals("refresh-new-switch", (manager as AuthTokenProvider).refreshToken())
             assertEquals(AuthenticationState.SWITCHING_TENANT, transitions.last().fromState)
             collector.cancel()
         }
@@ -276,13 +283,15 @@ class AuthSessionManagerTest {
 
             assertEquals(AuthenticationState.REFRESHING, manager.state.value)
             assertEquals(oldIdentity, manager.identity.value)
-            assertEquals(oldTokens.accessToken, (manager as AuthTokenProvider).accessToken())
+            assertNull((manager as AuthTokenProvider).accessToken())
+            assertNull((manager as AuthTokenProvider).refreshToken())
             clearRelease.complete(Unit)
             expiring.await()
             runCurrent()
             assertEquals(terminalState, manager.state.value)
             assertNull(manager.identity.value)
             assertNull((manager as AuthTokenProvider).accessToken())
+            assertNull((manager as AuthTokenProvider).refreshToken())
             assertEquals(AuthenticationState.REFRESHING, transitions.last().fromState)
             collector.cancel()
         }
@@ -364,6 +373,7 @@ class AuthSessionManagerTest {
         assertEquals(AuthenticationState.SIGNED_OUT, manager.state.value)
         assertNull(manager.identity.value)
         assertNull(tokenProvider.accessToken())
+        assertNull(tokenProvider.refreshToken())
         persistence.failReplace = false
         manager.login(tokens = tokenSet("retry"), identity = identityArguments)
         assertEquals(1L, assertNotNull(manager.identity.value).identityEpoch)
@@ -387,6 +397,7 @@ class AuthSessionManagerTest {
             assertEquals(AuthenticationState.AUTHENTICATED, manager.state.value)
             assertEquals(oldIdentity, manager.identity.value)
             assertEquals(oldTokens.accessToken, tokenProvider.accessToken())
+            assertEquals(oldTokens.refreshToken, tokenProvider.refreshToken())
             persistence.failReplace = false
             refreshWith(manager, tokenSet("retry"), refreshedArguments)
             val retriedIdentity = assertNotNull(manager.identity.value)
@@ -418,6 +429,7 @@ class AuthSessionManagerTest {
         assertEquals(AuthenticationState.AUTHENTICATED, manager.state.value)
         assertEquals(oldIdentity, manager.identity.value)
         assertEquals(oldTokens.accessToken, tokenProvider.accessToken())
+        assertEquals(oldTokens.refreshToken, tokenProvider.refreshToken())
         assertTrue(transitions.isEmpty())
         persistence.failClear = false
         manager.logout()
@@ -451,6 +463,7 @@ class AuthSessionManagerTest {
             assertEquals(AuthenticationState.AUTHENTICATED, manager.state.value)
             assertEquals(oldIdentity, manager.identity.value)
             assertEquals(oldTokens.accessToken, tokenProvider.accessToken())
+            assertEquals(oldTokens.refreshToken, tokenProvider.refreshToken())
             assertTrue(transitions.isEmpty())
             persistence.failClear = false
             expire(manager)
@@ -544,38 +557,49 @@ class AuthSessionManagerTest {
     }
 
     @Test
-    fun `慢订阅者阻塞时十一条身份事件仍全部非阻塞有序交付`() = runTest {
-        val manager = AuthSessionManager(RecordingCredentialPersistence())
+    fun `慢订阅者阻塞时百次生命周期不阻塞且最终收到最新身份事件`() = runTest {
+        val manager = AuthSessionManager(
+            credentialPersistence = RecordingCredentialPersistence(),
+            identityTransitionBufferCapacity = 2,
+        )
         val firstReceived = CompletableDeferred<Unit>()
         val release = CompletableDeferred<Unit>()
+        val latestReceived = CompletableDeferred<AuthIdentityTransition>()
+        var expectedEpoch = Long.MAX_VALUE
         val received = mutableListOf<AuthIdentityTransition>()
         val collector = launch(start = CoroutineStart.UNDISPATCHED) {
-            manager.identityTransitions.take(11).collect { transition ->
+            manager.identityTransitions.collect { transition ->
                 received += transition
                 if (received.size == 1) {
                     firstReceived.complete(Unit)
                     release.await()
+                }
+                if (transition.identityEpoch == expectedEpoch) {
+                    latestReceived.complete(transition)
                 }
             }
         }
         manager.login(tokens = tokenSet("initial"), identity = identityArguments)
         firstReceived.await()
 
-        repeat(5) { index ->
-            withTimeout(1_000) { manager.logout() }
-            withTimeout(1_000) {
+        withTimeout(5_000) {
+            repeat(50) { index ->
+                manager.logout()
                 manager.login(tokens = tokenSet("burst-$index"), identity = identityArguments)
             }
         }
 
+        val finalIdentity = assertNotNull(manager.identity.value)
+        expectedEpoch = finalIdentity.identityEpoch
         release.complete(Unit)
-        collector.join()
-        assertEquals(
-            List(11) { index ->
-                if (index % 2 == 0) AuthenticationState.AUTHENTICATED else AuthenticationState.SIGNED_OUT
-            },
-            received.map { it.toState },
-        )
+        val latest = withTimeout(1_000) { latestReceived.await() }
+
+        assertEquals(AuthenticationState.AUTHENTICATED, manager.state.value)
+        assertEquals(finalIdentity, manager.identity.value)
+        assertEquals(finalIdentity.identityEpoch, latest.identityEpoch)
+        assertEquals(finalIdentity, latest.currentIdentity)
+        assertTrue(received.size <= 3, message = "received=${received.size}")
+        collector.cancel()
     }
 
     private companion object {

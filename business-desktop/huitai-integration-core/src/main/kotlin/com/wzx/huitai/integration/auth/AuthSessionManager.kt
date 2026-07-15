@@ -2,6 +2,7 @@ package com.wzx.huitai.integration.auth
 
 import java.time.Instant
 import java.util.UUID
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -16,15 +17,23 @@ class AuthSessionManager(
     private val credentialPersistence: AuthCredentialPersistencePort,
     private val stateMachine: AuthenticationStateMachine = AuthenticationStateMachine(),
     private val authSessionIdFactory: () -> String = { UUID.randomUUID().toString() },
+    internal val identityTransitionBufferCapacity: Int = 16,
 ) : AuthTokenProvider {
+    init {
+        require(identityTransitionBufferCapacity > 0) { "identityTransitionBufferCapacity must be positive" }
+    }
+
     private val mutex = Mutex()
     private val mutableState = MutableStateFlow(AuthenticationState.SIGNED_OUT)
     private val mutableIdentity = MutableStateFlow<AuthIdentitySnapshot?>(null)
-    // 身份事件体积小且必须非阻塞、不丢失；持久历史由后续 durable audit 承担。
+    // UI 事件采用有界合并缓冲；权威状态由 StateFlow 提供，持久历史由 durable audit 承担。
     private val mutableIdentityTransitions =
-        MutableSharedFlow<AuthIdentityTransition>(extraBufferCapacity = Int.MAX_VALUE)
+        MutableSharedFlow<AuthIdentityTransition>(
+            extraBufferCapacity = identityTransitionBufferCapacity,
+            onBufferOverflow = BufferOverflow.DROP_OLDEST,
+        )
     @Volatile
-    private var tokens: AuthTokenSet? = null
+    private var credentialSnapshot = CredentialSnapshot(tokens = null, readable = false)
     private var identityEpoch: Long = 0
 
     val state: StateFlow<AuthenticationState> = mutableState.asStateFlow()
@@ -56,17 +65,20 @@ class AuthSessionManager(
             permissions = frozenSet(permissions),
             authenticatedAt = authenticatedAt,
         )
+        val previousCredentialSnapshot = credentialSnapshot
         mutableState.value = signingIn
+        credentialSnapshot = previousCredentialSnapshot.copy(readable = false)
         try {
             credentialPersistence.replace(tokens)
         } catch (failure: Throwable) {
+            credentialSnapshot = previousCredentialSnapshot
             mutableState.value = previousState
             throw failure
         }
         identityEpoch = nextEpoch
-        this.tokens = tokens
         mutableIdentity.value = identity
         mutableState.value = authenticated
+        credentialSnapshot = CredentialSnapshot(tokens = tokens, readable = true)
         publishTransition(
             AuthIdentityTransition(
                 previousIdentity = previousIdentity,
@@ -80,7 +92,8 @@ class AuthSessionManager(
 
     /** 启动恢复只装载内部凭据，不推断登录状态或身份。 */
     suspend fun restoreCredentials() = mutex.withLock {
-        tokens = credentialPersistence.load()
+        val loaded = credentialPersistence.load()
+        credentialSnapshot = CredentialSnapshot(tokens = loaded, readable = loaded != null)
     }
 
     /**
@@ -122,17 +135,20 @@ class AuthSessionManager(
         )
 
         // 持久化成功才发布新凭据与身份，避免内存和安全存储观察到不同版本。
+        val previousCredentialSnapshot = credentialSnapshot
         mutableState.value = transitioning
+        credentialSnapshot = previousCredentialSnapshot.copy(readable = false)
         try {
             credentialPersistence.replace(tokens)
         } catch (failure: Throwable) {
+            credentialSnapshot = previousCredentialSnapshot
             mutableState.value = previousState
             throw failure
         }
         identityEpoch = nextEpoch
-        this.tokens = tokens
         mutableIdentity.value = refreshedIdentity
         mutableState.value = authenticated
+        credentialSnapshot = CredentialSnapshot(tokens = tokens, readable = true)
         publishTransition(
             AuthIdentityTransition(
                 previousIdentity = currentIdentity,
@@ -159,12 +175,18 @@ class AuthSessionManager(
         )
 
         // 清理失败时保持完整旧会话，允许调用方安全重试。
-        credentialPersistence.clear()
+        val previousCredentialSnapshot = credentialSnapshot
+        try {
+            credentialPersistence.clear()
+        } catch (failure: Throwable) {
+            credentialSnapshot = previousCredentialSnapshot
+            throw failure
+        }
+        credentialSnapshot = CredentialSnapshot(tokens = null, readable = false)
         identityEpoch = nextEpoch
         mutableState.value = signedOut
         publishTransition(transition)
         mutableIdentity.value = null
-        tokens = null
     }
 
     /** 将当前认证收束为普通凭据失效，并删除本地身份和凭据。 */
@@ -193,30 +215,39 @@ class AuthSessionManager(
         )
 
         // 清理失败不发布终态，避免持久凭据与公开会话状态相互矛盾。
+        val previousCredentialSnapshot = credentialSnapshot
         mutableState.value = transitionSource
+        credentialSnapshot = previousCredentialSnapshot.copy(readable = false)
         try {
             credentialPersistence.clear()
         } catch (failure: Throwable) {
+            credentialSnapshot = previousCredentialSnapshot
             mutableState.value = previousState
             throw failure
         }
+        credentialSnapshot = CredentialSnapshot(tokens = null, readable = false)
         identityEpoch = nextEpoch
         mutableState.value = terminal
         publishTransition(transition)
         mutableIdentity.value = null
-        tokens = null
     }
 
     /** 仅供模块内传输层读取访问 token。 */
-    override suspend fun accessToken(): String? = tokens?.accessToken
+    override suspend fun accessToken(): String? = credentialSnapshot.readableTokens()?.accessToken
 
     /** 仅供模块内刷新协调器读取刷新 token。 */
-    override suspend fun refreshToken(): String? = tokens?.refreshToken
+    override suspend fun refreshToken(): String? = credentialSnapshot.readableTokens()?.refreshToken
 
     /** 非阻塞发布身份事件，避免慢订阅者在认证互斥区内造成全局停顿。 */
     private fun publishTransition(transition: AuthIdentityTransition) {
-        check(mutableIdentityTransitions.tryEmit(transition)) {
-            "Authentication identity transition buffer is full"
-        }
+        mutableIdentityTransitions.tryEmit(transition)
+    }
+
+    /** 单一 volatile 快照保证凭据内容与可读状态不会被跨线程拆开观察。 */
+    private data class CredentialSnapshot(
+        val tokens: AuthTokenSet?,
+        val readable: Boolean,
+    ) {
+        fun readableTokens(): AuthTokenSet? = tokens?.takeIf { readable }
     }
 }
