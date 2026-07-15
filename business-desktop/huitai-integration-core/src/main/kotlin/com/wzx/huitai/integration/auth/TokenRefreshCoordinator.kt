@@ -30,6 +30,8 @@ sealed interface TokenRefreshResult {
     data object MembershipExpired : TokenRefreshResult
 
     data object Stale : TokenRefreshResult
+
+    data object CredentialsAlreadyRefreshed : TokenRefreshResult
 }
 
 /** Serializes token refresh while allowing every concurrent caller to await one shared result. */
@@ -41,22 +43,44 @@ class TokenRefreshCoordinator(
     private val mutex = Mutex()
     private var inFlight: Deferred<RefreshExecution>? = null
 
-    suspend fun refreshOnce(): TokenRefreshResult {
+    suspend fun refreshOnce(): TokenRefreshResult = coordinateRefresh(expectedIdentity = null)
+
+    internal suspend fun refreshOnce(
+        expectedIdentity: AuthenticatedRequestIdentity,
+    ): TokenRefreshResult = coordinateRefresh(expectedIdentity)
+
+    private suspend fun coordinateRefresh(
+        expectedIdentity: AuthenticatedRequestIdentity?,
+    ): TokenRefreshResult {
         check(currentCoroutineContext()[RefreshContext.Key]?.coordinator !== this) {
             "Recursive token refresh is not allowed"
         }
 
-        val refresh = mutex.withLock {
-            inFlight ?: createRefresh().also { created -> inFlight = created }
+        val decision = mutex.withLock {
+            val activeRefresh = inFlight
+            if (activeRefresh != null) {
+                RefreshDecision.Await(activeRefresh)
+            } else {
+                expectedIdentity.immediateResultOrNull()?.let(RefreshDecision::Immediate)
+                    ?: createRefresh(expectedIdentity).also { created -> inFlight = created }
+                        .let(RefreshDecision::Await)
+            }
         }
-        refresh.start()
-        return when (val execution = refresh.await()) {
-            is RefreshExecution.Completed -> execution.result
-            is RefreshExecution.Failed -> throw execution.failure
+        return when (decision) {
+            is RefreshDecision.Immediate -> decision.result
+            is RefreshDecision.Await -> {
+                decision.refresh.start()
+                when (val execution = decision.refresh.await()) {
+                    is RefreshExecution.Completed -> execution.result
+                    is RefreshExecution.Failed -> throw execution.failure
+                }
+            }
         }
     }
 
-    private fun createRefresh(): Deferred<RefreshExecution> {
+    private fun createRefresh(
+        expectedIdentity: AuthenticatedRequestIdentity?,
+    ): Deferred<RefreshExecution> {
         lateinit var created: Deferred<RefreshExecution>
         created = refreshScope.async(
             start = CoroutineStart.LAZY,
@@ -65,7 +89,7 @@ class TokenRefreshCoordinator(
                 try {
                     RefreshExecution.Completed(
                         withContext(RefreshContext(this@TokenRefreshCoordinator)) {
-                            executeRefresh()
+                            executeRefresh(expectedIdentity)
                         },
                     )
                 } catch (cancelled: CancellationException) {
@@ -86,16 +110,20 @@ class TokenRefreshCoordinator(
         return created
     }
 
-    private suspend fun executeRefresh(): TokenRefreshResult {
-        val startIdentity = sessionManager.requestIdentitySnapshot()
-            ?: return TokenRefreshResult.AuthenticationExpired
-        val refreshToken = (sessionManager as AuthTokenProvider).refreshToken()
+    private suspend fun executeRefresh(
+        expectedIdentity: AuthenticatedRequestIdentity?,
+    ): TokenRefreshResult {
+        val startIdentity = if (expectedIdentity == null) {
+            sessionManager.requestIdentitySnapshot()
+                ?: return TokenRefreshResult.AuthenticationExpired
+        } else {
+            expectedIdentity.immediateResultOrNull()?.let { return it }
+            expectedIdentity
+        }
+        val refreshToken = sessionManager.refreshTokenIfCurrent(startIdentity)
         if (refreshToken == null) {
-            sessionManager.expireAuthenticationIfCurrent(
-                startIdentity.authSessionId,
-                startIdentity.identityEpoch,
-            )
-            return TokenRefreshResult.AuthenticationExpired
+            return startIdentity.immediateResultOrNull()
+                ?: TokenRefreshResult.AuthenticationExpired
         }
 
         val result = try {
@@ -140,9 +168,25 @@ class TokenRefreshCoordinator(
             )
 
             TokenRefreshResult.Stale -> false
+            TokenRefreshResult.CredentialsAlreadyRefreshed -> false
         }
         return if (applied) result else TokenRefreshResult.Stale
     }
+
+    private fun AuthenticatedRequestIdentity?.immediateResultOrNull(): TokenRefreshResult? {
+        if (this == null) return null
+        val currentIdentity = sessionManager.requestIdentitySnapshot()
+            ?: return TokenRefreshResult.Stale
+        if (!currentIdentity.hasSameBoundary(this)) return TokenRefreshResult.Stale
+        return if (currentIdentity.accessToken != accessToken) {
+            TokenRefreshResult.CredentialsAlreadyRefreshed
+        } else {
+            null
+        }
+    }
+
+    private fun AuthenticatedRequestIdentity.hasSameBoundary(other: AuthenticatedRequestIdentity): Boolean =
+        authSessionId == other.authSessionId && identityEpoch == other.identityEpoch
 
     private class RefreshContext(
         val coordinator: TokenRefreshCoordinator,
@@ -154,5 +198,11 @@ class TokenRefreshCoordinator(
         data class Completed(val result: TokenRefreshResult) : RefreshExecution
 
         data class Failed(val failure: Throwable) : RefreshExecution
+    }
+
+    private sealed interface RefreshDecision {
+        data class Immediate(val result: TokenRefreshResult) : RefreshDecision
+
+        data class Await(val refresh: Deferred<RefreshExecution>) : RefreshDecision
     }
 }

@@ -40,22 +40,15 @@ class HuitaiHttpClient(
         }
         if (outcome.httpStatus !in AUTH_EXPIRED_STATUSES) return decoded
 
-        val currentIdentity = sessionManager.requestIdentitySnapshot()
-            ?: return failure(ActionErrorCode.AUTH_EXPIRED)
-        if (!currentIdentity.hasSameBoundary(requestIdentity)) {
-            return failure(ActionErrorCode.AUTH_EXPIRED)
-        }
-        if (currentIdentity.accessToken != requestIdentity.accessToken) {
-            return replayAfterRefresh(request, requestIdentity, outcome)
-        }
-
-        when (val refreshResult = refreshSafely()) {
+        when (val refreshResult = refreshSafely(requestIdentity)) {
             TokenRefreshResult.AuthenticationExpired,
             TokenRefreshResult.Stale,
             -> return failure(ActionErrorCode.AUTH_EXPIRED)
 
             TokenRefreshResult.MembershipExpired -> return failure(ActionErrorCode.MEMBERSHIP_EXPIRED)
-            is TokenRefreshResult.Refreshed -> Unit
+            is TokenRefreshResult.Refreshed,
+            TokenRefreshResult.CredentialsAlreadyRefreshed,
+            -> Unit
         }
         return replayAfterRefresh(request, requestIdentity, outcome)
     }
@@ -77,11 +70,10 @@ class HuitaiHttpClient(
         }
     }
 
-    private fun AuthenticatedRequestIdentity.hasSameBoundary(other: AuthenticatedRequestIdentity): Boolean =
-        authSessionId == other.authSessionId && identityEpoch == other.identityEpoch
-
-    private suspend fun refreshSafely(): TokenRefreshResult = try {
-        refreshCoordinator.refreshOnce()
+    private suspend fun refreshSafely(
+        expectedIdentity: AuthenticatedRequestIdentity,
+    ): TokenRefreshResult = try {
+        refreshCoordinator.refreshOnce(expectedIdentity)
     } catch (cancelled: CancellationException) {
         throw cancelled
     } catch (error: Error) {
@@ -190,6 +182,9 @@ class HuitaiHttpClient(
 
     private fun HuitaiResponse.isAuthenticationExpired(): Boolean =
         this is HuitaiResponse.Failure && errorCode == ActionErrorCode.AUTH_EXPIRED
+
+    private fun AuthenticatedRequestIdentity.hasSameBoundary(other: AuthenticatedRequestIdentity): Boolean =
+        authSessionId == other.authSessionId && identityEpoch == other.identityEpoch
 
     private fun removeHeaderIgnoreCase(headers: MutableMap<String, String>, headerName: String) {
         headers.keys.filter { it.equals(headerName, ignoreCase = true) }.forEach(headers::remove)

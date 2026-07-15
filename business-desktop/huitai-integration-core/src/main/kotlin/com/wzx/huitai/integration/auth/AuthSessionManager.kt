@@ -310,6 +310,14 @@ class AuthSessionManager(
     internal fun requestIdentitySnapshot(): AuthenticatedRequestIdentity? =
         credentialSnapshot.requestIdentity
 
+    /** 从同一个 volatile 凭据快照中校验请求身份并取得刷新 token。 */
+    internal fun refreshTokenIfCurrent(expectedIdentity: AuthenticatedRequestIdentity): String? {
+        val snapshot = credentialSnapshot
+        return snapshot.tokens
+            ?.takeIf { snapshot.readable && snapshot.requestIdentity == expectedIdentity }
+            ?.refreshToken
+    }
+
     private fun requestIdentityMatches(authSessionId: String, identityEpoch: Long): Boolean =
         credentialSnapshot.requestIdentity?.let { identity ->
             identity.authSessionId == authSessionId && identity.identityEpoch == identityEpoch

@@ -61,6 +61,49 @@ class TokenRefreshCoordinatorTest {
     }
 
     @Test
+    fun `late caller with old expected identity reuses completed refresh without another operation`() = runTest {
+        val manager = authenticatedManager(RefreshCredentialPersistence())
+        val oldIdentity = assertNotNull(manager.requestIdentitySnapshot())
+        val operationCalls = AtomicInteger()
+        val coordinator = TokenRefreshCoordinator(manager, backgroundScope) {
+            operationCalls.incrementAndGet()
+            refreshedResult("rotated")
+        }
+
+        assertEquals(refreshedResult("rotated"), coordinator.refreshOnce(oldIdentity))
+        assertSame(TokenRefreshResult.CredentialsAlreadyRefreshed, coordinator.refreshOnce(oldIdentity))
+        assertEquals(1, operationCalls.get())
+        assertEquals("access-rotated", manager.requestIdentitySnapshot()?.accessToken)
+    }
+
+    @Test
+    fun `expected refresh rejects changed identity boundary without calling operation`() = runTest {
+        val persistence = RefreshCredentialPersistence()
+        val manager = authenticatedManager(persistence)
+        val oldIdentity = assertNotNull(manager.requestIdentitySnapshot())
+        manager.logout()
+        manager.login(
+            userId = "user-new",
+            tenantId = "tenant-new",
+            platformId = PLATFORM_ID,
+            roles = ROLES,
+            permissions = PERMISSIONS,
+            authenticatedAt = AUTHENTICATED_AT.plusSeconds(120),
+            tokens = tokenSet("new-boundary"),
+        )
+        val operationCalls = AtomicInteger()
+        val coordinator = TokenRefreshCoordinator(manager, backgroundScope) {
+            operationCalls.incrementAndGet()
+            refreshedResult("must-not-run")
+        }
+
+        assertSame(TokenRefreshResult.Stale, coordinator.refreshOnce(oldIdentity))
+        assertEquals(0, operationCalls.get())
+        assertEquals("tenant-new", manager.requestIdentitySnapshot()?.tenantId)
+        assertEquals("access-new-boundary", manager.requestIdentitySnapshot()?.accessToken)
+    }
+
+    @Test
     fun `shared refresh failure expires authentication and reaches every waiter`() = runTest {
         val persistence = RefreshCredentialPersistence()
         val manager = authenticatedManager(persistence)
