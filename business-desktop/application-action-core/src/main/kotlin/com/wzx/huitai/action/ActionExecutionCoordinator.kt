@@ -7,10 +7,12 @@ import com.wzx.huitai.action.port.ActionAuditDraft
 import com.wzx.huitai.action.port.ActionClock
 import com.wzx.huitai.action.port.ActionExecutionRecord
 import com.wzx.huitai.action.port.ActionExecutionStore
+import com.wzx.huitai.action.port.ActionExecutionReplayHydrator
 import com.wzx.huitai.action.port.ExecutionCreateResult
 import com.wzx.huitai.action.port.ExecutionBinding
 import com.wzx.huitai.action.port.ReconciliationClaimRequest
 import com.wzx.huitai.action.port.ReconciliationClaimResult
+import com.wzx.huitai.action.port.ReplayHydrationResult
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -114,8 +116,18 @@ class ActionExecutionCoordinator internal constructor(
      * 在风险策略前快速检查已存在 execution；不存在时返回 null，最终创建仍由 [begin] 原子裁决。
      */
     suspend fun inspectExisting(command: ActionCommand): ActionExecutionStart? = serialized(command.executionId) {
-        val existing = executionStore.find(command.executionId) ?: return@serialized null
-        existingStart(binding(command), existing) {
+        val expected = binding(command)
+        val existing = when (val store = executionStore) {
+            is ActionExecutionReplayHydrator -> when (
+                val hydrated = store.findAndHydrateReplayCandidate(command, expected)
+            ) {
+                is ReplayHydrationResult.Matching -> hydrated.record
+                is ReplayHydrationResult.BindingMismatch -> hydrated.record
+                ReplayHydrationResult.Missing -> return@serialized null
+            }
+            else -> store.find(command.executionId) ?: return@serialized null
+        }
+        existingStart(expected, existing) {
             when {
                 it.needsReconciliation -> ActionExecutionStart.NeedsReconciliation(it)
                 it.isTerminal -> ActionExecutionStart.ExistingTerminal(it)

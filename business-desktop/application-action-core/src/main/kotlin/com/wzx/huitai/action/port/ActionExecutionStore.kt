@@ -471,6 +471,26 @@ interface ScopedActionExecutionQuery {
     suspend fun listNonTerminal(identityScope: ActionIdentityScope): List<ActionExecutionRecord>
 }
 
+/**
+ * 为重启后的精确重放提供候选命令 hydration，而不要求所有执行存储都实现持久缓存。
+ *
+ * 实现必须先在自己的原子事实源中比较 executionId 与完整 [ExecutionBinding]；只有完全匹配时
+ * 才能把 [candidateCommand] 的原始输入叠加到返回快照，冲突时返回未 hydration 的持久记录。
+ */
+interface ActionExecutionReplayHydrator {
+    suspend fun findAndHydrateReplayCandidate(
+        candidateCommand: ActionCommand,
+        expectedBinding: ExecutionBinding,
+    ): ReplayHydrationResult
+}
+
+/** 候选重放 hydration 的穷举结果，Coordinator 仍会独立复核 binding。 */
+sealed interface ReplayHydrationResult {
+    data class Matching(val record: ActionExecutionRecord) : ReplayHydrationResult
+    data class BindingMismatch(val record: ActionExecutionRecord) : ReplayHydrationResult
+    data object Missing : ReplayHydrationResult
+}
+
 interface ActionExecutionStore {
     /** 按 executionId 查询当前精确记录；不存在返回 null。 */
     suspend fun find(executionId: String): ActionExecutionRecord?
