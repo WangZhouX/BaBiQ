@@ -1,6 +1,8 @@
 package com.wzx.babiq.server.config;
 
 import com.wzx.babiq.server.api.JsonRpcWebSocketHandler;
+import com.wzx.babiq.server.application.auth.BusinessDesktopHandshakeInterceptor;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.socket.config.annotation.EnableWebSocket;
@@ -23,6 +25,8 @@ public class WebSocketConfig implements WebSocketConfigurer {
     private final String wsPath;
     /** 允许跨域连接的来源列表，本地桌面端开发通常使用 *。 */
     private final String allowedOrigins;
+    /** 仅 business-desktop profile 存在的本机会话认证拦截器。 */
+    private final BusinessDesktopHandshakeInterceptor businessDesktopHandshakeInterceptor;
 
     /**
      * 创建 WebSocket 配置。
@@ -34,10 +38,12 @@ public class WebSocketConfig implements WebSocketConfigurer {
     public WebSocketConfig(
             JsonRpcWebSocketHandler jsonRpcWebSocketHandler,
             @Value("${babiq.ws.path:/ws/agent}") String wsPath,
-            @Value("${babiq.ws.allowed-origins:*}") String allowedOrigins) {
+            @Value("${babiq.ws.allowed-origins:*}") String allowedOrigins,
+            ObjectProvider<BusinessDesktopHandshakeInterceptor> handshakeInterceptorProvider) {
         this.jsonRpcWebSocketHandler = jsonRpcWebSocketHandler;
         this.wsPath = wsPath;
         this.allowedOrigins = allowedOrigins;
+        this.businessDesktopHandshakeInterceptor = handshakeInterceptorProvider.getIfAvailable();
     }
 
     /**
@@ -47,6 +53,10 @@ public class WebSocketConfig implements WebSocketConfigurer {
      */
     @Override
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
-        registry.addHandler(jsonRpcWebSocketHandler, wsPath).setAllowedOrigins(allowedOrigins);
+        var registration = registry.addHandler(jsonRpcWebSocketHandler, wsPath)
+                .setAllowedOrigins(allowedOrigins);
+        if (businessDesktopHandshakeInterceptor != null) {
+            registration.addInterceptors(businessDesktopHandshakeInterceptor);
+        }
     }
 }

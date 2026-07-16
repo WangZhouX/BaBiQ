@@ -57,10 +57,16 @@ class BusinessDesktopProfileIsolationIT {
 
     private static final Path TEST_RUNTIME = Path.of(
             "target", "business-profile-it-" + UUID.randomUUID()).toAbsolutePath().normalize();
+    private static final Path TEST_TOKEN_FILE = TEST_RUNTIME.resolve("session-token");
+    private static final String TEST_TOKEN = "A".repeat(43);
 
     @DynamicPropertySource
-    static void businessRuntime(DynamicPropertyRegistry registry) {
+    static void businessRuntime(DynamicPropertyRegistry registry) throws Exception {
+        Files.createDirectories(TEST_RUNTIME);
+        Files.writeString(TEST_TOKEN_FILE, TEST_TOKEN, StandardCharsets.US_ASCII);
+        applyOwnerOnlyPermissions(TEST_TOKEN_FILE);
         registry.add("babiq.business.runtime-dir", TEST_RUNTIME::toString);
+        registry.add("babiq.business.session-token-file", TEST_TOKEN_FILE::toString);
     }
 
     @Autowired
@@ -402,5 +408,26 @@ class BusinessDesktopProfileIsolationIT {
         assertThat(allowedEntries).isNotEmpty();
         assertThat(allowedEntries)
                 .allSatisfy(entry -> assertThat(entry.principal()).isEqualTo(owner));
+    }
+
+    private static void applyOwnerOnlyPermissions(Path path) throws Exception {
+        PosixFileAttributeView posixView = Files.getFileAttributeView(path, PosixFileAttributeView.class);
+        if (posixView != null) {
+            Files.setPosixFilePermissions(
+                    path,
+                    Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
+            return;
+        }
+
+        AclFileAttributeView aclView = Files.getFileAttributeView(path, AclFileAttributeView.class);
+        if (aclView == null) {
+            return;
+        }
+        AclEntry ownerEntry = AclEntry.newBuilder()
+                .setType(AclEntryType.ALLOW)
+                .setPrincipal(Files.getOwner(path))
+                .setPermissions(java.util.EnumSet.allOf(java.nio.file.attribute.AclEntryPermission.class))
+                .build();
+        aclView.setAcl(List.of(ownerEntry));
     }
 }

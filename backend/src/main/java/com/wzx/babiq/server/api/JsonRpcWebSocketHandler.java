@@ -3,8 +3,11 @@ package com.wzx.babiq.server.api;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
+import com.wzx.babiq.server.application.auth.BusinessDesktopConnectionRegistry;
+import com.wzx.babiq.server.application.auth.BusinessDesktopHandshakeInterceptor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
@@ -30,6 +33,8 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
     private final JsonRpcDispatcher dispatcher;
     /** WebSocket 文本帧与 JsonRpcMessage 之间的 Jackson 编解码器。 */
     private final ObjectMapper objectMapper;
+    /** 仅 business-desktop profile 存在的可信连接注册表。 */
+    private final BusinessDesktopConnectionRegistry businessDesktopConnectionRegistry;
 
     /**
      * 创建 WebSocket handler。
@@ -37,9 +42,13 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
      * @param dispatcher JSON-RPC 方法路由器
      * @param objectMapper JSON 序列化器
      */
-    public JsonRpcWebSocketHandler(JsonRpcDispatcher dispatcher, ObjectMapper objectMapper) {
+    public JsonRpcWebSocketHandler(
+            JsonRpcDispatcher dispatcher,
+            ObjectMapper objectMapper,
+            ObjectProvider<BusinessDesktopConnectionRegistry> connectionRegistryProvider) {
         this.dispatcher = dispatcher;
         this.objectMapper = objectMapper;
+        this.businessDesktopConnectionRegistry = connectionRegistryProvider.getIfAvailable();
     }
 
     /**
@@ -48,7 +57,32 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
      * @param session 新建立的 WebSocket 会话
      */
     @Override
-    public void afterConnectionEstablished(WebSocketSession session) {
+    public void afterConnectionEstablished(WebSocketSession session) throws Exception {
+        if (businessDesktopConnectionRegistry != null) {
+            try {
+                businessDesktopConnectionRegistry.finalizeReservation(
+                        trustedAttribute(session, BusinessDesktopHandshakeInterceptor.RESERVATION_ID_ATTRIBUTE),
+                        trustedAttribute(session, BusinessDesktopHandshakeInterceptor.DESKTOP_INSTANCE_ID_ATTRIBUTE),
+                        trustedAttribute(session, BusinessDesktopHandshakeInterceptor.DESKTOP_SESSION_ID_ATTRIBUTE),
+                        session.getId());
+            } catch (RuntimeException exception) {
+                String reservationId = stringAttribute(
+                        session, BusinessDesktopHandshakeInterceptor.RESERVATION_ID_ATTRIBUTE);
+                if (reservationId != null) {
+                    businessDesktopConnectionRegistry.cancelReservation(reservationId);
+                } else {
+                    businessDesktopConnectionRegistry.cancelPending(
+                            stringAttribute(
+                                    session,
+                                    BusinessDesktopHandshakeInterceptor.DESKTOP_INSTANCE_ID_ATTRIBUTE),
+                            stringAttribute(
+                                    session,
+                                    BusinessDesktopHandshakeInterceptor.DESKTOP_SESSION_ID_ATTRIBUTE));
+                }
+                session.close(CloseStatus.POLICY_VIOLATION);
+                throw exception;
+            }
+        }
         log.info("WebSocket 已连接: sessionId={}, remote={}, uri={}",
                 session.getId(), session.getRemoteAddress(), session.getUri());
     }
@@ -74,7 +108,27 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
      */
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+        if (businessDesktopConnectionRegistry != null) {
+            String reservationId = stringAttribute(
+                    session, BusinessDesktopHandshakeInterceptor.RESERVATION_ID_ATTRIBUTE);
+            if (reservationId != null) {
+                businessDesktopConnectionRegistry.release(reservationId, session.getId());
+            }
+        }
         log.info("WebSocket 已关闭: sessionId={}, status={}", session.getId(), status);
+    }
+
+    private static String trustedAttribute(WebSocketSession session, String key) {
+        String value = stringAttribute(session, key);
+        if (value == null || value.isBlank()) {
+            throw new IllegalStateException("trusted business desktop handshake attributes are incomplete");
+        }
+        return value;
+    }
+
+    private static String stringAttribute(WebSocketSession session, String key) {
+        Object value = session.getAttributes().get(key);
+        return value instanceof String text ? text : null;
     }
 
     private JsonRpcMessage handleRequest(WebSocketSession session, String payload, long startedNanos) {
@@ -129,7 +183,7 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
             return JsonRpcMessage.ErrorResponse.of(
                     requestId,
                     JsonRpcErrorCode.INTERNAL_ERROR,
-                    exception.getMessage(),
+                    "Internal error",
                     null);
         }
     }
