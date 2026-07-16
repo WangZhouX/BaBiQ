@@ -23,6 +23,7 @@ import com.wzx.huitai.action.port.ReconciliationReleaseResult
 import com.wzx.huitai.action.port.ReconciliationRenewRequest
 import com.wzx.huitai.action.port.ReconciliationRenewResult
 import com.wzx.huitai.action.port.ReconciliationUpdateResult
+import com.wzx.huitai.action.port.ScopedActionExecutionQuery
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.test.runTest
@@ -45,6 +46,88 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class InMemoryActionExecutionStoreTest {
+    @Test
+    fun `create rejects command binding inconsistencies before records or audit are written`() = runTest {
+        val original = runningRecord()
+        val mismatches = listOf(
+            original.binding.copy(actionId = "other.action"),
+            original.binding.copy(actionVersion = original.binding.actionVersion + 1),
+            original.binding.copy(origin = ActionOrigin.USER),
+            original.binding.copy(identityScope = original.command.identityScope.copy(tenantId = "other")),
+            original.binding.copy(pageId = "other-page"),
+            original.binding.copy(contextRevision = original.binding.contextRevision + 1),
+        )
+
+        mismatches.forEach { mismatchedBinding ->
+            val store = InMemoryActionExecutionStore()
+
+            assertFailsWith<IllegalArgumentException> {
+                store.compareAndCreate(original.copy(binding = mismatchedBinding), audit())
+            }
+            assertNull(store.find(original.command.executionId))
+            assertEquals(emptyList(), store.events(original.command.executionId))
+        }
+    }
+
+    @Test
+    fun `scoped query matches all seven identity fields and missing is indistinguishable`() = runTest {
+        val store = InMemoryActionExecutionStore()
+        val record = runningRecord()
+        store.compareAndCreate(record, audit())
+        val query: ScopedActionExecutionQuery = store
+        val scope = record.command.identityScope
+        val mismatches = listOf(
+            scope.copy(desktopInstanceId = "other"),
+            scope.copy(desktopSessionId = "other"),
+            scope.copy(authSessionId = "other"),
+            scope.copy(identityEpoch = 2),
+            scope.copy(userId = "other"),
+            scope.copy(tenantId = "other"),
+            scope.copy(platformId = "other"),
+        )
+
+        assertEquals(record, query.find(record.command.executionId, scope))
+        mismatches.forEach { assertNull(query.find(record.command.executionId, it)) }
+        assertNull(query.find("missing", scope))
+    }
+
+    @Test
+    fun `scoped nonterminal query filters exact session sorts stably and returns defensive snapshots`() = runTest {
+        val store = InMemoryActionExecutionStore()
+        val scope = command().identityScope
+        val later = runningRecord().copy(
+            command = command().copy(executionId = "z-execution"),
+            binding = binding(command().copy(executionId = "z-execution")),
+            createdAt = NOW.plusSeconds(2),
+            startedAt = NOW.plusSeconds(2),
+            updatedAt = NOW.plusSeconds(2),
+        )
+        val earlier = runningRecord().copy(
+            command = command().copy(executionId = "a-execution"),
+            binding = binding(command().copy(executionId = "a-execution")),
+        )
+        val priorSessionCommand = command().copy(
+            executionId = "prior-session",
+            identityScope = scope.copy(desktopSessionId = "prior-session"),
+        )
+        val priorSession = runningRecord().copy(
+            command = priorSessionCommand,
+            binding = binding(priorSessionCommand),
+        )
+        store.compareAndCreate(later, audit().copy(executionId = later.command.executionId, occurredAt = later.createdAt))
+        store.compareAndCreate(earlier, audit().copy(executionId = earlier.command.executionId))
+        store.compareAndCreate(priorSession, audit().copy(executionId = priorSession.command.executionId))
+        val query: ScopedActionExecutionQuery = store
+
+        val first = query.listNonTerminal(scope)
+        val second = query.listNonTerminal(scope)
+
+        assertEquals(listOf("a-execution", "z-execution"), first.map { it.command.executionId })
+        assertNotSame(first, second)
+        assertNotSame(first.first(), second.first())
+        assertNotSame(first.first().command.input, second.first().command.input)
+    }
+
     @Test
     fun `Created和find返回独立深不可变命令快照且攻击不改变存储事实`() = runTest {
         val input = buildJsonObject {
@@ -240,8 +323,12 @@ class InMemoryActionExecutionStoreTest {
         val record = runningRecord()
         store.compareAndCreate(record, audit())
 
+        val conflictingCommand = record.command.copy(actionId = "other")
         val conflict = store.compareAndCreate(
-            record.copy(binding = record.binding.copy(actionId = "other", inputFingerprint = "other")),
+            record.copy(
+                command = conflictingCommand,
+                binding = record.binding.copy(actionId = "other", inputFingerprint = "other"),
+            ),
             audit(),
         )
 

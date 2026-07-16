@@ -62,6 +62,54 @@ class ApplicationSequenceTracker(initialDesktopSessionId: String) {
         )
     }
 
+    /** 原子接受 identity envelope 的会话 sequence 与连接 identityEpoch。 */
+    fun acceptIdentityEnvelope(
+        candidateDesktopSessionId: String,
+        sequence: Long,
+        connectionId: String,
+        identityEpoch: Long,
+    ) = acceptEnvelopeAndCounter(candidateDesktopSessionId, sequence, connectionId) { counters ->
+        counters.identityEpoch = requireStrictIncrease("identityEpoch", counters.identityEpoch, identityEpoch)
+    }
+
+    /** 原子接受 catalog envelope 的会话 sequence 与连接 catalogEpoch。 */
+    fun acceptCatalogEnvelope(
+        candidateDesktopSessionId: String,
+        sequence: Long,
+        connectionId: String,
+        catalogEpoch: Long,
+    ) = acceptEnvelopeAndCounter(candidateDesktopSessionId, sequence, connectionId) { counters ->
+        counters.catalogEpoch = requireStrictIncrease("catalogEpoch", counters.catalogEpoch, catalogEpoch)
+    }
+
+    /** 原子接受 context envelope 的会话 sequence 与连接 contextSequence。 */
+    fun acceptContextEnvelope(
+        candidateDesktopSessionId: String,
+        sequence: Long,
+        connectionId: String,
+        contextSequence: Long,
+    ) = acceptEnvelopeAndCounter(candidateDesktopSessionId, sequence, connectionId) { counters ->
+        counters.contextSequence = requireStrictIncrease("contextSequence", counters.contextSequence, contextSequence)
+    }
+
+    /** 在副本上校验分类水位，全部成功后才一次提交分类水位和 envelope sequence。 */
+    private inline fun acceptEnvelopeAndCounter(
+        candidateDesktopSessionId: String,
+        sequence: Long,
+        connectionId: String,
+        updateCounter: (ConnectionCounters) -> Unit,
+    ) = mutex.withLock {
+        if (candidateDesktopSessionId != desktopSessionId) {
+            throw ApplicationSequenceException("Envelope belongs to a different desktop session")
+        }
+        val nextSequence = requireStrictIncrease("sequence", lastEnvelopeSequence, sequence)
+        val counters = countersFor(connectionId)
+        val nextCounters = counters.copy()
+        updateCounter(nextCounters)
+        lastEnvelopeSequence = nextSequence
+        connectionCounters[connectionId] = nextCounters
+    }
+
     /** connectionId 第一次出现时创建独立水位，旧连接的高值不会限制新连接首次重发。 */
     private fun countersFor(connectionId: String): ConnectionCounters {
         val validated = requireIdentifier("connectionId", connectionId)

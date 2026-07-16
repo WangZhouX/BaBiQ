@@ -3,6 +3,7 @@ package com.wzx.huitai.security.execution
 import com.wzx.huitai.action.model.ActionError
 import com.wzx.huitai.action.model.ActionErrorCode
 import com.wzx.huitai.action.model.ActionExecutionState
+import com.wzx.huitai.action.model.ActionIdentityScope
 import com.wzx.huitai.action.model.ActionResult
 import com.wzx.huitai.action.port.ActionAuditDraft
 import com.wzx.huitai.action.port.ActionAuditEvent
@@ -21,6 +22,7 @@ import com.wzx.huitai.action.port.ReconciliationReleaseResult
 import com.wzx.huitai.action.port.ReconciliationRenewRequest
 import com.wzx.huitai.action.port.ReconciliationRenewResult
 import com.wzx.huitai.action.port.ReconciliationUpdateResult
+import com.wzx.huitai.action.port.ScopedActionExecutionQuery
 import com.wzx.huitai.security.audit.AuditRedactor
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -39,7 +41,7 @@ import java.util.Collections
  */
 class InMemoryActionExecutionStore(
     private val redactor: AuditRedactor = AuditRedactor(),
-) : ActionExecutionStore {
+) : ActionExecutionStore, ScopedActionExecutionQuery {
     private val mutex = Mutex()
     private val records = mutableMapOf<String, ActionExecutionRecord>()
     private val auditEvents = mutableMapOf<String, MutableList<ActionAuditEvent>>()
@@ -48,6 +50,32 @@ class InMemoryActionExecutionStore(
     override suspend fun find(executionId: String): ActionExecutionRecord? = mutex.withLock {
         records[executionId]?.snapshot()
     }
+
+    override suspend fun find(
+        executionId: String,
+        identityScope: ActionIdentityScope,
+    ): ActionExecutionRecord? = mutex.withLock {
+        records[executionId]
+            ?.takeIf {
+                it.command.identityScope == identityScope &&
+                    it.binding.identityScope == identityScope
+            }
+            ?.snapshot()
+    }
+
+    override suspend fun listNonTerminal(identityScope: ActionIdentityScope): List<ActionExecutionRecord> =
+        mutex.withLock {
+            records.values
+                .asSequence()
+                .filter {
+                    !it.isTerminal &&
+                        it.command.identityScope == identityScope &&
+                        it.binding.identityScope == identityScope
+                }
+                .sortedWith(compareBy<ActionExecutionRecord> { it.createdAt }.thenBy { it.command.executionId })
+                .map { it.snapshot() }
+                .toList()
+        }
 
     /** 返回指定 execution 的不可修改审计快照，供测试和演示展示。 */
     suspend fun events(executionId: String): List<ActionAuditEvent> = mutex.withLock {
@@ -231,6 +259,14 @@ class InMemoryActionExecutionStore(
 
     /** 创建记录、状态和首条审计必须描述同一个原子业务事实。 */
     private fun validateCreateAudit(record: ActionExecutionRecord, audit: ActionAuditDraft) {
+        val command = record.command
+        val binding = record.binding
+        require(binding.actionId == command.actionId) { "binding actionId must match command" }
+        require(binding.actionVersion == command.actionVersion) { "binding actionVersion must match command" }
+        require(binding.origin == command.origin) { "binding origin must match command" }
+        require(binding.identityScope == command.identityScope) { "binding identityScope must match command" }
+        require(binding.pageId == command.pageId) { "binding pageId must match command" }
+        require(binding.contextRevision == command.contextRevision) { "binding contextRevision must match command" }
         require(audit.executionId == record.command.executionId) { "创建审计 executionId 不匹配" }
         require(audit.fromState == ActionExecutionState.RECEIVED) { "创建审计必须源自 RECEIVED" }
         require(audit.toState == record.state) { "创建审计目标状态与记录不匹配" }

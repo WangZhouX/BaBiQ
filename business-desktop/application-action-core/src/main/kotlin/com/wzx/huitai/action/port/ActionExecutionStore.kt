@@ -458,6 +458,19 @@ sealed interface ReconciliationReleaseResult {
 }
 
 /** 动作幂等和终态重放存储端口。 */
+/**
+ * Executes identity-scoped reads without exposing an unscoped existence probe to protocol adapters.
+ * Implementations must match the execution identifier and the complete identity scope atomically.
+ */
+interface ScopedActionExecutionQuery {
+    suspend fun find(
+        executionId: String,
+        identityScope: ActionIdentityScope,
+    ): ActionExecutionRecord?
+
+    suspend fun listNonTerminal(identityScope: ActionIdentityScope): List<ActionExecutionRecord>
+}
+
 interface ActionExecutionStore {
     /** 按 executionId 查询当前精确记录；不存在返回 null。 */
     suspend fun find(executionId: String): ActionExecutionRecord?
