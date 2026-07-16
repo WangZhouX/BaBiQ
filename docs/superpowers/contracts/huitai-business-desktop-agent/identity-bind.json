@@ -1,0 +1,20 @@
+{
+  "jsonrpc": "2.0",
+  "id": "request-identity-bind",
+  "method": "application/identity/bind",
+  "params": {
+    "protocolVersion": "1.0",
+    "desktopInstanceId": "desktop-1",
+    "desktopSessionId": "desktop-session-1",
+    "authSessionId": "auth-session-1",
+    "identityEpoch": 8,
+    "sequence": 4,
+    "generatedAt": "2026-07-16T10:00:00Z",
+    "userId": "user-1",
+    "tenantId": "tenant-1",
+    "platformId": "platform-1",
+    "authenticated": true,
+    "roles": ["lawyer"],
+    "permissions": ["framework:read"]
+  }
+}

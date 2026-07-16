@@ -1,0 +1,11 @@
+{
+  "jsonrpc": "2.0",
+  "id": "request-action-result",
+  "result": {
+    "executionId": "execution-1",
+    "state": "succeeded",
+    "output": {
+      "accepted": true
+    }
+  }
+}

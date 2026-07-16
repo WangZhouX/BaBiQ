@@ -1,0 +1,23 @@
+{
+  "jsonrpc": "2.0",
+  "method": "application/context/publish",
+  "params": {
+    "protocolVersion": "1.0",
+    "desktopInstanceId": "desktop-1",
+    "desktopSessionId": "desktop-session-1",
+    "authSessionId": "auth-session-1",
+    "identityEpoch": 8,
+    "sequence": 3,
+    "generatedAt": "2026-07-16T10:00:00Z",
+    "userId": "user-1",
+    "tenantId": "tenant-1",
+    "platformId": "platform-1",
+    "catalogEpoch": 1,
+    "contextSequence": 9,
+    "payloadSize": 42,
+    "payload": {
+      "contextRevision": "context-revision-1",
+      "pageType": "framework-demo"
+    }
+  }
+}

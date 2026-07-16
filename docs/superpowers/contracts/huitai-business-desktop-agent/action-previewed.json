@@ -1,0 +1,21 @@
+{
+  "jsonrpc": "2.0",
+  "method": "application/action/previewed",
+  "params": {
+    "protocolVersion": "1.0",
+    "desktopInstanceId": "desktop-1",
+    "desktopSessionId": "desktop-session-1",
+    "authSessionId": "auth-session-1",
+    "identityEpoch": 8,
+    "sequence": 9,
+    "generatedAt": "2026-07-16T10:00:00Z",
+    "userId": "user-1",
+    "tenantId": "tenant-1",
+    "platformId": "platform-1",
+    "threadId": "thread-1",
+    "turnId": "turn-1",
+    "toolCallId": "tool-call-1",
+    "executionId": "execution-1",
+    "payload": {"actionId": "framework.demo", "state": "previewed"}
+  }
+}

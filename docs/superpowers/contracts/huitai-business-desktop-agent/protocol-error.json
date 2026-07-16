@@ -1,0 +1,11 @@
+{
+  "jsonrpc": "2.0",
+  "id": "request-action-status",
+  "error": {
+    "code": -32041,
+    "message": "PROTOCOL_ERROR",
+    "data": {
+      "reason": "identity_scope_mismatch"
+    }
+  }
+}

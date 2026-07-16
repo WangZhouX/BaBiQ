@@ -1,0 +1,24 @@
+{
+  "jsonrpc": "2.0",
+  "id": "request-catalog-register",
+  "method": "application/catalog/register",
+  "params": {
+    "protocolVersion": "1.0",
+    "desktopInstanceId": "desktop-1",
+    "desktopSessionId": "desktop-session-1",
+    "authSessionId": "auth-session-1",
+    "identityEpoch": 8,
+    "sequence": 1,
+    "generatedAt": "2026-07-16T10:00:00Z",
+    "userId": "user-1",
+    "tenantId": "tenant-1",
+    "platformId": "platform-1",
+    "catalogEpoch": 3,
+    "contextSequence": 1,
+    "payloadSize": 48,
+    "payload": {
+      "catalogRevision": "catalog-revision-1",
+      "actions": {}
+    }
+  }
+}

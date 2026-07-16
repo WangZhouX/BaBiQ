@@ -1,0 +1,23 @@
+{
+  "jsonrpc": "2.0",
+  "method": "application/catalog/update",
+  "params": {
+    "protocolVersion": "1.0",
+    "desktopInstanceId": "desktop-1",
+    "desktopSessionId": "desktop-session-1",
+    "authSessionId": "auth-session-1",
+    "identityEpoch": 8,
+    "sequence": 2,
+    "generatedAt": "2026-07-16T10:00:00Z",
+    "userId": "user-1",
+    "tenantId": "tenant-1",
+    "platformId": "platform-1",
+    "catalogEpoch": 4,
+    "contextSequence": 2,
+    "payloadSize": 48,
+    "payload": {
+      "catalogRevision": "catalog-revision-1",
+      "actions": {}
+    }
+  }
+}

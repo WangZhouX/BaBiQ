@@ -1,0 +1,8 @@
+{
+  "jsonrpc": "2.0",
+  "id": "request-action-status",
+  "result": {
+    "executionId": "execution-1",
+    "state": "executing"
+  }
+}
