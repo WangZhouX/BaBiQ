@@ -7,4 +7,3 @@ object ApplicationProtocolLimits {
     const val MAX_ACTION_INPUT_BYTES: Int = 64 * 1024
     const val MAX_ACTION_RESULT_BYTES: Int = 64 * 1024
 }
-
