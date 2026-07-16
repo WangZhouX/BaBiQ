@@ -1,0 +1,52 @@
+server:
+  address: 127.0.0.1
+  port: 0
+
+logging:
+  file:
+    name: ${babiq.business.runtime-dir}/logs/backend.log
+
+babiq:
+  business:
+    enabled: true
+    runtime-dir: ${user.home}/.huitai-agent-desktop/agent
+    database-path: ${babiq.persistence.database-path}
+    key-store-path: ${babiq.secrets.keystore-path}
+    log-path: ${logging.file.name}
+    memory-root: ${babiq.memory.long-term.root-dir}
+    team-root: ${babiq.team.root-dir}
+    backend-lock-path: ${babiq.business.runtime-dir}/instance.lock
+    session-token-file: ${babiq.business.runtime-dir}/session-token
+    authentication-required: true
+    server-address: ${server.address}
+    allowed-origins: ${babiq.ws.allowed-origins}
+    max-envelope-bytes: 262144
+    max-catalog-payload-bytes: 131072
+    max-context-payload-bytes: 131072
+    max-action-input-bytes: 65536
+    max-action-result-bytes: 65536
+    accept-timeout: 10s
+    preview-timeout: 30s
+    approval-timeout: 5m
+    execute-timeout: 2m
+    reconciliation-grace-timeout: 10s
+  persistence:
+    database-path: ${babiq.business.runtime-dir}/data/babiq-business.db
+  secrets:
+    keystore-path: ${babiq.business.runtime-dir}/secrets/business-agent.jceks
+  memory:
+    long-term:
+      enabled: false
+      generate-enabled: false
+      read-enabled: false
+      retrieval-enabled: false
+      root-dir: ${babiq.business.runtime-dir}/memory
+  team:
+    root-dir: ${babiq.business.runtime-dir}/teams
+  mcp:
+    enabled: false
+  skills:
+    enabled: false
+  ws:
+    path: /ws/agent
+    allowed-origins: http://127.0.0.1
