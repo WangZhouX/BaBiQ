@@ -118,13 +118,51 @@ public final class ApplicationActionTool implements Tool {
         if (invocation == null) {
             return failure("protocol_error", "missing immutable application turn scope");
         }
-        Optional<BusinessIdentityScopeService.ActiveBusinessIdentity> active =
-                scopes.resolveActive(invocation.businessIdentityScope());
-        if (active.isEmpty()) {
+        ItemEmitter emitter = emitter(toolContext);
+        Optional<ActionPreparation> atomicPreparation = scopes.withActiveConnectionScope(
+                invocation.businessIdentityScope(), trusted -> prepareAction(
+                        trusted, invocation, actionId, actionVersion, input, pageId, contextRevision, emitter));
+        if (atomicPreparation.isEmpty()) {
             return failure("auth_expired", "business identity is no longer active");
         }
+        ActionPreparation preparation = atomicPreparation.orElseThrow();
+        if (preparation.errorCode() != null) {
+            return failure(preparation.errorCode(), preparation.errorSummary());
+        }
+        PreparedAction prepared = preparation.action();
         try {
-            BusinessIdentityScopeService.ActiveBusinessIdentity trusted = active.orElseThrow();
+            emitAdded(emitter, prepared.requestedItem());
+            prepared.progressListener().activate();
+            try {
+                protocol.sendActionRequest(prepared.requestedAction(), prepared.requestPayload())
+                        .join();
+            } catch (RuntimeException acknowledgementFailure) {
+                Throwable cause = unwrap(acknowledgementFailure);
+                if (cause instanceof ConfirmedActionRequestRejection rejection) {
+                    return toResult(pending.confirmedRequestRejected(
+                            prepared.executionId(), prepared.correlation(), prepared.connectionContext(),
+                            rejection.errorCode(), "desktop rejected application action request").join());
+                }
+                return toResult(pending.acknowledgementUncertain(
+                        prepared.executionId(), prepared.correlation(), prepared.connectionContext(),
+                        "application action request acknowledgement uncertain").join());
+            }
+            return toResult(prepared.terminal().join());
+        } catch (RuntimeException failure) {
+            return failure("remote_request_failed", "desktop action request failed");
+        }
+    }
+
+    private ActionPreparation prepareAction(
+            BusinessIdentityScopeService.ActiveBusinessIdentity trusted,
+            ApplicationToolInvocationContext.Invocation invocation,
+            String actionId,
+            Integer actionVersion,
+            JsonNode input,
+            String pageId,
+            Long contextRevision,
+            ItemEmitter emitter) {
+        try {
             ApplicationCatalogRegistry.CatalogSnapshot catalog = catalogs.current(trusted.connection())
                     .orElseThrow(() -> new ActionValidation("action_not_found", "catalog unavailable"));
             ApplicationPageContextRegistry.PageContextSnapshot context = contexts.current(trusted.connection())
@@ -133,49 +171,35 @@ public final class ApplicationActionTool implements Tool {
                 throw new ActionValidation("context_stale", "catalog and context do not match");
             }
             JsonNode descriptor = findAction(catalog.payload().path("actions"), actionId, actionVersion)
-                    .orElseThrow(() -> new ActionValidation("action_not_found", "action not available"));
+                    .orElseThrow(() -> new ActionValidation("action_not_found", "action not available"))
+                    .deepCopy();
             validatePageContext(context.payload(), pageId, contextRevision);
             validateInput(input);
             PendingApplicationAction.Path path = path(descriptor.get("risk"));
-
             String executionId = executionIds.get();
             PendingApplicationAction.Correlation correlation = new PendingApplicationAction.Correlation(
                     invocation.threadId(), invocation.turnId(), invocation.toolCallId());
             PendingApplicationAction.ConnectionContext connectionContext = connectionContext(trusted);
             String itemId = "it_action_" + executionId.replaceAll("[^A-Za-z0-9]", "");
             long started = nanoTime.getAsLong();
-            ItemEmitter emitter = emitter(toolContext);
-            ApplicationActionItem requested = item(itemId, executionId, actionId, descriptor, "requested",
-                    null, null, null, 0L);
-            emitAdded(emitter, requested);
-
+            DeferredProgressListener<PendingApplicationAction> progress = new DeferredProgressListener<>(snapshot -> emitUpdated(
+                    emitter, progressItem(itemId, actionId, descriptor, snapshot, elapsed(started))));
             CompletableFuture<PendingApplicationAction> terminal = pending.register(
-                    executionId, correlation, path, connectionContext,
-                    snapshot -> emitUpdated(emitter, progressItem(
-                            itemId, actionId, descriptor, snapshot, elapsed(started))));
+                    executionId, correlation, path, connectionContext, progress::accept);
             PendingApplicationAction requestedAction = new PendingApplicationAction(
                     executionId, correlation, path, PendingApplicationAction.State.REQUESTED,
                     null, null, Instant.now(), connectionContext);
-            try {
-                protocol.sendActionRequest(requestedAction,
-                                requestPayload(actionId, actionVersion, input, pageId, contextRevision))
-                        .join();
-            } catch (RuntimeException acknowledgementFailure) {
-                Throwable cause = unwrap(acknowledgementFailure);
-                if (cause instanceof ConfirmedActionRequestRejection rejection) {
-                    return toResult(pending.confirmedRequestRejected(
-                            executionId, correlation, connectionContext,
-                            rejection.errorCode(), "desktop rejected application action request").join());
-                }
-                return toResult(pending.acknowledgementUncertain(
-                        executionId, correlation, connectionContext,
-                        "application action request acknowledgement uncertain").join());
-            }
-            return toResult(terminal.join());
+            ApplicationActionItem requestedItem = item(
+                    itemId, executionId, actionId, descriptor, "requested", null, null, null, 0L);
+            ObjectNode frozenRequest = requestPayload(
+                    actionId, actionVersion, input, pageId, contextRevision);
+            return ActionPreparation.success(new PreparedAction(
+                    executionId, correlation, connectionContext, requestedAction, frozenRequest,
+                    requestedItem, terminal, progress));
         } catch (ActionValidation validation) {
-            return failure(validation.errorCode, validation.getMessage());
-        } catch (RuntimeException failure) {
-            return failure("remote_request_failed", "desktop action request failed");
+            return ActionPreparation.error(validation.errorCode, validation.getMessage());
+        } catch (RuntimeException registrationFailure) {
+            return ActionPreparation.error("remote_request_failed", "desktop action request failed");
         }
     }
 
@@ -364,5 +388,29 @@ public final class ApplicationActionTool implements Tool {
             super(message);
             this.errorCode = errorCode;
         }
+    }
+
+    private record ActionPreparation(
+            PreparedAction action,
+            String errorCode,
+            String errorSummary) {
+        private static ActionPreparation success(PreparedAction action) {
+            return new ActionPreparation(action, null, null);
+        }
+
+        private static ActionPreparation error(String errorCode, String errorSummary) {
+            return new ActionPreparation(null, errorCode, errorSummary);
+        }
+    }
+
+    private record PreparedAction(
+            String executionId,
+            PendingApplicationAction.Correlation correlation,
+            PendingApplicationAction.ConnectionContext connectionContext,
+            PendingApplicationAction requestedAction,
+            ObjectNode requestPayload,
+            ApplicationActionItem requestedItem,
+            CompletableFuture<PendingApplicationAction> terminal,
+            DeferredProgressListener<PendingApplicationAction> progressListener) {
     }
 }

@@ -28,6 +28,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -321,11 +322,11 @@ class ApplicationActionToolTest {
                 .isEqualTo("protocol_error");
 
         try (ApplicationToolInvocationContext.Scope ignored = invocationScope()) {
-            when(scopes.resolveActive(scope)).thenReturn(Optional.empty());
+            when(scopes.withActiveConnectionScope(eq(scope), any())).thenReturn(Optional.empty());
             assertThat(invoke("framework.demo", 2, json.createObjectNode(), 7).errorCode())
                     .isEqualTo("auth_expired");
 
-            when(scopes.resolveActive(scope)).thenReturn(Optional.of(active()));
+            stubActiveScope();
             when(catalogs.current(connection)).thenReturn(Optional.of(
                     new ApplicationCatalogRegistry.CatalogSnapshot(connection, 1, catalogPayload(false), true)));
             when(contexts.current(connection)).thenReturn(Optional.of(
@@ -488,7 +489,7 @@ class ApplicationActionToolTest {
     }
 
     private void arrangeSnapshots(JsonNode catalog, JsonNode context) {
-        when(scopes.resolveActive(scope)).thenReturn(Optional.of(active()));
+        stubActiveScope();
         when(catalogs.current(connection)).thenReturn(Optional.of(
                 new ApplicationCatalogRegistry.CatalogSnapshot(connection, 1, catalog, true)));
         when(contexts.current(connection)).thenReturn(Optional.of(
@@ -520,6 +521,14 @@ class ApplicationActionToolTest {
 
     private BusinessIdentityScopeService.ActiveBusinessIdentity active() {
         return new BusinessIdentityScopeService.ActiveBusinessIdentity(connection, identity);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void stubActiveScope() {
+        when(scopes.withActiveConnectionScope(eq(scope), any())).thenAnswer(invocation -> {
+            Function<BusinessIdentityScopeService.ActiveBusinessIdentity, Object> reader = invocation.getArgument(1);
+            return Optional.ofNullable(reader.apply(active()));
+        });
     }
 
     private ObjectNode catalogPayload(boolean highRisk) {

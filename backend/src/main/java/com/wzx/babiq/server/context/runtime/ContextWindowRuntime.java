@@ -3,6 +3,7 @@ package com.wzx.babiq.server.context.runtime;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.wzx.babiq.server.context.CapabilityCatalogAssembler;
+import com.wzx.babiq.server.application.context.ApplicationContextModelContributor;
 import com.wzx.babiq.server.context.ContextAssembler;
 import com.wzx.babiq.server.context.compaction.ContextBudget;
 import com.wzx.babiq.server.context.compaction.ContextBudgetPolicy;
@@ -32,6 +33,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -69,10 +71,14 @@ public class ContextWindowRuntime {
     private final ContextSummaryRepository summaryRepository;
     /** 长期记忆读取服务；为空时保持 P3-3 之前不注入长期记忆的行为。 */
     private final LongTermMemoryReadService longTermMemoryReadService;
+    /** 业务模式页面/目录参考贡献器；普通 profile 中为空。 */
+    private final ApplicationContextModelContributor applicationContextContributor;
     /** 默认预算策略，主要服务测试或未启用压缩服务的场景。 */
     private final ContextBudgetPolicy fallbackBudgetPolicy;
     /** snake_case JSON mapper，保证 envelope/snapshot JSON 和 P3-1 结构一致。 */
     private final ObjectMapper objectMapper;
+    /** 协议历史 item 保持 WebSocket/ConversationEventRecorder 的 camelCase 映射。 */
+    private final ObjectMapper protocolObjectMapper;
 
     /**
      * 创建上下文窗口运行时。
@@ -85,7 +91,7 @@ public class ContextWindowRuntime {
                                 ContextSnapshotRepository snapshotRepository,
                                 ObjectMapper objectMapper) {
         this(conversationRepository, contextAssembler, capabilityCatalogAssembler, promptRenderer,
-                windowRepository, snapshotRepository, objectMapper, null, null, null);
+                windowRepository, snapshotRepository, objectMapper, null, null, null, null);
     }
 
     /**
@@ -100,7 +106,23 @@ public class ContextWindowRuntime {
                                 ObjectMapper objectMapper,
                                 ContextCompactionService compactionService) {
         this(conversationRepository, contextAssembler, capabilityCatalogAssembler, promptRenderer,
-                windowRepository, snapshotRepository, objectMapper, compactionService, null, null);
+                windowRepository, snapshotRepository, objectMapper, compactionService, null, null, null);
+    }
+
+    /** 兼容 P3-4 测试/调用点，不提供业务上下文贡献器。 */
+    public ContextWindowRuntime(ConversationRepository conversationRepository,
+                                ContextAssembler contextAssembler,
+                                CapabilityCatalogAssembler capabilityCatalogAssembler,
+                                ContextualPromptRenderer promptRenderer,
+                                ContextWindowRepository windowRepository,
+                                ContextSnapshotRepository snapshotRepository,
+                                ObjectMapper objectMapper,
+                                ContextCompactionService compactionService,
+                                ContextSummaryRepository summaryRepository,
+                                LongTermMemoryReadService longTermMemoryReadService) {
+        this(conversationRepository, contextAssembler, capabilityCatalogAssembler, promptRenderer,
+                windowRepository, snapshotRepository, objectMapper, compactionService, summaryRepository,
+                longTermMemoryReadService, null);
     }
 
     /**
@@ -116,7 +138,8 @@ public class ContextWindowRuntime {
                                 ObjectMapper objectMapper,
                                 ContextCompactionService compactionService,
                                 ContextSummaryRepository summaryRepository,
-                                LongTermMemoryReadService longTermMemoryReadService) {
+                                LongTermMemoryReadService longTermMemoryReadService,
+                                ObjectProvider<ApplicationContextModelContributor> applicationContextContributorProvider) {
         this.conversationRepository = conversationRepository;
         this.contextAssembler = contextAssembler;
         this.capabilityCatalogAssembler = capabilityCatalogAssembler;
@@ -126,8 +149,11 @@ public class ContextWindowRuntime {
         this.compactionService = compactionService;
         this.summaryRepository = summaryRepository;
         this.longTermMemoryReadService = longTermMemoryReadService;
+        this.applicationContextContributor = applicationContextContributorProvider == null
+                ? null : applicationContextContributorProvider.getIfAvailable();
         this.fallbackBudgetPolicy = new ContextBudgetPolicy();
         ObjectMapper base = objectMapper == null ? new ObjectMapper() : objectMapper;
+        this.protocolObjectMapper = base.copy();
         this.objectMapper = base.copy().setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
     }
 
@@ -208,7 +234,7 @@ public class ContextWindowRuntime {
 
     private Optional<ThreadItem> parseThreadItem(ItemRecord record) {
         try {
-            return Optional.of(objectMapper.readValue(record.payloadJson(), ThreadItem.class));
+            return Optional.of(protocolObjectMapper.readValue(record.payloadJson(), ThreadItem.class));
         } catch (Exception ignored) {
             return Optional.empty();
         }
@@ -324,13 +350,16 @@ public class ContextWindowRuntime {
                 historyItems,
                 activeSummary,
                 longTermMemoryReferences,
-                workspaceFacts(input.cwd()),
+                workspaceFacts(input),
                 capabilityCatalog));
     }
 
     private LongTermMemoryReadResult readLongTermMemory(ContextWindowRuntimeInput input,
                                                         String snapshotId,
                                                         int modelWindow) {
+        if (input.businessIdentityScope().scoped()) {
+            return LongTermMemoryReadResult.empty();
+        }
         if (longTermMemoryReadService == null) {
             return LongTermMemoryReadResult.empty();
         }
@@ -342,6 +371,14 @@ public class ContextWindowRuntime {
                     input.threadId(), input.turnId(), exception.getClass().getSimpleName(), exception.getMessage());
             return LongTermMemoryReadResult.empty();
         }
+    }
+
+    private List<String> workspaceFacts(ContextWindowRuntimeInput input) {
+        List<String> facts = new java.util.ArrayList<>(workspaceFacts(input.cwd()));
+        if (input.businessIdentityScope().scoped() && applicationContextContributor != null) {
+            facts.addAll(applicationContextContributor.contribute(input.businessIdentityScope()));
+        }
+        return List.copyOf(facts);
     }
 
     private ContextBudget budget(int modelWindow) {

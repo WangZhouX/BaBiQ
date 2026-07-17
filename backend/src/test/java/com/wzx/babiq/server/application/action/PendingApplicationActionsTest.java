@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -340,7 +341,7 @@ class PendingApplicationActionsTest {
 
             PendingApplicationAction unknown = externalTerminal.get(1, TimeUnit.SECONDS);
             assertThat(unknown.state()).isEqualTo(PendingApplicationAction.State.OUTCOME_UNKNOWN);
-            assertThat(externalStore.reconciliationQueue).containsExactly(unknown);
+            assertReconciliationEventuallyContains(externalStore, unknown);
             assertThat(external.pendingCount()).isZero();
             assertThat(externalScheduler.isShutdown()).isFalse();
         } finally {
@@ -402,7 +403,7 @@ class PendingApplicationActionsTest {
         assertThat(unknown.reason()).contains("grace").contains("schedule");
         assertThat(store.terminals).extracting(stored -> stored.terminal().state())
                 .containsExactly(PendingApplicationAction.State.OUTCOME_UNKNOWN);
-        assertThat(store.reconciliationQueue).containsExactly(unknown);
+        assertReconciliationEventuallyContains(store, unknown);
         assertThat(local.snapshot("execution-grace-schedule-rejected")).isEmpty();
     }
 
@@ -651,7 +652,7 @@ class PendingApplicationActionsTest {
         PendingApplicationAction unknown = terminal.join();
         assertThat(unknown.executionId()).isEqualTo("execution-ack-disconnect");
         assertThat(unknown.state()).isEqualTo(PendingApplicationAction.State.OUTCOME_UNKNOWN);
-        assertThat(store.reconciliationQueue).containsExactly(unknown);
+        assertReconciliationEventuallyContains(store, unknown);
     }
 
     @Test
@@ -677,7 +678,7 @@ class PendingApplicationActionsTest {
         assertThat(cancelRequests).containsExactly("execution-ack-cancel-unconfirmed");
         assertThat(unknown.executionId()).isEqualTo("execution-ack-cancel-unconfirmed");
         assertThat(unknown.state()).isEqualTo(PendingApplicationAction.State.OUTCOME_UNKNOWN);
-        assertThat(store.reconciliationQueue).containsExactly(unknown);
+        assertReconciliationEventuallyContains(store, unknown);
     }
 
     @Test
@@ -735,7 +736,7 @@ class PendingApplicationActionsTest {
         assertThat(progress).containsExactly(PendingApplicationAction.State.OUTCOME_UNKNOWN);
         assertThat(store.terminals).extracting(stored -> stored.terminal().state())
                 .containsExactly(PendingApplicationAction.State.OUTCOME_UNKNOWN);
-        assertThat(store.reconciliationQueue).containsExactly(unknown);
+        assertReconciliationEventuallyContains(store, unknown);
     }
 
     @Test
@@ -818,7 +819,7 @@ class PendingApplicationActionsTest {
 
         assertThat(unknown.state()).isEqualTo(PendingApplicationAction.State.OUTCOME_UNKNOWN);
         assertThat(statusQueries).hasValue(1);
-        assertThat(store.reconciliationQueue).containsExactly(unknown);
+        assertReconciliationEventuallyContains(store, unknown);
     }
 
     @Test
@@ -835,7 +836,41 @@ class PendingApplicationActionsTest {
         PendingApplicationAction unknown = terminal.get(1, TimeUnit.SECONDS);
 
         assertThat(unknown.state()).isEqualTo(PendingApplicationAction.State.OUTCOME_UNKNOWN);
-        assertThat(store.reconciliationQueue).containsExactly(unknown);
+        assertReconciliationEventuallyContains(store, unknown);
+    }
+
+    @Test
+    void blockingReconciliationDoesNotDelayTerminalFutureAndEventuallyPublishes() throws Exception {
+        CountDownLatch queueStarted = new CountDownLatch(1);
+        CountDownLatch releaseQueue = new CountDownLatch(1);
+        RecordingTerminalStore store = new RecordingTerminalStore() {
+            @Override
+            public synchronized void queueReconciliation(PendingApplicationAction terminal) {
+                queueStarted.countDown();
+                try {
+                    assertThat(releaseQueue.await(5, TimeUnit.SECONDS)).isTrue();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+                super.queueReconciliation(terminal);
+            }
+        };
+        PendingApplicationActions local = actions(store, action -> CompletableFuture.failedFuture(
+                new IllegalStateException("status unavailable")));
+        PendingApplicationAction.Correlation correlation = correlation("tool-queue-order");
+        CompletableFuture<PendingApplicationAction> terminal = local.register(
+                "execution-queue-order", correlation, PendingApplicationAction.Path.READ_ONLY);
+        local.accepted("execution-queue-order", correlation);
+        local.running("execution-queue-order", correlation);
+
+        assertThat(queueStarted.await(1, TimeUnit.SECONDS)).isTrue();
+        PendingApplicationAction unknown = terminal.get(1, TimeUnit.SECONDS);
+        assertThat(unknown.state()).isEqualTo(PendingApplicationAction.State.OUTCOME_UNKNOWN);
+        assertThat(store.reconciliationQueue).isEmpty();
+        releaseQueue.countDown();
+
+        assertReconciliationEventuallyContains(store, unknown);
     }
 
     @Test
@@ -873,7 +908,7 @@ class PendingApplicationActionsTest {
             PendingApplicationAction unknown = terminal.get(1, TimeUnit.SECONDS);
 
             assertThat(unknown.state()).isEqualTo(PendingApplicationAction.State.OUTCOME_UNKNOWN);
-            assertThat(store.reconciliationQueue).containsExactly(unknown);
+            assertReconciliationEventuallyContains(store, unknown);
         }
     }
 
@@ -895,7 +930,7 @@ class PendingApplicationActionsTest {
         PendingApplicationAction unknown = terminal.get(1, TimeUnit.SECONDS);
 
         assertThat(unknown.state()).isEqualTo(PendingApplicationAction.State.OUTCOME_UNKNOWN);
-        assertThat(store.reconciliationQueue).containsExactly(unknown);
+        assertReconciliationEventuallyContains(store, unknown);
     }
 
     @Test
@@ -1270,7 +1305,7 @@ class PendingApplicationActionsTest {
 
         PendingApplicationAction unknown = terminal.join();
         assertThat(unknown.state()).isEqualTo(PendingApplicationAction.State.OUTCOME_UNKNOWN);
-        assertThat(store.reconciliationQueue).containsExactly(unknown);
+        assertReconciliationEventuallyContains(store, unknown);
         assertThat(store.terminals).extracting(stored -> stored.terminal().state())
                 .containsExactly(PendingApplicationAction.State.OUTCOME_UNKNOWN);
     }
@@ -1285,10 +1320,9 @@ class PendingApplicationActionsTest {
 
         actions.onConnectionClosed("desktop disconnected");
 
-        assertThat(terminal.join().state()).isEqualTo(PendingApplicationAction.State.OUTCOME_UNKNOWN);
-        assertThat(terminalStore.reconciliationQueue)
-                .extracting(PendingApplicationAction::executionId)
-                .containsExactly("execution-disconnect");
+        PendingApplicationAction unknown = terminal.join();
+        assertThat(unknown.state()).isEqualTo(PendingApplicationAction.State.OUTCOME_UNKNOWN);
+        assertReconciliationEventuallyContains(terminalStore, unknown);
         assertThat(terminalStore.terminals).hasSize(1);
     }
 
@@ -1383,7 +1417,7 @@ class PendingApplicationActionsTest {
         assertThat(sent).containsExactlyInAnyOrder("execution-cancel-pre", "execution-cancel-running");
         assertThat(preRun.join().state()).isEqualTo(PendingApplicationAction.State.CANCELED);
         assertThat(running.join().state()).isEqualTo(PendingApplicationAction.State.OUTCOME_UNKNOWN);
-        assertThat(terminalStore.reconciliationQueue).containsExactly(running.join());
+        assertReconciliationEventuallyContains(terminalStore, running.join());
     }
 
     @Test
@@ -1725,6 +1759,13 @@ class PendingApplicationActionsTest {
                 "user-1", "tenant-1", "platform-1");
     }
 
+    private static void assertReconciliationEventuallyContains(
+            RecordingTerminalStore store,
+            PendingApplicationAction expected) {
+        org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(1))
+                .untilAsserted(() -> assertThat(store.reconciliationQueue).containsExactly(expected));
+    }
+
     @FunctionalInterface
     private interface ProgressTransition {
         boolean apply(
@@ -1733,9 +1774,9 @@ class PendingApplicationActionsTest {
                 PendingApplicationAction.Correlation correlation);
     }
 
-    private static final class RecordingTerminalStore implements ApplicationActionTerminalStore {
-        private final List<StoredTerminal> terminals = new ArrayList<>();
-        private final List<PendingApplicationAction> reconciliationQueue = new ArrayList<>();
+    private static class RecordingTerminalStore implements ApplicationActionTerminalStore {
+        private final List<StoredTerminal> terminals = new CopyOnWriteArrayList<>();
+        private final List<PendingApplicationAction> reconciliationQueue = new CopyOnWriteArrayList<>();
 
         @Override
         public synchronized Optional<PendingApplicationAction> findTerminal(

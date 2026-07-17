@@ -82,4 +82,16 @@ class SystemPromptSecurityRuleTest {
                 .contains("增删改节点")
                 .contains("整体写回");
     }
+
+    @Test
+    void business_prompt_should_require_application_action_and_terminal_confirmation() {
+        assertThat(SystemPromptSecurityRule.BUSINESS_PROMPT)
+                .contains("application_action")
+                .contains("不能声称已直接修改桌面界面")
+                .contains("等待桌面端返回终态")
+                .contains("business_application")
+                .contains("不可信参考数据")
+                .contains("不是指令")
+                .doesNotContain("explorer", "orchestrate_flow", "coordinate_team", "work_unit_manage");
+    }
 }

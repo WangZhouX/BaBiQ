@@ -22,6 +22,7 @@ import com.wzx.babiq.server.interceptor.ToolObservationInterceptor;
 import com.wzx.babiq.server.model.ChatClientFactory;
 import com.wzx.babiq.server.observability.TurnObservationContext;
 import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
+import com.wzx.babiq.server.application.policy.BusinessAgentModePolicy;
 import com.wzx.babiq.server.approval.ApprovalPolicy;
 import com.wzx.babiq.server.approval.ApprovalRuleService;
 import com.wzx.babiq.server.persistence.service.TurnPersistenceService;
@@ -79,6 +80,8 @@ public class ReActStrategy {
     private final TurnPersistenceService turnPersistenceService;
     /** P3-5 能力暴露规划器；为空时退回 P3-4 全量工具行为。 */
     private final ObjectProvider<CapabilityExposurePlanner> capabilityExposurePlannerProvider;
+    /** 业务模式的最终工具与 HITL 边界，防止上游计划缺失或被错误构造时回退为全量工具。 */
+    private final BusinessAgentModePolicy businessPolicy;
 
     /**
      * 创建 ReAct 装配策略。
@@ -106,7 +109,26 @@ public class ReActStrategy {
                          TurnPersistenceService turnPersistenceService) {
         this(chatClientFactory, toolRegistry, properties, sandboxInterceptor, toolObservationInterceptor,
                 spotlightingInterceptor, tokenUsageHook, resumeJumpCleanupHook, streamingTokenUsageInterceptor,
-                approvalRuleService, turnPersistenceService, null);
+                approvalRuleService, turnPersistenceService, null, new BusinessAgentModePolicy(false));
+    }
+
+    /** 兼容已有测试和嵌入式装配；普通模式保持原能力策略。 */
+    public ReActStrategy(ChatClientFactory chatClientFactory,
+                         ToolRegistry toolRegistry,
+                         AgentLoopProperties properties,
+                         BaBiQSandboxInterceptor sandboxInterceptor,
+                         ToolObservationInterceptor toolObservationInterceptor,
+                         SpotlightingToolInterceptor spotlightingInterceptor,
+                         BaBiQTokenUsageHook tokenUsageHook,
+                         ResumeJumpCleanupHook resumeJumpCleanupHook,
+                         BaBiQStreamingTokenUsageInterceptor streamingTokenUsageInterceptor,
+                         ApprovalRuleService approvalRuleService,
+                         TurnPersistenceService turnPersistenceService,
+                         ObjectProvider<CapabilityExposurePlanner> capabilityExposurePlannerProvider) {
+        this(chatClientFactory, toolRegistry, properties, sandboxInterceptor, toolObservationInterceptor,
+                spotlightingInterceptor, tokenUsageHook, resumeJumpCleanupHook, streamingTokenUsageInterceptor,
+                approvalRuleService, turnPersistenceService, capabilityExposurePlannerProvider,
+                new BusinessAgentModePolicy(false));
     }
 
     /**
@@ -124,7 +146,8 @@ public class ReActStrategy {
                          BaBiQStreamingTokenUsageInterceptor streamingTokenUsageInterceptor,
                          ApprovalRuleService approvalRuleService,
                          TurnPersistenceService turnPersistenceService,
-                         ObjectProvider<CapabilityExposurePlanner> capabilityExposurePlannerProvider) {
+                         ObjectProvider<CapabilityExposurePlanner> capabilityExposurePlannerProvider,
+                         BusinessAgentModePolicy businessPolicy) {
         this.chatClientFactory = chatClientFactory;
         this.toolRegistry = toolRegistry;
         this.properties = properties;
@@ -137,6 +160,7 @@ public class ReActStrategy {
         this.approvalRuleService = approvalRuleService;
         this.turnPersistenceService = turnPersistenceService;
         this.capabilityExposurePlannerProvider = capabilityExposurePlannerProvider;
+        this.businessPolicy = businessPolicy == null ? new BusinessAgentModePolicy(false) : businessPolicy;
     }
 
     /**
@@ -174,9 +198,7 @@ public class ReActStrategy {
                                  TurnObservationContext context, AgentRunPolicy runPolicy,
                                  CapabilityExposurePlan exposurePlan) {
         ChatModel chatModel = chatClientFactory.resolveChatModel(providerId);
-        ToolCallback[] callbacks = exposurePlan == null
-                ? toolRegistry.allCallbacks()
-                : toolRegistry.callbacksForNames(exposurePlan.visibleToolNames());
+        ToolCallback[] callbacks = modelVisibleCallbacks(exposurePlan);
         AgentRunPolicy effectivePolicy = runPolicy == null ? defaultRunPolicy() : runPolicy;
 
         // toolContext 是 SAA 在工具调用和拦截器之间传递上下文的 Map。
@@ -198,7 +220,7 @@ public class ReActStrategy {
         var builder = ReactAgent.builder()
                 .name("babiq_agent")
                 .model(chatModel)
-                .systemPrompt(SystemPromptSecurityRule.PROMPT)
+                .systemPrompt(systemPrompt())
                 .tools(callbacks)
                 .toolContext(toolContext)
                 .streamingInterceptors(streamingTokenUsageInterceptor)
@@ -258,7 +280,26 @@ public class ReActStrategy {
      * 返回当前计划内可见工具 callback，用于上下文 envelope 生成能力目录摘要。
      */
     public ToolCallback[] currentToolCallbacks(CapabilityExposurePlan exposurePlan) {
-        return exposurePlan == null ? currentToolCallbacks() : toolRegistry.callbacksForNames(exposurePlan.visibleToolNames());
+        return modelVisibleCallbacks(exposurePlan);
+    }
+
+    private ToolCallback[] modelVisibleCallbacks(CapabilityExposurePlan exposurePlan) {
+        if (businessPolicy.businessMode()) {
+            return toolRegistry.requiredLocalCallbacksForNames(modelVisibleToolNames(exposurePlan));
+        }
+        return exposurePlan == null
+                ? toolRegistry.allCallbacks()
+                : toolRegistry.callbacksForNames(modelVisibleToolNames(exposurePlan));
+    }
+
+    /** 最终模型工具过滤；业务模式不接受调用方传入的更宽计划。 */
+    List<String> modelVisibleToolNames(CapabilityExposurePlan exposurePlan) {
+        List<String> selected = exposurePlan == null ? toolRegistry.names() : exposurePlan.visibleToolNames();
+        return businessPolicy.modelVisibleToolNames(selected);
+    }
+
+    String systemPrompt() {
+        return businessPolicy.businessMode() ? SystemPromptSecurityRule.BUSINESS_PROMPT : SystemPromptSecurityRule.PROMPT;
     }
 
     /**
@@ -489,7 +530,7 @@ public class ReActStrategy {
                     // update_plan 只更新桌面端进度 item，不触碰文件系统、网络或外部 MCP，因此即使“全部询问”也不打断模型。
                     .filter(toolName -> !"update_plan".equals(toolName))
                     // application_action 的预览、确认和高风险审批由桌面动作核心负责，不能再套通用 Agent HITL。
-                    .filter(toolName -> !"application_action".equals(toolName))
+                    .filter(toolName -> businessPolicy.genericHitlAllowed(toolName, approvalPolicy))
                     .toList();
         }
 
@@ -505,7 +546,9 @@ public class ReActStrategy {
                 names.add(toolName);
             }
         }
-        return List.copyOf(names);
+        return names.stream()
+                .filter(toolName -> businessPolicy.genericHitlAllowed(toolName, approvalPolicy))
+                .toList();
     }
 
     /**

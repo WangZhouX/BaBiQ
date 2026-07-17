@@ -3,6 +3,8 @@ package com.wzx.babiq.server.context.runtime;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wzx.babiq.server.agent.AgentRunPolicy;
 import com.wzx.babiq.server.approval.ApprovalPolicy;
+import com.wzx.babiq.server.application.context.ApplicationContextModelContributor;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
 import com.wzx.babiq.server.context.CapabilityCatalogAssembler;
 import com.wzx.babiq.server.context.ContextAssembler;
 import com.wzx.babiq.server.context.repository.ContextSnapshotRecord;
@@ -136,5 +138,55 @@ class ContextWindowRuntimeTest {
         runtime.recordUsage("ctxsnap_1", context);
 
         verify(snapshotRepository).updateActualPromptTokens("ctxsnap_1", 42L);
+    }
+
+    @Test
+    @DisplayName("业务上下文在快照前加入 workspace facts 且不读取长期记忆")
+    void business_context_should_use_frozen_scope_contribution_and_skip_long_term_memory() throws Exception {
+        ConversationRepository conversationRepository = mock(ConversationRepository.class);
+        ContextWindowRepository windowRepository = mock(ContextWindowRepository.class);
+        ContextSnapshotRepository snapshotRepository = mock(ContextSnapshotRepository.class);
+        com.wzx.babiq.server.memory.LongTermMemoryReadService memory =
+                mock(com.wzx.babiq.server.memory.LongTermMemoryReadService.class);
+        ApplicationContextModelContributor contributor = mock(ApplicationContextModelContributor.class);
+        BusinessIdentityScope scope = BusinessIdentityScope.scoped(
+                "desktop-a", "desktop-session-a", "auth-a", 1,
+                "user-a", "tenant-a", "platform-a");
+        when(contributor.contribute(scope)).thenReturn(List.of(
+                "<untrusted-data source=\"business_application\">safe page facts</untrusted-data>"));
+        when(conversationRepository.listItems("thr_business", 200)).thenReturn(List.of(
+                ItemRecord.of("it_action", "thr_business", "turn_old", "applicationAction", 1,
+                        new ObjectMapper().writeValueAsString(new com.wzx.babiq.server.conversation.items.ApplicationActionItem(
+                                "it_action", "applicationAction", "execution-secret", "demo.read", "Read",
+                                "read_only", "completed", null, null, null, 1L)),
+                        "completed", Instant.now())));
+        when(windowRepository.findByThreadId("thr_business")).thenReturn(Optional.empty());
+        when(windowRepository.upsert(any(ContextWindowRecord.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        ObjectMapper mapper = new ObjectMapper();
+        ContextWindowRuntime runtime = new ContextWindowRuntime(
+                conversationRepository, new ContextAssembler(mapper), new CapabilityCatalogAssembler(),
+                new ContextualPromptRenderer(), windowRepository, snapshotRepository, mapper,
+                null, null, memory, providerOf(contributor));
+
+        ContextWindowRuntimeResult result = runtime.prepare(new ContextWindowRuntimeInput(
+                "thr_business", "turn_business", "read page", "provider", "model", "E:\\BaBiQ", "BaBiQ",
+                AgentRunPolicy.of(SandboxMode.READ_ONLY, ApprovalPolicy.NEVER), 128_000,
+                new org.springframework.ai.tool.ToolCallback[0], null, scope));
+
+        assertThat(result.modelInputText())
+                .contains("safe page facts", "business_application")
+                .doesNotContain("execution-secret");
+        assertThat(result.assemblyResult().envelope().longTermMemory().memoryRefs()).isEmpty();
+        assertThat(result.assemblyResult().snapshot().items())
+                .anySatisfy(item -> assertThat(item.reason()).isEqualTo("APPLICATION_ACTION_DISPLAY_ONLY"));
+        verify(contributor).contribute(scope);
+        verify(memory, never()).readForTurn(any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyInt());
+    }
+
+    private static <T> org.springframework.beans.factory.ObjectProvider<T> providerOf(T value) {
+        @SuppressWarnings("unchecked")
+        org.springframework.beans.factory.ObjectProvider<T> provider = mock(org.springframework.beans.factory.ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(value);
+        return provider;
     }
 }

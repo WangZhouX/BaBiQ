@@ -13,6 +13,7 @@ import org.springframework.web.socket.WebSocketSession;
 
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Function;
 
 /** 在 JSON-RPC 请求边界把可信桌面连接解析成不可变业务身份作用域。 */
 @Component
@@ -92,6 +93,42 @@ public final class BusinessIdentityScopeService {
             return Optional.empty();
         }
         return Optional.of(new ActiveBusinessIdentity(connection, identity));
+    }
+
+    /**
+     * 在连接级身份切换互斥区间内读取当前作用域数据，防止旧 Turn 拼接新身份快照。
+     *
+     * <p>锁顺序与身份更新和目录发布一致：connection -> identity registry -> downstream registry。</p>
+     */
+    public <T> Optional<T> withActiveConnectionScope(
+            BusinessIdentityScope scope,
+            Function<ActiveBusinessIdentity, T> reader) {
+        if (!businessEnabled || connections == null || identities == null || scope == null
+                || !scope.scoped() || reader == null) {
+            return Optional.empty();
+        }
+        TrustedDesktopConnection connection = connections.findByDesktopSessionId(scope.desktopSessionId())
+                .filter(candidate -> candidate.desktopInstanceId().equals(scope.desktopInstanceId()))
+                .orElse(null);
+        if (connection == null) {
+            return Optional.empty();
+        }
+        synchronized (connection) {
+            try {
+                TrustedBusinessIdentity identity = identities.current(connection).orElse(null);
+                if (identity == null || !scope.equals(toScope(identity))) {
+                    return Optional.empty();
+                }
+                T result = reader.apply(new ActiveBusinessIdentity(connection, identity));
+                TrustedBusinessIdentity afterRead = identities.current(connection).orElse(null);
+                if (afterRead == null || !scope.equals(toScope(afterRead)) || !identity.equals(afterRead)) {
+                    return Optional.empty();
+                }
+                return Optional.ofNullable(result);
+            } catch (RuntimeException identityOrReadFailure) {
+                return Optional.empty();
+            }
+        }
     }
 
     private static BusinessIdentityScope toScope(TrustedBusinessIdentity identity) {

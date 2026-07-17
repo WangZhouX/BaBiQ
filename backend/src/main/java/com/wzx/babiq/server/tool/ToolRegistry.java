@@ -29,6 +29,8 @@ public class ToolRegistry {
     private final Map<String, Tool> toolsByName;
     /** 本地静态工具转换出的 Spring AI callback；MCP callback 每次导出时动态追加。 */
     private final ToolCallback[] callbacks;
+    /** 经 Tool.name 与 callback definition 一一核验后的可信本地 callback。 */
+    private final Map<String, ToolCallback> localCallbacksByName;
     /** MCP 动态工具目录懒加载引用；未启用 MCP 或单元测试旧构造器中可以为空。 */
     private final ObjectProvider<McpToolCatalog> mcpToolCatalogProvider;
 
@@ -53,10 +55,15 @@ public class ToolRegistry {
         this.toolsByName = indexTools(safeTools);
         this.mcpToolCatalogProvider = mcpToolCatalogProvider;
         // MethodToolCallbackProvider 只负责 @Tool 本地方法；MCP adapter 本身已经实现 ToolCallback。
-        this.callbacks = MethodToolCallbackProvider.builder()
-                .toolObjects(safeTools.toArray())
-                .build()
-                .getToolCallbacks();
+        try {
+            this.callbacks = MethodToolCallbackProvider.builder()
+                    .toolObjects(safeTools.toArray())
+                    .build()
+                    .getToolCallbacks();
+        } catch (RuntimeException invalidCallbacks) {
+            throw new IllegalStateException("Invalid local tool callbacks", invalidCallbacks);
+        }
+        this.localCallbacksByName = indexLocalCallbacks(this.callbacks, this.toolsByName);
     }
 
     /**
@@ -130,6 +137,27 @@ public class ToolRegistry {
     }
 
     /**
+     * 按固定顺序返回经过本地工具实例身份核验的 callback；缺失配置直接失败。
+     */
+    public ToolCallback[] requiredLocalCallbacksForNames(List<String> names) {
+        if (names == null || names.isEmpty()) {
+            return new ToolCallback[0];
+        }
+        List<ToolCallback> required = new ArrayList<>();
+        for (String name : names) {
+            ToolCallback callback = localCallbacksByName.get(name);
+            if (callback == null) {
+                throw new IllegalStateException("Invalid business tool callbacks: missing trusted local tool " + name);
+            }
+            required.add(callback);
+        }
+        if (required.size() != names.size()) {
+            throw new IllegalStateException("Invalid business tool callbacks");
+        }
+        return required.toArray(ToolCallback[]::new);
+    }
+
+    /**
      * 建立本地工具名称索引，并在启动期发现重复工具名。
      */
     private Map<String, Tool> indexTools(List<Tool> tools) {
@@ -139,6 +167,24 @@ public class ToolRegistry {
             if (previous != null) {
                 throw new IllegalStateException("Duplicate tool name: " + tool.name());
             }
+        }
+        return Collections.unmodifiableMap(indexed);
+    }
+
+    private Map<String, ToolCallback> indexLocalCallbacks(
+            ToolCallback[] localCallbacks,
+            Map<String, Tool> localTools) {
+        Map<String, ToolCallback> indexed = new LinkedHashMap<>();
+        for (ToolCallback callback : localCallbacks) {
+            String name = callback.getToolDefinition().name();
+            if (indexed.put(name, callback) != null) {
+                throw new IllegalStateException("Duplicate local tool callback: " + name);
+            }
+        }
+        if (!indexed.keySet().equals(localTools.keySet())) {
+            throw new IllegalStateException(
+                    "Tool name does not match callback definition: tools=" + localTools.keySet()
+                            + ", callbacks=" + indexed.keySet());
         }
         return Collections.unmodifiableMap(indexed);
     }

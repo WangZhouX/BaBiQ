@@ -5,6 +5,7 @@ import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.action.InterruptionMetadata;
 import com.wzx.babiq.server.approval.ApprovalPolicy;
 import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
+import com.wzx.babiq.server.application.policy.BusinessAgentModePolicy;
 import com.wzx.babiq.server.approval.ApprovalRuleService;
 import com.wzx.babiq.server.hook.BaBiQTokenUsageHook;
 import com.wzx.babiq.server.hook.ResumeJumpCleanupHook;
@@ -18,6 +19,7 @@ import com.wzx.babiq.server.persistence.service.TurnPersistenceService;
 import com.wzx.babiq.server.sandbox.SandboxMode;
 import com.wzx.babiq.server.tool.ToolRegistry;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.tool.ToolCallback;
 
 import java.util.List;
 import java.util.Map;
@@ -99,6 +101,50 @@ class ReActStrategyTest {
         assertThat(strategy.approvalToolNamesFor(ApprovalPolicy.ON_REQUEST)).doesNotContain("application_action");
     }
 
+    @Test
+    void business_mode_restricts_even_a_caller_supplied_exposure_plan() {
+        ToolRegistry registry = mock(ToolRegistry.class);
+        when(registry.names()).thenReturn(List.of(
+                "read_file", "application_action", "update_plan", "explorer", "mcp.crm.search"));
+        ReActStrategy strategy = newStrategy(registry, new BusinessAgentModePolicy(true));
+
+        assertThat(strategy.modelVisibleToolNames(new com.wzx.babiq.server.capability.CapabilityExposurePlan(
+                List.of("local.read_file", "local.application_action", "local.update_plan", "mcp.crm.search"),
+                List.of("read_file", "application_action", "update_plan", "mcp.crm.search"),
+                List.of(), List.of(), "forged")))
+                .containsExactly("application_action", "update_plan");
+    }
+
+    @Test
+    void business_mode_uses_the_business_system_prompt_without_changing_common_mode() {
+        assertThat(newStrategy(mock(ToolRegistry.class), new BusinessAgentModePolicy(true)).systemPrompt())
+                .isEqualTo(com.wzx.babiq.server.security.SystemPromptSecurityRule.BUSINESS_PROMPT);
+        assertThat(newStrategy(mock(ToolRegistry.class), new BusinessAgentModePolicy(false)).systemPrompt())
+                .isEqualTo(com.wzx.babiq.server.security.SystemPromptSecurityRule.PROMPT);
+    }
+
+    @Test
+    void common_mode_without_an_exposure_plan_keeps_the_original_all_callbacks_path() {
+        ToolRegistry registry = mock(ToolRegistry.class);
+        ToolCallback first = mock(ToolCallback.class);
+        ToolCallback second = mock(ToolCallback.class);
+        when(registry.allCallbacks()).thenReturn(new ToolCallback[]{first, second});
+
+        assertThat(newStrategy(registry).currentToolCallbacks(null)).containsExactly(first, second);
+    }
+
+    @Test
+    void business_mode_uses_only_registry_verified_trusted_callbacks() {
+        ToolRegistry registry = mock(ToolRegistry.class);
+        ToolCallback action = mock(ToolCallback.class);
+        ToolCallback plan = mock(ToolCallback.class);
+        when(registry.requiredLocalCallbacksForNames(List.of("application_action", "update_plan")))
+                .thenReturn(new ToolCallback[]{action, plan});
+
+        assertThat(newStrategy(registry, new BusinessAgentModePolicy(true)).currentToolCallbacks(null))
+                .containsExactly(action, plan);
+    }
+
     /**
      * 创建只用于配置测试的策略对象。
      *
@@ -110,6 +156,10 @@ class ReActStrategyTest {
     }
 
     private ReActStrategy newStrategy(ToolRegistry toolRegistry) {
+        return newStrategy(toolRegistry, new BusinessAgentModePolicy(false));
+    }
+
+    private ReActStrategy newStrategy(ToolRegistry toolRegistry, BusinessAgentModePolicy businessPolicy) {
         return new ReActStrategy(
                 mock(ChatClientFactory.class),
                 toolRegistry,
@@ -121,7 +171,9 @@ class ReActStrategyTest {
                 mock(ResumeJumpCleanupHook.class),
                 mock(BaBiQStreamingTokenUsageInterceptor.class),
                 mock(ApprovalRuleService.class),
-                mock(TurnPersistenceService.class));
+                mock(TurnPersistenceService.class),
+                null,
+                businessPolicy);
     }
 
     /**

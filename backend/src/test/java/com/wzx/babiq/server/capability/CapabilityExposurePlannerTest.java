@@ -1,5 +1,6 @@
 package com.wzx.babiq.server.capability;
 
+import com.wzx.babiq.server.application.policy.BusinessAgentModePolicy;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -46,6 +47,26 @@ class CapabilityExposurePlannerTest {
 
         assertThat(plan.visibleToolNames()).containsExactly("mcp.fs.read");
         assertThat(plan.reason()).contains("recent_tool_search");
+    }
+
+    @Test
+    @DisplayName("业务模式忽略已注册能力和搜索提升并固定只暴露两个安全工具")
+    void business_mode_should_use_the_fixed_model_tool_allowlist() {
+        InMemoryCapabilityRepository repository = new InMemoryCapabilityRepository();
+        repository.upsert(capability("local.read_file", "read_file", CapabilityExposureMode.VISIBLE, true));
+        repository.upsert(capability("local.application_action", "application_action", CapabilityExposureMode.DISABLED, false));
+        repository.upsert(capability("local.update_plan", "update_plan", CapabilityExposureMode.VISIBLE, true));
+        repository.upsert(capability("mcp.crm.search", "mcp.crm.search", CapabilityExposureMode.DEFERRED, true));
+        repository.upsert(capability("skill.tdd", "tdd", CapabilityExposureMode.DEFERRED, true));
+        repository.recentSelected = List.of("mcp.crm.search", "skill.tdd");
+        CapabilityExposurePlanner planner = new CapabilityExposurePlanner(
+                repository, () -> {}, new BusinessAgentModePolicy(true));
+
+        CapabilityExposurePlan plan = planner.plan("thr_business", "turn_business");
+
+        assertThat(plan.visibleToolNames()).containsExactly("application_action", "update_plan");
+        assertThat(plan.visibleCapabilityIds()).containsExactly("local.application_action", "local.update_plan");
+        assertThat(plan.reason()).isEqualTo("business_fixed_allowlist");
     }
 
     private static CapabilityDescriptor capability(String id, String name, CapabilityExposureMode mode, boolean enabled) {
