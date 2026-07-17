@@ -12,6 +12,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.socket.WebSocketSession;
 
 import java.util.Map;
+import java.util.Optional;
 
 /** 在 JSON-RPC 请求边界把可信桌面连接解析成不可变业务身份作用域。 */
 @Component
@@ -69,6 +70,40 @@ public final class BusinessIdentityScopeService {
         return BusinessIdentityScope.scoped(
                 identity.desktopInstanceId(), identity.desktopSessionId(), identity.authSessionId(),
                 identity.identityEpoch(), identity.userId(), identity.tenantId(), identity.platformId());
+    }
+
+    /**
+     * 用 Turn 创建时冻结的七元身份定位唯一的当前连接；任一字段变化都拒绝复用。
+     *
+     * <p>这里不是读取“当前租户”，而是验证原快照仍精确对应同一桌面会话和认证身份。</p>
+     */
+    public Optional<ActiveBusinessIdentity> resolveActive(BusinessIdentityScope scope) {
+        if (!businessEnabled || connections == null || identities == null || scope == null || !scope.scoped()) {
+            return Optional.empty();
+        }
+        TrustedDesktopConnection connection = connections.findByDesktopSessionId(scope.desktopSessionId())
+                .filter(candidate -> candidate.desktopInstanceId().equals(scope.desktopInstanceId()))
+                .orElse(null);
+        if (connection == null) {
+            return Optional.empty();
+        }
+        TrustedBusinessIdentity identity = identities.current(connection).orElse(null);
+        if (identity == null || !scope.equals(toScope(identity))) {
+            return Optional.empty();
+        }
+        return Optional.of(new ActiveBusinessIdentity(connection, identity));
+    }
+
+    private static BusinessIdentityScope toScope(TrustedBusinessIdentity identity) {
+        return BusinessIdentityScope.scoped(
+                identity.desktopInstanceId(), identity.desktopSessionId(), identity.authSessionId(),
+                identity.identityEpoch(), identity.userId(), identity.tenantId(), identity.platformId());
+    }
+
+    /** 精确匹配的连接和可信身份，仅供服务端动作桥使用。 */
+    public record ActiveBusinessIdentity(
+            TrustedDesktopConnection connection,
+            TrustedBusinessIdentity identity) {
     }
 
     private static void requireCurrentConnection(

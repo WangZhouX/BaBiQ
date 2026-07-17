@@ -10,6 +10,7 @@ import com.wzx.babiq.server.context.model.ContextSourceType;
 import com.wzx.babiq.server.context.model.LongTermMemoryReference;
 import com.wzx.babiq.server.context.model.ShortTermSummary;
 import com.wzx.babiq.server.conversation.items.AgentMessageItem;
+import com.wzx.babiq.server.conversation.items.ApplicationActionItem;
 import com.wzx.babiq.server.conversation.items.ContextCompactionItem;
 import com.wzx.babiq.server.conversation.items.ReasoningItem;
 import com.wzx.babiq.server.conversation.items.ThreadItem;
@@ -63,11 +64,15 @@ class ContextAssemblerTest {
         assertThat(result.snapshot().items())
                 .filteredOn(item -> item.sourceType() == ContextSourceType.THREAD_ITEM && !item.included())
                 .extracting("sourceId")
-                .containsExactly("it_reasoning_1", "it_summary_1", "it_compact_1");
+                .containsExactly("it_reasoning_1", "it_action_1", "it_summary_1", "it_compact_1");
         assertThat(result.snapshot().items())
                 .filteredOn(item -> item.sourceId().equals("it_reasoning_1"))
                 .extracting("reason")
                 .containsExactly(ContextExclusionReason.REASONING_DISPLAY_ONLY.name());
+        assertThat(result.snapshot().items())
+                .filteredOn(item -> item.sourceId().equals("it_action_1"))
+                .extracting("reason")
+                .containsExactly(ContextExclusionReason.APPLICATION_ACTION_DISPLAY_ONLY.name());
         assertThat(result.snapshot().items())
                 .filteredOn(item -> item.sourceType() == ContextSourceType.THREAD_ITEM && item.included())
                 .extracting("sourceId")
@@ -100,6 +105,9 @@ class ContextAssemblerTest {
                 UserMessageItem.of("it_user_1", "我之前让你分析项目结构"),
                 AgentMessageItem.full("it_agent_1", "已经分析了 backend 和 desktop"),
                 new ReasoningItem("it_reasoning_1", "reasoning", "这里是模型思考过程，只给用户看，不进入后续上下文。"),
+                new ApplicationActionItem(
+                        "it_action_1", "applicationAction", "execution-1", "framework.demo",
+                        "读取演示数据", "read_only", "completed", null, null, null, 20L),
                 new TurnSummaryItem("it_summary_1", "turnSummary", "COMPLETED", "deepseek-v4-pro", 10, 5, 15, 1, 3000),
                 new ContextCompactionItem("it_compact_1"),
                 UserMessageItem.of("it_user_2", "后续都使用中文注释")

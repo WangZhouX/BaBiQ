@@ -6,6 +6,7 @@ import com.wzx.huitai.action.model.ActionCommand
 import com.wzx.huitai.action.model.ActionError
 import com.wzx.huitai.action.model.ActionExecutionState
 import com.wzx.huitai.action.model.ActionIdentityScope
+import com.wzx.huitai.action.model.ActionResult
 import com.wzx.huitai.action.port.ActionExecutionRecord
 import com.wzx.huitai.action.port.ActionExecutionStore
 import com.wzx.huitai.action.port.ScopedActionExecutionQuery
@@ -238,9 +239,22 @@ class ApplicationActionExecutionRuntime(
 
     private suspend fun execute(owned: RuntimeOwnedExecution) {
         var rejection: ActionError? = null
+        var completedResult: ActionResult<*>? = null
         val observer = ownerScope.launch { observe(owned) }
         try {
-            rejection = (executor.execute(owned.command, owned.context) as? ActionBusResult.Rejected)?.error
+            when (val outcome = executor.execute(owned.command, owned.context) { projected ->
+                val current = scopedQuery.find(owned.command.executionId, owned.command.identityScope) ?: return@execute
+                if (!current.isTerminal) {
+                    owned.publicationSlot?.offerProgress(
+                        PublicationIntent.Record(owned.publication, current, projectedResult = projected),
+                    )
+                }
+            }) {
+                is ActionBusResult.Completed -> completedResult = outcome.result
+                is ActionBusResult.Rejected -> rejection = outcome.error
+                is ActionBusResult.OutputEncodingFailed -> rejection = outcome.error
+                else -> Unit
+            }
         } catch (_: CancellationException) {
             // The action bus persists its cancellation handoff before rethrowing.
         } finally {
@@ -251,7 +265,7 @@ class ApplicationActionExecutionRuntime(
                 installCompleted(owned)
                 when {
                     finalRead is ScopedRead.Found && finalRead.record.isTerminal -> owned.publicationSlot?.offerTerminal(
-                        PublicationIntent.Record(owned.publication, finalRead.record, rejection),
+                        PublicationIntent.Record(owned.publication, finalRead.record, rejection, completedResult),
                     )
                     rejection != null -> owned.publicationSlot?.offerTerminal(
                         PublicationIntent.Rejected(owned.publication, owned.command.actionId, rejection),
@@ -265,7 +279,12 @@ class ApplicationActionExecutionRuntime(
     private suspend fun observe(owned: RuntimeOwnedExecution) {
         while (true) {
             val record = scopedQuery.find(owned.command.executionId, owned.command.identityScope)
-            if (active[owned.runtimeKey()] === owned && record != null && !record.isTerminal && !owned.terminalQueued) {
+            if (active[owned.runtimeKey()] === owned &&
+                record != null &&
+                !record.isTerminal &&
+                !record.requiresTransientProjection &&
+                !owned.terminalQueued
+            ) {
                 owned.publicationSlot?.offerProgress(PublicationIntent.Record(owned.publication, record))
             }
             delay(statusPollMillis)
@@ -375,8 +394,10 @@ internal sealed interface PublicationIntent {
         val publication: ApplicationActionPublicationContext,
         val record: ActionExecutionRecord,
         val rejection: ActionError? = null,
+        val projectedResult: ActionResult<*>? = null,
     ) : PublicationIntent {
-        override suspend fun publish(client: ApplicationActionStatusClient) = client.publish(publication, record, rejection)
+        override suspend fun publish(client: ApplicationActionStatusClient) =
+            client.publish(publication, record, rejection, projectedResult)
     }
     data class Rejected(
         val publication: ApplicationActionPublicationContext,
@@ -421,7 +442,7 @@ internal class RuntimePublicationSlot(
 
     fun offerProgress(intent: PublicationIntent) {
         if (closed.get() || pendingTerminal.get() != null) return
-        latestProgress.set(intent)
+        latestProgress.updateAndGet { current -> richerProgress(current, intent) }
         if (pendingTerminal.get() == null) signal.trySend(Unit)
     }
 
@@ -446,6 +467,15 @@ internal class RuntimePublicationSlot(
     private companion object { const val RETRY_MILLIS = 10L }
 }
 
+private fun richerProgress(current: PublicationIntent?, incoming: PublicationIntent): PublicationIntent {
+    val existing = current as? PublicationIntent.Record ?: return incoming
+    val candidate = incoming as? PublicationIntent.Record ?: return incoming
+    if (existing.record.command.executionId != candidate.record.command.executionId ||
+        existing.record.state != candidate.record.state
+    ) return incoming
+    return if (existing.projectedResult != null && candidate.projectedResult == null) existing else incoming
+}
+
 private fun ActionExecutionRecord.matchesBinding(candidate: RuntimeOwnedExecution): Boolean =
     command == candidate.command &&
         binding.actionId == candidate.command.actionId &&
@@ -457,3 +487,6 @@ private fun ActionExecutionRecord.matchesBinding(candidate: RuntimeOwnedExecutio
         candidate.context.identityScope == candidate.command.identityScope &&
         candidate.context.pageId == candidate.command.pageId &&
         candidate.context.contextRevision == candidate.command.contextRevision
+
+private val ActionExecutionRecord.requiresTransientProjection: Boolean
+    get() = state == ActionExecutionState.PREVIEWED || state == ActionExecutionState.WAITING_APPROVAL

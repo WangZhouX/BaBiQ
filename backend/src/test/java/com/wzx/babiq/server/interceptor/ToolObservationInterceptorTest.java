@@ -20,12 +20,109 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 class ToolObservationInterceptorTest {
+
+    @Test
+    void applicationActionPersistenceStoresOnlySafeMetadataAndNeverRawInput() {
+        ToolCallPersistenceService persistence = mock(ToolCallPersistenceService.class);
+        ToolObservationInterceptor interceptor = new ToolObservationInterceptor(new BaBiQMetrics(), persistence);
+        TurnObservationContext context = TurnObservationContext.start(
+                "thr_safe", "turn_safe", "provider", "model");
+        String arguments = """
+                {"actionId":"framework.demo","actionVersion":2,"pageId":"page-1","contextRevision":7,
+                 "input":{"password":"pw-secret","person":{"idCard":"330102199001011234"},
+                 "contacts":[{"mobile":"13800138000"}]}}
+                """;
+        ToolCallRequest request = ToolCallRequest.builder()
+                .toolName("application_action")
+                .toolCallId("call_safe")
+                .arguments(arguments)
+                .context(Map.of(TurnObservationContext.METADATA_KEY, context))
+                .build();
+
+        interceptor.interceptToolCall(request,
+                ignored -> ToolCallResponse.of("call_safe", "application_action", "ok"));
+
+        ArgumentCaptor<String> persistedArgs = ArgumentCaptor.forClass(String.class);
+        verify(persistence).recordStarted(
+                eq("call_safe"), eq("thr_safe"), eq("turn_safe"), eq("application_action"),
+                persistedArgs.capture(), any(), any(), any(), any());
+        assertThat(persistedArgs.getValue())
+                .contains("framework.demo", "actionVersion", "page-1", "contextRevision")
+                .doesNotContain("pw-secret", "330102199001011234", "13800138000", "password", "idCard", "mobile");
+    }
+
+    @Test
+    void applicationActionPersistenceOmitsOversizedIdentifiersWithoutPersistingTheirContents() {
+        String actionId = "action-secret-" + "x".repeat(300);
+        String pageId = "page-secret-" + "y".repeat(300);
+
+        String persisted = persistedArguments(
+                "application_action",
+                """
+                        {"actionId":"%s","actionVersion":2,"pageId":"%s","contextRevision":7,
+                         "input":{"password":"pw-secret"}}
+                        """.formatted(actionId, pageId));
+
+        assertThat(persisted)
+                .isEqualTo("{\"actionVersion\":2,\"contextRevision\":7,\"input\":\"[REDACTED]\"}")
+                .doesNotContain("action-secret", "page-secret", "pw-secret")
+                .hasSizeLessThan(100);
+    }
+
+    @Test
+    void applicationActionPersistenceOmitsMetadataWithUnsafeTypesOrRanges() {
+        String[] unsafeArguments = {
+                """
+                        {"actionId":{"secret":"object-secret"},"pageId":["array-secret"],
+                         "actionVersion":"2","contextRevision":"7","input":"input-secret"}
+                        """,
+                """
+                        {"actionId":123,"pageId":null,"actionVersion":2.5,"contextRevision":7.5,
+                         "input":"input-secret"}
+                        """,
+                """
+                        {"actionVersion":-1,"contextRevision":-1,"input":"input-secret"}
+                        """,
+                """
+                        {"actionVersion":2147483648,"contextRevision":9223372036854775808,
+                         "input":"input-secret"}
+                        """
+        };
+
+        for (String arguments : unsafeArguments) {
+            assertThat(persistedArguments("application_action", arguments))
+                    .isEqualTo("{\"input\":\"[REDACTED]\"}");
+        }
+    }
+
+    @Test
+    void applicationActionPersistenceFailsClosedForMalformedJsonAndOmitsUnknownFields() {
+        assertThat(persistedArguments("application_action", "{malformed-secret"))
+                .isEqualTo("{\"input\":\"[REDACTED]\"}");
+        assertThat(persistedArguments(
+                "application_action",
+                """
+                        {"actionId":"framework.demo","actionVersion":2,"pageId":"page-1",
+                         "contextRevision":7,"apiKey":"unknown-secret","nested":{"token":"secret"},
+                         "input":{"password":"pw-secret"}}
+                        """))
+                .isEqualTo("{\"actionId\":\"framework.demo\",\"actionVersion\":2,\"pageId\":\"page-1\","
+                        + "\"contextRevision\":7,\"input\":\"[REDACTED]\"}");
+    }
+
+    @Test
+    void ordinaryToolPersistenceKeepsOriginalArgumentsUnchanged() {
+        String arguments = "{\"path\":\"README.md\",\"query\":\"ordinary-value\"}";
+
+        assertThat(persistedArguments("read_file", arguments)).isEqualTo(arguments);
+    }
 
     @Test
     void interceptToolCall_should_record_tool_call_in_context_and_metrics() {
@@ -140,5 +237,27 @@ class ToolObservationInterceptorTest {
         assertThat(item.delegationId()).isEqualTo("dlg_1");
         assertThat(item.status()).isEqualTo("running");
         assertThat(item.toolCallCount()).isEqualTo(1);
+    }
+
+    private String persistedArguments(String toolName, String arguments) {
+        ToolCallPersistenceService persistence = mock(ToolCallPersistenceService.class);
+        ToolObservationInterceptor interceptor = new ToolObservationInterceptor(new BaBiQMetrics(), persistence);
+        TurnObservationContext context = TurnObservationContext.start(
+                "thr_persist", "turn_persist", "provider", "model");
+        ToolCallRequest request = ToolCallRequest.builder()
+                .toolName(toolName)
+                .toolCallId("call_persist")
+                .arguments(arguments)
+                .context(Map.of(TurnObservationContext.METADATA_KEY, context))
+                .build();
+
+        interceptor.interceptToolCall(request,
+                ignored -> ToolCallResponse.of("call_persist", toolName, "ok"));
+
+        ArgumentCaptor<String> persistedArgs = ArgumentCaptor.forClass(String.class);
+        verify(persistence).recordStarted(
+                eq("call_persist"), eq("thr_persist"), eq("turn_persist"), eq(toolName),
+                persistedArgs.capture(), any(), any(), any(), any());
+        return persistedArgs.getValue();
     }
 }

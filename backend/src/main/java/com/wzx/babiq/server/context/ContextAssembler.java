@@ -16,6 +16,7 @@ import com.wzx.babiq.server.context.model.LongTermMemoryReference;
 import com.wzx.babiq.server.context.model.RecentHistoryItem;
 import com.wzx.babiq.server.context.model.ShortTermSummary;
 import com.wzx.babiq.server.conversation.items.AgentMessageItem;
+import com.wzx.babiq.server.conversation.items.ApplicationActionItem;
 import com.wzx.babiq.server.conversation.items.ContextCompactionItem;
 import com.wzx.babiq.server.conversation.items.ReasoningItem;
 import com.wzx.babiq.server.conversation.items.ThreadItem;
@@ -163,6 +164,8 @@ public class ContextAssembler {
             } else if (item instanceof ReasoningItem) {
                 // reasoning 是给用户看的“思考过程”展示层，不是 assistant 对话事实，不能污染下一轮模型输入。
                 excludeThreadItem(snapshotItems, item.id(), ContextExclusionReason.REASONING_DISPLAY_ONLY);
+            } else if (item instanceof ApplicationActionItem) {
+                excludeThreadItem(snapshotItems, item.id(), ContextExclusionReason.APPLICATION_ACTION_DISPLAY_ONLY);
             } else if (item instanceof TurnSummaryItem) {
                 excludeThreadItem(snapshotItems, item.id(), ContextExclusionReason.RUNTIME_SUMMARY);
             } else if (item instanceof ContextCompactionItem) {

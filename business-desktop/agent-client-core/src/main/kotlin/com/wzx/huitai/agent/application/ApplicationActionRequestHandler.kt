@@ -7,6 +7,7 @@ import com.wzx.huitai.action.model.ActionCommand
 import com.wzx.huitai.action.model.ActionErrorCode
 import com.wzx.huitai.action.model.ActionIdentityScope
 import com.wzx.huitai.action.model.ActionOrigin
+import com.wzx.huitai.action.model.ActionResult
 import com.wzx.huitai.action.port.ActionExecutionRecord
 import com.wzx.huitai.action.port.ActionExecutionStore
 import com.wzx.huitai.action.port.ScopedActionExecutionQuery
@@ -37,10 +38,21 @@ import kotlinx.serialization.json.put
 /** 可替换的最小执行端口，测试无需代理 final 的 [ApplicationActionBus]。 */
 fun interface ApplicationActionExecutor {
     suspend fun execute(command: ActionCommand, context: ActionContext): ActionBusResult
+
+    suspend fun execute(
+        command: ActionCommand,
+        context: ActionContext,
+        progress: suspend (ActionResult<*>) -> Unit,
+    ): ActionBusResult = execute(command, context)
 }
 
 class DirectApplicationActionExecutor(private val bus: ApplicationActionBus) : ApplicationActionExecutor {
     override suspend fun execute(command: ActionCommand, context: ActionContext) = bus.execute(command, context)
+    override suspend fun execute(
+        command: ActionCommand,
+        context: ActionContext,
+        progress: suspend (ActionResult<*>) -> Unit,
+    ) = bus.execute(command, context, progress)
 }
 
 /** 接管服务端动作 request/cancel/status/result 请求，并拥有其启动的执行 Job。 */

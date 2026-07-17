@@ -20,6 +20,7 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -79,6 +80,80 @@ class ApplicationActionProtocolHandlerTest {
                 "application/action/status",
                 "application/action/result/get");
         assertThat(handler.methods()).doesNotContain("application/action/cancel");
+    }
+
+    @Test
+    void outboundActionRequestUsesExactConnectionCorrelationIdentityAndRequiresMatchingAck() {
+        PendingApplicationAction requested = action(PendingApplicationAction.State.REQUESTED)
+                .withConnectionContext(connectionContext());
+        CompletableFuture<com.wzx.babiq.server.api.JsonRpcMessage> response = new CompletableFuture<>();
+        when(outbound.request(eq("ws-1"), eq("application/action/request"), any(), any()))
+                .thenReturn(response);
+
+        CompletableFuture<com.wzx.babiq.server.api.JsonRpcMessage> sent = handler.sendActionRequest(
+                requested, objectMapper.createObjectNode().put("actionId", "framework.demo"));
+        ArgumentCaptor<Object> envelope = ArgumentCaptor.forClass(Object.class);
+        verify(outbound).request(eq("ws-1"), eq("application/action/request"), envelope.capture(), any());
+        assertThat(envelope.getValue())
+                .isInstanceOfSatisfying(com.wzx.babiq.server.application.protocol.ApplicationActionMessage.class,
+                        message -> {
+                            assertThat(message.executionId()).isEqualTo("execution-1");
+                            assertThat(message.threadId()).isEqualTo("thread-1");
+                            assertThat(message.turnId()).isEqualTo("turn-1");
+                            assertThat(message.toolCallId()).isEqualTo("tool-call-1");
+                            assertThat(message.payload().path("actionId").asText()).isEqualTo("framework.demo");
+                        });
+
+        response.complete(new com.wzx.babiq.server.api.JsonRpcMessage.Response(
+                "2.0", 1L, Map.of("executionId", "execution-1", "accepted", true)));
+        assertThat(sent.join()).isInstanceOf(com.wzx.babiq.server.api.JsonRpcMessage.Response.class);
+    }
+
+    @Test
+    void outboundActionRequestSeparatesConfirmedNegativeAcknowledgementsFromTransportUncertainty() {
+        PendingApplicationAction requested = action(PendingApplicationAction.State.REQUESTED)
+                .withConnectionContext(connectionContext());
+        when(outbound.request(eq("ws-1"), eq("application/action/request"), any(), any()))
+                .thenReturn(CompletableFuture.completedFuture(
+                        new com.wzx.babiq.server.api.JsonRpcMessage.Response(
+                                "2.0", 1L, Map.of("executionId", "execution-1", "accepted", false))));
+        assertThatThrownBy(() -> handler.sendActionRequest(
+                requested, objectMapper.createObjectNode()).join())
+                .hasRootCauseInstanceOf(ConfirmedActionRequestRejection.class);
+
+        java.util.List<com.wzx.babiq.server.api.JsonRpcMessage> uncertain = java.util.List.of(
+                new com.wzx.babiq.server.api.JsonRpcMessage.Response(
+                        "2.0", 2L, Map.of("executionId", "execution-other", "accepted", true)),
+                new com.wzx.babiq.server.api.JsonRpcMessage.Response(
+                        "2.0", 3L, Map.of("executionId", "execution-1")),
+                new com.wzx.babiq.server.api.JsonRpcMessage.Response(
+                        "2.0", 4L, Map.of("executionId", "execution-1", "accepted", "false")),
+                new com.wzx.babiq.server.api.JsonRpcMessage.Response(
+                        "2.0", 5L, Map.of("executionId", "execution-1", "accepted", 0)),
+                new com.wzx.babiq.server.api.JsonRpcMessage.Response(
+                        "2.0", 6L, java.util.Map.of("executionId", "execution-1", "accepted",
+                                com.fasterxml.jackson.databind.node.NullNode.getInstance())),
+                new com.wzx.babiq.server.api.JsonRpcMessage.Notification("2.0", "unexpected", Map.of()),
+                com.wzx.babiq.server.api.JsonRpcMessage.ErrorResponse.of(
+                        7L, com.wzx.babiq.server.api.error.JsonRpcErrorCode.INVALID_PARAMS,
+                        "request rejected", null));
+        for (com.wzx.babiq.server.api.JsonRpcMessage response : uncertain) {
+            when(outbound.request(eq("ws-1"), eq("application/action/request"), any(), any()))
+                    .thenReturn(CompletableFuture.completedFuture(response));
+
+            assertThatThrownBy(() -> handler.sendActionRequest(
+                    requested, objectMapper.createObjectNode()).join())
+                    .isInstanceOfSatisfying(java.util.concurrent.CompletionException.class,
+                            failure -> assertThat(failure.getCause())
+                                    .isInstanceOf(ActionRequestAcknowledgementUncertain.class));
+        }
+
+        when(outbound.request(eq("ws-1"), eq("application/action/request"), any(), any()))
+                .thenReturn(CompletableFuture.failedFuture(new java.util.concurrent.TimeoutException("ack lost")));
+        assertThatThrownBy(() -> handler.sendActionRequest(requested, objectMapper.createObjectNode()).join())
+                .isInstanceOfSatisfying(java.util.concurrent.CompletionException.class,
+                        failure -> assertThat(failure.getCause())
+                                .isInstanceOf(ActionRequestAcknowledgementUncertain.class));
     }
 
     @Test

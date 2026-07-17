@@ -10,6 +10,7 @@ import com.wzx.babiq.server.api.method.TurnInterruptHandler;
 import com.wzx.babiq.server.application.action.PendingApplicationActions;
 import com.wzx.babiq.server.application.action.ApplicationMessageSequence;
 import com.wzx.babiq.server.application.api.ApplicationActionProtocolHandler;
+import com.wzx.babiq.server.application.tool.ApplicationActionTool;
 import com.wzx.babiq.server.conversation.repository.ConversationRepository;
 import com.wzx.babiq.server.conversation.repository.TurnRecord;
 import com.wzx.babiq.server.memory.LongTermMemoryProperties;
@@ -122,6 +123,9 @@ class BusinessDesktopProfileIsolationIT {
 
     @Autowired
     private ApplicationActionProtocolHandler applicationActionProtocolHandler;
+
+    @Autowired
+    private ApplicationActionTool applicationActionTool;
 
     private BusinessDesktopRuntimePaths testLoggingPaths;
 
@@ -373,6 +377,11 @@ class BusinessDesktopProfileIsolationIT {
     void springInjectsTheSharedApplicationMessageSequenceIntoTheProtocolHandler() {
         assertThat(ReflectionTestUtils.getField(applicationActionProtocolHandler, "messageSequence"))
                 .isSameAs(applicationMessageSequence);
+    }
+
+    @Test
+    void businessProfileRegistersTheApplicationActionTool() {
+        assertThat(applicationActionTool.name()).isEqualTo("application_action");
     }
 
     private BusinessDesktopModeProperties propertiesForRuntime(Path runtime) {

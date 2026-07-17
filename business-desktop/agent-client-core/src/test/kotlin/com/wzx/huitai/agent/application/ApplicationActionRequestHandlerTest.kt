@@ -267,7 +267,7 @@ class ApplicationActionRequestHandlerTest {
     }
 
     @Test
-    fun `store progress is emitted once in order and persisted terminal wins`() = runTest {
+    fun `pollable store progress is emitted once and persisted terminal wins`() = runTest {
         val fixture = Fixture(backgroundScope)
         val release = CompletableDeferred<Unit>()
         fixture.executor.block = { command ->
@@ -296,13 +296,169 @@ class ApplicationActionRequestHandlerTest {
         assertEquals(
             listOf(
                 ApplicationMethod.ACTION_ACCEPTED.wireName,
-                ApplicationMethod.ACTION_PREVIEWED.wireName,
-                ApplicationMethod.ACTION_APPROVAL_REQUIRED.wireName,
                 ApplicationMethod.ACTION_RUNNING.wireName,
                 ApplicationMethod.ACTION_COMPLETED.wireName,
             ),
             fixture.connection.sent.mapNotNull(::methodOrNull),
         )
+        fixture.close()
+    }
+
+    @Test
+    fun `progress payloads expose only safe preview and error summaries from real action results`() = runTest {
+        val fixture = Fixture(backgroundScope)
+        val command = command()
+        val preview = com.wzx.huitai.action.model.ActionPreview(
+            executionId = command.executionId,
+            summary = "将更新两个字段",
+            redactedInput = buildJsonObject { put("mobile", "[REDACTED]") },
+        )
+        val previewRecord = record(command, ActionExecutionState.PREVIEWED)
+        val approvalRecord = record(command, ActionExecutionState.WAITING_APPROVAL)
+        val previewResult = ActionResult.Preview(preview)
+        val approvalResult = ActionResult.ApprovalRequired(
+            command.executionId, "approval-1", preview, "高风险确认", NOW.toEpochMilli() + 60_000,
+        )
+        val failedRecord = record(command, ActionExecutionState.FAILED).copy(
+            result = ActionResult.Failure(
+                command.executionId,
+                ActionError(ActionErrorCode.REMOTE_REQUEST_FAILED, "请求失败，请稍后重试"),
+            ),
+        )
+
+        fixture.status.publish(publication(), previewRecord, projectedResult = previewResult)
+        fixture.status.publish(publication(), approvalRecord, projectedResult = approvalResult)
+        fixture.status.publish(publication(), failedRecord)
+
+        val payloads = fixture.connection.sent.map { it.json().getValue("params").jsonObject.getValue("payload").jsonObject }
+        assertEquals("将更新两个字段", payloads[0].getValue("previewSummary").jsonPrimitive.content)
+        assertEquals("将更新两个字段", payloads[1].getValue("previewSummary").jsonPrimitive.content)
+        assertEquals("请求失败，请稍后重试", payloads[2].getValue("errorSummary").jsonPrimitive.content)
+        assertEquals(false, fixture.connection.sent.joinToString().contains("[REDACTED]"))
+        fixture.close()
+    }
+
+    @Test
+    fun `runtime forwards real executor progress projection without storing intermediate results`() = runTest {
+        val fixture = Fixture(backgroundScope)
+        val preview = com.wzx.huitai.action.model.ActionPreview(
+            executionId = command().executionId,
+            summary = "将更新两个字段",
+        )
+        fixture.executor.progressBlock = { command, progress ->
+            fixture.store.current = record(command, ActionExecutionState.PREVIEWED)
+            progress(ActionResult.Preview(preview))
+            fixture.executor.progressRelease.await()
+            fixture.store.current = record(command, ActionExecutionState.FAILED)
+            ActionBusResult.Completed(assertNotNull(fixture.store.current?.result))
+        }
+
+        fixture.serverRequest("projected-progress", ApplicationMethod.ACTION_REQUEST, requestEnvelope(sequence = 1))
+        fixture.executor.entered.await()
+        runCurrent()
+        fixture.executor.progressRelease.complete(Unit)
+        runCurrent()
+
+        val previewPayload = fixture.connection.sent.map { it.json() }
+            .first { it["method"]?.jsonPrimitive?.content == ApplicationMethod.ACTION_PREVIEWED.wireName }
+            .getValue("params").jsonObject.getValue("payload").jsonObject
+        assertEquals("将更新两个字段", previewPayload.getValue("previewSummary").jsonPrimitive.content)
+        assertEquals(null, fixture.store.current?.result?.takeIf { fixture.store.current?.state == ActionExecutionState.PREVIEWED })
+        fixture.close()
+    }
+
+    @Test
+    fun `polling waits for rich preview and approval projections instead of publishing empty states`() = runTest {
+        val fixture = Fixture(backgroundScope)
+        val previewPersisted = CompletableDeferred<Unit>()
+        val releasePreviewProjection = CompletableDeferred<Unit>()
+        val approvalPersisted = CompletableDeferred<Unit>()
+        val releaseApprovalProjection = CompletableDeferred<Unit>()
+        val releaseTerminal = CompletableDeferred<Unit>()
+        val preview = com.wzx.huitai.action.model.ActionPreview(
+            executionId = command().executionId,
+            summary = "安全预览",
+        )
+        fixture.executor.progressBlock = { command, progress ->
+            fixture.store.current = record(command, ActionExecutionState.PREVIEWED)
+            previewPersisted.complete(Unit)
+            releasePreviewProjection.await()
+            progress(ActionResult.Preview(preview))
+            fixture.store.current = record(command, ActionExecutionState.WAITING_APPROVAL)
+            approvalPersisted.complete(Unit)
+            releaseApprovalProjection.await()
+            progress(ActionResult.Preview(preview))
+            releaseTerminal.await()
+            fixture.store.current = record(command, ActionExecutionState.FAILED)
+            ActionBusResult.Completed(assertNotNull(fixture.store.current?.result))
+        }
+
+        fixture.serverRequest("empty-first", ApplicationMethod.ACTION_REQUEST, requestEnvelope(sequence = 1))
+        previewPersisted.await()
+        advanceTimeBy(2)
+        runCurrent()
+        assertEquals(
+            emptyList(),
+            fixture.connection.sent.mapNotNull(::methodOrNull)
+                .filter { it == ApplicationMethod.ACTION_PREVIEWED.wireName },
+        )
+
+        releasePreviewProjection.complete(Unit)
+        approvalPersisted.await()
+        runCurrent()
+        advanceTimeBy(2)
+        runCurrent()
+        assertEquals(
+            emptyList(),
+            fixture.connection.sent.mapNotNull(::methodOrNull)
+                .filter { it == ApplicationMethod.ACTION_APPROVAL_REQUIRED.wireName },
+        )
+
+        releaseApprovalProjection.complete(Unit)
+        runCurrent()
+        val progressNotifications = fixture.connection.sent.map { it.json() }.filter {
+            it["method"]?.jsonPrimitive?.content in setOf(
+                ApplicationMethod.ACTION_PREVIEWED.wireName,
+                ApplicationMethod.ACTION_APPROVAL_REQUIRED.wireName,
+            )
+        }
+        assertEquals(
+            listOf(
+                ApplicationMethod.ACTION_PREVIEWED.wireName,
+                ApplicationMethod.ACTION_APPROVAL_REQUIRED.wireName,
+            ),
+            progressNotifications.map { it.getValue("method").jsonPrimitive.content },
+        )
+        assertEquals(
+            listOf("安全预览", "安全预览"),
+            progressNotifications.map {
+                it.getValue("params").jsonObject.getValue("payload").jsonObject
+                    .getValue("previewSummary").jsonPrimitive.content
+            },
+        )
+
+        releaseTerminal.complete(Unit)
+        runCurrent()
+        fixture.close()
+    }
+
+    @Test
+    fun `same state polling cannot overwrite a richer projected progress`() = runTest {
+        val fixture = Fixture(backgroundScope)
+        val record = record(command(), ActionExecutionState.PREVIEWED)
+        val preview = ActionResult.Preview(
+            com.wzx.huitai.action.model.ActionPreview(command().executionId, "安全预览"),
+        )
+        val slot = RuntimePublicationSlot(backgroundScope) { fixture.status }
+
+        slot.offerProgress(PublicationIntent.Record(publication(), record, projectedResult = preview))
+        slot.offerProgress(PublicationIntent.Record(publication(), record))
+        runCurrent()
+
+        val payload = fixture.connection.sent.single().json()
+            .getValue("params").jsonObject.getValue("payload").jsonObject
+        assertEquals("安全预览", payload.getValue("previewSummary").jsonPrimitive.content)
+        slot.close()
         fixture.close()
     }
 
@@ -333,6 +489,9 @@ class ApplicationActionRequestHandlerTest {
             rejection = ActionError(ActionErrorCode.PERMISSION_DENIED, "secret-denial"),
         )
         assertEquals(listOf(ApplicationMethod.ACTION_REJECTED.wireName), rejected.connection.sent.mapNotNull(::methodOrNull))
+        val rejectionPayload = rejected.connection.sent.single().json()
+            .getValue("params").jsonObject.getValue("payload").jsonObject
+        assertEquals("[REDACTED]", rejectionPayload.getValue("errorSummary").jsonPrimitive.content)
         assertEquals(false, rejected.connection.sent.single().contains("secret-denial"))
         rejected.close()
     }
@@ -668,6 +827,8 @@ class ApplicationActionRequestHandlerTest {
         var context: ActionContext? = null
         val entered = CompletableDeferred<Unit>()
         val cancelled = CompletableDeferred<Unit>()
+        val progressRelease = CompletableDeferred<Unit>()
+        var progressBlock: (suspend (ActionCommand, suspend (ActionResult<*>) -> Unit) -> ActionBusResult)? = null
         var block: suspend (ActionCommand) -> ActionBusResult = { ActionBusResult.InProgress(it.executionId, ActionExecutionState.EXECUTING) }
         override suspend fun execute(command: ActionCommand, context: ActionContext): ActionBusResult {
             calls += 1
@@ -675,6 +836,20 @@ class ApplicationActionRequestHandlerTest {
             this.context = context
             entered.complete(Unit)
             return block(command)
+        }
+        override suspend fun execute(
+            command: ActionCommand,
+            context: ActionContext,
+            progress: suspend (ActionResult<*>) -> Unit,
+        ): ActionBusResult {
+            progressBlock?.let { block ->
+                calls += 1
+                this.command = command
+                this.context = context
+                entered.complete(Unit)
+                return block(command, progress)
+            }
+            return execute(command, context)
         }
     }
 

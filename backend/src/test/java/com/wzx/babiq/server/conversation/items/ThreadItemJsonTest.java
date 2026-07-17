@@ -167,4 +167,22 @@ class ThreadItemJsonTest {
         assertThat(orchestration.nodes()).hasSize(2);
         assertThat(orchestration.nodes().get(1).summary()).contains("写入");
     }
+
+    @Test
+    void applicationActionItemRoundTripsOnlySafeDisplayFields() throws Exception {
+        ThreadItem item = new ApplicationActionItem(
+                "it_action_1", "applicationAction", "execution-1", "framework.demo",
+                "更新案件资料", "reversible_write", "previewed",
+                "将更新 2 个字段", null, null, 18L);
+
+        String serialized = objectMapper.writeValueAsString(item);
+        ThreadItem restored = objectMapper.readValue(serialized, ThreadItem.class);
+
+        assertThat(restored).isInstanceOf(ApplicationActionItem.class);
+        assertThat(serialized)
+                .contains("\"type\":\"applicationAction\"")
+                .contains("\"executionId\":\"execution-1\"")
+                .contains("\"status\":\"previewed\"")
+                .doesNotContain("input", "output", "identity", "permission", "secret");
+    }
 }

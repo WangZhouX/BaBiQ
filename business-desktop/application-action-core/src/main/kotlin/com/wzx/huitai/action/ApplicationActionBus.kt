@@ -51,6 +51,8 @@ import java.security.MessageDigest
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
+import java.util.logging.Level
+import java.util.logging.Logger
 
 /** 远程对账硬超时必须严格早于持久 claim 租约，避免 owner 仍运行时被其他进程接管。 */
 internal object ReconciliationTimingPolicy {
@@ -222,7 +224,15 @@ class ApplicationActionBus internal constructor(
     }
 
     /** 解析、校验并按有效风险执行一个动作命令。 */
-    suspend fun execute(command: ActionCommand, context: ActionContext): ActionBusResult {
+    suspend fun execute(command: ActionCommand, context: ActionContext): ActionBusResult =
+        execute(command, context) { }
+
+    /** 可选瞬态进度只承载已脱敏预览，不进入持久 execution record。 */
+    suspend fun execute(
+        command: ActionCommand,
+        context: ActionContext,
+        progress: suspend (ActionResult<*>) -> Unit,
+    ): ActionBusResult {
         val registered = when (val resolution = registry.resolve(command.actionId, command.actionVersion)) {
             is ActionResolution.Found -> resolution.action
             is ActionResolution.NotFound -> return ActionBusResult.Rejected(resolution.error)
@@ -284,6 +294,7 @@ class ApplicationActionBus internal constructor(
                 context,
                 validating,
                 risk.effectiveRisk,
+                progress,
             )
             ActionRiskLevel.HIGH_RISK -> executeHighRisk(
                 registered,
@@ -291,6 +302,7 @@ class ApplicationActionBus internal constructor(
                 context,
                 risk,
                 validating,
+                progress,
             )
         }
     }
@@ -720,6 +732,7 @@ class ApplicationActionBus internal constructor(
         context: ActionContext,
         validating: ActionExecutionRecord,
         effectiveRisk: ActionRiskLevel,
+        progress: suspend (ActionResult<*>) -> Unit,
     ): ActionBusResult {
         val preview = try {
             when (val attempt = preview(registered, command, context)) {
@@ -736,6 +749,7 @@ class ApplicationActionBus internal constructor(
             is StateAdvanceResult.ExistingTerminal -> return advanced.result
             is StateAdvanceResult.Rejected -> return advanced.result
         }
+        emitProgressSafely(progress, ActionResult.Preview(preview))
         val confirmation = try {
             confirmationPort.request(command, preview, context)
         } catch (cancellation: CancellationException) {
@@ -796,6 +810,7 @@ class ApplicationActionBus internal constructor(
         context: ActionContext,
         risk: RiskEvaluation,
         validating: ActionExecutionRecord,
+        progress: suspend (ActionResult<*>) -> Unit,
     ): ActionBusResult {
         val preview = try {
             when (val attempt = preview(registered, command, context)) {
@@ -812,6 +827,7 @@ class ApplicationActionBus internal constructor(
             is StateAdvanceResult.ExistingTerminal -> return advanced.result
             is StateAdvanceResult.Rejected -> return advanced.result
         }
+        emitProgressSafely(progress, ActionResult.Preview(preview))
         val confirmation = try {
             confirmationPort.request(command, preview, context)
         } catch (cancellation: CancellationException) {
@@ -868,6 +884,8 @@ class ApplicationActionBus internal constructor(
             is StateAdvanceResult.ExistingTerminal -> return advanced.result
             is StateAdvanceResult.Rejected -> return advanced.result
         }
+        // WAITING_APPROVAL 复用同一个真实预览；协议方法由持久化 state 决定。
+        emitProgressSafely(progress, ActionResult.Preview(preview))
         val approval = try {
             approvalPort.request(command, preview, risk, context)
         } catch (cancellation: CancellationException) {
@@ -1282,8 +1300,22 @@ class ApplicationActionBus internal constructor(
         }
     }
 
+    private suspend fun emitProgressSafely(
+        progress: suspend (ActionResult<*>) -> Unit,
+        projected: ActionResult<*>,
+    ) {
+        try {
+            progress(projected)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (failure: Exception) {
+            LOGGER.log(Level.WARNING, "Application action progress observer failed: {0}", failure.javaClass.simpleName)
+        }
+    }
+
     private companion object {
         const val CANCELLATION_HANDOFF_TIMEOUT_MILLIS = 5_000L
+        val LOGGER: Logger = Logger.getLogger(ApplicationActionBus::class.java.name)
     }
 }
 

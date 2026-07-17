@@ -12,6 +12,8 @@ public enum ContextExclusionReason {
     COMPACTION_MARKER,
     /** ReasoningItem 只服务桌面端折叠展示，不应作为 assistant 历史注入后续模型上下文。 */
     REASONING_DISPLAY_ONLY,
+    /** ApplicationActionItem 只展示桌面执行进度，不能作为新的对话事实再次注入。 */
+    APPLICATION_ACTION_DISPLAY_ONLY,
     /** Agent 流式增量没有完整文本，直接注入会污染历史语义。 */
     INCOMPLETE_ASSISTANT_MESSAGE,
     /** 文本为空，没有模型可见价值。 */

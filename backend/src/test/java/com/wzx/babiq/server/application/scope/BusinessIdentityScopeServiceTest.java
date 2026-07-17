@@ -140,6 +140,25 @@ class BusinessIdentityScopeServiceTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
+    @Test
+    void frozenScopeResolvesOnlyTheExactStillActiveConnectionAndIdentity() {
+        BusinessIdentityScopeService service = new BusinessIdentityScopeService(true, connections, identities);
+        BusinessIdentityScope frozen = BusinessIdentityScope.scoped(
+                "desktop-secret", "desktop-session-secret", "auth-session-secret", 8,
+                "user-secret", "tenant-secret", "platform-secret");
+
+        assertThat(service.resolveActive(frozen)).get().satisfies(active -> {
+            assertThat(active.connection()).isSameAs(connection);
+            assertThat(active.identity()).isSameAs(identity);
+        });
+
+        assertThat(service.resolveActive(BusinessIdentityScope.scoped(
+                "desktop-secret", "desktop-session-secret", "auth-session-secret", 8,
+                "user-secret", "tenant-other", "platform-secret"))).isEmpty();
+        when(identities.current(connection)).thenReturn(Optional.empty());
+        assertThat(service.resolveActive(frozen)).isEmpty();
+    }
+
     private static Map<String, Object> attributes(
             String reservationId,
             String desktopInstanceId,

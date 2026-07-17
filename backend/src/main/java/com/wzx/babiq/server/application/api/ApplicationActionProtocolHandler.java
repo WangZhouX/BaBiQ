@@ -30,6 +30,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 
 /** 接收桌面动作进度/终态，并提供 status/cancel 的服务端主动请求适配。 */
 @Component
@@ -58,6 +59,84 @@ public final class ApplicationActionProtocolHandler
     private final BusinessDesktopConnectionRegistry connections;
     private final ApplicationOutboundJsonRpcClient outbound;
     private final ApplicationMessageSequence messageSequence;
+
+    /** 发送真实动作 request；注册 pending 必须先由调用方完成，避免响应早于 waiter。 */
+    public CompletableFuture<JsonRpcMessage> sendActionRequest(
+            PendingApplicationAction action,
+            JsonNode payload) {
+        PendingApplicationAction.ConnectionContext context = action.connectionContext();
+        if (context == null) {
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException("application action transport is unavailable"));
+        }
+        ApplicationActionMessage message = new ApplicationActionMessage(
+                "1.0",
+                context.desktopInstanceId(),
+                context.desktopSessionId(),
+                context.authSessionId(),
+                context.identityEpoch(),
+                messageSequence.next(context.desktopSessionId()),
+                Instant.now().toString(),
+                context.userId(),
+                context.tenantId(),
+                context.platformId(),
+                action.correlation().threadId(),
+                action.correlation().turnId(),
+                action.correlation().toolCallId(),
+                action.executionId(),
+                payload);
+        CompletableFuture<JsonRpcMessage> request;
+        try {
+            request = outbound.request(
+                    context.webSocketSessionId(), "application/action/request", message, OUTBOUND_TIMEOUT);
+        } catch (RuntimeException failure) {
+            return CompletableFuture.failedFuture(new ActionRequestAcknowledgementUncertain(
+                    "application action acknowledgement transport failed", failure));
+        }
+        return request.handle((response, failure) -> {
+            if (failure != null) {
+                throw new CompletionException(new ActionRequestAcknowledgementUncertain(
+                        "application action acknowledgement transport failed", unwrap(failure)));
+            }
+            return requireActionAck(action.executionId(), response);
+        });
+    }
+
+    private JsonRpcMessage requireActionAck(String executionId, JsonRpcMessage message) {
+        if (message instanceof JsonRpcMessage.ErrorResponse) {
+            throw new ActionRequestAcknowledgementUncertain(
+                    "desktop application action acknowledgement returned an error");
+        }
+        if (!(message instanceof JsonRpcMessage.Response response)) {
+            throw new ActionRequestAcknowledgementUncertain(
+                    "desktop returned an invalid application action acknowledgement");
+        }
+        JsonNode result = JSON.valueToTree(response.result());
+        if (!executionId.equals(result.path("executionId").asText())) {
+            throw new ActionRequestAcknowledgementUncertain(
+                    "desktop application action acknowledgement correlation mismatch");
+        }
+        JsonNode accepted = result.get("accepted");
+        if (accepted == null || !accepted.isBoolean()) {
+            throw new ActionRequestAcknowledgementUncertain(
+                    "desktop application action acknowledgement accepted flag is invalid");
+        }
+        if (!accepted.booleanValue()) {
+            throw new ConfirmedActionRequestRejection(
+                    "remote_request_failed", "desktop rejected application action request");
+        }
+        return message;
+    }
+
+    private static Throwable unwrap(Throwable failure) {
+        Throwable current = failure;
+        while ((current instanceof java.util.concurrent.CompletionException
+                || current instanceof java.util.concurrent.ExecutionException)
+                && current.getCause() != null) {
+            current = current.getCause();
+        }
+        return current;
+    }
 
     public ApplicationActionProtocolHandler(
             PendingApplicationActions actions,

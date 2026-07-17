@@ -257,6 +257,50 @@ class PendingApplicationActionsTest {
     }
 
     @Test
+    void progressListenerIsInstalledBeforeThePendingEntryCanReceiveDesktopProgress() throws Exception {
+        CountDownLatch scheduling = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        ScheduledExecutorService controlledScheduler = mock(ScheduledExecutorService.class);
+        when(controlledScheduler.schedule(any(Runnable.class), anyLong(), eq(TimeUnit.NANOSECONDS)))
+                .thenAnswer(invocation -> {
+                    scheduling.countDown();
+                    release.await(1, TimeUnit.SECONDS);
+                    return mock(ScheduledFuture.class);
+                });
+        PendingApplicationActions local = new PendingApplicationActions(
+                timeouts, terminalStore,
+                action -> CompletableFuture.completedFuture(PendingApplicationActions.RemoteStatus.running()),
+                controlledScheduler, Clock.systemUTC());
+        PendingApplicationAction.Correlation correlation = correlation("tool-atomic-listener");
+        List<PendingApplicationAction.State> progress = new java.util.concurrent.CopyOnWriteArrayList<>();
+        Thread register = new Thread(() -> local.register(
+                "execution-atomic-listener", correlation, PendingApplicationAction.Path.READ_ONLY,
+                connectionContext("ws-atomic-listener"), snapshot -> progress.add(snapshot.state())));
+
+        register.start();
+        assertThat(scheduling.await(1, TimeUnit.SECONDS)).isTrue();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> pending = (Map<String, Object>) org.springframework.test.util.ReflectionTestUtils
+                .getField(local, "pending");
+        Object entry = pending.get("execution-atomic-listener");
+        Object installedListener = org.springframework.test.util.ReflectionTestUtils
+                .getField(entry, "progressListener");
+        assertThat(installedListener).isNotNull();
+
+        AtomicBoolean accepted = new AtomicBoolean();
+        Thread desktopProgress = new Thread(() -> accepted.set(local.acceptedAuthorized(
+                "execution-atomic-listener", correlation, connectionContext("ws-atomic-listener"))));
+        desktopProgress.start();
+        assertThat(desktopProgress.isAlive()).isTrue();
+        release.countDown();
+        register.join(1_000);
+        desktopProgress.join(1_000);
+
+        assertThat(accepted).isTrue();
+        assertThat(progress).containsExactly(PendingApplicationAction.State.ACCEPTED);
+    }
+
+    @Test
     void closeShutsDownOnlyTheOwnedSchedulerAndCompletesPendingActions() throws Exception {
         @SuppressWarnings("unchecked")
         ObjectProvider<ApplicationActionTerminalStore> terminalProvider = mock(ObjectProvider.class);
@@ -544,6 +588,190 @@ class PendingApplicationActionsTest {
     }
 
     @Test
+    void acknowledgementUncertainKeepsPendingSoLaterDesktopTerminalWins() throws Exception {
+        RecordingTerminalStore store = new RecordingTerminalStore();
+        CompletableFuture<PendingApplicationActions.RemoteStatus> status = new CompletableFuture<>();
+        AtomicInteger queries = new AtomicInteger();
+        PendingApplicationActions local = actions(store, action -> {
+            queries.incrementAndGet();
+            return status;
+        });
+        PendingApplicationAction.Correlation correlation = correlation("tool-ack-uncertain");
+        PendingApplicationAction.ConnectionContext context = connectionContext("ws-ack-uncertain");
+        CompletableFuture<PendingApplicationAction> terminal = local.register(
+                "execution-ack-uncertain", correlation, PendingApplicationAction.Path.READ_ONLY, context);
+
+        CompletableFuture<PendingApplicationAction> reconciliation = local.acknowledgementUncertain(
+                "execution-ack-uncertain", correlation, context, "ack lost");
+        assertThat(reconciliation).isSameAs(terminal);
+        assertThat(local.terminalAuthorized(
+                "execution-ack-uncertain", correlation, context,
+                PendingApplicationAction.State.COMPLETED, null)).isTrue();
+
+        assertThat(terminal.get(1, TimeUnit.SECONDS).state())
+                .isEqualTo(PendingApplicationAction.State.COMPLETED);
+        assertThat(queries).hasValue(1);
+        assertThat(store.reconciliationQueue).isEmpty();
+    }
+
+    @Test
+    void confirmedRequestRejectionCleansRequestedEntryWithoutReconciliation() {
+        PendingApplicationAction.Correlation correlation = correlation("tool-confirmed-request-rejection");
+        PendingApplicationAction.ConnectionContext context = connectionContext("ws-confirmed-request-rejection");
+        CompletableFuture<PendingApplicationAction> terminal = actions.register(
+                "execution-confirmed-request-rejection",
+                correlation,
+                PendingApplicationAction.Path.READ_ONLY,
+                context);
+
+        CompletableFuture<PendingApplicationAction> rejected = actions.confirmedRequestRejected(
+                "execution-confirmed-request-rejection", correlation, context,
+                "remote_request_failed", "desktop rejected action request");
+
+        assertThat(rejected).isSameAs(terminal);
+        assertThat(terminal.join().state()).isEqualTo(PendingApplicationAction.State.REJECTED);
+        assertThat(terminal.join().payload().path("errorCode").asText()).isEqualTo("remote_request_failed");
+        assertThat(actions.snapshot("execution-confirmed-request-rejection")).isEmpty();
+        assertThat(terminalStore.reconciliationQueue).isEmpty();
+    }
+
+    @Test
+    void acknowledgementUncertainDisconnectBecomesOutcomeUnknownInsteadOfCanceled() {
+        RecordingTerminalStore store = new RecordingTerminalStore();
+        CompletableFuture<PendingApplicationActions.RemoteStatus> status = new CompletableFuture<>();
+        PendingApplicationActions local = actions(store, action -> status);
+        PendingApplicationAction.Correlation correlation = correlation("tool-ack-disconnect");
+        PendingApplicationAction.ConnectionContext context = connectionContext("ws-ack-disconnect");
+        CompletableFuture<PendingApplicationAction> terminal = local.register(
+                "execution-ack-disconnect", correlation, PendingApplicationAction.Path.READ_ONLY, context);
+        local.acknowledgementUncertain("execution-ack-disconnect", correlation, context, "ack lost");
+
+        local.onConnectionClosed("ws-ack-disconnect", "desktop disconnected");
+
+        PendingApplicationAction unknown = terminal.join();
+        assertThat(unknown.executionId()).isEqualTo("execution-ack-disconnect");
+        assertThat(unknown.state()).isEqualTo(PendingApplicationAction.State.OUTCOME_UNKNOWN);
+        assertThat(store.reconciliationQueue).containsExactly(unknown);
+    }
+
+    @Test
+    void acknowledgementUncertainCancelWithoutConfirmationBecomesOutcomeUnknown() {
+        RecordingTerminalStore store = new RecordingTerminalStore();
+        CompletableFuture<PendingApplicationActions.RemoteStatus> status = new CompletableFuture<>();
+        PendingApplicationActions local = actions(store, action -> status);
+        List<String> cancelRequests = new ArrayList<>();
+        local.bindCancelSender(action -> {
+            cancelRequests.add(action.executionId());
+            return CompletableFuture.completedFuture(false);
+        });
+        PendingApplicationAction.Correlation correlation = correlation("tool-ack-cancel-unconfirmed");
+        PendingApplicationAction.ConnectionContext context = connectionContext("ws-ack-cancel-unconfirmed");
+        CompletableFuture<PendingApplicationAction> terminal = local.register(
+                "execution-ack-cancel-unconfirmed", correlation, PendingApplicationAction.Path.READ_ONLY, context);
+        local.acknowledgementUncertain(
+                "execution-ack-cancel-unconfirmed", correlation, context, "ack lost");
+
+        assertThat(local.cancelByTurn("turn-1")).isEqualTo(1);
+
+        PendingApplicationAction unknown = terminal.join();
+        assertThat(cancelRequests).containsExactly("execution-ack-cancel-unconfirmed");
+        assertThat(unknown.executionId()).isEqualTo("execution-ack-cancel-unconfirmed");
+        assertThat(unknown.state()).isEqualTo(PendingApplicationAction.State.OUTCOME_UNKNOWN);
+        assertThat(store.reconciliationQueue).containsExactly(unknown);
+    }
+
+    @Test
+    void acknowledgementUncertainCancelAcceptsExplicitDesktopCanceledTerminal() {
+        RecordingTerminalStore store = new RecordingTerminalStore();
+        CompletableFuture<PendingApplicationActions.RemoteStatus> status = new CompletableFuture<>();
+        ApplicationActionTimeoutProperties stableTimeouts = new ApplicationActionTimeoutProperties(
+                Duration.ofSeconds(1), Duration.ofSeconds(1), Duration.ofSeconds(1),
+                Duration.ofSeconds(1), Duration.ofSeconds(1));
+        PendingApplicationActions local = new PendingApplicationActions(
+                stableTimeouts, store, action -> status, scheduler, Clock.systemUTC());
+        local.bindCancelSender(action -> CompletableFuture.completedFuture(true));
+        PendingApplicationAction.Correlation correlation = correlation("tool-ack-cancel-confirmed");
+        PendingApplicationAction.ConnectionContext context = connectionContext("ws-ack-cancel-confirmed");
+        CompletableFuture<PendingApplicationAction> terminal = local.register(
+                "execution-ack-cancel-confirmed", correlation, PendingApplicationAction.Path.READ_ONLY, context);
+        local.acknowledgementUncertain(
+                "execution-ack-cancel-confirmed", correlation, context, "ack lost");
+
+        assertThat(local.cancelByTurn("turn-1")).isEqualTo(1);
+        assertThat(terminal).isNotDone();
+        assertThat(local.terminalAuthorized(
+                "execution-ack-cancel-confirmed", correlation, context,
+                PendingApplicationAction.State.CANCELED, null)).isTrue();
+
+        assertThat(terminal.join().state()).isEqualTo(PendingApplicationAction.State.CANCELED);
+        assertThat(store.reconciliationQueue).isEmpty();
+    }
+
+    @Test
+    void acknowledgementUncertainConfirmedCancelTimesOutOutcomeUnknownWhenDesktopSendsNoTerminal()
+            throws Exception {
+        RecordingTerminalStore store = new RecordingTerminalStore();
+        CompletableFuture<PendingApplicationActions.RemoteStatus> status = new CompletableFuture<>();
+        List<PendingApplicationAction.State> progress = new java.util.concurrent.CopyOnWriteArrayList<>();
+        CountDownLatch progressPublished = new CountDownLatch(1);
+        PendingApplicationActions local = actions(store, action -> status);
+        local.bindCancelSender(action -> CompletableFuture.completedFuture(true));
+        PendingApplicationAction.Correlation correlation = correlation("tool-ack-cancel-timeout");
+        PendingApplicationAction.ConnectionContext context = connectionContext("ws-ack-cancel-timeout");
+        CompletableFuture<PendingApplicationAction> terminal = local.register(
+                "execution-ack-cancel-timeout", correlation, PendingApplicationAction.Path.READ_ONLY,
+                context, snapshot -> {
+                    progress.add(snapshot.state());
+                    progressPublished.countDown();
+                });
+        local.acknowledgementUncertain(
+                "execution-ack-cancel-timeout", correlation, context, "ack lost");
+
+        assertThat(local.cancelByTurn("turn-1")).isEqualTo(1);
+
+        PendingApplicationAction unknown = terminal.get(1, TimeUnit.SECONDS);
+        assertThat(unknown.state()).isEqualTo(PendingApplicationAction.State.OUTCOME_UNKNOWN);
+        assertThat(progressPublished.await(1, TimeUnit.SECONDS)).isTrue();
+        assertThat(progress).containsExactly(PendingApplicationAction.State.OUTCOME_UNKNOWN);
+        assertThat(store.terminals).extracting(stored -> stored.terminal().state())
+                .containsExactly(PendingApplicationAction.State.OUTCOME_UNKNOWN);
+        assertThat(store.reconciliationQueue).containsExactly(unknown);
+    }
+
+    @Test
+    void acknowledgementUncertainDesktopSuccessOrFailureWinsBeforeTurnCancel() {
+        for (PendingApplicationAction.State desktopTerminal : List.of(
+                PendingApplicationAction.State.COMPLETED,
+                PendingApplicationAction.State.FAILED)) {
+            RecordingTerminalStore store = new RecordingTerminalStore();
+            CompletableFuture<PendingApplicationActions.RemoteStatus> status = new CompletableFuture<>();
+            PendingApplicationActions local = actions(store, action -> status);
+            AtomicInteger cancelRequests = new AtomicInteger();
+            local.bindCancelSender(action -> {
+                cancelRequests.incrementAndGet();
+                return CompletableFuture.completedFuture(true);
+            });
+            String suffix = desktopTerminal.name().toLowerCase();
+            PendingApplicationAction.Correlation correlation = correlation("tool-ack-terminal-" + suffix);
+            PendingApplicationAction.ConnectionContext context = connectionContext("ws-ack-terminal-" + suffix);
+            CompletableFuture<PendingApplicationAction> terminal = local.register(
+                    "execution-ack-terminal-" + suffix,
+                    correlation,
+                    PendingApplicationAction.Path.READ_ONLY,
+                    context);
+            local.acknowledgementUncertain(
+                    "execution-ack-terminal-" + suffix, correlation, context, "ack lost");
+
+            assertThat(local.terminalAuthorized(
+                    "execution-ack-terminal-" + suffix, correlation, context, desktopTerminal, null)).isTrue();
+            assertThat(local.cancelByTurn("turn-1")).isZero();
+
+            assertThat(terminal.join().state()).isEqualTo(desktopTerminal);
+            assertThat(cancelRequests).hasValue(0);
+        }
+    }
+
+    @Test
     void executeTimeoutNeverAdoptsAStoredTerminalFromAnotherConnectionScope() throws Exception {
         RecordingTerminalStore store = new RecordingTerminalStore();
         PendingApplicationAction.Correlation correlation = correlation("tool-stored-other-scope");
@@ -695,6 +923,30 @@ class PendingApplicationActionsTest {
     }
 
     @Test
+    void storedTerminalAdoptionAlsoNotifiesTheProgressListener() throws Exception {
+        RecordingTerminalStore store = new RecordingTerminalStore();
+        List<PendingApplicationAction.State> progress = new java.util.concurrent.CopyOnWriteArrayList<>();
+        PendingApplicationActions local = actions(store, action -> {
+            PendingApplicationAction stored = action.toTerminal(
+                    PendingApplicationAction.State.COMPLETED, null, "stored terminal", Instant.now());
+            store.recordTerminal(stored, false);
+            return CompletableFuture.completedFuture(PendingApplicationActions.RemoteStatus.running());
+        });
+        PendingApplicationAction.Correlation correlation = correlation("tool-stored-progress");
+        CompletableFuture<PendingApplicationAction> terminal = local.register(
+                "execution-stored-progress", correlation, PendingApplicationAction.Path.READ_ONLY,
+                connectionContext("ws-stored-progress"), snapshot -> progress.add(snapshot.state()));
+        local.accepted("execution-stored-progress", correlation);
+        local.running("execution-stored-progress", correlation);
+
+        assertThat(terminal.get(1, TimeUnit.SECONDS).state()).isEqualTo(PendingApplicationAction.State.COMPLETED);
+        assertThat(progress).containsSequence(
+                PendingApplicationAction.State.ACCEPTED,
+                PendingApplicationAction.State.RUNNING,
+                PendingApplicationAction.State.COMPLETED);
+    }
+
+    @Test
     void lateTerminalAfterFirstTerminalIsRecordedOnlyAsLateAndDoesNotReplaceConsumedResult() {
         RecordingTerminalStore store = new RecordingTerminalStore();
         PendingApplicationActions local = actions(store, action -> CompletableFuture.completedFuture(
@@ -713,6 +965,211 @@ class PendingApplicationActionsTest {
         assertThat(store.terminals).extracting(StoredTerminal::lateResult)
                 .containsExactly(false, true);
         assertThat(store.terminals.get(1).terminal().state()).isEqualTo(PendingApplicationAction.State.FAILED);
+    }
+
+    @Test
+    void terminalStoreFailureCannotStrandTheFirstTerminalWaiter() throws Exception {
+        ApplicationActionTerminalStore store = throwingStore(true, false, false);
+        List<PendingApplicationAction.State> progress = new java.util.concurrent.CopyOnWriteArrayList<>();
+        PendingApplicationActions local = actions(store, action -> CompletableFuture.completedFuture(
+                PendingApplicationActions.RemoteStatus.running()));
+        PendingApplicationAction.Correlation correlation = correlation("tool-store-failure");
+        CompletableFuture<PendingApplicationAction> terminal = local.register(
+                "execution-store-failure", correlation, PendingApplicationAction.Path.READ_ONLY,
+                connectionContext("ws-store-failure"), snapshot -> progress.add(snapshot.state()));
+        local.accepted("execution-store-failure", correlation);
+        local.running("execution-store-failure", correlation);
+
+        assertThat(local.terminal(
+                "execution-store-failure", correlation,
+                PendingApplicationAction.State.COMPLETED, null)).isTrue();
+
+        assertThat(terminal.get(1, TimeUnit.SECONDS).state())
+                .isEqualTo(PendingApplicationAction.State.COMPLETED);
+        assertThat(local.pendingCount()).isZero();
+        assertThat(progress).endsWith(PendingApplicationAction.State.COMPLETED);
+    }
+
+    @Test
+    void lateTerminalAuditFailureDoesNotEscapeOrReplaceTheFirstTerminal() throws Exception {
+        RecordingTerminalStore store = new RecordingTerminalStore();
+        AtomicBoolean throwLate = new AtomicBoolean(false);
+        ApplicationActionTerminalStore failingLateStore = new ApplicationActionTerminalStore() {
+            @Override
+            public Optional<PendingApplicationAction> findTerminal(
+                    String executionId,
+                    PendingApplicationAction.Correlation correlation) {
+                return store.findTerminal(executionId, correlation);
+            }
+
+            @Override
+            public void recordTerminal(PendingApplicationAction terminal, boolean lateResult) {
+                if (lateResult && throwLate.get()) {
+                    throw new IllegalStateException("late audit unavailable");
+                }
+                store.recordTerminal(terminal, lateResult);
+            }
+
+            @Override
+            public void queueReconciliation(PendingApplicationAction terminal) {
+                store.queueReconciliation(terminal);
+            }
+        };
+        PendingApplicationActions local = actions(failingLateStore, action -> CompletableFuture.completedFuture(
+                PendingApplicationActions.RemoteStatus.running()));
+        PendingApplicationAction.Correlation correlation = correlation("tool-late-store-failure");
+        CompletableFuture<PendingApplicationAction> terminal = local.register(
+                "execution-late-store-failure", correlation, PendingApplicationAction.Path.READ_ONLY);
+        local.accepted("execution-late-store-failure", correlation);
+        local.running("execution-late-store-failure", correlation);
+        assertThat(local.terminal(
+                "execution-late-store-failure", correlation,
+                PendingApplicationAction.State.COMPLETED, null)).isTrue();
+        throwLate.set(true);
+
+        assertThat(local.terminal(
+                "execution-late-store-failure", correlation,
+                PendingApplicationAction.State.FAILED, null)).isFalse();
+        assertThat(terminal.get(1, TimeUnit.SECONDS).state())
+                .isEqualTo(PendingApplicationAction.State.COMPLETED);
+    }
+
+    @Test
+    void reconciliationQueueFailureStillCompletesOutcomeUnknown() throws Exception {
+        ApplicationActionTerminalStore store = throwingStore(false, true, false);
+        PendingApplicationActions local = actions(store, action -> CompletableFuture.completedFuture(
+                PendingApplicationActions.RemoteStatus.running()));
+        PendingApplicationAction.Correlation correlation = correlation("tool-queue-failure");
+        CompletableFuture<PendingApplicationAction> terminal = local.register(
+                "execution-queue-failure", correlation, PendingApplicationAction.Path.READ_ONLY);
+        local.accepted("execution-queue-failure", correlation);
+        local.running("execution-queue-failure", correlation);
+
+        assertThat(local.cancel("execution-queue-failure", correlation, "cancel uncertain")).isTrue();
+
+        assertThat(terminal.get(1, TimeUnit.SECONDS).state())
+                .isEqualTo(PendingApplicationAction.State.OUTCOME_UNKNOWN);
+        assertThat(local.pendingCount()).isZero();
+    }
+
+    @Test
+    void reconciliationLookupFailureFallsBackToBoundedOutcomeUnknown() throws Exception {
+        ApplicationActionTimeoutProperties shortReconciliation = new ApplicationActionTimeoutProperties(
+                Duration.ofSeconds(5), Duration.ofSeconds(5), Duration.ofSeconds(5),
+                Duration.ofSeconds(5), Duration.ofMillis(10));
+        PendingApplicationActions local = new PendingApplicationActions(
+                shortReconciliation,
+                throwingStore(false, false, true),
+                action -> CompletableFuture.completedFuture(PendingApplicationActions.RemoteStatus.running()),
+                scheduler,
+                Clock.systemUTC());
+        PendingApplicationAction.Correlation correlation = correlation("tool-find-failure");
+        CompletableFuture<PendingApplicationAction> terminal = local.register(
+                "execution-find-failure", correlation, PendingApplicationAction.Path.READ_ONLY,
+                connectionContext("ws-find-failure"));
+        local.accepted("execution-find-failure", correlation);
+        local.running("execution-find-failure", correlation);
+
+        local.acknowledgementUncertain(
+                "execution-find-failure", correlation,
+                connectionContext("ws-find-failure"), "ack uncertain");
+
+        assertThat(terminal.get(1, TimeUnit.SECONDS).state())
+                .isEqualTo(PendingApplicationAction.State.OUTCOME_UNKNOWN);
+        assertThat(local.pendingCount()).isZero();
+    }
+
+    @Test
+    void closeDrainsEveryPendingEntryWhenTerminalAuditFails() throws Exception {
+        PendingApplicationActions local = actions(throwingStore(true, true, false), action ->
+                CompletableFuture.completedFuture(PendingApplicationActions.RemoteStatus.running()));
+        PendingApplicationAction.Correlation firstCorrelation = correlation("tool-close-failure-1");
+        PendingApplicationAction.Correlation secondCorrelation = correlation("tool-close-failure-2");
+        CompletableFuture<PendingApplicationAction> first = local.register(
+                "execution-close-failure-1", firstCorrelation, PendingApplicationAction.Path.READ_ONLY);
+        CompletableFuture<PendingApplicationAction> second = local.register(
+                "execution-close-failure-2", secondCorrelation, PendingApplicationAction.Path.READ_ONLY);
+
+        local.close();
+
+        assertThat(first.get(1, TimeUnit.SECONDS).state())
+                .isEqualTo(PendingApplicationAction.State.CANCELED);
+        assertThat(second.get(1, TimeUnit.SECONDS).state())
+                .isEqualTo(PendingApplicationAction.State.CANCELED);
+        assertThat(local.pendingCount()).isZero();
+    }
+
+    @Test
+    void reentrantAcceptedListenerCannotOverwriteTheRunningTimeout() throws Exception {
+        ApplicationActionTimeoutProperties shortExecution = new ApplicationActionTimeoutProperties(
+                Duration.ofSeconds(5), Duration.ofSeconds(5), Duration.ofSeconds(5),
+                Duration.ofMillis(15), Duration.ofMillis(10));
+        PendingApplicationActions local = new PendingApplicationActions(
+                shortExecution,
+                new RecordingTerminalStore(),
+                action -> CompletableFuture.completedFuture(PendingApplicationActions.RemoteStatus.running()),
+                scheduler,
+                Clock.systemUTC());
+        PendingApplicationAction.Correlation correlation = correlation("tool-reentrant-listener");
+        AtomicReference<PendingApplicationActions> owner = new AtomicReference<>(local);
+        CompletableFuture<PendingApplicationAction> terminal = local.register(
+                "execution-reentrant-listener", correlation, PendingApplicationAction.Path.READ_ONLY,
+                connectionContext("ws-reentrant-listener"), snapshot -> {
+                    if (snapshot.state() == PendingApplicationAction.State.ACCEPTED) {
+                        owner.get().running("execution-reentrant-listener", correlation);
+                    }
+                });
+
+        assertThat(local.accepted("execution-reentrant-listener", correlation)).isTrue();
+
+        assertThat(terminal.get(1, TimeUnit.SECONDS).state())
+                .isEqualTo(PendingApplicationAction.State.OUTCOME_UNKNOWN);
+        assertThat(local.pendingCount()).isZero();
+    }
+
+    @Test
+    void terminalProgressListenerRunsAfterTheEntryMonitorIsReleased() throws Exception {
+        CountDownLatch listenerEntered = new CountDownLatch(1);
+        CountDownLatch releaseListener = new CountDownLatch(1);
+        PendingApplicationActions local = actions(new RecordingTerminalStore(), action ->
+                CompletableFuture.completedFuture(PendingApplicationActions.RemoteStatus.running()));
+        PendingApplicationAction.Correlation correlation = correlation("tool-terminal-listener-lock");
+        local.register(
+                "execution-terminal-listener-lock", correlation, PendingApplicationAction.Path.READ_ONLY,
+                connectionContext("ws-terminal-listener-lock"), snapshot -> {
+                    if (snapshot.state() == PendingApplicationAction.State.COMPLETED) {
+                        listenerEntered.countDown();
+                        try {
+                            releaseListener.await(1, TimeUnit.SECONDS);
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }
+                });
+        local.accepted("execution-terminal-listener-lock", correlation);
+        local.running("execution-terminal-listener-lock", correlation);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> pending = (Map<String, Object>) org.springframework.test.util.ReflectionTestUtils
+                .getField(local, "pending");
+        Object entry = pending.get("execution-terminal-listener-lock");
+        Thread terminalThread = new Thread(() -> local.terminal(
+                "execution-terminal-listener-lock", correlation,
+                PendingApplicationAction.State.COMPLETED, null));
+        terminalThread.start();
+        assertThat(listenerEntered.await(1, TimeUnit.SECONDS)).isTrue();
+        CountDownLatch acquired = new CountDownLatch(1);
+        Thread contender = new Thread(() -> {
+            synchronized (entry) {
+                acquired.countDown();
+            }
+        });
+        contender.start();
+        assertThat(acquired.await(200, TimeUnit.MILLISECONDS)).isTrue();
+        releaseListener.countDown();
+        terminalThread.join(1_000);
+        contender.join(1_000);
+
+        assertThat(acquired.getCount()).isZero();
     }
 
     @Test
@@ -749,6 +1206,52 @@ class PendingApplicationActionsTest {
         } finally {
             pool.shutdownNow();
         }
+    }
+
+    @Test
+    void terminalThatReadEntryBeforeWinnerFinishedIsRecordedAsLateAfterLockRelease() throws Exception {
+        RecordingTerminalStore store = new RecordingTerminalStore();
+        ApplicationActionTimeoutProperties stableTimeouts = new ApplicationActionTimeoutProperties(
+                Duration.ofSeconds(5), Duration.ofSeconds(5), Duration.ofSeconds(5),
+                Duration.ofSeconds(5), Duration.ofSeconds(5));
+        PendingApplicationActions local = new PendingApplicationActions(
+                stableTimeouts,
+                store,
+                action -> CompletableFuture.completedFuture(PendingApplicationActions.RemoteStatus.running()),
+                scheduler,
+                Clock.systemUTC());
+        PendingApplicationAction.Correlation correlation = correlation("tool-stale-entry-terminal");
+        CompletableFuture<PendingApplicationAction> terminal = local.register(
+                "execution-stale-entry-terminal", correlation, PendingApplicationAction.Path.READ_ONLY);
+        local.accepted("execution-stale-entry-terminal", correlation);
+        local.running("execution-stale-entry-terminal", correlation);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> pending = (Map<String, Object>) org.springframework.test.util.ReflectionTestUtils
+                .getField(local, "pending");
+        Object entry = pending.get("execution-stale-entry-terminal");
+        AtomicBoolean loserAccepted = new AtomicBoolean(true);
+        Thread loser = new Thread(() -> loserAccepted.set(local.terminal(
+                "execution-stale-entry-terminal", correlation, PendingApplicationAction.State.FAILED, null)));
+
+        synchronized (entry) {
+            loser.start();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+            while (loser.getState() != Thread.State.BLOCKED && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertThat(loser.getState()).isEqualTo(Thread.State.BLOCKED);
+            assertThat(local.terminal(
+                    "execution-stale-entry-terminal", correlation,
+                    PendingApplicationAction.State.COMPLETED, null)).isTrue();
+        }
+        loser.join(1_000);
+
+        assertThat(loser.isAlive()).isFalse();
+        assertThat(loserAccepted).isFalse();
+        assertThat(terminal.join().state()).isEqualTo(PendingApplicationAction.State.COMPLETED);
+        assertThat(store.terminals).extracting(StoredTerminal::lateResult)
+                .containsExactly(false, true);
+        assertThat(store.terminals.get(1).terminal().state()).isEqualTo(PendingApplicationAction.State.FAILED);
     }
 
     @Test
@@ -1044,7 +1547,7 @@ class PendingApplicationActionsTest {
 
         assertThat(local.cancel("execution-ordering", correlation, "test cancel")).isTrue();
 
-        assertThat(events).containsExactly("record", "queue", "complete");
+        assertThat(events).containsExactly("complete", "record", "queue");
     }
 
     @Test
@@ -1085,6 +1588,37 @@ class PendingApplicationActionsTest {
             ApplicationActionTerminalStore store,
             PendingApplicationActions.StatusQuery statusQuery) {
         return new PendingApplicationActions(timeouts, store, statusQuery, scheduler, Clock.systemUTC());
+    }
+
+    private ApplicationActionTerminalStore throwingStore(
+            boolean throwRecord,
+            boolean throwQueue,
+            boolean throwFind) {
+        return new ApplicationActionTerminalStore() {
+            @Override
+            public Optional<PendingApplicationAction> findTerminal(
+                    String executionId,
+                    PendingApplicationAction.Correlation correlation) {
+                if (throwFind) {
+                    throw new IllegalStateException("terminal lookup unavailable");
+                }
+                return Optional.empty();
+            }
+
+            @Override
+            public void recordTerminal(PendingApplicationAction terminal, boolean lateResult) {
+                if (throwRecord) {
+                    throw new IllegalStateException("terminal audit unavailable");
+                }
+            }
+
+            @Override
+            public void queueReconciliation(PendingApplicationAction terminal) {
+                if (throwQueue) {
+                    throw new IllegalStateException("reconciliation queue unavailable");
+                }
+            }
+        };
     }
 
     private void assertRejectedProgressKeepsPreviousState(

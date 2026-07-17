@@ -81,9 +81,10 @@ class ApplicationActionStatusClient(
         context: ApplicationActionPublicationContext,
         record: ActionExecutionRecord,
         rejection: ActionError? = null,
+        projectedResult: ActionResult<*>? = null,
     ) {
         val method = rejection?.let { ApplicationMethod.ACTION_REJECTED } ?: record.state.toMethodOrNull() ?: return
-        val payload = record.toProtocolPayload(rejection)
+        val payload = record.toProtocolPayload(rejection, projectedResult)
         publishOnce(context, method, payload)
     }
 
@@ -154,17 +155,37 @@ class ApplicationActionStatusClient(
     )
 }
 
-internal fun ActionExecutionRecord.toProtocolPayload(rejection: ActionError? = null): JsonObject = buildJsonObject {
+internal fun ActionExecutionRecord.toProtocolPayload(
+    rejection: ActionError? = null,
+    projectedResult: ActionResult<*>? = null,
+): JsonObject = buildJsonObject {
     put("actionId", command.actionId)
     put("state", if (rejection != null) "rejected" else state.wireName())
-    val terminal = result
+    val terminal = projectedResult ?: result
     when {
-        rejection != null -> put("errorCode", rejection.code.name.lowercase())
-        terminal is ActionResult.Success -> terminal.redactedOutput?.let { put("output", it) }
-        terminal is ActionResult.Failure -> put("errorCode", terminal.error.code.name.lowercase())
-        terminal is ActionResult.OutcomeUnknown -> put("errorCode", terminal.error.code.name.lowercase())
+        rejection != null -> {
+            put("errorCode", rejection.code.name.lowercase())
+            put("errorSummary", rejection.safeRejectionSummary())
+        }
+        terminal is ActionResult.Preview -> put("previewSummary", terminal.preview.summary.safeProtocolSummary())
+        terminal is ActionResult.ApprovalRequired -> put("previewSummary", terminal.preview.summary.safeProtocolSummary())
+        terminal is ActionResult.Success -> (terminal.redactedOutput as? JsonElement)?.let { put("output", it) }
+        terminal is ActionResult.Failure -> {
+            put("errorCode", terminal.error.code.name.lowercase())
+            put("errorSummary", terminal.error.message.safeProtocolSummary())
+        }
+        terminal is ActionResult.OutcomeUnknown -> {
+            put("errorCode", terminal.error.code.name.lowercase())
+            put("errorSummary", terminal.error.message.safeProtocolSummary())
+        }
     }
 }
+
+private fun String.safeProtocolSummary(): String = take(MAX_PROTOCOL_SUMMARY_LENGTH)
+
+private fun ActionError.safeRejectionSummary(): String = "[REDACTED]"
+
+private const val MAX_PROTOCOL_SUMMARY_LENGTH = 240
 
 internal fun ActionExecutionState.wireName(): String = when (this) {
     ActionExecutionState.RECEIVED -> "received"

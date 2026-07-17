@@ -488,6 +488,8 @@ public class ReActStrategy {
             return toolRegistry.names().stream()
                     // update_plan 只更新桌面端进度 item，不触碰文件系统、网络或外部 MCP，因此即使“全部询问”也不打断模型。
                     .filter(toolName -> !"update_plan".equals(toolName))
+                    // application_action 的预览、确认和高风险审批由桌面动作核心负责，不能再套通用 Agent HITL。
+                    .filter(toolName -> !"application_action".equals(toolName))
                     .toList();
         }
 

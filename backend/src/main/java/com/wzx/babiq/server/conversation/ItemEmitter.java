@@ -133,6 +133,16 @@ public class ItemEmitter {
         emitItemAdded(item);
     }
 
+    /** 发射业务桌面动作的新增进度卡片。 */
+    public void emitApplicationActionAdded(ThreadItem item) throws IOException {
+        emitItemAdded(item);
+    }
+
+    /** 原地更新业务桌面动作的生命周期状态。 */
+    public void emitApplicationActionUpdated(ThreadItem item) throws IOException {
+        emitItemUpdated(item);
+    }
+
     /**
      * 发射文件变更 item。
      *

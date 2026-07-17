@@ -6,8 +6,10 @@ import com.alibaba.cloud.ai.graph.agent.interceptor.ToolCallResponse;
 import com.alibaba.cloud.ai.graph.agent.interceptor.ToolInterceptor;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.wzx.babiq.server.agent.delegation.BuiltInSubAgents;
 import com.wzx.babiq.server.agent.delegation.SubAgentDelegationContext;
+import com.wzx.babiq.server.application.tool.ApplicationToolInvocationContext;
 import com.wzx.babiq.server.conversation.ItemEmitter;
 import com.wzx.babiq.server.conversation.items.CommandExecutionItem;
 import com.wzx.babiq.server.observability.BaBiQMetrics;
@@ -36,6 +38,8 @@ public class ToolObservationInterceptor extends ToolInterceptor {
     private static final int TOOL_DETAIL_PREVIEW_LIMIT = 1200;
     /** 工具入参在聊天流里的最大预览长度，用于 JSON 无法结构化解析时兜底。 */
     private static final int TOOL_ARGUMENT_PREVIEW_LIMIT = 400;
+    /** 应用动作审计标识符的最大长度，避免敏感正文伪装成标识符写入运行记录。 */
+    private static final int APPLICATION_ACTION_IDENTIFIER_LIMIT = 256;
 
     /** 全局工具调用指标聚合器，和每轮 TurnObservationContext 的局部统计互相补充。 */
     private final BaBiQMetrics metrics;
@@ -72,7 +76,7 @@ public class ToolObservationInterceptor extends ToolInterceptor {
         TurnObservationContext context = record(request);
         persistStartedIfPossible(request, context);
         long startedNanos = System.nanoTime();
-        try {
+        try (ApplicationToolInvocationContext.Scope ignored = installApplicationContext(request, context)) {
             ToolCallResponse response = handler.call(request);
             persistFinishedIfPossible(request, response);
             emitToolDetailIfPossible(request, response, elapsedMillis(startedNanos));
@@ -82,6 +86,20 @@ public class ToolObservationInterceptor extends ToolInterceptor {
             emitFailedToolDetailIfPossible(request, exception, elapsedMillis(startedNanos));
             throw exception;
         }
+    }
+
+    /** 仅给业务桌面动作工具安装关联上下文；其他工具保持原来的调用环境。 */
+    private ApplicationToolInvocationContext.Scope installApplicationContext(
+            ToolCallRequest request,
+            TurnObservationContext context) {
+        if (!"application_action".equals(request.getToolName()) || context == null) {
+            return null;
+        }
+        return ApplicationToolInvocationContext.install(new ApplicationToolInvocationContext.Invocation(
+                request.getToolCallId(),
+                context.threadId(),
+                context.turnId(),
+                context.businessIdentityScope()));
     }
 
     /**
@@ -112,7 +130,7 @@ public class ToolObservationInterceptor extends ToolInterceptor {
                     context.threadId(),
                     context.turnId(),
                     request.getToolName(),
-                    request.getArguments(),
+                    persistenceArguments(request),
                     agentName(request),
                     parentAgentName(request),
                     delegationId(request),
@@ -122,6 +140,49 @@ public class ToolObservationInterceptor extends ToolInterceptor {
             log.warn("工具调用开始记录持久化失败，已降级为仅内存观测: toolCallId={}, toolName={}, reason={}",
                     request.getToolCallId(), request.getToolName(), exception.getMessage());
             log.debug("工具调用开始记录持久化失败详情", exception);
+        }
+    }
+
+    private String persistenceArguments(ToolCallRequest request) {
+        if (!"application_action".equals(request.getToolName())) {
+            return request.getArguments();
+        }
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(request.getArguments());
+            var safe = OBJECT_MAPPER.createObjectNode();
+            copyBoundedText(root, safe, "actionId");
+            copyPositiveInt(root, safe, "actionVersion");
+            copyBoundedText(root, safe, "pageId");
+            copyPositiveLong(root, safe, "contextRevision");
+            safe.put("input", "[REDACTED]");
+            return OBJECT_MAPPER.writeValueAsString(safe);
+        } catch (Exception ignored) {
+            return "{\"input\":\"[REDACTED]\"}";
+        }
+    }
+
+    private void copyBoundedText(JsonNode source, ObjectNode target, String field) {
+        JsonNode value = source == null ? null : source.get(field);
+        if (value == null || !value.isTextual()) {
+            return;
+        }
+        String text = value.textValue();
+        if (text != null && !text.isBlank() && text.length() <= APPLICATION_ACTION_IDENTIFIER_LIMIT) {
+            target.put(field, text);
+        }
+    }
+
+    private void copyPositiveInt(JsonNode source, ObjectNode target, String field) {
+        JsonNode value = source == null ? null : source.get(field);
+        if (value != null && value.isIntegralNumber() && value.canConvertToInt() && value.intValue() > 0) {
+            target.put(field, value.intValue());
+        }
+    }
+
+    private void copyPositiveLong(JsonNode source, ObjectNode target, String field) {
+        JsonNode value = source == null ? null : source.get(field);
+        if (value != null && value.isIntegralNumber() && value.canConvertToLong() && value.longValue() > 0) {
+            target.put(field, value.longValue());
         }
     }
 
@@ -174,6 +235,9 @@ public class ToolObservationInterceptor extends ToolInterceptor {
         if (BuiltInSubAgents.EXPLORER_NAME.equals(request.getToolName())) {
             return;
         }
+        if ("application_action".equals(request.getToolName())) {
+            return;
+        }
         ItemEmitter emitter = itemEmitter(request);
         if (emitter == null) {
             return;
@@ -201,6 +265,9 @@ public class ToolObservationInterceptor extends ToolInterceptor {
             return;
         }
         if (BuiltInSubAgents.EXPLORER_NAME.equals(request.getToolName())) {
+            return;
+        }
+        if ("application_action".equals(request.getToolName())) {
             return;
         }
         ItemEmitter emitter = itemEmitter(request);

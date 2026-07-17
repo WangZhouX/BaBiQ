@@ -115,6 +115,61 @@ class ApplicationActionBusReadOnlyTest {
     }
 
     @Test
+    fun `write progress callback receives real preview without persisting it as execution result`() = runTest {
+        listOf(ActionRiskLevel.REVERSIBLE_WRITE, ActionRiskLevel.HIGH_RISK).forEach { risk ->
+            val fixture = BusFixture(risk)
+            val progress = mutableListOf<Pair<ActionExecutionState?, ActionResult<*>>>()
+
+            fixture.bus.execute(fixture.command(), fixture.context) { projected ->
+                progress += fixture.store.record?.state to projected
+            }
+
+            assertEquals(
+                if (risk == ActionRiskLevel.HIGH_RISK) {
+                    listOf(ActionExecutionState.PREVIEWED, ActionExecutionState.WAITING_APPROVAL)
+                } else {
+                    listOf(ActionExecutionState.PREVIEWED)
+                },
+                progress.map { it.first },
+            )
+            progress.forEach { (_, result) ->
+                assertEquals("secret-preview", assertIs<ActionResult.Preview>(result).preview.summary)
+            }
+        }
+    }
+
+    @Test
+    fun `write progress observer failure cannot change reversible or high risk business outcome`() = runTest {
+        listOf(ActionRiskLevel.REVERSIBLE_WRITE, ActionRiskLevel.HIGH_RISK).forEach { risk ->
+            val fixture = BusFixture(risk)
+
+            val result = fixture.bus.execute(fixture.command(), fixture.context) {
+                throw IllegalStateException("observer unavailable")
+            }
+
+            assertIs<ActionBusResult.Completed>(result)
+            assertEquals(ActionExecutionState.SUCCEEDED, fixture.store.record?.state)
+            assertEquals(1, fixture.action.executeCount)
+            assertEquals(1, fixture.confirmation.requests)
+            assertEquals(if (risk == ActionRiskLevel.HIGH_RISK) 1 else 0, fixture.approval.requests)
+        }
+    }
+
+    @Test
+    fun `write progress cancellation remains a real cancellation signal`() = runTest {
+        val fixture = BusFixture(ActionRiskLevel.REVERSIBLE_WRITE)
+
+        assertFailsWith<CancellationException> {
+            fixture.bus.execute(fixture.command(), fixture.context) {
+                throw CancellationException("observer cancelled")
+            }
+        }
+
+        assertEquals(ActionExecutionState.PREVIEWED, fixture.store.record?.state)
+        assertEquals(0, fixture.action.executeCount)
+    }
+
+    @Test
     fun `audit is allocated after record creation and continues persisted sequence`() = runTest {
         val fixture = BusFixture(ActionRiskLevel.READ_ONLY)
         fixture.store.nextAuditSequence = 7
