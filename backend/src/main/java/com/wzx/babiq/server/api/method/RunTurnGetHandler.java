@@ -5,6 +5,7 @@ import com.wzx.babiq.server.api.JsonRpcMethodHandler;
 import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
 import com.wzx.babiq.server.api.error.JsonRpcException;
 import com.wzx.babiq.server.observability.RunRecordService;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScopeService;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.WebSocketSession;
 
@@ -19,6 +20,7 @@ public class RunTurnGetHandler implements JsonRpcMethodHandler {
 
     /** 运行记录聚合服务。 */
     private final RunRecordService runRecordService;
+    private final BusinessIdentityScopeService scopes;
 
     /**
      * 创建 run/turn/get handler。
@@ -26,7 +28,13 @@ public class RunTurnGetHandler implements JsonRpcMethodHandler {
      * @param runRecordService 运行记录聚合服务
      */
     public RunTurnGetHandler(RunRecordService runRecordService) {
+        this(runRecordService, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public RunTurnGetHandler(RunRecordService runRecordService, BusinessIdentityScopeService scopes) {
         this.runRecordService = runRecordService;
+        this.scopes = scopes;
     }
 
     @Override
@@ -38,7 +46,8 @@ public class RunTurnGetHandler implements JsonRpcMethodHandler {
     public Object handle(JsonNode params, WebSocketSession session) {
         String turnId = requiredText(params, "turnId");
         try {
-            return runRecordService.getTurn(turnId);
+            return scopes == null ? runRecordService.getTurn(turnId)
+                    : runRecordService.getTurn(turnId, scopes.resolve(session));
         } catch (IllegalArgumentException exception) {
             throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, exception.getMessage());
         }

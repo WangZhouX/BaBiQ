@@ -1,5 +1,7 @@
 package com.wzx.babiq.server.context.repository;
 
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
+
 import java.util.Optional;
 
 /**
@@ -16,6 +18,10 @@ public interface ContextWindowRepository {
      * @return 当前窗口状态；从未生成过上下文快照时为空
      */
     Optional<ContextWindowRecord> findByThreadId(String threadId);
+
+    default Optional<ContextWindowRecord> findByThreadId(String threadId, BusinessIdentityScope scope) {
+        return findByThreadId(threadId).filter(record -> record.businessIdentityScope().equals(scope));
+    }
 
     /**
      * 创建或更新 thread 的当前窗口状态。

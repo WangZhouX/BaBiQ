@@ -5,6 +5,7 @@ import com.wzx.babiq.server.api.JsonRpcMethodHandler;
 import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
 import com.wzx.babiq.server.api.error.JsonRpcException;
 import com.wzx.babiq.server.conversation.ConversationApplicationService;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScopeService;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.WebSocketSession;
 
@@ -18,6 +19,7 @@ public class ThreadArchiveHandler implements JsonRpcMethodHandler {
 
     /** 会话历史应用服务，负责归档规则和持久化更新。 */
     private final ConversationApplicationService conversationApplicationService;
+    private final BusinessIdentityScopeService scopes;
 
     /**
      * 创建 thread/archive handler。
@@ -25,7 +27,14 @@ public class ThreadArchiveHandler implements JsonRpcMethodHandler {
      * @param conversationApplicationService 会话历史应用服务
      */
     public ThreadArchiveHandler(ConversationApplicationService conversationApplicationService) {
+        this(conversationApplicationService, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public ThreadArchiveHandler(ConversationApplicationService conversationApplicationService,
+                                BusinessIdentityScopeService scopes) {
         this.conversationApplicationService = conversationApplicationService;
+        this.scopes = scopes;
     }
 
     @Override
@@ -36,7 +45,12 @@ public class ThreadArchiveHandler implements JsonRpcMethodHandler {
     @Override
     public Object handle(JsonNode params, WebSocketSession session) {
         String threadId = requiredText(params, "threadId");
-        return conversationApplicationService.archiveThread(threadId);
+        try {
+            return scopes == null ? conversationApplicationService.archiveThread(threadId)
+                    : conversationApplicationService.archiveThread(threadId, scopes.resolve(session));
+        } catch (IllegalArgumentException exception) {
+            throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "thread 不存在");
+        }
     }
 
     private static String requiredText(JsonNode params, String fieldName) {

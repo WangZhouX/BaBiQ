@@ -82,7 +82,9 @@ public record PendingApplicationAction(
     public enum Path {
         READ_ONLY,
         REVERSIBLE_WRITE,
-        HIGH_RISK
+        HIGH_RISK,
+        /** 仅表示旧表未持久化 path；禁止注册或参与正常状态迁移。 */
+        UNKNOWN_PERSISTED
     }
 
     public enum State {

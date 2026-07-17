@@ -72,8 +72,8 @@ class ApplicationActionToolTest {
                 new java.util.concurrent.atomic.AtomicReference<>();
         CountDownLatch registered = new CountDownLatch(1);
         when(pending.register(eq("execution-fixed"), any(), eq(PendingApplicationAction.Path.READ_ONLY),
-                any(), any())).thenAnswer(invocation -> {
-                    progress.set(invocation.getArgument(4));
+                any(), any(), any())).thenAnswer(invocation -> {
+                    progress.set(invocation.getArgument(5));
                     registered.countDown();
                     return waiter;
                 });
@@ -105,6 +105,58 @@ class ApplicationActionToolTest {
         assertThat(requestPayload.getValue().path("origin").asText()).isEqualTo("agent");
         assertThat(requestPayload.getValue().path("state").asText()).isEqualTo("requested");
         assertThat(requestPayload.getValue().toString()).doesNotContain("auth-a", "tenant-a", "secret");
+        ArgumentCaptor<PendingApplicationActions.RegistrationMetadata> metadata =
+                ArgumentCaptor.forClass(PendingApplicationActions.RegistrationMetadata.class);
+        verify(pending).register(eq("execution-fixed"), any(),
+                eq(PendingApplicationAction.Path.READ_ONLY), any(), metadata.capture(), any());
+        assertThat(metadata.getValue().actionId()).isEqualTo("framework.demo");
+        assertThat(metadata.getValue().actionVersion()).isEqualTo(2);
+        assertThat(metadata.getValue().requestFingerprint()).matches("sha256:[0-9a-f]{64}");
+    }
+
+    @Test
+    void requestFingerprintIsStableForCanonicalInputAndChangesWithInput() {
+        arrangeSnapshots(catalogPayload(false), contextPayload(7));
+        when(pending.register(any(), any(), any(), any(), any(), any())).thenReturn(
+                CompletableFuture.completedFuture(action(PendingApplicationAction.State.COMPLETED, null)));
+        when(protocol.sendActionRequest(any(), any())).thenReturn(CompletableFuture.completedFuture(null));
+
+        try (ApplicationToolInvocationContext.Scope ignored = invocationScope()) {
+            invoke("framework.demo", 2, json.createObjectNode().put("b", 2).put("a", 1), 7);
+        }
+        try (ApplicationToolInvocationContext.Scope ignored = invocationScope()) {
+            invoke("framework.demo", 2, json.createObjectNode().put("a", 1).put("b", 2), 7);
+        }
+        try (ApplicationToolInvocationContext.Scope ignored = invocationScope()) {
+            invoke("framework.demo", 2, json.createObjectNode().put("a", 1).put("b", 3), 7);
+        }
+
+        ArgumentCaptor<PendingApplicationActions.RegistrationMetadata> metadata =
+                ArgumentCaptor.forClass(PendingApplicationActions.RegistrationMetadata.class);
+        verify(pending, times(3)).register(any(), any(), any(), any(), metadata.capture(), any());
+        assertThat(metadata.getAllValues()).extracting(
+                        PendingApplicationActions.RegistrationMetadata::requestFingerprint)
+                .allMatch(value -> value.matches("sha256:[0-9a-f]{64}"))
+                .satisfies(values -> {
+                    assertThat(values.get(0)).isEqualTo(values.get(1));
+                    assertThat(values.get(2)).isNotEqualTo(values.get(0));
+                });
+    }
+
+    @Test
+    void registrationPersistenceFailurePreventsOutboundAndReturnsStableLocalError() {
+        arrangeSnapshots(catalogPayload(false), contextPayload(7));
+        when(pending.register(any(), any(), any(), any(), any(), any()))
+                .thenThrow(new IllegalStateException("sqlite secret detail"));
+
+        ApplicationActionToolResult result;
+        try (ApplicationToolInvocationContext.Scope ignored = invocationScope()) {
+            result = invoke("framework.demo", 2, json.createObjectNode(), 7);
+        }
+
+        assertThat(result.errorCode()).isEqualTo("local_persistence_failed");
+        assertThat(result.toString()).doesNotContain("sqlite secret detail");
+        verify(protocol, never()).sendActionRequest(any(), any());
     }
 
     @Test
@@ -132,7 +184,7 @@ class ApplicationActionToolTest {
 
             assertThat(result.errorCode()).isEqualTo("validation_failed");
         }
-        verify(pending, never()).register(any(), any(), any(), any(), any());
+        verify(pending, never()).register(any(), any(), any(), any(), any(), any());
         verify(protocol, never()).sendActionRequest(any(), any());
     }
 
@@ -180,7 +232,7 @@ class ApplicationActionToolTest {
                 });
 
         cases.forEach(Runnable::run);
-        verify(pending, never()).register(any(), any(), any(), any(), any());
+        verify(pending, never()).register(any(), any(), any(), any(), any(), any());
         verify(protocol, never()).sendActionRequest(any(), any());
     }
 
@@ -199,7 +251,7 @@ class ApplicationActionToolTest {
         }
 
         assertThat(result.errorCode()).isEqualTo("action_not_found");
-        verify(pending, never()).register(any(), any(), any(), any(), any());
+        verify(pending, never()).register(any(), any(), any(), any(), any(), any());
         verify(protocol, never()).sendActionRequest(any(), any());
     }
 
@@ -211,8 +263,8 @@ class ApplicationActionToolTest {
                 new java.util.concurrent.atomic.AtomicReference<>();
         CountDownLatch registered = new CountDownLatch(1);
         when(pending.register(eq("execution-fixed"), any(), eq(PendingApplicationAction.Path.HIGH_RISK),
-                any(), any())).thenAnswer(invocation -> {
-                    progress.set(invocation.getArgument(4));
+                any(), any(), any())).thenAnswer(invocation -> {
+                    progress.set(invocation.getArgument(5));
                     registered.countDown();
                     return waiter;
                 });
@@ -256,8 +308,8 @@ class ApplicationActionToolTest {
         java.util.concurrent.atomic.AtomicReference<Consumer<PendingApplicationAction>> progress =
                 new java.util.concurrent.atomic.AtomicReference<>();
         CountDownLatch registered = new CountDownLatch(1);
-        when(pending.register(eq("execution-fixed"), any(), any(), any(), any())).thenAnswer(invocation -> {
-            progress.set(invocation.getArgument(4));
+        when(pending.register(eq("execution-fixed"), any(), any(), any(), any(), any())).thenAnswer(invocation -> {
+            progress.set(invocation.getArgument(5));
             registered.countDown();
             return waiter;
         });
@@ -289,8 +341,8 @@ class ApplicationActionToolTest {
         CompletableFuture<PendingApplicationAction> waiter = new CompletableFuture<>();
         java.util.concurrent.atomic.AtomicReference<Consumer<PendingApplicationAction>> progress =
                 new java.util.concurrent.atomic.AtomicReference<>();
-        when(pending.register(eq("execution-fixed"), any(), any(), any(), any())).thenAnswer(invocation -> {
-            progress.set(invocation.getArgument(4));
+        when(pending.register(eq("execution-fixed"), any(), any(), any(), any(), any())).thenAnswer(invocation -> {
+            progress.set(invocation.getArgument(5));
             return waiter;
         });
         when(protocol.sendActionRequest(any(), any())).thenReturn(CompletableFuture.completedFuture(null));
@@ -343,7 +395,7 @@ class ApplicationActionToolTest {
                     .isEqualTo("validation_failed");
         }
 
-        verify(pending, never()).register(any(), any(), any(), any(), any());
+        verify(pending, never()).register(any(), any(), any(), any(), any(), any());
         verify(protocol, never()).sendActionRequest(any(), any());
     }
 
@@ -396,7 +448,7 @@ class ApplicationActionToolTest {
         arrangeSnapshots(catalogPayload(false), contextPayload(7));
         CompletableFuture<PendingApplicationAction> waiter = new CompletableFuture<>();
         when(pending.register(eq("execution-fixed"), any(), eq(PendingApplicationAction.Path.READ_ONLY),
-                any(), any())).thenReturn(waiter);
+                any(), any(), any())).thenReturn(waiter);
         when(protocol.sendActionRequest(any(), any())).thenReturn(
                 CompletableFuture.failedFuture(new com.wzx.babiq.server.application.api.ActionRequestAcknowledgementUncertain(
                         "ack lost", new java.util.concurrent.TimeoutException("ack lost"))));
@@ -421,7 +473,7 @@ class ApplicationActionToolTest {
         arrangeSnapshots(catalogPayload(false), contextPayload(7));
         CompletableFuture<PendingApplicationAction> waiter = new CompletableFuture<>();
         when(pending.register(eq("execution-fixed"), any(), eq(PendingApplicationAction.Path.READ_ONLY),
-                any(), any())).thenReturn(waiter);
+                any(), any(), any())).thenReturn(waiter);
         when(protocol.sendActionRequest(any(), any())).thenReturn(CompletableFuture.failedFuture(
                 new com.wzx.babiq.server.application.api.ConfirmedActionRequestRejection(
                         "remote_request_failed", "desktop rejected action request")));
@@ -449,8 +501,8 @@ class ApplicationActionToolTest {
         CompletableFuture<PendingApplicationAction> waiter = new CompletableFuture<>();
         java.util.concurrent.atomic.AtomicReference<Consumer<PendingApplicationAction>> progress =
                 new java.util.concurrent.atomic.AtomicReference<>();
-        when(pending.register(eq("execution-fixed"), any(), any(), any(), any())).thenAnswer(invocation -> {
-            progress.set(invocation.getArgument(4));
+        when(pending.register(eq("execution-fixed"), any(), any(), any(), any(), any())).thenAnswer(invocation -> {
+            progress.set(invocation.getArgument(5));
             return waiter;
         });
         when(protocol.sendActionRequest(any(), any())).thenReturn(CompletableFuture.completedFuture(null));

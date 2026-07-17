@@ -1,5 +1,7 @@
 package com.wzx.babiq.server.context.repository;
 
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
+
 import java.time.Instant;
 
 /**
@@ -50,7 +52,8 @@ public record ContextSnapshotRecord(
         String longTermMemoryRefsJson,
         int longTermMemoryTokenEstimate,
         String inputPreview,
-        Instant createdAt
+        Instant createdAt,
+        BusinessIdentityScope businessIdentityScope
 ) {
     /**
      * 兼容 P3-2/P3-3 旧调用点的构造器；未接入长期记忆时相关字段为空和 0。
@@ -76,6 +79,26 @@ public record ContextSnapshotRecord(
                                  Instant createdAt) {
         this(snapshotId, threadId, turnId, phase, providerId, model, cwd, windowOrdinal, modelContextWindow,
                 autoCompactThreshold, estimatedTokens, actualPromptTokens, includedItemCount, excludedItemCount,
-                envelopeJson, itemsJson, capabilityCatalogJson, null, 0, inputPreview, createdAt);
+                envelopeJson, itemsJson, capabilityCatalogJson, null, 0, inputPreview, createdAt,
+                BusinessIdentityScope.UNSCOPED);
+    }
+
+    public ContextSnapshotRecord(String snapshotId, String threadId, String turnId, String phase,
+                                 String providerId, String model, String cwd, int windowOrdinal,
+                                 int modelContextWindow, int autoCompactThreshold, int estimatedTokens,
+                                 Long actualPromptTokens, int includedItemCount, int excludedItemCount,
+                                 String envelopeJson, String itemsJson, String capabilityCatalogJson,
+                                 String longTermMemoryRefsJson, int longTermMemoryTokenEstimate,
+                                 String inputPreview, Instant createdAt) {
+        this(snapshotId, threadId, turnId, phase, providerId, model, cwd, windowOrdinal,
+                modelContextWindow, autoCompactThreshold, estimatedTokens, actualPromptTokens,
+                includedItemCount, excludedItemCount, envelopeJson, itemsJson, capabilityCatalogJson,
+                longTermMemoryRefsJson, longTermMemoryTokenEstimate, inputPreview, createdAt,
+                BusinessIdentityScope.UNSCOPED);
+    }
+
+    public ContextSnapshotRecord {
+        businessIdentityScope = businessIdentityScope == null
+                ? BusinessIdentityScope.UNSCOPED : businessIdentityScope;
     }
 }

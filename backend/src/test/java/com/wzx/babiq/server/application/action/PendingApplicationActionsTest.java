@@ -9,11 +9,15 @@ import org.springframework.beans.factory.ObjectProvider;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -70,6 +74,702 @@ class PendingApplicationActionsTest {
                 .get()
                 .extracting(PendingApplicationAction::state)
                 .isEqualTo(PendingApplicationAction.State.REQUESTED);
+    }
+
+    @Test
+    void registrationPersistenceFailureRemovesCandidateAndFailsRegistration() {
+        ApplicationActionTerminalStore store = new RecordingTerminalStore() {
+            @Override
+            public synchronized void recordRegistered(
+                    PendingApplicationAction requested,
+                    String actionId,
+                    int actionVersion,
+                    String requestFingerprint) {
+                throw new IllegalStateException("registration store unavailable");
+            }
+        };
+        PendingApplicationActions local = actions(store, action ->
+                CompletableFuture.completedFuture(PendingApplicationActions.RemoteStatus.running()));
+
+        assertThatThrownBy(() -> local.register(
+                "execution-register-failed",
+                correlation("tool-register-failed"),
+                PendingApplicationAction.Path.READ_ONLY,
+                connectionContext("ws-register-failed"),
+                new PendingApplicationActions.RegistrationMetadata("case.read", 1, "sha256:fingerprint"),
+                null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("registration store unavailable");
+        assertThat(local.pendingCount()).isZero();
+        assertThat(local.snapshot("execution-register-failed")).isEmpty();
+    }
+
+    @Test
+    void auditPublicationDrainsTransitionsInCommittedEntryOrder() throws Exception {
+        BlockingAuditStore store = new BlockingAuditStore();
+        ApplicationActionTimeoutProperties stableTimeouts = new ApplicationActionTimeoutProperties(
+                Duration.ofSeconds(5), Duration.ofSeconds(5), Duration.ofSeconds(5),
+                Duration.ofSeconds(5), Duration.ofSeconds(5));
+        PendingApplicationActions local = new PendingApplicationActions(
+                stableTimeouts, store, action -> CompletableFuture.completedFuture(
+                        PendingApplicationActions.RemoteStatus.running()), scheduler, Clock.systemUTC());
+        PendingApplicationAction.Correlation correlation = correlation("tool-audit-fifo");
+        local.register(
+                "execution-audit-fifo", correlation, PendingApplicationAction.Path.REVERSIBLE_WRITE,
+                connectionContext("ws-audit-fifo"));
+        store.blockAccepted.set(true);
+
+        var pool = Executors.newFixedThreadPool(3);
+        try {
+            var accepted = pool.submit(() -> local.accepted("execution-audit-fifo", correlation));
+            assertThat(store.acceptedEntered.await(1, TimeUnit.SECONDS)).isTrue();
+            var previewed = pool.submit(() -> local.previewed("execution-audit-fifo", correlation));
+            org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(1))
+                    .until(() -> local.snapshot("execution-audit-fifo")
+                            .map(PendingApplicationAction::state)
+                            .orElse(null) == PendingApplicationAction.State.PREVIEWED);
+            var running = pool.submit(() -> local.running("execution-audit-fifo", correlation));
+            org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(1))
+                    .until(() -> local.snapshot("execution-audit-fifo")
+                            .map(PendingApplicationAction::state)
+                            .orElse(null) == PendingApplicationAction.State.RUNNING);
+
+            store.releaseAccepted.countDown();
+            assertThat(accepted.get(1, TimeUnit.SECONDS)).isTrue();
+            assertThat(previewed.get(1, TimeUnit.SECONDS)).isTrue();
+            assertThat(running.get(1, TimeUnit.SECONDS)).isTrue();
+
+            assertThat(store.events).containsExactly("REQUESTED", "ACCEPTED", "PREVIEWED", "EXECUTING");
+            assertThat(store.currentState).isEqualTo("EXECUTING");
+        } finally {
+            store.releaseAccepted.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void auditPublicationKeepsTerminalBeforeLateResultWhenTerminalStoreBlocks() throws Exception {
+        BlockingAuditStore store = new BlockingAuditStore();
+        PendingApplicationActions local = actions(store, action ->
+                CompletableFuture.completedFuture(PendingApplicationActions.RemoteStatus.running()));
+        PendingApplicationAction.Correlation correlation = correlation("tool-audit-terminal-fifo");
+        CompletableFuture<PendingApplicationAction> waiter = local.register(
+                "execution-audit-terminal-fifo", correlation, PendingApplicationAction.Path.READ_ONLY,
+                connectionContext("ws-audit-terminal-fifo"));
+        local.accepted("execution-audit-terminal-fifo", correlation);
+        local.running("execution-audit-terminal-fifo", correlation);
+        store.blockNextTerminal.set(true);
+
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            var winner = pool.submit(() -> local.terminal(
+                    "execution-audit-terminal-fifo", correlation,
+                    PendingApplicationAction.State.COMPLETED, null));
+            assertThat(waiter.get(1, TimeUnit.SECONDS).state()).isEqualTo(PendingApplicationAction.State.COMPLETED);
+            assertThat(store.terminalEntered.await(1, TimeUnit.SECONDS)).isTrue();
+            var late = pool.submit(() -> local.terminal(
+                    "execution-audit-terminal-fifo", correlation,
+                    PendingApplicationAction.State.FAILED, null));
+
+            store.releaseTerminal.countDown();
+            assertThat(winner.get(1, TimeUnit.SECONDS)).isTrue();
+            assertThat(late.get(1, TimeUnit.SECONDS)).isFalse();
+            assertThat(store.events).containsExactly(
+                    "REQUESTED", "ACCEPTED", "EXECUTING", "COMPLETED", "FAILED:late");
+            assertThat(store.currentState).isEqualTo("COMPLETED");
+        } finally {
+            store.releaseTerminal.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void terminalIndexTransferCannotLoseALateResultBetweenPendingAndCompleted() throws Exception {
+        GapDetectingTerminalStore store = new GapDetectingTerminalStore();
+        PendingApplicationActions local = actions(store, action ->
+                CompletableFuture.completedFuture(PendingApplicationActions.RemoteStatus.running()));
+        String executionId = "execution-terminal-index-handoff";
+        PendingApplicationAction.Correlation correlation = correlation("tool-terminal-index-handoff");
+        CompletableFuture<PendingApplicationAction> waiter = local.register(
+                executionId, correlation, PendingApplicationAction.Path.READ_ONLY,
+                connectionContext("ws-terminal-index-handoff"));
+        local.accepted(executionId, correlation);
+        local.running(executionId, correlation);
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> current = (Map<String, Object>) org.springframework.test.util.ReflectionTestUtils
+                .getField(local, "pending");
+        BlockingRemoveMap replacement = new BlockingRemoveMap(executionId);
+        replacement.putAll(current);
+        org.springframework.test.util.ReflectionTestUtils.setField(local, "pending", replacement);
+
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            var winner = pool.submit(() -> local.terminal(
+                    executionId, correlation, PendingApplicationAction.State.COMPLETED, null));
+            assertThat(replacement.removed.await(1, TimeUnit.SECONDS)).isTrue();
+            var late = pool.submit(() -> local.terminal(
+                    executionId, correlation, PendingApplicationAction.State.FAILED, null));
+
+            store.lookupEntered.await(200, TimeUnit.MILLISECONDS);
+            replacement.releaseRemove.countDown();
+            store.releaseLookup.countDown();
+
+            assertThat(winner.get(1, TimeUnit.SECONDS)).isTrue();
+            assertThat(late.get(1, TimeUnit.SECONDS)).isFalse();
+            assertThat(waiter.get(1, TimeUnit.SECONDS).state())
+                    .isEqualTo(PendingApplicationAction.State.COMPLETED);
+            assertThat(store.terminals).extracting(StoredTerminal::lateResult)
+                    .containsExactly(false, true);
+        } finally {
+            replacement.releaseRemove.countDown();
+            store.releaseLookup.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void terminalThatReadAnActiveEntryBeforeRetirementUsesHistoricalAdmissionForItsLateAudit() throws Exception {
+        RetirementRaceStore store = new RetirementRaceStore();
+        store.releaseTerminal.countDown();
+        PendingApplicationActions local = actions(store, action ->
+                CompletableFuture.completedFuture(PendingApplicationActions.RemoteStatus.running()));
+        String executionId = "execution-retired-late-race";
+        PendingApplicationAction.Correlation correlation = correlation("tool-retired-late-race");
+        local.register(executionId, correlation, PendingApplicationAction.Path.READ_ONLY);
+        local.accepted(executionId, correlation);
+        local.running(executionId, correlation);
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> pending = (Map<String, Object>) org.springframework.test.util.ReflectionTestUtils
+                .getField(local, "pending");
+        Object entry = java.util.Objects.requireNonNull(pending.get(executionId));
+        AtomicBoolean lateAccepted = new AtomicBoolean(true);
+        Thread late = new Thread(() -> lateAccepted.set(local.terminal(
+                executionId, correlation, PendingApplicationAction.State.FAILED, null)));
+        try {
+            synchronized (entry) {
+                late.start();
+                org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(1))
+                        .until(() -> late.getState() == Thread.State.BLOCKED);
+                assertThat(local.terminal(
+                        executionId, correlation, PendingApplicationAction.State.COMPLETED, null)).isTrue();
+                store.failLate.set(true);
+            }
+            late.join(1_000);
+
+            assertThat(late.isAlive()).isFalse();
+            assertThat(lateAccepted).isFalse();
+            assertThatThrownBy(local::close)
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("audit backlog remains");
+
+            store.failLate.set(false);
+            local.close();
+            assertThat(store.terminals).extracting(StoredTerminal::lateResult)
+                    .containsExactly(false, true);
+        } finally {
+            store.releaseTerminal.countDown();
+            if (late.isAlive()) {
+                late.interrupt();
+            }
+        }
+    }
+
+    @Test
+    void historicalLateAdmissionDoesNotLoseItsAuditWhenAnExistingEntryRetiresBeforeEnqueue() throws Exception {
+        ManualScheduledExecutor retryScheduler = new ManualScheduledExecutor();
+        HistoricalTerminalStore store = new HistoricalTerminalStore();
+        String executionId = "execution-historical-existing-retirement";
+        PendingApplicationAction.Correlation correlation = correlation("tool-historical-existing-retirement");
+        store.putHistorical(executionId, correlation);
+        store.blockLookup.set(true);
+        PendingApplicationActions local = new PendingApplicationActions(
+                timeouts, store, action -> CompletableFuture.completedFuture(
+                        PendingApplicationActions.RemoteStatus.running()),
+                retryScheduler, Clock.systemUTC(), 1);
+        AtomicBoolean lateAccepted = new AtomicBoolean(true);
+        Thread historicalLate = new Thread(() -> lateAccepted.set(local.terminal(
+                executionId, correlation, PendingApplicationAction.State.FAILED, null)));
+        try {
+            historicalLate.start();
+            assertThat(store.lookupEntered.await(1, TimeUnit.SECONDS)).isTrue();
+
+            local.register(executionId, correlation, PendingApplicationAction.Path.READ_ONLY);
+            local.accepted(executionId, correlation);
+            local.running(executionId, correlation);
+            store.fail.set(true);
+            assertThat(local.terminal(
+                    executionId, correlation, PendingApplicationAction.State.COMPLETED, null)).isTrue();
+
+            @SuppressWarnings("unchecked")
+            Map<String, Object> completed = (Map<String, Object>) org.springframework.test.util.ReflectionTestUtils
+                    .getField(local, "completed");
+            Object entry = java.util.Objects.requireNonNull(completed.get(executionId));
+            synchronized (entry) {
+                store.releaseLookup.countDown();
+                org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(1))
+                        .until(() -> historicalLate.getState() == Thread.State.BLOCKED);
+                store.fail.set(false);
+                retryScheduler.runNextRetry();
+            }
+
+            historicalLate.join(1_000);
+            assertThat(historicalLate.isAlive()).isFalse();
+            assertThat(lateAccepted).isFalse();
+            assertThat(store.lateExecutionIds).containsExactly(executionId);
+            assertThat(local.completedRetentionCount()).isZero();
+        } finally {
+            store.releaseLookup.countDown();
+            if (historicalLate.isAlive()) {
+                historicalLate.interrupt();
+            }
+            retryScheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void historicalLateConstructionFailureDoesNotLeakAdmissionCapacity() throws Exception {
+        HistoricalTerminalStore store = new HistoricalTerminalStore();
+        String executionId = "execution-historical-construction-failure";
+        PendingApplicationAction.Correlation correlation = correlation("tool-historical-construction-failure");
+        store.putHistorical(executionId, correlation);
+        OneShotThrowingClock clock = new OneShotThrowingClock();
+        PendingApplicationActions local = new PendingApplicationActions(
+                timeouts, store, action -> CompletableFuture.completedFuture(
+                        PendingApplicationActions.RemoteStatus.running()),
+                scheduler, clock, 1);
+
+        assertThat(local.terminal(
+                executionId, correlation, PendingApplicationAction.State.FAILED, null)).isFalse();
+        assertThat(local.completedRetentionCount()).isZero();
+
+        CompletableFuture<PendingApplicationAction> reusable = local.register(
+                "execution-after-construction-failure",
+                correlation("tool-after-construction-failure"),
+                PendingApplicationAction.Path.READ_ONLY);
+        local.close();
+        assertThat(reusable.get(1, TimeUnit.SECONDS).state())
+                .isEqualTo(PendingApplicationAction.State.CANCELED);
+    }
+
+    @Test
+    void concurrentHistoricalLateResultsRespectAdmissionCapacityAndReleaseAfterDrain() throws Exception {
+        HistoricalTerminalStore store = new HistoricalTerminalStore();
+        PendingApplicationActions local = new PendingApplicationActions(
+                timeouts, store, action -> CompletableFuture.completedFuture(
+                        PendingApplicationActions.RemoteStatus.running()), scheduler, Clock.systemUTC(), 1);
+        store.putHistorical("execution-history-a", correlation("tool-history-a"));
+        store.putHistorical("execution-history-b", correlation("tool-history-b"));
+        store.fail.set(true);
+
+        CountDownLatch start = new CountDownLatch(1);
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            var first = pool.submit(() -> {
+                start.await();
+                return local.terminal("execution-history-a", correlation("tool-history-a"),
+                        PendingApplicationAction.State.FAILED, null);
+            });
+            var second = pool.submit(() -> {
+                start.await();
+                return local.terminal("execution-history-b", correlation("tool-history-b"),
+                        PendingApplicationAction.State.FAILED, null);
+            });
+            start.countDown();
+            assertThat(first.get(1, TimeUnit.SECONDS)).isFalse();
+            assertThat(second.get(1, TimeUnit.SECONDS)).isFalse();
+        } finally {
+            pool.shutdownNow();
+        }
+        assertThat(local.completedRetentionCount()).isEqualTo(1);
+
+        store.fail.set(false);
+        org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(1))
+                .until(() -> local.completedRetentionCount() == 0);
+        assertThat(store.lateExecutionIds).hasSize(1);
+        String rejected = store.lateExecutionIds.contains("execution-history-a")
+                ? "execution-history-b" : "execution-history-a";
+        String rejectedTool = rejected.endsWith("b") ? "tool-history-b" : "tool-history-a";
+        assertThat(local.terminal(rejected, correlation(rejectedTool),
+                PendingApplicationAction.State.FAILED, null)).isFalse();
+        assertThat(store.lateExecutionIds).containsExactlyInAnyOrder(
+                "execution-history-a", "execution-history-b");
+    }
+
+    @Test
+    void closeWaitsForInFlightHistoricalLateAdmissionAndDrainsItBeforeSuccess() throws Exception {
+        HistoricalTerminalStore store = new HistoricalTerminalStore();
+        store.putHistorical("execution-close-history", correlation("tool-close-history"));
+        store.blockLookup.set(true);
+        store.lateFailures.set(2);
+        ApplicationActionTimeoutProperties closeGrace = new ApplicationActionTimeoutProperties(
+                Duration.ofSeconds(5), Duration.ofSeconds(5), Duration.ofSeconds(5),
+                Duration.ofSeconds(5), Duration.ofSeconds(1));
+        PendingApplicationActions local = new PendingApplicationActions(
+                closeGrace, store, action -> CompletableFuture.completedFuture(
+                        PendingApplicationActions.RemoteStatus.running()), scheduler, Clock.systemUTC(), 1);
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            var late = pool.submit(() -> local.terminal(
+                    "execution-close-history", correlation("tool-close-history"),
+                    PendingApplicationAction.State.FAILED, null));
+            assertThat(store.lookupEntered.await(1, TimeUnit.SECONDS)).isTrue();
+            var close = pool.submit(() -> {
+                local.close();
+                return true;
+            });
+            assertThat(close.isDone()).isFalse();
+
+            store.releaseLookup.countDown();
+            assertThat(late.get(1, TimeUnit.SECONDS)).isFalse();
+            assertThat(close.get(1, TimeUnit.SECONDS)).isTrue();
+            assertThat(store.lateExecutionIds).containsExactly("execution-close-history");
+            assertThat(local.completedRetentionCount()).isZero();
+        } finally {
+            store.releaseLookup.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void historicalLateAdmissionAfterSuccessfulCloseIsRejectedWithoutBacklog() {
+        HistoricalTerminalStore store = new HistoricalTerminalStore();
+        store.putHistorical("execution-after-close", correlation("tool-after-close"));
+        PendingApplicationActions local = actions(store, action ->
+                CompletableFuture.completedFuture(PendingApplicationActions.RemoteStatus.running()));
+        local.close();
+
+        assertThat(local.terminal("execution-after-close", correlation("tool-after-close"),
+                PendingApplicationAction.State.FAILED, null)).isFalse();
+        assertThat(store.lateExecutionIds).isEmpty();
+        assertThat(local.completedRetentionCount()).isZero();
+    }
+
+    @Test
+    void closeFailsLoudlyWhenInFlightHistoricalLateExceedsGraceThenCanResume() throws Exception {
+        HistoricalTerminalStore store = new HistoricalTerminalStore();
+        store.putHistorical("execution-close-history-timeout", correlation("tool-close-history-timeout"));
+        store.blockLookup.set(true);
+        ApplicationActionTimeoutProperties fastClose = new ApplicationActionTimeoutProperties(
+                Duration.ofSeconds(5), Duration.ofSeconds(5), Duration.ofSeconds(5),
+                Duration.ofSeconds(5), Duration.ofMillis(20));
+        PendingApplicationActions local = new PendingApplicationActions(
+                fastClose, store, action -> CompletableFuture.completedFuture(
+                        PendingApplicationActions.RemoteStatus.running()), scheduler, Clock.systemUTC(), 1);
+        var pool = Executors.newSingleThreadExecutor();
+        try {
+            var late = pool.submit(() -> local.terminal(
+                    "execution-close-history-timeout", correlation("tool-close-history-timeout"),
+                    PendingApplicationAction.State.FAILED, null));
+            assertThat(store.lookupEntered.await(1, TimeUnit.SECONDS)).isTrue();
+
+            assertThatThrownBy(local::close)
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("late admission remains");
+            store.releaseLookup.countDown();
+            assertThat(late.get(1, TimeUnit.SECONDS)).isFalse();
+
+            local.close();
+            local.close();
+            assertThat(store.lateExecutionIds).containsExactly("execution-close-history-timeout");
+        } finally {
+            store.releaseLookup.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void transientAuditFailureRetriesHeadBeforePublishingLaterTransitions() throws Exception {
+        ManualScheduledExecutor retryScheduler = new ManualScheduledExecutor();
+        FailingAuditStore store = new FailingAuditStore(1);
+        PendingApplicationActions local = new PendingApplicationActions(
+                timeouts, store, action -> CompletableFuture.completedFuture(
+                        PendingApplicationActions.RemoteStatus.running()), retryScheduler, Clock.systemUTC());
+        PendingApplicationAction.Correlation correlation = correlation("tool-audit-retry");
+        local.register("execution-audit-retry", correlation, PendingApplicationAction.Path.REVERSIBLE_WRITE,
+                connectionContext("ws-audit-retry"));
+
+        assertThat(local.accepted("execution-audit-retry", correlation)).isTrue();
+        assertThat(local.previewed("execution-audit-retry", correlation)).isTrue();
+        assertThat(local.running("execution-audit-retry", correlation)).isTrue();
+        assertThat(store.events).containsExactly("REQUESTED");
+
+        retryScheduler.runNextRetry();
+
+        assertThat(store.events).containsExactly("REQUESTED", "ACCEPTED", "PREVIEWED", "EXECUTING");
+        assertThat(store.currentState).isEqualTo("EXECUTING");
+    }
+
+    @Test
+    void auditRetryContinuesPastInitialBudgetUntilDurableStoreRecovers() throws Exception {
+        ManualScheduledExecutor retryScheduler = new ManualScheduledExecutor();
+        FailingAuditStore store = new FailingAuditStore(4);
+        PendingApplicationActions local = new PendingApplicationActions(
+                timeouts, store, action -> CompletableFuture.completedFuture(
+                        PendingApplicationActions.RemoteStatus.running()), retryScheduler, Clock.systemUTC());
+        PendingApplicationAction.Correlation correlation = correlation("tool-audit-permanent");
+        CompletableFuture<PendingApplicationAction> waiter = local.register(
+                "execution-audit-permanent", correlation, PendingApplicationAction.Path.READ_ONLY,
+                connectionContext("ws-audit-permanent"));
+        local.accepted("execution-audit-permanent", correlation);
+        local.running("execution-audit-permanent", correlation);
+
+        assertThat(local.terminal("execution-audit-permanent", correlation,
+                PendingApplicationAction.State.COMPLETED, null)).isTrue();
+        assertThat(waiter.get(1, TimeUnit.SECONDS).state()).isEqualTo(PendingApplicationAction.State.COMPLETED);
+
+        retryScheduler.runAllRetries();
+
+        assertThat(store.events).containsExactly("REQUESTED", "ACCEPTED", "EXECUTING", "COMPLETED");
+        assertThat(store.reconciliationQueue).isEmpty();
+        assertThat(store.recordAttempts.get()).isEqualTo(5);
+    }
+
+    @Test
+    void fullAuditBacklogRejectsNewRegistrationWithoutEvictingExistingEntries() {
+        ManualScheduledExecutor retryScheduler = new ManualScheduledExecutor();
+        FailingAuditStore store = new FailingAuditStore(Integer.MAX_VALUE);
+        PendingApplicationActions local = new PendingApplicationActions(
+                timeouts, store, action -> CompletableFuture.completedFuture(
+                        PendingApplicationActions.RemoteStatus.running()), retryScheduler, Clock.systemUTC(), 2);
+
+        for (int index = 0; index < 2; index++) {
+            String executionId = "execution-bounded-" + index;
+            PendingApplicationAction.Correlation correlation = correlation("tool-bounded-" + index);
+            local.register(executionId, correlation, PendingApplicationAction.Path.READ_ONLY,
+                    connectionContext("ws-bounded-" + index));
+            local.accepted(executionId, correlation);
+            local.running(executionId, correlation);
+            local.terminal(executionId, correlation, PendingApplicationAction.State.COMPLETED, null);
+        }
+
+        assertThat(local.completedRetentionCount()).isEqualTo(2);
+        assertThatThrownBy(() -> local.register(
+                "execution-bounded-2", correlation("tool-bounded-2"), PendingApplicationAction.Path.READ_ONLY,
+                connectionContext("ws-bounded-2")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("audit backlog capacity");
+        assertThat(local.completedRetentionCount()).isEqualTo(2);
+
+        assertThat(local.terminal(
+                "execution-bounded-0", correlation("tool-bounded-0"),
+                PendingApplicationAction.State.FAILED, null)).isFalse();
+        assertThat(local.completedRetentionCount()).isEqualTo(2);
+    }
+
+    @Test
+    void sameExecutionLateFloodIsBoundedAndDrainsAcceptedLateResultsInFifoOrder() {
+        ManualScheduledExecutor retryScheduler = new ManualScheduledExecutor();
+        SwitchableEventAuditStore store = new SwitchableEventAuditStore();
+        PendingApplicationActions local = new PendingApplicationActions(
+                timeouts, store, action -> CompletableFuture.completedFuture(
+                        PendingApplicationActions.RemoteStatus.running()), retryScheduler, Clock.systemUTC(), 2);
+        String executionId = "execution-late-flood";
+        PendingApplicationAction.Correlation correlation = correlation("tool-late-flood");
+        local.register(executionId, correlation, PendingApplicationAction.Path.READ_ONLY);
+        store.fail.set(true);
+        local.accepted(executionId, correlation);
+        local.running(executionId, correlation);
+        local.terminal(executionId, correlation, PendingApplicationAction.State.COMPLETED, null);
+
+        local.terminal(executionId, correlation, PendingApplicationAction.State.FAILED, null);
+        local.terminal(executionId, correlation, PendingApplicationAction.State.CANCELED, null);
+        local.terminal(executionId, correlation, PendingApplicationAction.State.REJECTED, null);
+
+        assertThat(local.pendingLateAuditCount()).isEqualTo(2);
+        store.fail.set(false);
+        retryScheduler.runAllRetries();
+
+        assertThat(store.events).containsExactly(
+                "REQUESTED", "ACCEPTED", "EXECUTING", "COMPLETED", "FAILED:late", "CANCELED:late");
+        assertThat(local.pendingLateAuditCount()).isZero();
+        assertThat(local.completedRetentionCount()).isZero();
+    }
+
+    @Test
+    void liveLateConstructionFailureDoesNotLeakPublicationAdmission() {
+        ManualScheduledExecutor retryScheduler = new ManualScheduledExecutor();
+        SwitchableEventAuditStore store = new SwitchableEventAuditStore();
+        ArmableThrowingClock clock = new ArmableThrowingClock();
+        PendingApplicationActions local = new PendingApplicationActions(
+                timeouts, store, action -> CompletableFuture.completedFuture(
+                        PendingApplicationActions.RemoteStatus.running()), retryScheduler, clock, 1);
+        String executionId = "execution-live-late-construction-failure";
+        PendingApplicationAction.Correlation correlation = correlation("tool-live-late-construction-failure");
+        local.register(executionId, correlation, PendingApplicationAction.Path.READ_ONLY);
+        store.fail.set(true);
+        local.accepted(executionId, correlation);
+        local.running(executionId, correlation);
+        local.terminal(executionId, correlation, PendingApplicationAction.State.COMPLETED, null);
+
+        clock.throwNext();
+        assertThat(local.terminal(
+                executionId, correlation, PendingApplicationAction.State.FAILED, null)).isFalse();
+        assertThat(local.pendingLateAuditCount()).isZero();
+
+        assertThat(local.terminal(
+                executionId, correlation, PendingApplicationAction.State.CANCELED, null)).isFalse();
+        assertThat(local.pendingLateAuditCount()).isEqualTo(1);
+        store.fail.set(false);
+        retryScheduler.runAllRetries();
+
+        assertThat(store.events).containsExactly(
+                "REQUESTED", "ACCEPTED", "EXECUTING", "COMPLETED", "CANCELED:late");
+        assertThat(local.pendingLateAuditCount()).isZero();
+        assertThat(local.completedRetentionCount()).isZero();
+    }
+
+    @Test
+    void fullAuditBacklogRejectsConcurrentRegistrationsWithoutPublishingEitherEntry() throws Exception {
+        ManualScheduledExecutor retryScheduler = new ManualScheduledExecutor();
+        FailingAuditStore store = new FailingAuditStore(Integer.MAX_VALUE);
+        PendingApplicationActions local = new PendingApplicationActions(
+                timeouts, store, action -> CompletableFuture.completedFuture(
+                        PendingApplicationActions.RemoteStatus.running()), retryScheduler, Clock.systemUTC(), 1);
+        PendingApplicationAction.Correlation existing = correlation("tool-full-backlog");
+        local.register("execution-full-backlog", existing, PendingApplicationAction.Path.READ_ONLY,
+                connectionContext("ws-full-backlog"));
+        local.accepted("execution-full-backlog", existing);
+        local.running("execution-full-backlog", existing);
+        local.terminal("execution-full-backlog", existing, PendingApplicationAction.State.COMPLETED, null);
+
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            CountDownLatch start = new CountDownLatch(1);
+            var first = pool.submit(() -> registerFailureAfter(start, local, "a"));
+            var second = pool.submit(() -> registerFailureAfter(start, local, "b"));
+            start.countDown();
+
+            assertThat(List.of(first.get(1, TimeUnit.SECONDS), second.get(1, TimeUnit.SECONDS)))
+                    .allMatch(message -> message.contains("audit backlog capacity"));
+            assertThat(local.pendingCount()).isZero();
+            assertThat(local.completedRetentionCount()).isEqualTo(1);
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void admissionCapacityIsHeldFromActiveRegistrationUntilAuditQueueFullyDrains() {
+        ManualScheduledExecutor retryScheduler = new ManualScheduledExecutor();
+        SwitchableAuditStore store = new SwitchableAuditStore();
+        PendingApplicationActions local = new PendingApplicationActions(
+                timeouts, store, action -> CompletableFuture.completedFuture(
+                        PendingApplicationActions.RemoteStatus.running()), retryScheduler, Clock.systemUTC(), 1);
+        PendingApplicationAction.Correlation first = correlation("tool-admission-a");
+        local.register("execution-admission-a", first, PendingApplicationAction.Path.READ_ONLY,
+                connectionContext("ws-admission-a"));
+
+        assertCapacityRejected(local, "active");
+
+        local.accepted("execution-admission-a", first);
+        local.running("execution-admission-a", first);
+        local.terminal("execution-admission-a", first, PendingApplicationAction.State.COMPLETED, null);
+        assertCapacityRejected(local, "terminal-pending-audit");
+
+        store.fail.set(false);
+        retryScheduler.runAllRetries();
+        CompletableFuture<PendingApplicationAction> admitted = local.register(
+                "execution-admission-b", correlation("tool-admission-b"), PendingApplicationAction.Path.READ_ONLY,
+                connectionContext("ws-admission-b"));
+        assertThat(admitted).isNotNull();
+    }
+
+    @Test
+    void closeRetriesTransientAuditFailuresUntilTheWholeFifoIsDurable() {
+        ManualScheduledExecutor retryScheduler = new ManualScheduledExecutor();
+        FailingAuditStore store = new FailingAuditStore(3);
+        ApplicationActionTimeoutProperties closeGrace = new ApplicationActionTimeoutProperties(
+                Duration.ofSeconds(5), Duration.ofSeconds(5), Duration.ofSeconds(5),
+                Duration.ofSeconds(5), Duration.ofSeconds(1));
+        PendingApplicationActions local = new PendingApplicationActions(
+                closeGrace, store, action -> CompletableFuture.completedFuture(
+                        PendingApplicationActions.RemoteStatus.running()), retryScheduler, Clock.systemUTC());
+        PendingApplicationAction.Correlation correlation = correlation("tool-close-audit-retry");
+        CompletableFuture<PendingApplicationAction> terminal = local.register(
+                "execution-close-audit-retry", correlation, PendingApplicationAction.Path.READ_ONLY);
+        local.accepted("execution-close-audit-retry", correlation);
+
+        local.close();
+
+        assertThat(terminal.join().state()).isEqualTo(PendingApplicationAction.State.CANCELED);
+        assertThat(store.events).containsExactly("REQUESTED", "ACCEPTED", "CANCELED");
+        assertThat(local.completedRetentionCount()).isZero();
+    }
+
+    @Test
+    void closeWaitsForCurrentDrainerThenTakesOverFailedAuditRetry() throws Exception {
+        BlockingThenFailingAuditStore store = new BlockingThenFailingAuditStore();
+        PendingApplicationActions local = actions(store, action ->
+                CompletableFuture.completedFuture(PendingApplicationActions.RemoteStatus.running()));
+        PendingApplicationAction.Correlation correlation = correlation("tool-close-concurrent-drainer");
+        local.register("execution-close-concurrent-drainer", correlation, PendingApplicationAction.Path.READ_ONLY);
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            var progress = pool.submit(() -> local.accepted("execution-close-concurrent-drainer", correlation));
+            assertThat(store.entered.await(1, TimeUnit.SECONDS)).isTrue();
+            var close = pool.submit(() -> {
+                local.close();
+                return true;
+            });
+            store.release.countDown();
+
+            assertThat(progress.get(1, TimeUnit.SECONDS)).isTrue();
+            assertThat(close.get(1, TimeUnit.SECONDS)).isTrue();
+            assertThat(store.events).containsExactly("REQUESTED", "ACCEPTED", "CANCELED");
+        } finally {
+            store.release.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void closeFailsLoudlyWhenAuditStoreStaysUnavailablePastGraceDeadline() {
+        ManualScheduledExecutor retryScheduler = new ManualScheduledExecutor();
+        FailingAuditStore store = new FailingAuditStore(Integer.MAX_VALUE);
+        ApplicationActionTimeoutProperties fastClose = new ApplicationActionTimeoutProperties(
+                Duration.ofSeconds(5), Duration.ofSeconds(5), Duration.ofSeconds(5),
+                Duration.ofSeconds(5), Duration.ofMillis(20));
+        PendingApplicationActions local = new PendingApplicationActions(
+                fastClose, store, action -> CompletableFuture.completedFuture(
+                        PendingApplicationActions.RemoteStatus.running()), retryScheduler, Clock.systemUTC());
+        PendingApplicationAction.Correlation correlation = correlation("tool-close-fail-loud");
+        local.register("execution-close-fail-loud", correlation, PendingApplicationAction.Path.READ_ONLY);
+        local.accepted("execution-close-fail-loud", correlation);
+
+        assertThatThrownBy(local::close)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("audit backlog remains");
+        assertThat(local.completedRetentionCount()).isEqualTo(1);
+    }
+
+    @Test
+    void closeCanResumeAfterFailLoudAndBecomesIdempotentAfterRecovery() {
+        ManualScheduledExecutor retryScheduler = new ManualScheduledExecutor();
+        SwitchableAuditStore store = new SwitchableAuditStore();
+        ApplicationActionTimeoutProperties fastClose = new ApplicationActionTimeoutProperties(
+                Duration.ofSeconds(5), Duration.ofSeconds(5), Duration.ofSeconds(5),
+                Duration.ofSeconds(5), Duration.ofMillis(20));
+        PendingApplicationActions local = new PendingApplicationActions(
+                fastClose, store, action -> CompletableFuture.completedFuture(
+                        PendingApplicationActions.RemoteStatus.running()), retryScheduler, Clock.systemUTC());
+        PendingApplicationAction.Correlation correlation = correlation("tool-close-resume");
+        local.register("execution-close-resume", correlation, PendingApplicationAction.Path.READ_ONLY);
+        local.accepted("execution-close-resume", correlation);
+
+        assertThatThrownBy(local::close)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("audit backlog remains");
+        store.fail.set(false);
+
+        local.close();
+        local.close();
+
+        assertThat(local.completedRetentionCount()).isZero();
+        assertThat(store.terminals).singleElement()
+                .extracting(stored -> stored.terminal().state())
+                .isEqualTo(PendingApplicationAction.State.CANCELED);
     }
 
     @Test
@@ -238,17 +938,16 @@ class PendingApplicationActionsTest {
         AtomicBoolean accepted = new AtomicBoolean();
         Thread progress = new Thread(() -> accepted.set(local.accepted(executionId, correlation)));
         progress.start();
-        Thread.sleep(20);
-        assertThat(progress.isAlive()).isTrue();
+        progress.join(1_000);
+        assertThat(progress.isAlive()).isFalse();
+        assertThat(accepted).isFalse();
 
         releaseInitialSchedule.countDown();
         register.join(1_000);
-        progress.join(1_000);
 
         assertThat(registerFailure.get()).isNull();
         assertThat(register.isAlive()).isFalse();
-        assertThat(progress.isAlive()).isFalse();
-        assertThat(accepted).isTrue();
+        assertThat(local.accepted(executionId, correlation)).isTrue();
         verify(requestedFuture).cancel(false);
         verify(acceptedFuture, never()).cancel(false);
         requestedTimeout.get().run();
@@ -280,24 +979,19 @@ class PendingApplicationActionsTest {
 
         register.start();
         assertThat(scheduling.await(1, TimeUnit.SECONDS)).isTrue();
-        @SuppressWarnings("unchecked")
-        Map<String, Object> pending = (Map<String, Object>) org.springframework.test.util.ReflectionTestUtils
-                .getField(local, "pending");
-        Object entry = pending.get("execution-atomic-listener");
-        Object installedListener = org.springframework.test.util.ReflectionTestUtils
-                .getField(entry, "progressListener");
-        assertThat(installedListener).isNotNull();
-
         AtomicBoolean accepted = new AtomicBoolean();
         Thread desktopProgress = new Thread(() -> accepted.set(local.acceptedAuthorized(
                 "execution-atomic-listener", correlation, connectionContext("ws-atomic-listener"))));
         desktopProgress.start();
-        assertThat(desktopProgress.isAlive()).isTrue();
+        desktopProgress.join(1_000);
+        assertThat(desktopProgress.isAlive()).isFalse();
+        assertThat(accepted).isFalse();
         release.countDown();
         register.join(1_000);
-        desktopProgress.join(1_000);
 
-        assertThat(accepted).isTrue();
+        assertThat(local.acceptedAuthorized(
+                "execution-atomic-listener", correlation,
+                connectionContext("ws-atomic-listener"))).isTrue();
         assertThat(progress).containsExactly(PendingApplicationAction.State.ACCEPTED);
     }
 
@@ -586,6 +1280,28 @@ class PendingApplicationActionsTest {
                 .isEqualTo(PendingApplicationAction.State.COMPLETED);
         assertThat(statusQueries).hasValue(1);
         assertThat(storedTerminal.terminals).hasSize(1);
+    }
+
+    @Test
+    void reconciliationStillRejectsAnInMemoryStoredTerminalWithADifferentConcretePath() throws Exception {
+        RecordingTerminalStore store = new RecordingTerminalStore();
+        PendingApplicationAction.Correlation correlation = correlation("tool-stored-path-mismatch");
+        PendingApplicationAction.ConnectionContext context = connectionContext("ws-stored-path-mismatch");
+        store.recordTerminal(new PendingApplicationAction(
+                "execution-stored-path-mismatch", correlation,
+                PendingApplicationAction.Path.HIGH_RISK, PendingApplicationAction.State.COMPLETED,
+                null, "wrong path terminal", Instant.now(), context), false);
+        PendingApplicationActions local = actions(store, action ->
+                CompletableFuture.completedFuture(PendingApplicationActions.RemoteStatus.terminal(
+                        PendingApplicationAction.State.FAILED)));
+        CompletableFuture<PendingApplicationAction> terminal = local.register(
+                "execution-stored-path-mismatch", correlation,
+                PendingApplicationAction.Path.READ_ONLY, context);
+        local.accepted("execution-stored-path-mismatch", correlation);
+        local.running("execution-stored-path-mismatch", correlation);
+
+        assertThat(terminal.get(1, TimeUnit.SECONDS).state())
+                .isEqualTo(PendingApplicationAction.State.FAILED);
     }
 
     @Test
@@ -975,10 +1691,11 @@ class PendingApplicationActionsTest {
         local.running("execution-stored-progress", correlation);
 
         assertThat(terminal.get(1, TimeUnit.SECONDS).state()).isEqualTo(PendingApplicationAction.State.COMPLETED);
-        assertThat(progress).containsSequence(
-                PendingApplicationAction.State.ACCEPTED,
-                PendingApplicationAction.State.RUNNING,
-                PendingApplicationAction.State.COMPLETED);
+        org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(1))
+                .untilAsserted(() -> assertThat(progress).containsSequence(
+                        PendingApplicationAction.State.ACCEPTED,
+                        PendingApplicationAction.State.RUNNING,
+                        PendingApplicationAction.State.COMPLETED));
     }
 
     @Test
@@ -1115,9 +1832,14 @@ class PendingApplicationActionsTest {
     }
 
     @Test
-    void closeDrainsEveryPendingEntryWhenTerminalAuditFails() throws Exception {
-        PendingApplicationActions local = actions(throwingStore(true, true, false), action ->
-                CompletableFuture.completedFuture(PendingApplicationActions.RemoteStatus.running()));
+    void closeCompletesEveryPendingEntryAndFailsLoudlyWhenTerminalAuditFails() throws Exception {
+        ApplicationActionTimeoutProperties fastClose = new ApplicationActionTimeoutProperties(
+                Duration.ofSeconds(5), Duration.ofSeconds(5), Duration.ofSeconds(5),
+                Duration.ofSeconds(5), Duration.ofMillis(20));
+        PendingApplicationActions local = new PendingApplicationActions(
+                fastClose, throwingStore(true, true, false), action ->
+                CompletableFuture.completedFuture(PendingApplicationActions.RemoteStatus.running()),
+                scheduler, Clock.systemUTC());
         PendingApplicationAction.Correlation firstCorrelation = correlation("tool-close-failure-1");
         PendingApplicationAction.Correlation secondCorrelation = correlation("tool-close-failure-2");
         CompletableFuture<PendingApplicationAction> first = local.register(
@@ -1125,7 +1847,9 @@ class PendingApplicationActionsTest {
         CompletableFuture<PendingApplicationAction> second = local.register(
                 "execution-close-failure-2", secondCorrelation, PendingApplicationAction.Path.READ_ONLY);
 
-        local.close();
+        assertThatThrownBy(local::close)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("audit backlog remains");
 
         assertThat(first.get(1, TimeUnit.SECONDS).state())
                 .isEqualTo(PendingApplicationAction.State.CANCELED);
@@ -1766,6 +2490,30 @@ class PendingApplicationActionsTest {
                 .untilAsserted(() -> assertThat(store.reconciliationQueue).containsExactly(expected));
     }
 
+    private static String registerFailureAfter(
+            CountDownLatch start,
+            PendingApplicationActions actions,
+            String suffix) throws InterruptedException {
+        start.await();
+        try {
+            actions.register("execution-capacity-" + suffix, correlation("tool-capacity-" + suffix),
+                    PendingApplicationAction.Path.READ_ONLY, connectionContext("ws-capacity-" + suffix));
+            return "registered";
+        } catch (IllegalStateException failure) {
+            return failure.getMessage();
+        }
+    }
+
+    private static void assertCapacityRejected(PendingApplicationActions actions, String suffix) {
+        assertThatThrownBy(() -> actions.register(
+                "execution-capacity-rejected-" + suffix,
+                correlation("tool-capacity-rejected-" + suffix),
+                PendingApplicationAction.Path.READ_ONLY,
+                connectionContext("ws-capacity-rejected-" + suffix)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("audit backlog capacity");
+    }
+
     @FunctionalInterface
     private interface ProgressTransition {
         boolean apply(
@@ -1775,8 +2523,8 @@ class PendingApplicationActionsTest {
     }
 
     private static class RecordingTerminalStore implements ApplicationActionTerminalStore {
-        private final List<StoredTerminal> terminals = new CopyOnWriteArrayList<>();
-        private final List<PendingApplicationAction> reconciliationQueue = new CopyOnWriteArrayList<>();
+        protected final List<StoredTerminal> terminals = new CopyOnWriteArrayList<>();
+        protected final List<PendingApplicationAction> reconciliationQueue = new CopyOnWriteArrayList<>();
 
         @Override
         public synchronized Optional<PendingApplicationAction> findTerminal(
@@ -1802,5 +2550,418 @@ class PendingApplicationActionsTest {
     }
 
     private record StoredTerminal(PendingApplicationAction terminal, boolean lateResult) {
+    }
+
+    private static final class GapDetectingTerminalStore extends RecordingTerminalStore {
+        private final CountDownLatch lookupEntered = new CountDownLatch(1);
+        private final CountDownLatch releaseLookup = new CountDownLatch(1);
+
+        @Override
+        public synchronized Optional<PendingApplicationAction> findTerminal(
+                String executionId,
+                PendingApplicationAction.Correlation correlation) {
+            lookupEntered.countDown();
+            BlockingAuditStore.await(releaseLookup);
+            return super.findTerminal(executionId, correlation);
+        }
+    }
+
+    private static final class BlockingRemoveMap extends ConcurrentHashMap<String, Object> {
+        private final String blockedExecutionId;
+        private final CountDownLatch removed = new CountDownLatch(1);
+        private final CountDownLatch releaseRemove = new CountDownLatch(1);
+
+        private BlockingRemoveMap(String blockedExecutionId) {
+            this.blockedExecutionId = blockedExecutionId;
+        }
+
+        @Override
+        public boolean remove(Object key, Object value) {
+            boolean result = super.remove(key, value);
+            if (result && blockedExecutionId.equals(key)) {
+                removed.countDown();
+                BlockingAuditStore.await(releaseRemove);
+            }
+            return result;
+        }
+    }
+
+    private static final class BlockingAuditStore extends RecordingTerminalStore {
+        private final List<String> events = new CopyOnWriteArrayList<>();
+        private final CountDownLatch acceptedEntered = new CountDownLatch(1);
+        private final CountDownLatch releaseAccepted = new CountDownLatch(1);
+        private final CountDownLatch terminalEntered = new CountDownLatch(1);
+        private final CountDownLatch releaseTerminal = new CountDownLatch(1);
+        private final AtomicBoolean blockNextTerminal = new AtomicBoolean();
+        private final AtomicBoolean blockAccepted = new AtomicBoolean();
+        private volatile String currentState;
+
+        @Override
+        public void recordRegistered(PendingApplicationAction requested) {
+            currentState = "REQUESTED";
+            events.add("REQUESTED");
+        }
+
+        @Override
+        public void recordTransition(
+                PendingApplicationAction previous,
+                PendingApplicationAction current,
+                boolean lateResult) {
+            if (current.state() == PendingApplicationAction.State.ACCEPTED
+                    && blockAccepted.compareAndSet(true, false)) {
+                acceptedEntered.countDown();
+                await(releaseAccepted);
+            }
+            if (current.isTerminal() && !lateResult && blockNextTerminal.compareAndSet(true, false)) {
+                terminalEntered.countDown();
+                await(releaseTerminal);
+            }
+            if (!lateResult) {
+                currentState = dbState(current.state());
+            }
+            events.add(dbState(current.state()) + (lateResult ? ":late" : ""));
+            if (current.isTerminal()) {
+                super.recordTerminal(current, lateResult);
+            }
+        }
+
+        @Override
+        public void recordTerminal(PendingApplicationAction terminal, boolean lateResult) {
+            recordTransition(null, terminal, lateResult);
+        }
+
+        private static void await(CountDownLatch latch) {
+            try {
+                latch.await();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("audit store interrupted", interrupted);
+            }
+        }
+    }
+
+    private static final class FailingAuditStore extends RecordingTerminalStore {
+        private final int acceptedFailures;
+        private final AtomicInteger recordAttempts = new AtomicInteger();
+        private final List<String> events = new CopyOnWriteArrayList<>();
+        private volatile String currentState;
+
+        private FailingAuditStore(int acceptedFailures) {
+            this.acceptedFailures = acceptedFailures;
+        }
+
+        @Override
+        public void recordRegistered(PendingApplicationAction requested) {
+            currentState = "REQUESTED";
+            events.add("REQUESTED");
+        }
+
+        @Override
+        public void recordTransition(
+                PendingApplicationAction previous,
+                PendingApplicationAction current,
+                boolean lateResult) {
+            if (current.state() == PendingApplicationAction.State.ACCEPTED
+                    && recordAttempts.incrementAndGet() <= acceptedFailures) {
+                throw new IllegalStateException("transient audit failure");
+            }
+            if (!lateResult) {
+                currentState = dbState(current.state());
+            }
+            events.add(dbState(current.state()) + (lateResult ? ":late" : ""));
+            if (current.isTerminal()) {
+                super.recordTerminal(current, lateResult);
+            }
+        }
+
+        @Override
+        public void recordTerminal(PendingApplicationAction terminal, boolean lateResult) {
+            recordTransition(null, terminal, lateResult);
+        }
+    }
+
+    private static final class SwitchableAuditStore extends RecordingTerminalStore {
+        private final AtomicBoolean fail = new AtomicBoolean(true);
+
+        @Override
+        public void recordRegistered(PendingApplicationAction requested) {
+            // Registration is the hard durable prerequisite and succeeds while transition audit is unavailable.
+        }
+
+        @Override
+        public void recordTransition(
+                PendingApplicationAction previous,
+                PendingApplicationAction current,
+                boolean lateResult) {
+            if (fail.get()) {
+                throw new IllegalStateException("audit unavailable");
+            }
+            if (current.isTerminal()) {
+                super.recordTerminal(current, lateResult);
+            }
+        }
+
+        @Override
+        public void recordTerminal(PendingApplicationAction terminal, boolean lateResult) {
+            recordTransition(null, terminal, lateResult);
+        }
+    }
+
+    private static final class SwitchableEventAuditStore extends RecordingTerminalStore {
+        private final AtomicBoolean fail = new AtomicBoolean();
+        private final List<String> events = new CopyOnWriteArrayList<>();
+
+        @Override
+        public void recordRegistered(PendingApplicationAction requested) {
+            events.add("REQUESTED");
+        }
+
+        @Override
+        public void recordTransition(
+                PendingApplicationAction previous,
+                PendingApplicationAction current,
+                boolean lateResult) {
+            if (fail.get()) {
+                throw new IllegalStateException("audit unavailable");
+            }
+            events.add(dbState(current.state()) + (lateResult ? ":late" : ""));
+        }
+
+        @Override
+        public void recordTerminal(PendingApplicationAction terminal, boolean lateResult) {
+            recordTransition(null, terminal, lateResult);
+        }
+    }
+
+    private static final class BlockingThenFailingAuditStore extends RecordingTerminalStore {
+        private final CountDownLatch entered = new CountDownLatch(1);
+        private final CountDownLatch release = new CountDownLatch(1);
+        private final AtomicBoolean first = new AtomicBoolean(true);
+        private final List<String> events = new CopyOnWriteArrayList<>(List.of("REQUESTED"));
+
+        @Override
+        public void recordRegistered(PendingApplicationAction requested) {
+            // Initial event is represented by the seeded list entry.
+        }
+
+        @Override
+        public void recordTransition(
+                PendingApplicationAction previous,
+                PendingApplicationAction current,
+                boolean lateResult) {
+            if (first.compareAndSet(true, false)) {
+                entered.countDown();
+                BlockingAuditStore.await(release);
+                throw new IllegalStateException("first drainer failed");
+            }
+            events.add(dbState(current.state()));
+        }
+
+        @Override
+        public void recordTerminal(PendingApplicationAction terminal, boolean lateResult) {
+            recordTransition(null, terminal, lateResult);
+        }
+    }
+
+    private static final class HistoricalTerminalStore extends RecordingTerminalStore {
+        private final Map<String, PendingApplicationAction> historical = new ConcurrentHashMap<>();
+        private final AtomicBoolean fail = new AtomicBoolean();
+        private final List<String> lateExecutionIds = new CopyOnWriteArrayList<>();
+        private final AtomicBoolean blockLookup = new AtomicBoolean();
+        private final CountDownLatch lookupEntered = new CountDownLatch(1);
+        private final CountDownLatch releaseLookup = new CountDownLatch(1);
+        private final AtomicInteger lateFailures = new AtomicInteger();
+
+        private void putHistorical(String executionId, PendingApplicationAction.Correlation correlation) {
+            historical.put(executionId, new PendingApplicationAction(
+                    executionId, correlation, PendingApplicationAction.Path.READ_ONLY,
+                    PendingApplicationAction.State.COMPLETED, null, null, Instant.now(), null));
+        }
+
+        @Override
+        public Optional<PendingApplicationAction> findTerminal(
+                String executionId, PendingApplicationAction.Correlation correlation) {
+            if (blockLookup.get()) {
+                lookupEntered.countDown();
+                BlockingAuditStore.await(releaseLookup);
+            }
+            return Optional.ofNullable(historical.get(executionId))
+                    .filter(action -> action.correlation().equals(correlation));
+        }
+
+        @Override
+        public void recordTerminal(PendingApplicationAction terminal, boolean lateResult) {
+            if (fail.get() || lateFailures.getAndUpdate(value -> Math.max(0, value - 1)) > 0) {
+                throw new IllegalStateException("historical late audit unavailable");
+            }
+            if (lateResult) {
+                lateExecutionIds.add(terminal.executionId());
+            }
+        }
+    }
+
+    private static final class RetirementRaceStore extends RecordingTerminalStore {
+        private final CountDownLatch terminalEntered = new CountDownLatch(1);
+        private final CountDownLatch releaseTerminal = new CountDownLatch(1);
+        private final AtomicBoolean firstTerminal = new AtomicBoolean(true);
+        private final AtomicBoolean failLate = new AtomicBoolean();
+
+        @Override
+        public void recordTerminal(PendingApplicationAction terminal, boolean lateResult) {
+            if (!lateResult && firstTerminal.compareAndSet(true, false)) {
+                terminalEntered.countDown();
+                BlockingAuditStore.await(releaseTerminal);
+            }
+            if (lateResult && failLate.get()) {
+                throw new IllegalStateException("late audit unavailable");
+            }
+            super.recordTerminal(terminal, lateResult);
+        }
+    }
+
+    private static final class OneShotThrowingClock extends Clock {
+        private final AtomicBoolean throwNext = new AtomicBoolean(true);
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneId.of("UTC");
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            if (throwNext.compareAndSet(true, false)) {
+                throw new IllegalStateException("clock unavailable");
+            }
+            return Instant.now();
+        }
+    }
+
+    private static final class ArmableThrowingClock extends Clock {
+        private final AtomicBoolean throwNext = new AtomicBoolean();
+
+        private void throwNext() {
+            throwNext.set(true);
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneId.of("UTC");
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            if (throwNext.compareAndSet(true, false)) {
+                throw new IllegalStateException("clock unavailable");
+            }
+            return Instant.now();
+        }
+    }
+
+    private static final class ManualScheduledExecutor extends java.util.concurrent.ScheduledThreadPoolExecutor {
+        private final Queue<ManualScheduledFuture> scheduled = new ConcurrentLinkedQueue<>();
+
+        private ManualScheduledExecutor() {
+            super(0);
+        }
+
+        @Override
+        public ScheduledFuture<?> schedule(Runnable command, long delay, TimeUnit unit) {
+            ManualScheduledFuture future = new ManualScheduledFuture(command, unit.toNanos(delay));
+            scheduled.add(future);
+            return future;
+        }
+
+        private void runNextRetry() {
+            ManualScheduledFuture retry = scheduled.stream()
+                    .filter(task -> !task.isCancelled() && !task.isDone())
+                    .filter(task -> task.delayNanos <= TimeUnit.MILLISECONDS.toNanos(10))
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError("no audit retry scheduled"));
+            retry.run();
+        }
+
+        private void runAllRetries() {
+            for (int index = 0; index < 10; index++) {
+                Optional<ManualScheduledFuture> retry = scheduled.stream()
+                        .filter(task -> !task.isCancelled() && !task.isDone())
+                        .filter(task -> task.delayNanos <= TimeUnit.MILLISECONDS.toNanos(10))
+                        .findFirst();
+                if (retry.isEmpty()) {
+                    return;
+                }
+                retry.orElseThrow().run();
+            }
+            throw new AssertionError("audit retry budget is not bounded");
+        }
+    }
+
+    private static final class ManualScheduledFuture implements ScheduledFuture<Object>, Runnable {
+        private final Runnable command;
+        private final long delayNanos;
+        private volatile boolean cancelled;
+        private volatile boolean done;
+
+        private ManualScheduledFuture(Runnable command, long delayNanos) {
+            this.command = command;
+            this.delayNanos = delayNanos;
+        }
+
+        @Override
+        public void run() {
+            if (!cancelled && !done) {
+                done = true;
+                command.run();
+            }
+        }
+
+        @Override
+        public long getDelay(TimeUnit unit) {
+            return unit.convert(delayNanos, TimeUnit.NANOSECONDS);
+        }
+
+        @Override
+        public int compareTo(java.util.concurrent.Delayed other) {
+            return Long.compare(delayNanos, other.getDelay(TimeUnit.NANOSECONDS));
+        }
+
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            cancelled = true;
+            return true;
+        }
+
+        @Override
+        public boolean isCancelled() {
+            return cancelled;
+        }
+
+        @Override
+        public boolean isDone() {
+            return done || cancelled;
+        }
+
+        @Override
+        public Object get() {
+            return null;
+        }
+
+        @Override
+        public Object get(long timeout, TimeUnit unit) {
+            return null;
+        }
+    }
+
+    private static String dbState(PendingApplicationAction.State state) {
+        return state == PendingApplicationAction.State.RUNNING ? "EXECUTING" : state.name();
     }
 }

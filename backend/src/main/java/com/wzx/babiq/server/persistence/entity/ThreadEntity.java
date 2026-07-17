@@ -68,6 +68,27 @@ public class ThreadEntity {
     @TableField("memory_polluted_at")
     private String memoryPollutedAt;
 
+    @TableField("desktop_instance_id")
+    private String desktopInstanceId;
+
+    @TableField("desktop_session_id")
+    private String desktopSessionId;
+
+    @TableField("auth_session_id")
+    private String authSessionId;
+
+    @TableField("identity_epoch")
+    private Long identityEpoch;
+
+    @TableField("user_id")
+    private String userId;
+
+    @TableField("tenant_id")
+    private String tenantId;
+
+    @TableField("platform_id")
+    private String platformId;
+
     /** 创建时间，使用 Instant 字符串保存，避免 SQLite 时区转换歧义。 */
     @TableField("created_at")
     private String createdAt;

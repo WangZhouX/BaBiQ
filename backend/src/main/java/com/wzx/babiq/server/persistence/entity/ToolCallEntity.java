@@ -54,6 +54,18 @@ public class ToolCallEntity {
     @TableField("delegation_id")
     private String delegationId;
 
+    /** application_action 生成的 executionId；其他工具调用为空。 */
+    @TableField("execution_id")
+    private String executionId;
+
+    @TableField("desktop_instance_id") private String desktopInstanceId;
+    @TableField("desktop_session_id") private String desktopSessionId;
+    @TableField("auth_session_id") private String authSessionId;
+    @TableField("identity_epoch") private Long identityEpoch;
+    @TableField("user_id") private String userId;
+    @TableField("tenant_id") private String tenantId;
+    @TableField("platform_id") private String platformId;
+
     /** 工具原始参数 JSON；读取和展示时都必须视为不可信数据。 */
     @TableField("args_json")
     private String argsJson;

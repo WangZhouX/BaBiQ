@@ -5,6 +5,7 @@ import com.wzx.babiq.server.api.JsonRpcMethodHandler;
 import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
 import com.wzx.babiq.server.api.error.JsonRpcException;
 import com.wzx.babiq.server.observability.RunRecordService;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScopeService;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.WebSocketSession;
 
@@ -19,6 +20,7 @@ public class RunTurnsListHandler implements JsonRpcMethodHandler {
 
     /** 运行记录服务。 */
     private final RunRecordService runRecordService;
+    private final BusinessIdentityScopeService scopes;
 
     /**
      * 创建 run/turns/list handler。
@@ -26,7 +28,13 @@ public class RunTurnsListHandler implements JsonRpcMethodHandler {
      * @param runRecordService 运行记录服务
      */
     public RunTurnsListHandler(RunRecordService runRecordService) {
+        this(runRecordService, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public RunTurnsListHandler(RunRecordService runRecordService, BusinessIdentityScopeService scopes) {
         this.runRecordService = runRecordService;
+        this.scopes = scopes;
     }
 
     @Override
@@ -41,7 +49,12 @@ public class RunTurnsListHandler implements JsonRpcMethodHandler {
                 ? 20
                 : Math.max(1, Math.min(params.get("limit").asInt(20), 100));
         String cursor = optionalText(params, "cursor");
-        return runRecordService.listTurns(threadId, limit, cursor);
+        try {
+            return scopes == null ? runRecordService.listTurns(threadId, limit, cursor)
+                    : runRecordService.listTurns(threadId, limit, cursor, scopes.resolve(session));
+        } catch (IllegalArgumentException exception) {
+            throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "thread 不存在");
+        }
     }
 
     private static String requiredText(JsonNode params, String fieldName) {

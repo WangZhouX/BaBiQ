@@ -6,6 +6,9 @@ import com.wzx.babiq.server.api.JsonRpcMethodHandler;
 import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
 import com.wzx.babiq.server.api.error.JsonRpcException;
 import com.wzx.babiq.server.application.action.PendingApplicationActions;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScopeService;
+import com.wzx.babiq.server.conversation.TurnStatus;
 import com.wzx.babiq.server.persistence.service.TurnPersistenceService;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.WebSocketSession;
@@ -26,6 +29,7 @@ public class TurnInterruptHandler implements JsonRpcMethodHandler {
     /** 可选 turn 持久化服务，生产环境把主动中断写入 bq_turns。 */
     private final TurnPersistenceService turnPersistenceService;
     private PendingApplicationActions pendingApplicationActions;
+    private final BusinessIdentityScopeService scopes;
 
     /**
      * 创建 turn/interrupt handler。
@@ -33,7 +37,7 @@ public class TurnInterruptHandler implements JsonRpcMethodHandler {
      * @param turnExecutor Agent 异步执行器
      */
     public TurnInterruptHandler(TurnExecutor turnExecutor) {
-        this(turnExecutor, null);
+        this(turnExecutor, null, null, null);
     }
 
     /**
@@ -42,18 +46,34 @@ public class TurnInterruptHandler implements JsonRpcMethodHandler {
      * @param turnExecutor Agent 异步执行器
      * @param turnPersistenceService turn 持久化服务；为空时只取消后台任务
      */
-    @org.springframework.beans.factory.annotation.Autowired
     public TurnInterruptHandler(TurnExecutor turnExecutor, TurnPersistenceService turnPersistenceService) {
-        this.turnExecutor = turnExecutor;
-        this.turnPersistenceService = turnPersistenceService;
+        this(turnExecutor, turnPersistenceService, null, null);
     }
 
     public TurnInterruptHandler(
             TurnExecutor turnExecutor,
             TurnPersistenceService turnPersistenceService,
             PendingApplicationActions pendingApplicationActions) {
-        this(turnExecutor, turnPersistenceService);
+        this(turnExecutor, turnPersistenceService, pendingApplicationActions, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public TurnInterruptHandler(
+            TurnExecutor turnExecutor,
+            TurnPersistenceService turnPersistenceService,
+            BusinessIdentityScopeService scopes) {
+        this(turnExecutor, turnPersistenceService, null, scopes);
+    }
+
+    public TurnInterruptHandler(
+            TurnExecutor turnExecutor,
+            TurnPersistenceService turnPersistenceService,
+            PendingApplicationActions pendingApplicationActions,
+            BusinessIdentityScopeService scopes) {
+        this.turnExecutor = turnExecutor;
+        this.turnPersistenceService = turnPersistenceService;
         this.pendingApplicationActions = pendingApplicationActions;
+        this.scopes = scopes;
     }
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
@@ -81,6 +101,18 @@ public class TurnInterruptHandler implements JsonRpcMethodHandler {
     @Override
     public Object handle(JsonNode params, WebSocketSession session) {
         String turnId = requiredText(params, "turnId");
+        BusinessIdentityScope scope = scopes == null ? null : scopes.resolve(session);
+        if (turnPersistenceService != null) {
+            var persisted = scope == null
+                    ? turnPersistenceService.findTurn(turnId)
+                    : turnPersistenceService.findTurn(turnId, scope);
+            if (scope != null && persisted.isEmpty()) {
+                throw unknownTurn(turnId);
+            }
+            if (persisted.map(entity -> TurnStatus.valueOf(entity.getStatus()).isTerminal()).orElse(false)) {
+                throw unknownTurn(turnId);
+            }
+        }
         if (pendingApplicationActions != null) {
             pendingApplicationActions.cancelByTurn(turnId);
         }
@@ -89,9 +121,18 @@ public class TurnInterruptHandler implements JsonRpcMethodHandler {
             throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "turnId 不存在或已结束: " + turnId);
         }
         if (turnPersistenceService != null) {
-            turnPersistenceService.markCanceled(turnId, "INTERRUPTED", "user_interrupted");
+            if (scope == null) {
+                turnPersistenceService.markCanceled(turnId, "INTERRUPTED", "user_interrupted");
+            } else {
+                turnPersistenceService.markCanceled(turnId, "INTERRUPTED", "user_interrupted", scope);
+            }
         }
         return Map.of("accepted", true);
+    }
+
+    private static JsonRpcException unknownTurn(String turnId) {
+        return new JsonRpcException(
+                JsonRpcErrorCode.INVALID_PARAMS, "turnId does not exist or has ended: " + turnId);
     }
 
     private String requiredText(JsonNode params, String fieldName) {

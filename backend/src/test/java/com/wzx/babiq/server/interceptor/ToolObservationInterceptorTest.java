@@ -52,10 +52,33 @@ class ToolObservationInterceptorTest {
         ArgumentCaptor<String> persistedArgs = ArgumentCaptor.forClass(String.class);
         verify(persistence).recordStarted(
                 eq("call_safe"), eq("thr_safe"), eq("turn_safe"), eq("application_action"),
-                persistedArgs.capture(), any(), any(), any(), any());
+                persistedArgs.capture(), any(), any(), any(), any(), any());
         assertThat(persistedArgs.getValue())
                 .contains("framework.demo", "actionVersion", "page-1", "contextRevision")
                 .doesNotContain("pw-secret", "330102199001011234", "13800138000", "password", "idCard", "mobile");
+    }
+
+    @Test
+    void persistenceUsesFrozenTurnScopeEvenAfterLiveIdentityChanges() {
+        ToolCallPersistenceService persistence = mock(ToolCallPersistenceService.class);
+        ToolObservationInterceptor interceptor = new ToolObservationInterceptor(new BaBiQMetrics(), persistence);
+        var frozenScope = com.wzx.babiq.server.application.scope.BusinessIdentityScope.scoped(
+                "desktop", "session-a", "auth-a", 1, "user-a", "tenant-a", "platform");
+        TurnObservationContext context = TurnObservationContext.start(
+                "thr_scope", "turn_scope", "provider", "model", frozenScope);
+        ToolCallRequest request = ToolCallRequest.builder()
+                .toolName("application_action")
+                .toolCallId("call_scope")
+                .arguments("{\"actionId\":\"demo.read\",\"input\":{}}")
+                .context(Map.of(TurnObservationContext.METADATA_KEY, context))
+                .build();
+
+        interceptor.interceptToolCall(request,
+                ignored -> ToolCallResponse.of("call_scope", "application_action", "ok"));
+
+        verify(persistence).recordStarted(
+                eq("call_scope"), eq("thr_scope"), eq("turn_scope"), eq("application_action"),
+                anyString(), any(), any(), any(), eq(frozenScope), any());
     }
 
     @Test
@@ -257,7 +280,7 @@ class ToolObservationInterceptorTest {
         ArgumentCaptor<String> persistedArgs = ArgumentCaptor.forClass(String.class);
         verify(persistence).recordStarted(
                 eq("call_persist"), eq("thr_persist"), eq("turn_persist"), eq(toolName),
-                persistedArgs.capture(), any(), any(), any(), any());
+                persistedArgs.capture(), any(), any(), any(), any(), any());
         return persistedArgs.getValue();
     }
 }

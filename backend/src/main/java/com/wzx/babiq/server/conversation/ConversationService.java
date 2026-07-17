@@ -104,7 +104,7 @@ public class ConversationService {
     public Optional<Thread> findThread(String threadId) {
         Thread existing = threads.get(threadId);
         if (existing != null) {
-            return Optional.of(existing);
+            return existing.businessIdentityScope().scoped() ? Optional.empty() : Optional.of(existing);
         }
         if (conversationRepository == null) {
             return Optional.empty();
@@ -114,9 +114,27 @@ public class ConversationService {
                     Thread restored = new Thread(
                             entity.getThreadId(),
                             entity.getCwd(),
-                            java.time.Instant.parse(entity.getCreatedAt()));
+                            java.time.Instant.parse(entity.getCreatedAt()), scope(entity));
                     threads.put(restored.id(), restored);
                     return restored;
+                });
+    }
+
+    public Optional<Thread> findThread(String threadId, BusinessIdentityScope scope) {
+        Thread existing = threads.get(threadId);
+        if (existing != null) {
+            return existing.businessIdentityScope().equals(scope) ? Optional.of(existing) : Optional.empty();
+        }
+        if (conversationRepository == null) {
+            return Optional.empty();
+        }
+        return conversationRepository.findThread(threadId, scope)
+                .map(entity -> {
+                    Thread restored = new Thread(
+                            entity.getThreadId(), entity.getCwd(), java.time.Instant.parse(entity.getCreatedAt()), scope);
+                    threads.putIfAbsent(restored.id(), restored);
+                    Thread canonical = threads.get(restored.id());
+                    return canonical.businessIdentityScope().equals(scope) ? canonical : null;
                 });
     }
 
@@ -133,6 +151,17 @@ public class ConversationService {
             throw new IllegalArgumentException("threadId=" + threadId + " 不存在,无法创建 Turn");
         }
 
+        String turnId = newId("turn_");
+        Turn turn = new Turn(turnId, threadId, thread.businessIdentityScope());
+        turns.put(turnId, turn);
+        return turn;
+    }
+
+    public Turn startTurn(String threadId, BusinessIdentityScope scope) {
+        Thread thread = findThread(threadId, scope).orElse(null);
+        if (thread == null) {
+            throw new IllegalArgumentException("threadId=" + threadId + " 不存在,无法创建 Turn");
+        }
         String turnId = newId("turn_");
         Turn turn = new Turn(turnId, threadId, thread.businessIdentityScope());
         turns.put(turnId, turn);
@@ -170,7 +199,8 @@ public class ConversationService {
                 model,
                 sandboxMode,
                 approvalPolicy,
-                turn.createdAt()));
+                turn.createdAt(),
+                turn.businessIdentityScope()));
     }
 
     /**
@@ -205,7 +235,32 @@ public class ConversationService {
      * @return 找到时返回 Turn,否则 Optional.empty
      */
     public Optional<Turn> findTurn(String turnId) {
-        return Optional.ofNullable(turns.get(turnId));
+        Turn turn = turns.get(turnId);
+        if (turn != null) return turn.businessIdentityScope().scoped() ? Optional.empty() : Optional.of(turn);
+        if (turnPersistenceService == null) return Optional.empty();
+        return turnPersistenceService.findTurn(turnId)
+                .map(entity -> restoreTurn(entity, BusinessIdentityScope.UNSCOPED));
+    }
+
+    public Optional<Turn> findTurn(String turnId, BusinessIdentityScope scope) {
+        Turn turn = turns.get(turnId);
+        if (turn != null) return turn.businessIdentityScope().equals(scope) ? Optional.of(turn) : Optional.empty();
+        if (turnPersistenceService == null) return Optional.empty();
+        return turnPersistenceService.findTurn(turnId, scope)
+                .map(entity -> restoreTurn(entity, scope));
+    }
+
+    private Turn restoreTurn(
+            com.wzx.babiq.server.persistence.entity.TurnEntity entity,
+            BusinessIdentityScope scope) {
+        Turn restored = Turn.restore(
+                entity.getTurnId(), entity.getThreadId(), scope,
+                TurnStatus.valueOf(entity.getStatus()),
+                entity.getStartedAt() == null ? null : java.time.Instant.parse(entity.getStartedAt()),
+                entity.getCompletedAt() == null ? null : java.time.Instant.parse(entity.getCompletedAt()),
+                entity.getFailureReason());
+        turns.putIfAbsent(restored.id(), restored);
+        return turns.get(restored.id());
     }
 
     /**
@@ -216,7 +271,13 @@ public class ConversationService {
      */
     public boolean hasActiveTurn(String threadId) {
         return turns.values().stream()
-                .anyMatch(turn -> threadId.equals(turn.threadId()) && !turn.status().isTerminal());
+                .anyMatch(turn -> threadId.equals(turn.threadId())
+                        && !turn.businessIdentityScope().scoped() && !turn.status().isTerminal());
+    }
+
+    public boolean hasActiveTurn(String threadId, BusinessIdentityScope scope) {
+        return turns.values().stream().anyMatch(turn -> threadId.equals(turn.threadId())
+                && turn.businessIdentityScope().equals(scope) && !turn.status().isTerminal());
     }
 
     /**
@@ -326,7 +387,15 @@ public class ConversationService {
                 provider == null ? null : provider.model(),
                 agentLoopProperties == null ? null : agentLoopProperties.sandboxMode().name(),
                 agentLoopProperties == null ? null : agentLoopProperties.approvalPolicy().name(),
-                thread.createdAt());
+                thread.createdAt(),
+                thread.businessIdentityScope());
+    }
+
+    private static BusinessIdentityScope scope(com.wzx.babiq.server.persistence.entity.ThreadEntity entity) {
+        if (entity.getDesktopInstanceId() == null) return BusinessIdentityScope.UNSCOPED;
+        return BusinessIdentityScope.scoped(entity.getDesktopInstanceId(), entity.getDesktopSessionId(),
+                entity.getAuthSessionId(), entity.getIdentityEpoch(), entity.getUserId(),
+                entity.getTenantId(), entity.getPlatformId());
     }
 
     private String defaultTitle(String cwd) {

@@ -81,7 +81,7 @@ class ApplicationActionToolAtomicityTest {
         resume.countDown();
 
         assertThat(call.get(5, TimeUnit.SECONDS).errorCode()).isEqualTo("auth_expired");
-        verify(pending, never()).register(any(), any(), any(), any(), any());
+        verify(pending, never()).register(any(), any(), any(), any(), any(), any());
         verify(protocol, never()).sendActionRequest(any(), any());
     }
 
@@ -94,7 +94,7 @@ class ApplicationActionToolAtomicityTest {
         BusinessDesktopConnectionRegistry connections = mock(BusinessDesktopConnectionRegistry.class);
         when(connections.findByDesktopSessionId("desktop-session-1")).thenReturn(Optional.of(connection));
         PendingApplicationActions pending = mock(PendingApplicationActions.class);
-        when(pending.register(eq("execution-fixed"), any(), any(), any(), any()))
+        when(pending.register(eq("execution-fixed"), any(), any(), any(), any(), any()))
                 .thenReturn(CompletableFuture.completedFuture(terminalA()));
         ApplicationActionProtocolHandler protocol = mock(ApplicationActionProtocolHandler.class);
         when(protocol.sendActionRequest(any(), any())).thenReturn(CompletableFuture.completedFuture(null));
@@ -116,7 +116,12 @@ class ApplicationActionToolAtomicityTest {
         ApplicationActionToolResult result = call.get(5, TimeUnit.SECONDS);
         switchToB.get(5, TimeUnit.SECONDS);
         assertThat(result.status()).isEqualTo("completed");
-        verify(pending).register(eq("execution-fixed"), any(), any(), any(), any());
+        var metadata = org.mockito.ArgumentCaptor.forClass(
+                PendingApplicationActions.RegistrationMetadata.class);
+        verify(pending).register(eq("execution-fixed"), any(), any(), any(), metadata.capture(), any());
+        assertThat(metadata.getValue().actionId()).isEqualTo("a.action");
+        assertThat(metadata.getValue().actionVersion()).isEqualTo(1);
+        assertThat(metadata.getValue().requestFingerprint()).matches("sha256:[0-9a-f]{64}");
         var payload = org.mockito.ArgumentCaptor.forClass(JsonNode.class);
         verify(protocol).sendActionRequest(any(), payload.capture());
         assertThat(payload.getValue().path("actionId").asText()).isEqualTo("a.action");

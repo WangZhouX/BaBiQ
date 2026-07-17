@@ -102,6 +102,14 @@ public class ContextSnapshotEntity {
     @TableField("input_preview")
     private String inputPreview;
 
+    @TableField("desktop_instance_id") private String desktopInstanceId;
+    @TableField("desktop_session_id") private String desktopSessionId;
+    @TableField("auth_session_id") private String authSessionId;
+    @TableField("identity_epoch") private Long identityEpoch;
+    @TableField("user_id") private String userId;
+    @TableField("tenant_id") private String tenantId;
+    @TableField("platform_id") private String platformId;
+
     /** 快照创建时间，ISO-8601 文本。 */
     @TableField("created_at")
     private String createdAt;

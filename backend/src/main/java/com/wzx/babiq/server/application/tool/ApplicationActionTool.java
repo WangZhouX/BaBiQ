@@ -15,6 +15,7 @@ import com.wzx.babiq.server.conversation.ItemEmitter;
 import com.wzx.babiq.server.conversation.items.ApplicationActionItem;
 import com.wzx.babiq.server.interceptor.BaBiQSandboxInterceptor;
 import com.wzx.babiq.server.memory.redaction.MemorySecretRedactor;
+import com.wzx.babiq.server.persistence.service.ToolCallPersistenceService;
 import com.wzx.babiq.server.tool.Tool;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.ToolParam;
@@ -24,8 +25,12 @@ import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
@@ -50,6 +55,7 @@ public final class ApplicationActionTool implements Tool {
     private final LongSupplier nanoTime;
     private final MemorySecretRedactor secretRedactor;
     private final ApplicationActionSafeSummary safeSummary;
+    private final ToolCallPersistenceService toolCalls;
 
     @Autowired
     public ApplicationActionTool(
@@ -58,9 +64,10 @@ public final class ApplicationActionTool implements Tool {
             ApplicationCatalogRegistry catalogs,
             ApplicationPageContextRegistry contexts,
             PendingApplicationActions pending,
-            ApplicationActionProtocolHandler protocol) {
+            ApplicationActionProtocolHandler protocol,
+            ToolCallPersistenceService toolCalls) {
         this(json, scopes, catalogs, contexts, pending, protocol,
-                () -> "execution-" + UUID.randomUUID(), System::nanoTime, new MemorySecretRedactor());
+                () -> "execution-" + UUID.randomUUID(), System::nanoTime, new MemorySecretRedactor(), toolCalls);
     }
 
     ApplicationActionTool(
@@ -73,7 +80,7 @@ public final class ApplicationActionTool implements Tool {
             Supplier<String> executionIds,
             LongSupplier nanoTime) {
         this(json, scopes, catalogs, contexts, pending, protocol, executionIds, nanoTime,
-                new MemorySecretRedactor());
+                new MemorySecretRedactor(), null);
     }
 
     ApplicationActionTool(
@@ -86,6 +93,20 @@ public final class ApplicationActionTool implements Tool {
             Supplier<String> executionIds,
             LongSupplier nanoTime,
             MemorySecretRedactor secretRedactor) {
+        this(json, scopes, catalogs, contexts, pending, protocol, executionIds, nanoTime, secretRedactor, null);
+    }
+
+    ApplicationActionTool(
+            ObjectMapper json,
+            BusinessIdentityScopeService scopes,
+            ApplicationCatalogRegistry catalogs,
+            ApplicationPageContextRegistry contexts,
+            PendingApplicationActions pending,
+            ApplicationActionProtocolHandler protocol,
+            Supplier<String> executionIds,
+            LongSupplier nanoTime,
+            MemorySecretRedactor secretRedactor,
+            ToolCallPersistenceService toolCalls) {
         this.json = json;
         this.scopes = scopes;
         this.catalogs = catalogs;
@@ -96,6 +117,7 @@ public final class ApplicationActionTool implements Tool {
         this.nanoTime = nanoTime;
         this.secretRedactor = secretRedactor;
         this.safeSummary = new ApplicationActionSafeSummary(json, secretRedactor, SAFE_SUMMARY_LIMIT);
+        this.toolCalls = toolCalls;
     }
 
     @Override
@@ -184,8 +206,21 @@ public final class ApplicationActionTool implements Tool {
             long started = nanoTime.getAsLong();
             DeferredProgressListener<PendingApplicationAction> progress = new DeferredProgressListener<>(snapshot -> emitUpdated(
                     emitter, progressItem(itemId, actionId, descriptor, snapshot, elapsed(started))));
+            String requestFingerprint = requestFingerprint(
+                    actionId, actionVersion, input, pageId, contextRevision);
             CompletableFuture<PendingApplicationAction> terminal = pending.register(
-                    executionId, correlation, path, connectionContext, progress::accept);
+                    executionId, correlation, path, connectionContext,
+                    new PendingApplicationActions.RegistrationMetadata(
+                            actionId, actionVersion, requestFingerprint),
+                    progress::accept);
+            if (toolCalls != null) {
+                try {
+                    toolCalls.bindExecutionId(invocation.toolCallId(), invocation.businessIdentityScope(), executionId);
+                } catch (RuntimeException bindingFailure) {
+                    pending.cancel(executionId, correlation, "tool call execution binding failed");
+                    throw bindingFailure;
+                }
+            }
             PendingApplicationAction requestedAction = new PendingApplicationAction(
                     executionId, correlation, path, PendingApplicationAction.State.REQUESTED,
                     null, null, Instant.now(), connectionContext);
@@ -199,7 +234,7 @@ public final class ApplicationActionTool implements Tool {
         } catch (ActionValidation validation) {
             return ActionPreparation.error(validation.errorCode, validation.getMessage());
         } catch (RuntimeException registrationFailure) {
-            return ActionPreparation.error("remote_request_failed", "desktop action request failed");
+            return ActionPreparation.error("local_persistence_failed", "local action registration failed");
         }
     }
 
@@ -302,6 +337,44 @@ public final class ApplicationActionTool implements Tool {
                 .put("pageId", pageId)
                 .put("contextRevision", revision);
         return payload;
+    }
+
+    /** 对已验证的动作边界做稳定摘要；原始输入永不写入动作审计表。 */
+    private String requestFingerprint(
+            String actionId,
+            int actionVersion,
+            JsonNode input,
+            String pageId,
+            long contextRevision) {
+        ObjectNode material = json.createObjectNode()
+                .put("actionId", actionId)
+                .put("actionVersion", actionVersion)
+                .put("contextRevision", contextRevision);
+        material.set("input", canonicalize(input));
+        material.put("pageId", pageId);
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(material.toString().getBytes(StandardCharsets.UTF_8));
+            return "sha256:" + HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
+    }
+
+    private JsonNode canonicalize(JsonNode value) {
+        if (value.isObject()) {
+            ObjectNode result = json.createObjectNode();
+            ArrayList<String> fields = new ArrayList<>();
+            value.fieldNames().forEachRemaining(fields::add);
+            fields.stream().sorted().forEach(field -> result.set(field, canonicalize(value.get(field))));
+            return result;
+        }
+        if (value.isArray()) {
+            var result = json.createArrayNode();
+            value.forEach(element -> result.add(canonicalize(element)));
+            return result;
+        }
+        return value.deepCopy();
     }
 
     private PendingApplicationAction.ConnectionContext connectionContext(

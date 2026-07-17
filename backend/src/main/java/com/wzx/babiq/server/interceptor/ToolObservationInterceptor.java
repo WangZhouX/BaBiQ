@@ -134,6 +134,7 @@ public class ToolObservationInterceptor extends ToolInterceptor {
                     agentName(request),
                     parentAgentName(request),
                     delegationId(request),
+                    context.businessIdentityScope(),
                     Instant.now());
         } catch (RuntimeException exception) {
             // 运行记录属于观测增强，不能反向影响工具执行；例如旧测试或内存 turn 没有先落库时会触发外键失败。

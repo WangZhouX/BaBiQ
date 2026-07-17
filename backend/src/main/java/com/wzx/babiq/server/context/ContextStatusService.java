@@ -10,6 +10,7 @@ import com.wzx.babiq.server.context.repository.ContextSnapshotRepository;
 import com.wzx.babiq.server.context.repository.ContextWindowRecord;
 import com.wzx.babiq.server.context.repository.ContextWindowRepository;
 import com.wzx.babiq.server.context.repository.ContextCompactionRepository;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -108,6 +109,22 @@ public class ContextStatusService {
                 lastCompactionStatus(threadId));
     }
 
+    public ContextStatusResult status(String threadId, BusinessIdentityScope scope) {
+        Optional<ContextWindowRecord> window = windowRepository.findByThreadId(threadId, scope);
+        if (window.isEmpty()) {
+            throw new IllegalArgumentException("context not found");
+        }
+        ContextWindowRecord record = window.get();
+        Optional<ContextSnapshotRecord> snapshot = Optional.empty();
+        if (record.lastSnapshotId() != null && !record.lastSnapshotId().isBlank()) {
+            snapshot = snapshotRepository.findBySnapshotId(record.lastSnapshotId(), scope);
+        }
+        if (snapshot.isEmpty()) {
+            snapshot = snapshotRepository.findLatestByThreadId(threadId, scope);
+        }
+        return statusResult(record, snapshot, false);
+    }
+
     private long compactionCount(String threadId) {
         return compactionRepository == null ? 0 : compactionRepository.countByThreadId(threadId);
     }
@@ -131,6 +148,10 @@ public class ContextStatusService {
         return snapshotRepository.findBySnapshotId(snapshotId).map(this::toDto);
     }
 
+    public Optional<ContextSnapshotDto> snapshot(String snapshotId, BusinessIdentityScope scope) {
+        return snapshotRepository.findBySnapshotId(snapshotId, scope).map(this::toDto);
+    }
+
     /**
      * 查询某个 turn 最近上下文快照详情，运行记录面板使用。
      *
@@ -139,6 +160,10 @@ public class ContextStatusService {
      */
     public Optional<ContextSnapshotDto> latestForTurn(String turnId) {
         return snapshotRepository.findLatestByTurnId(turnId).map(this::toDto);
+    }
+
+    public Optional<ContextSnapshotDto> latestForTurn(String turnId, BusinessIdentityScope scope) {
+        return snapshotRepository.findLatestByTurnId(turnId, scope).map(this::toDto);
     }
 
     private ContextSnapshotDto toDto(ContextSnapshotRecord record) {
@@ -214,5 +239,27 @@ public class ContextStatusService {
             return 0.0d;
         }
         return Math.min(1.0d, Math.max(0.0d, tokens / (double) modelContextWindow));
+    }
+
+    private ContextStatusResult statusResult(
+            ContextWindowRecord record, Optional<ContextSnapshotRecord> snapshot) {
+        return statusResult(record, snapshot, true);
+    }
+
+    private ContextStatusResult statusResult(
+            ContextWindowRecord record, Optional<ContextSnapshotRecord> snapshot, boolean includeCompaction) {
+        int estimated = snapshot.map(ContextSnapshotRecord::estimatedTokens).orElse(0);
+        Long actual = snapshot.map(ContextSnapshotRecord::actualPromptTokens).orElse(null);
+        double ratio = usageRatio(record.modelContextWindow(), actual == null ? estimated : actual);
+        String status = record.autoCompactThreshold() > 0
+                && (actual == null ? estimated : actual) >= record.autoCompactThreshold()
+                ? "over_threshold" : "ok";
+        return new ContextStatusResult(
+                record.threadId(), record.windowOrdinal(), record.modelContextWindow(),
+                record.autoCompactThreshold(),
+                snapshot.map(ContextSnapshotRecord::snapshotId).orElse(record.lastSnapshotId()),
+                estimated, actual, ratio, status, record.activeSummaryId(),
+                includeCompaction ? compactionCount(record.threadId()) : 0,
+                includeCompaction ? lastCompactionStatus(record.threadId()) : null);
     }
 }

@@ -5,6 +5,7 @@ import com.wzx.babiq.server.api.JsonRpcMethodHandler;
 import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
 import com.wzx.babiq.server.api.error.JsonRpcException;
 import com.wzx.babiq.server.conversation.ConversationApplicationService;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScopeService;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.WebSocketSession;
 
@@ -18,6 +19,7 @@ public class ThreadLoadHandler implements JsonRpcMethodHandler {
 
     /** 会话历史应用服务，负责从 SQLite 读取 thread 和 item。 */
     private final ConversationApplicationService conversationApplicationService;
+    private final BusinessIdentityScopeService scopes;
 
     /**
      * 创建 thread/load handler。
@@ -25,7 +27,14 @@ public class ThreadLoadHandler implements JsonRpcMethodHandler {
      * @param conversationApplicationService 会话历史应用服务
      */
     public ThreadLoadHandler(ConversationApplicationService conversationApplicationService) {
+        this(conversationApplicationService, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public ThreadLoadHandler(ConversationApplicationService conversationApplicationService,
+                             BusinessIdentityScopeService scopes) {
         this.conversationApplicationService = conversationApplicationService;
+        this.scopes = scopes;
     }
 
     @Override
@@ -38,7 +47,13 @@ public class ThreadLoadHandler implements JsonRpcMethodHandler {
         String threadId = requiredText(params, "threadId");
         int limit = clippedLimit(params, "limit", 200, 500);
         String beforeItemId = optionalText(params, "beforeItemId");
-        return conversationApplicationService.loadThread(threadId, limit, beforeItemId);
+        try {
+            return scopes == null
+                    ? conversationApplicationService.loadThread(threadId, limit, beforeItemId)
+                    : conversationApplicationService.loadThread(threadId, limit, beforeItemId, scopes.resolve(session));
+        } catch (IllegalArgumentException exception) {
+            throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "thread 不存在");
+        }
     }
 
     private static String requiredText(JsonNode params, String fieldName) {

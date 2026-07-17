@@ -52,7 +52,7 @@ class BusinessTurnScopePropagationTest {
     void conversationThreadTurnObservationAndContextInputKeepTheCreationScope() {
         ConversationService conversations = new ConversationService();
         Thread thread = conversations.createThread("E:/tenant-a", tenantA);
-        Turn turn = conversations.startTurn(thread.id());
+        Turn turn = conversations.startTurn(thread.id(), tenantA);
         TurnObservationContext observation = TurnObservationContext.start(
                 thread.id(), turn.id(), "provider", "model", turn.businessIdentityScope());
         ContextWindowRuntimeInput input = new ContextWindowRuntimeInput(

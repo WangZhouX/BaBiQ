@@ -5,6 +5,7 @@ import com.wzx.babiq.server.api.JsonRpcMethodHandler;
 import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
 import com.wzx.babiq.server.api.error.JsonRpcException;
 import com.wzx.babiq.server.context.ContextStatusService;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScopeService;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.WebSocketSession;
 
@@ -18,6 +19,7 @@ public class ContextStatusHandler implements JsonRpcMethodHandler {
 
     /** 上下文窗口查询服务。 */
     private final ContextStatusService service;
+    private final BusinessIdentityScopeService scopes;
 
     /**
      * 创建 context/status handler。
@@ -25,7 +27,13 @@ public class ContextStatusHandler implements JsonRpcMethodHandler {
      * @param service 上下文窗口查询服务
      */
     public ContextStatusHandler(ContextStatusService service) {
+        this(service, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public ContextStatusHandler(ContextStatusService service, BusinessIdentityScopeService scopes) {
         this.service = service;
+        this.scopes = scopes;
     }
 
     @Override
@@ -35,7 +43,12 @@ public class ContextStatusHandler implements JsonRpcMethodHandler {
 
     @Override
     public Object handle(JsonNode params, WebSocketSession session) {
-        return service.status(requiredText(params, "threadId"));
+        String threadId = requiredText(params, "threadId");
+        try {
+            return scopes == null ? service.status(threadId) : service.status(threadId, scopes.resolve(session));
+        } catch (IllegalArgumentException exception) {
+            throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "context 不存在");
+        }
     }
 
     static String requiredText(JsonNode params, String fieldName) {

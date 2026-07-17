@@ -1,6 +1,7 @@
 package com.wzx.babiq.server.conversation.repository;
 
 import com.wzx.babiq.server.persistence.entity.ThreadEntity;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
 
 import java.time.Instant;
 import java.util.List;
@@ -29,6 +30,12 @@ public interface ConversationRepository {
             String approvalPolicy,
             Instant now);
 
+    default ThreadEntity createThread(String threadId, String title, String cwd, String providerId,
+                                      String model, String sandboxMode, String approvalPolicy,
+                                      Instant now, BusinessIdentityScope scope) {
+        return createThread(threadId, title, cwd, providerId, model, sandboxMode, approvalPolicy, now);
+    }
+
     /**
      * 按协议层 threadId 查询会话。
      *
@@ -36,6 +43,10 @@ public interface ConversationRepository {
      * @return 找到时返回 thread，否则为空
      */
     Optional<ThreadEntity> findThread(String threadId);
+
+    default Optional<ThreadEntity> findThread(String threadId, BusinessIdentityScope scope) {
+        return findThread(threadId).filter(entity -> !scope.scoped());
+    }
 
     /**
      * 查询最近会话。
@@ -47,6 +58,11 @@ public interface ConversationRepository {
      */
     List<ThreadEntity> listRecentThreads(String cwd, boolean includeArchived, int limit);
 
+    default List<ThreadEntity> listRecentThreads(
+            String cwd, boolean includeArchived, int limit, BusinessIdentityScope scope) {
+        return scope.scoped() ? List.of() : listRecentThreads(cwd, includeArchived, limit);
+    }
+
     /**
      * 软归档会话，让默认最近列表不再显示它。
      *
@@ -54,6 +70,12 @@ public interface ConversationRepository {
      * @param archivedAt 归档时间
      */
     void archiveThread(String threadId, Instant archivedAt);
+
+    default boolean archiveThread(String threadId, Instant archivedAt, BusinessIdentityScope scope) {
+        if (findThread(threadId, scope).isEmpty()) return false;
+        archiveThread(threadId, archivedAt);
+        return true;
+    }
 
     /**
      * 保存或更新一个协议 item。
@@ -98,6 +120,11 @@ public interface ConversationRepository {
      */
     List<ItemRecord> listItems(String threadId, int limit, String beforeItemId);
 
+    default List<ItemRecord> listItems(
+            String threadId, int limit, String beforeItemId, BusinessIdentityScope scope) {
+        return scope.scoped() ? List.of() : listItems(threadId, limit, beforeItemId);
+    }
+
     /**
      * 统计会话内已经保存的 item 数量。
      *
@@ -106,6 +133,10 @@ public interface ConversationRepository {
      */
     long countItems(String threadId);
 
+    default long countItems(String threadId, BusinessIdentityScope scope) {
+        return scope.scoped() ? 0 : countItems(threadId);
+    }
+
     /**
      * 查询会话最近一轮 turn 的状态。
      *
@@ -113,6 +144,10 @@ public interface ConversationRepository {
      * @return 找到 turn 时返回状态，否则为空
      */
     Optional<String> findLatestTurnStatus(String threadId);
+
+    default Optional<String> findLatestTurnStatus(String threadId, BusinessIdentityScope scope) {
+        return scope.scoped() ? Optional.empty() : findLatestTurnStatus(threadId);
+    }
 
     /**
      * 保存或更新 turn 摘要。
@@ -128,4 +163,8 @@ public interface ConversationRepository {
      * @return 找到时返回摘要，否则为空
      */
     Optional<TurnSummaryRecord> findTurnSummary(String turnId);
+
+    default Optional<TurnSummaryRecord> findTurnSummary(String turnId, BusinessIdentityScope scope) {
+        return scope.scoped() ? Optional.empty() : findTurnSummary(turnId);
+    }
 }

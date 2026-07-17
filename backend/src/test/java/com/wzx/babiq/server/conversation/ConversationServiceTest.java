@@ -1,10 +1,18 @@
 package com.wzx.babiq.server.conversation;
 
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
 import com.wzx.babiq.server.conversation.items.CommandExecutionItem;
 import com.wzx.babiq.server.conversation.items.FileChangeItem;
 import com.wzx.babiq.server.conversation.items.ReasoningItem;
 import com.wzx.babiq.server.conversation.items.TurnSummaryItem;
+import com.wzx.babiq.server.persistence.entity.TurnEntity;
+import com.wzx.babiq.server.persistence.service.TurnPersistenceService;
 import org.junit.jupiter.api.Test;
+
+import java.time.Instant;
+
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -57,6 +65,41 @@ class ConversationServiceTest {
     }
 
     @Test
+    void unscopedLookupDoesNotExposeBusinessThreadOrTurnFromMemory() {
+        ConversationService service = new ConversationService();
+        BusinessIdentityScope scope = BusinessIdentityScope.scoped(
+                "desktop", "session", "auth", 1, "user", "tenant", "platform");
+        Thread thread = service.createThread("C:/business", scope);
+        Turn turn = service.startTurn(thread.id(), scope);
+
+        assertThat(service.findThread(thread.id())).isEmpty();
+        assertThat(service.findTurn(turn.id())).isEmpty();
+        assertThat(service.hasActiveTurn(thread.id())).isFalse();
+        assertThat(service.findThread(thread.id(), scope)).contains(thread);
+        assertThat(service.findTurn(turn.id(), scope)).contains(turn);
+        assertThat(service.hasActiveTurn(thread.id(), scope)).isTrue();
+    }
+
+    @Test
+    void databaseFallbackRestoresPersistedTurnStatusForScopedAndUnscopedLookups() {
+        TurnPersistenceService persistence = mock(TurnPersistenceService.class);
+        ConversationService service = new ConversationService(null, persistence, null, null);
+        BusinessIdentityScope scope = BusinessIdentityScope.scoped(
+                "desktop", "desktop-session", "auth", 3, "user", "tenant", "platform");
+        TurnEntity completed = persistedTurn("turn-completed", "COMPLETED");
+        TurnEntity waiting = persistedTurn("turn-waiting", "WAITING_APPROVAL");
+        when(persistence.findTurn("turn-completed")).thenReturn(java.util.Optional.of(completed));
+        when(persistence.findTurn("turn-waiting", scope)).thenReturn(java.util.Optional.of(waiting));
+
+        assertThat(service.findTurn("turn-completed")).get()
+                .extracting(Turn::status)
+                .isEqualTo(TurnStatus.COMPLETED);
+        assertThat(service.findTurn("turn-waiting", scope)).get()
+                .extracting(Turn::status)
+                .isEqualTo(TurnStatus.WAITING_APPROVAL);
+    }
+
+    @Test
     void helper_methods_should_create_protocol_items_with_stable_type_tags() {
         ConversationService conversationService = new ConversationService();
 
@@ -89,5 +132,16 @@ class ConversationServiceTest {
         assertThat(item.totalTokens()).isEqualTo(150L);
         assertThat(item.toolCalls()).isEqualTo(2);
         assertThat(item.durationMs()).isEqualTo(1200L);
+    }
+
+    private TurnEntity persistedTurn(String turnId, String status) {
+        TurnEntity entity = new TurnEntity();
+        entity.setTurnId(turnId);
+        entity.setThreadId("thread-persisted");
+        entity.setStatus(status);
+        entity.setStartedAt(Instant.parse("2026-07-17T00:00:00Z").toString());
+        entity.setCompletedAt(status.equals("COMPLETED")
+                ? Instant.parse("2026-07-17T00:00:01Z").toString() : null);
+        return entity;
     }
 }

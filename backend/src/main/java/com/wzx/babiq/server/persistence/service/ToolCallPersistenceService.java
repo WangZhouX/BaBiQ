@@ -2,6 +2,7 @@ package com.wzx.babiq.server.persistence.service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.wzx.babiq.server.conversation.repository.ToolCallRecord;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
 import com.wzx.babiq.server.persistence.entity.ToolCallEntity;
 import com.wzx.babiq.server.persistence.mapper.ToolCallMapper;
 import org.springframework.stereotype.Service;
@@ -10,6 +11,8 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
 
 /**
  * 工具调用持久化服务。
@@ -70,7 +73,23 @@ public class ToolCallPersistenceService {
                               String toolName, String argsJson,
                               String agentName, String parentAgentName,
                               String delegationId, Instant startedAt) {
-        ToolCallEntity existing = findEntity(toolCallId);
+        recordStartedInternal(toolCallId, threadId, turnId, toolName, argsJson,
+                agentName, parentAgentName, delegationId, BusinessIdentityScope.UNSCOPED, startedAt);
+    }
+
+    @Transactional
+    public void recordStarted(String toolCallId, String threadId, String turnId,
+                              String toolName, String argsJson, String agentName,
+                              String parentAgentName, String delegationId,
+                              BusinessIdentityScope scope, Instant startedAt) {
+        recordStartedInternal(toolCallId, threadId, turnId, toolName, argsJson,
+                agentName, parentAgentName, delegationId, scope, startedAt);
+    }
+
+    private void recordStartedInternal(String toolCallId, String threadId, String turnId,
+                                       String toolName, String argsJson, String agentName,
+                                       String parentAgentName, String delegationId,
+                                       BusinessIdentityScope scope, Instant startedAt) {
         ToolCallEntity entity = new ToolCallEntity();
         entity.setToolCallId(toolCallId);
         entity.setThreadId(threadId);
@@ -82,13 +101,22 @@ public class ToolCallPersistenceService {
         entity.setDelegationId(delegationId);
         entity.setStatus("running");
         entity.setStartedAt(PersistenceTime.write(startedAt));
+        applyScope(entity, scope);
+        ToolCallEntity existing = findEntity(toolCallId);
         if (existing == null) {
             toolCallMapper.insert(entity);
             return;
         }
-        entity.setId(existing.getId());
-        entity.setCompletedAt(existing.getCompletedAt());
-        toolCallMapper.updateById(entity);
+        if (!sameImmutableMetadata(existing, entity)) {
+            throw new IllegalStateException("tool call immutable metadata conflict");
+        }
+    }
+
+    private static void applyScope(ToolCallEntity entity, BusinessIdentityScope scope) {
+        if (entity == null || scope == null || !scope.scoped()) return;
+        entity.setDesktopInstanceId(scope.desktopInstanceId()); entity.setDesktopSessionId(scope.desktopSessionId());
+        entity.setAuthSessionId(scope.authSessionId()); entity.setIdentityEpoch(scope.identityEpoch());
+        entity.setUserId(scope.userId()); entity.setTenantId(scope.tenantId()); entity.setPlatformId(scope.platformId());
     }
 
     /**
@@ -121,18 +149,86 @@ public class ToolCallPersistenceService {
      * @return 按开始时间正序排列的工具调用记录
      */
     public List<ToolCallRecord> listByTurnId(String turnId) {
-        return toolCallMapper.selectList(Wrappers.<ToolCallEntity>lambdaQuery()
-                        .eq(ToolCallEntity::getTurnId, turnId)
-                        .orderByAsc(ToolCallEntity::getStartedAt))
+        return listByTurnId(turnId, BusinessIdentityScope.UNSCOPED);
+    }
+
+    public List<ToolCallRecord> listByTurnId(String turnId, BusinessIdentityScope scope) {
+        return toolCallMapper.selectAuthorizedByTurnId(
+                        turnId, scoped(scope), desktopInstanceId(scope), desktopSessionId(scope), authSessionId(scope),
+                        identityEpoch(scope), userId(scope), tenantId(scope), platformId(scope))
                 .stream()
                 .map(this::toRecord)
                 .sorted(Comparator.comparing(ToolCallRecord::startedAt))
                 .toList();
     }
 
+    @Transactional
+    public void bindExecutionId(String toolCallId, BusinessIdentityScope scope, String executionId) {
+        ToolCallEntity existing = findEntity(toolCallId, scope).orElse(null);
+        if (existing == null) {
+            throw new IllegalStateException("tool call execution binding conflict");
+        }
+        if (Objects.equals(existing.getExecutionId(), executionId)) {
+            return;
+        }
+        if (existing.getExecutionId() != null) {
+            throw new IllegalStateException("tool call execution binding conflict");
+        }
+        int updated = toolCallMapper.bindExecutionIdIfUnbound(
+                toolCallId, executionId, scoped(scope), desktopInstanceId(scope), desktopSessionId(scope),
+                authSessionId(scope), identityEpoch(scope), userId(scope), tenantId(scope), platformId(scope));
+        if (updated == 0 && !findEntity(toolCallId, scope)
+                .map(entity -> Objects.equals(entity.getExecutionId(), executionId)).orElse(false)) {
+            throw new IllegalStateException("tool call execution binding conflict");
+        }
+    }
+
+    private static int scoped(BusinessIdentityScope scope) { return scope != null && scope.scoped() ? 1 : 0; }
+    private static String desktopInstanceId(BusinessIdentityScope scope) { return scoped(scope) == 1 ? scope.desktopInstanceId() : null; }
+    private static String desktopSessionId(BusinessIdentityScope scope) { return scoped(scope) == 1 ? scope.desktopSessionId() : null; }
+    private static String authSessionId(BusinessIdentityScope scope) { return scoped(scope) == 1 ? scope.authSessionId() : null; }
+    private static Long identityEpoch(BusinessIdentityScope scope) { return scoped(scope) == 1 ? scope.identityEpoch() : null; }
+    private static String userId(BusinessIdentityScope scope) { return scoped(scope) == 1 ? scope.userId() : null; }
+    private static String tenantId(BusinessIdentityScope scope) { return scoped(scope) == 1 ? scope.tenantId() : null; }
+    private static String platformId(BusinessIdentityScope scope) { return scoped(scope) == 1 ? scope.platformId() : null; }
+
     private ToolCallEntity findEntity(String toolCallId) {
         return toolCallMapper.selectOne(Wrappers.<ToolCallEntity>lambdaQuery()
                 .eq(ToolCallEntity::getToolCallId, toolCallId));
+    }
+
+    private Optional<ToolCallEntity> findEntity(String toolCallId, BusinessIdentityScope scope) {
+        var query = Wrappers.<ToolCallEntity>lambdaQuery().eq(ToolCallEntity::getToolCallId, toolCallId);
+        if (scope == null || !scope.scoped()) {
+            query.isNull(ToolCallEntity::getDesktopInstanceId);
+        } else {
+            query.eq(ToolCallEntity::getDesktopInstanceId, scope.desktopInstanceId())
+                    .eq(ToolCallEntity::getDesktopSessionId, scope.desktopSessionId())
+                    .eq(ToolCallEntity::getAuthSessionId, scope.authSessionId())
+                    .eq(ToolCallEntity::getIdentityEpoch, scope.identityEpoch())
+                    .eq(ToolCallEntity::getUserId, scope.userId())
+                    .eq(ToolCallEntity::getTenantId, scope.tenantId())
+                    .eq(ToolCallEntity::getPlatformId, scope.platformId());
+        }
+        return Optional.ofNullable(toolCallMapper.selectOne(query));
+    }
+
+    private static boolean sameImmutableMetadata(ToolCallEntity existing, ToolCallEntity candidate) {
+        return Objects.equals(existing.getThreadId(), candidate.getThreadId())
+                && Objects.equals(existing.getTurnId(), candidate.getTurnId())
+                && Objects.equals(existing.getToolName(), candidate.getToolName())
+                && Objects.equals(existing.getArgsJson(), candidate.getArgsJson())
+                && Objects.equals(existing.getAgentName(), candidate.getAgentName())
+                && Objects.equals(existing.getParentAgentName(), candidate.getParentAgentName())
+                && Objects.equals(existing.getDelegationId(), candidate.getDelegationId())
+                && Objects.equals(existing.getStartedAt(), candidate.getStartedAt())
+                && Objects.equals(existing.getDesktopInstanceId(), candidate.getDesktopInstanceId())
+                && Objects.equals(existing.getDesktopSessionId(), candidate.getDesktopSessionId())
+                && Objects.equals(existing.getAuthSessionId(), candidate.getAuthSessionId())
+                && Objects.equals(existing.getIdentityEpoch(), candidate.getIdentityEpoch())
+                && Objects.equals(existing.getUserId(), candidate.getUserId())
+                && Objects.equals(existing.getTenantId(), candidate.getTenantId())
+                && Objects.equals(existing.getPlatformId(), candidate.getPlatformId());
     }
 
     private ToolCallRecord toRecord(ToolCallEntity entity) {

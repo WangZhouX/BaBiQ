@@ -24,6 +24,8 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -137,7 +139,8 @@ class ContextWindowRuntimeTest {
 
         runtime.recordUsage("ctxsnap_1", context);
 
-        verify(snapshotRepository).updateActualPromptTokens("ctxsnap_1", 42L);
+        verify(snapshotRepository).updateActualPromptTokens(
+                "ctxsnap_1", 42L, BusinessIdentityScope.UNSCOPED);
     }
 
     @Test
@@ -160,7 +163,7 @@ class ContextWindowRuntimeTest {
                                 "it_action", "applicationAction", "execution-secret", "demo.read", "Read",
                                 "read_only", "completed", null, null, null, 1L)),
                         "completed", Instant.now())));
-        when(windowRepository.findByThreadId("thr_business")).thenReturn(Optional.empty());
+        when(windowRepository.findByThreadId("thr_business", scope)).thenReturn(Optional.empty());
         when(windowRepository.upsert(any(ContextWindowRecord.class))).thenAnswer(invocation -> invocation.getArgument(0));
         ObjectMapper mapper = new ObjectMapper();
         ContextWindowRuntime runtime = new ContextWindowRuntime(
@@ -179,6 +182,13 @@ class ContextWindowRuntimeTest {
         assertThat(result.assemblyResult().envelope().longTermMemory().memoryRefs()).isEmpty();
         assertThat(result.assemblyResult().snapshot().items())
                 .anySatisfy(item -> assertThat(item.reason()).isEqualTo("APPLICATION_ACTION_DISPLAY_ONLY"));
+        var windowCaptor = org.mockito.ArgumentCaptor.forClass(ContextWindowRecord.class);
+        var snapshotCaptor = org.mockito.ArgumentCaptor.forClass(ContextSnapshotRecord.class);
+        verify(windowRepository).findByThreadId("thr_business", scope);
+        verify(windowRepository).upsert(windowCaptor.capture());
+        verify(snapshotRepository).save(snapshotCaptor.capture());
+        assertThat(windowCaptor.getValue().businessIdentityScope()).isEqualTo(scope);
+        assertThat(snapshotCaptor.getValue().businessIdentityScope()).isEqualTo(scope);
         verify(contributor).contribute(scope);
         verify(memory, never()).readForTurn(any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyInt());
     }

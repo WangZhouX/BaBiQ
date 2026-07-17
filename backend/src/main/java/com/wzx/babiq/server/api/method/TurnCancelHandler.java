@@ -5,6 +5,8 @@ import com.wzx.babiq.server.api.JsonRpcMethodHandler;
 import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
 import com.wzx.babiq.server.api.error.JsonRpcException;
 import com.wzx.babiq.server.application.action.PendingApplicationActions;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScopeService;
 import com.wzx.babiq.server.conversation.ConversationService;
 import com.wzx.babiq.server.conversation.Turn;
 import com.wzx.babiq.server.persistence.service.TurnPersistenceService;
@@ -27,6 +29,7 @@ public class TurnCancelHandler implements JsonRpcMethodHandler {
     /** 可选 turn 持久化服务，生产环境取消时同步 bq_turns。 */
     private final TurnPersistenceService turnPersistenceService;
     private PendingApplicationActions pendingApplicationActions;
+    private final BusinessIdentityScopeService scopes;
 
     /**
      * 创建 turn/cancel handler。
@@ -34,7 +37,7 @@ public class TurnCancelHandler implements JsonRpcMethodHandler {
      * @param conversationService 对话生命周期服务
      */
     public TurnCancelHandler(ConversationService conversationService) {
-        this(conversationService, null);
+        this(conversationService, null, null, null);
     }
 
     /**
@@ -43,18 +46,34 @@ public class TurnCancelHandler implements JsonRpcMethodHandler {
      * @param conversationService 对话生命周期服务
      * @param turnPersistenceService turn 持久化服务；为空时只更新内存状态
      */
-    @org.springframework.beans.factory.annotation.Autowired
     public TurnCancelHandler(ConversationService conversationService, TurnPersistenceService turnPersistenceService) {
-        this.conversationService = conversationService;
-        this.turnPersistenceService = turnPersistenceService;
+        this(conversationService, turnPersistenceService, null, null);
     }
 
     public TurnCancelHandler(
             ConversationService conversationService,
             TurnPersistenceService turnPersistenceService,
             PendingApplicationActions pendingApplicationActions) {
-        this(conversationService, turnPersistenceService);
+        this(conversationService, turnPersistenceService, pendingApplicationActions, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public TurnCancelHandler(
+            ConversationService conversationService,
+            TurnPersistenceService turnPersistenceService,
+            BusinessIdentityScopeService scopes) {
+        this(conversationService, turnPersistenceService, null, scopes);
+    }
+
+    public TurnCancelHandler(
+            ConversationService conversationService,
+            TurnPersistenceService turnPersistenceService,
+            PendingApplicationActions pendingApplicationActions,
+            BusinessIdentityScopeService scopes) {
+        this.conversationService = conversationService;
+        this.turnPersistenceService = turnPersistenceService;
         this.pendingApplicationActions = pendingApplicationActions;
+        this.scopes = scopes;
     }
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
@@ -83,11 +102,16 @@ public class TurnCancelHandler implements JsonRpcMethodHandler {
     @Override
     public Object handle(JsonNode params, WebSocketSession session) {
         String turnId = requiredText(params, "turnId");
-        Turn turn = conversationService.findTurn(turnId)
+        BusinessIdentityScope scope = scopes == null ? null : scopes.resolve(session);
+        Turn turn = (scope == null ? conversationService.findTurn(turnId) : conversationService.findTurn(turnId, scope))
                 .orElseThrow(() -> new JsonRpcException(
                         JsonRpcErrorCode.INVALID_PARAMS,
                         "turnId=" + turnId + " 不存在,无法取消"));
 
+        if (turn.status().isTerminal()) {
+            throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS,
+                    "turnId does not exist or has ended: " + turnId);
+        }
         if (pendingApplicationActions != null) {
             pendingApplicationActions.cancelByTurn(turnId);
         }
@@ -97,7 +121,11 @@ public class TurnCancelHandler implements JsonRpcMethodHandler {
             throw new JsonRpcException(JsonRpcErrorCode.SERVER_ERROR, exception.getMessage());
         }
         if (turnPersistenceService != null) {
-            turnPersistenceService.markCanceled(turnId, "CANCELED", "user_cancelled");
+            if (scope == null) {
+                turnPersistenceService.markCanceled(turnId, "CANCELED", "user_cancelled");
+            } else {
+                turnPersistenceService.markCanceled(turnId, "CANCELED", "user_cancelled", scope);
+            }
         }
         return Map.of("ok", true);
     }

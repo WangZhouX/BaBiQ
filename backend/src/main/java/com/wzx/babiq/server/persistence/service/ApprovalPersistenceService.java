@@ -1,6 +1,7 @@
 package com.wzx.babiq.server.persistence.service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
 import com.wzx.babiq.server.persistence.entity.ApprovalEntity;
 import com.wzx.babiq.server.persistence.mapper.ApprovalMapper;
 import org.springframework.stereotype.Service;
@@ -118,8 +119,21 @@ public class ApprovalPersistenceService {
      * @return 审批记录列表
      */
     public List<ApprovalEntity> listByTurnId(String turnId) {
-        return approvalMapper.selectList(Wrappers.<ApprovalEntity>lambdaQuery()
-                .eq(ApprovalEntity::getTurnId, turnId)
-                .orderByAsc(ApprovalEntity::getCreatedAt));
+        return listByTurnId(turnId, BusinessIdentityScope.UNSCOPED);
     }
+
+    public List<ApprovalEntity> listByTurnId(String turnId, BusinessIdentityScope scope) {
+        return approvalMapper.selectAuthorizedByTurnId(
+                turnId, scoped(scope), desktopInstanceId(scope), desktopSessionId(scope), authSessionId(scope),
+                identityEpoch(scope), userId(scope), tenantId(scope), platformId(scope));
+    }
+
+    private static int scoped(BusinessIdentityScope scope) { return scope != null && scope.scoped() ? 1 : 0; }
+    private static String desktopInstanceId(BusinessIdentityScope scope) { return scoped(scope) == 1 ? scope.desktopInstanceId() : null; }
+    private static String desktopSessionId(BusinessIdentityScope scope) { return scoped(scope) == 1 ? scope.desktopSessionId() : null; }
+    private static String authSessionId(BusinessIdentityScope scope) { return scoped(scope) == 1 ? scope.authSessionId() : null; }
+    private static Long identityEpoch(BusinessIdentityScope scope) { return scoped(scope) == 1 ? scope.identityEpoch() : null; }
+    private static String userId(BusinessIdentityScope scope) { return scoped(scope) == 1 ? scope.userId() : null; }
+    private static String tenantId(BusinessIdentityScope scope) { return scoped(scope) == 1 ? scope.tenantId() : null; }
+    private static String platformId(BusinessIdentityScope scope) { return scoped(scope) == 1 ? scope.platformId() : null; }
 }

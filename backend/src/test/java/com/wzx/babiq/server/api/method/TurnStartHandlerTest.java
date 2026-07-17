@@ -7,6 +7,9 @@ import com.wzx.babiq.server.approval.ApprovalPolicy;
 import com.wzx.babiq.server.conversation.ConversationService;
 import com.wzx.babiq.server.conversation.Thread;
 import com.wzx.babiq.server.conversation.items.WorkUnitItem;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScopeService;
+import com.wzx.babiq.server.api.error.JsonRpcException;
 import com.wzx.babiq.server.sandbox.SandboxMode;
 import com.wzx.babiq.server.settings.AppSettings;
 import com.wzx.babiq.server.settings.AppSettingsService;
@@ -23,11 +26,13 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -191,6 +196,29 @@ class TurnStartHandlerTest {
 
         verify(workUnitService).selectPendingGoalForTurn(thread.id(), "wu_1");
         verify(executor).submit(any(), eq("start html-test"), eq(null), eq("H:/aaa"), any(), any(), eq("goal_1"));
+    }
+
+    @Test
+    void businessTurnStartUsesScopedLookupBeforeCreatingAnyTurn() {
+        BusinessIdentityScope scope = BusinessIdentityScope.scoped(
+                "desktop", "session", "auth", 1, "user", "tenant", "platform");
+        ConversationService conversationService = mock(ConversationService.class);
+        BusinessIdentityScopeService scopes = mock(BusinessIdentityScopeService.class);
+        TurnExecutor executor = mock(TurnExecutor.class);
+        WebSocketSession session = recordingSession(new ArrayList<>());
+        when(scopes.resolve(session)).thenReturn(scope);
+        TurnStartHandler handler = new TurnStartHandler(
+                conversationService, objectMapper, executor, null, null, null, null, null, scopes);
+        var params = objectMapper.valueToTree(Map.of(
+                "threadId", "thread-a", "input", Map.of("type", "text", "text", "ping")));
+
+        assertThatThrownBy(() -> handler.handle(params, session)).isInstanceOf(JsonRpcException.class);
+
+        verify(conversationService).findThread("thread-a", scope);
+        verify(conversationService, never()).findThread("thread-a");
+        verify(conversationService, never()).startTurn(any());
+        verify(conversationService, never()).startTurn(any(), any());
+        verifyNoInteractions(executor);
     }
 
     private WebSocketSession recordingSession(List<String> payloads) {

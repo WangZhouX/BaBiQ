@@ -15,6 +15,7 @@ import com.wzx.babiq.server.api.error.JsonRpcException;
 import com.wzx.babiq.server.conversation.repository.ConversationRepository;
 import com.wzx.babiq.server.conversation.repository.ItemRecord;
 import com.wzx.babiq.server.persistence.entity.ThreadEntity;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -106,6 +107,13 @@ public class ConversationApplicationService {
         return new ThreadListResult(threads, null);
     }
 
+    public ThreadListResult listThreads(String cwd, boolean includeArchived, int limit, String cursor,
+                                        BusinessIdentityScope scope) {
+        int safeLimit = sanitizeLimit(limit, 1, 100);
+        return new ThreadListResult(repository.listRecentThreads(cwd, includeArchived, safeLimit, scope)
+                .stream().map(entity -> toSummary(entity, scope)).toList(), null);
+    }
+
     /**
      * 加载一个会话的历史 item。
      *
@@ -137,6 +145,30 @@ public class ConversationApplicationService {
                 nextBeforeItemId);
     }
 
+    public ThreadLoadResult loadThread(
+            String threadId, int limit, String beforeItemId, BusinessIdentityScope scope) {
+        ThreadEntity thread = repository.findThread(threadId, scope)
+                .orElseThrow(() -> new IllegalArgumentException("thread not found"));
+        return loadAuthorizedThread(thread, limit, beforeItemId, scope);
+    }
+
+    private ThreadLoadResult loadAuthorizedThread(
+            ThreadEntity thread, int limit, String beforeItemId, BusinessIdentityScope scope) {
+        String threadId = thread.getThreadId();
+        int safeLimit = sanitizeLimit(limit, 1, MAX_LOAD_LIMIT);
+        List<ItemRecord> records = new ArrayList<>(
+                repository.listItems(threadId, safeLimit + 1, beforeItemId, scope));
+        String nextBeforeItemId = null;
+        if (records.size() > safeLimit) {
+            records.remove(0);
+            nextBeforeItemId = records.isEmpty() ? null : records.get(0).itemId();
+        }
+        List<JsonNode> items = records.stream().map(this::parsePayload).toList();
+        return new ThreadLoadResult(
+                new ThreadMetaDto(thread.getThreadId(), thread.getTitle(), thread.getCwd(), thread.getStatus()),
+                items, latestSummary(items), nextBeforeItemId);
+    }
+
     /**
      * 软归档会话。
      *
@@ -150,6 +182,18 @@ public class ConversationApplicationService {
             throw new JsonRpcException(JsonRpcErrorCode.SERVER_ERROR, "当前 turn 仍在运行，不能归档");
         }
         repository.archiveThread(threadId, java.time.Instant.now());
+        conversationService.removeThread(threadId);
+        return new ThreadArchiveResult(true, threadId, true);
+    }
+
+    public ThreadArchiveResult archiveThread(String threadId, BusinessIdentityScope scope) {
+        if (repository.findThread(threadId, scope).isEmpty()) {
+            throw new IllegalArgumentException("thread not found");
+        }
+        if (conversationService.hasActiveTurn(threadId, scope)) {
+            throw new JsonRpcException(JsonRpcErrorCode.SERVER_ERROR, "当前 turn 仍在运行，不能归档");
+        }
+        repository.archiveThread(threadId, Instant.now(), scope);
         conversationService.removeThread(threadId);
         return new ThreadArchiveResult(true, threadId, true);
     }
@@ -205,6 +249,10 @@ public class ConversationApplicationService {
     }
 
     private ThreadSummaryDto toSummary(ThreadEntity entity) {
+        return toSummary(entity, BusinessIdentityScope.UNSCOPED);
+    }
+
+    private ThreadSummaryDto toSummary(ThreadEntity entity, BusinessIdentityScope scope) {
         return new ThreadSummaryDto(
                 entity.getThreadId(),
                 entity.getTitle(),
@@ -212,9 +260,9 @@ public class ConversationApplicationService {
                 entity.getProviderId(),
                 entity.getModel(),
                 entity.getStatus(),
-                repository.findLatestTurnStatus(entity.getThreadId()).orElse(null),
+                repository.findLatestTurnStatus(entity.getThreadId(), scope).orElse(null),
                 entity.getUpdatedAt(),
-                repository.countItems(entity.getThreadId()));
+                repository.countItems(entity.getThreadId(), scope));
     }
 
     private JsonNode parsePayload(ItemRecord record) {

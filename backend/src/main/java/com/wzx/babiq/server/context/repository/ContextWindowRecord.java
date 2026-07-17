@@ -1,5 +1,7 @@
 package com.wzx.babiq.server.context.repository;
 
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
+
 import java.time.Instant;
 
 /**
@@ -22,6 +24,18 @@ public record ContextWindowRecord(
         int autoCompactThreshold,
         String lastSnapshotId,
         Instant createdAt,
-        Instant updatedAt
+        Instant updatedAt,
+        BusinessIdentityScope businessIdentityScope
 ) {
+    public ContextWindowRecord(String threadId, int windowOrdinal, String activeSummaryId,
+                               int modelContextWindow, int autoCompactThreshold, String lastSnapshotId,
+                               Instant createdAt, Instant updatedAt) {
+        this(threadId, windowOrdinal, activeSummaryId, modelContextWindow, autoCompactThreshold,
+                lastSnapshotId, createdAt, updatedAt, BusinessIdentityScope.UNSCOPED);
+    }
+
+    public ContextWindowRecord {
+        businessIdentityScope = businessIdentityScope == null
+                ? BusinessIdentityScope.UNSCOPED : businessIdentityScope;
+    }
 }

@@ -161,16 +161,12 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
                 providerId == null ? "<active-provider>" : providerId,
                 userText.length(),
                 JsonRpcLogSupport.preview(userText));
-        Thread thread = conversationService.findThread(threadId)
-                .orElseThrow(() -> new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS,
-                        "threadId=" + threadId + " 不存在，无法创建 Turn"));
         BusinessIdentityScope requestScope = businessIdentityScopeService == null
                 ? BusinessIdentityScope.UNSCOPED
                 : resolveBusinessScope(session, threadId);
-        if (!thread.businessIdentityScope().equals(requestScope)) {
-            throw threadNotFound(threadId);
-        }
-        Turn turn = conversationService.startTurn(threadId);
+        Thread thread = conversationService.findThread(threadId, requestScope)
+                .orElseThrow(() -> threadNotFound(threadId));
+        Turn turn = conversationService.startTurn(threadId, requestScope);
         turn.start();
         ModelProviderConfig provider = resolveProvider(providerId);
         AppSettings settings = appSettingsService == null ? null : appSettingsService.get();

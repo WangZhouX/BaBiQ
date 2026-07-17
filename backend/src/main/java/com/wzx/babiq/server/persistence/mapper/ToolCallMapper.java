@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.wzx.babiq.server.persistence.entity.ToolCallEntity;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 import java.util.List;
 import java.util.Map;
@@ -14,6 +15,67 @@ import java.util.Map;
  * <p>Mapper 只提供基础 CRUD；工具状态转换、结果截断和排序规则由 ToolCallPersistenceService 封装。</p>
  */
 public interface ToolCallMapper extends BaseMapper<ToolCallEntity> {
+
+    @Update("""
+            UPDATE bq_tool_calls
+            SET execution_id = #{executionId}
+            WHERE tool_call_id = #{toolCallId}
+              AND execution_id IS NULL
+              AND ((#{scoped} = 0 AND desktop_instance_id IS NULL)
+                OR (#{scoped} = 1
+                  AND desktop_instance_id = #{desktopInstanceId}
+                  AND desktop_session_id = #{desktopSessionId}
+                  AND auth_session_id = #{authSessionId}
+                  AND identity_epoch = #{identityEpoch}
+                  AND user_id = #{userId}
+                  AND tenant_id = #{tenantId}
+                  AND platform_id = #{platformId}))
+            """)
+    int bindExecutionIdIfUnbound(
+            @Param("toolCallId") String toolCallId,
+            @Param("executionId") String executionId,
+            @Param("scoped") int scoped,
+            @Param("desktopInstanceId") String desktopInstanceId,
+            @Param("desktopSessionId") String desktopSessionId,
+            @Param("authSessionId") String authSessionId,
+            @Param("identityEpoch") Long identityEpoch,
+            @Param("userId") String userId,
+            @Param("tenantId") String tenantId,
+            @Param("platformId") String platformId);
+
+    @Select("""
+            SELECT tc.*
+            FROM bq_tool_calls tc
+            JOIN bq_turns t ON t.turn_id = tc.turn_id AND t.thread_id = tc.thread_id
+            WHERE tc.turn_id = #{turnId}
+              AND ((#{scoped} = 0 AND t.desktop_instance_id IS NULL AND tc.desktop_instance_id IS NULL)
+                OR (#{scoped} = 1
+                  AND t.desktop_instance_id = #{desktopInstanceId}
+                  AND t.desktop_session_id = #{desktopSessionId}
+                  AND t.auth_session_id = #{authSessionId}
+                  AND t.identity_epoch = #{identityEpoch}
+                  AND t.user_id = #{userId}
+                  AND t.tenant_id = #{tenantId}
+                  AND t.platform_id = #{platformId}
+                  AND tc.desktop_instance_id = #{desktopInstanceId}
+                  AND tc.desktop_session_id = #{desktopSessionId}
+                  AND tc.auth_session_id = #{authSessionId}
+                  AND tc.identity_epoch = #{identityEpoch}
+                  AND tc.user_id = #{userId}
+                  AND tc.tenant_id = #{tenantId}
+                  AND tc.platform_id = #{platformId}))
+            ORDER BY tc.started_at ASC
+            """)
+    List<ToolCallEntity> selectAuthorizedByTurnId(
+            @Param("turnId") String turnId,
+            @Param("scoped") int scoped,
+            @Param("desktopInstanceId") String desktopInstanceId,
+            @Param("desktopSessionId") String desktopSessionId,
+            @Param("authSessionId") String authSessionId,
+            @Param("identityEpoch") Long identityEpoch,
+            @Param("userId") String userId,
+            @Param("tenantId") String tenantId,
+            @Param("platformId") String platformId);
 
     /**
      * 按工具名聚合调用次数、失败次数和平均耗时。

@@ -1,5 +1,6 @@
 package com.wzx.babiq.server.persistence;
 
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
 import com.wzx.babiq.server.context.repository.ContextSnapshotRecord;
 import com.wzx.babiq.server.context.repository.ContextSnapshotRepository;
 import com.wzx.babiq.server.context.repository.ContextWindowRecord;
@@ -19,6 +20,7 @@ import java.time.Instant;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * P3-2 上下文窗口快照持久化测试。
@@ -28,6 +30,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @SpringBootTest
 class ContextSnapshotPersistenceTest {
+
+    private static final BusinessIdentityScope SCOPE_A = BusinessIdentityScope.scoped(
+            "desktop", "session-a", "auth-a", 1, "user-a", "tenant-a", "platform");
+    private static final BusinessIdentityScope SCOPE_B = BusinessIdentityScope.scoped(
+            "desktop", "session-b", "auth-b", 2, "user-b", "tenant-b", "platform");
 
     /** 每次测试使用独立 SQLite 文件，避免上下文快照受到本机真实历史污染。 */
     private static final Path TEST_DB = Path.of("target", "test-db",
@@ -149,5 +156,96 @@ class ContextSnapshotPersistenceTest {
                     assertThat(window.activeSummaryId()).isEqualTo("ctxsum_1");
                     assertThat(window.lastSnapshotId()).isEqualTo("ctxsnap_1");
                 });
+    }
+
+    @Test
+    @DisplayName("scoped context repositories query exact seven-field identity in SQL")
+    void scoped_context_queries_should_not_expose_other_identity() {
+        String suffix = UUID.randomUUID().toString();
+        String threadId = "thr_scope_" + suffix;
+        String turnId = "turn_scope_" + suffix;
+        String snapshotId = "ctxsnap_scope_" + suffix;
+        Instant now = Instant.now();
+        conversationRepository.createThread(threadId, "scope", "E:\\BaBiQ", "provider", "model",
+                "WORKSPACE_WRITE", "ON_REQUEST", now, SCOPE_A);
+        turnPersistenceService.saveTurn(TurnRecord.started(
+                turnId, threadId, "COMPLETED", "input", "E:\\BaBiQ", "provider", "model",
+                "WORKSPACE_WRITE", "ON_REQUEST", now, SCOPE_A));
+        windowRepository.upsert(new ContextWindowRecord(
+                threadId, 0, null, 1000, 750, snapshotId, now, now, SCOPE_A));
+        snapshotRepository.save(new ContextSnapshotRecord(
+                snapshotId, threadId, turnId, "pre_model_call", "provider", "model", "E:\\BaBiQ",
+                0, 1000, 750, 10, null, 1, 0, "{}", "[]", "{}", null, 0,
+                "preview", now, SCOPE_A));
+
+        assertThat(windowRepository.findByThreadId(threadId, SCOPE_A)).isPresent();
+        assertThat(windowRepository.findByThreadId(threadId, SCOPE_B)).isEmpty();
+        assertThat(snapshotRepository.findBySnapshotId(snapshotId, SCOPE_A)).isPresent();
+        assertThat(snapshotRepository.findBySnapshotId(snapshotId, SCOPE_B)).isEmpty();
+        assertThat(snapshotRepository.findLatestByTurnId(turnId, SCOPE_A)).isPresent();
+        assertThat(snapshotRepository.findLatestByTurnId(turnId, SCOPE_B)).isEmpty();
+        assertThat(snapshotRepository.findLatestByThreadId(threadId, SCOPE_A)).isPresent();
+        assertThat(snapshotRepository.findLatestByThreadId(threadId, SCOPE_B)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("context IDs cannot be rebound across identity scopes")
+    void context_ids_should_preserve_immutable_scope_and_correlation() {
+        String suffix = UUID.randomUUID().toString();
+        String threadId = "thr_context_owner_" + suffix;
+        String turnId = "turn_context_owner_" + suffix;
+        String snapshotId = "ctxsnap_context_owner_" + suffix;
+        Instant now = Instant.parse("2026-07-17T02:00:00Z");
+        conversationRepository.createThread(threadId, "scope", "E:\\BaBiQ", "provider", "model",
+                "WORKSPACE_WRITE", "ON_REQUEST", now, SCOPE_A);
+        turnPersistenceService.saveTurn(TurnRecord.started(
+                turnId, threadId, "RUNNING", "input", "E:\\BaBiQ", "provider", "model",
+                "WORKSPACE_WRITE", "ON_REQUEST", now, SCOPE_A));
+        ContextWindowRecord windowA = new ContextWindowRecord(
+                threadId, 0, null, 1000, 750, snapshotId, now, now, SCOPE_A);
+        ContextSnapshotRecord snapshotA = new ContextSnapshotRecord(
+                snapshotId, threadId, turnId, "pre_model_call", "provider", "model", "E:\\BaBiQ",
+                0, 1000, 750, 10, null, 1, 0, "{}", "[]", "{}", null, 0,
+                "preview", now, SCOPE_A);
+        windowRepository.upsert(windowA);
+        snapshotRepository.save(snapshotA);
+
+        snapshotRepository.updateActualPromptTokens(snapshotId, 99L);
+        assertThat(snapshotRepository.findBySnapshotId(snapshotId, SCOPE_A)).get()
+                .extracting(ContextSnapshotRecord::actualPromptTokens).isNull();
+        snapshotRepository.updateActualPromptTokens(snapshotId, 99L, SCOPE_A);
+        assertThat(snapshotRepository.findBySnapshotId(snapshotId, SCOPE_A)).get()
+                .extracting(ContextSnapshotRecord::actualPromptTokens).isEqualTo(99L);
+
+        windowRepository.upsert(windowA);
+        snapshotRepository.save(snapshotA);
+        assertThatThrownBy(() -> windowRepository.upsert(new ContextWindowRecord(
+                threadId, 9, "stolen", 2000, 1500, "stolen", now, now.plusSeconds(1), SCOPE_B)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("context window immutable scope conflict");
+        assertThatThrownBy(() -> windowRepository.compareAndSwapOrdinal(
+                threadId, 0, new ContextWindowRecord(
+                        threadId, 1, "stolen", 2000, 1500, "stolen", now, now.plusSeconds(1), SCOPE_B)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("context window immutable scope conflict");
+        assertThatThrownBy(() -> snapshotRepository.save(new ContextSnapshotRecord(
+                snapshotId, threadId, turnId, "pre_model_call", "other", "other", "C:/other",
+                9, 2000, 1500, 99, 99L, 9, 9, "{\"stolen\":true}", "[]", "{}", null, 0,
+                "stolen", now.plusSeconds(1), SCOPE_B)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("context snapshot immutable metadata conflict");
+
+        assertThat(windowRepository.findByThreadId(threadId, SCOPE_A)).get()
+                .satisfies(stored -> {
+                    assertThat(stored.windowOrdinal()).isZero();
+                    assertThat(stored.lastSnapshotId()).isEqualTo(snapshotId);
+                });
+        assertThat(snapshotRepository.findBySnapshotId(snapshotId, SCOPE_A)).get()
+                .satisfies(stored -> {
+                    assertThat(stored.providerId()).isEqualTo("provider");
+                    assertThat(stored.inputPreview()).isEqualTo("preview");
+                });
+        assertThat(windowRepository.findByThreadId(threadId, SCOPE_B)).isEmpty();
+        assertThat(snapshotRepository.findBySnapshotId(snapshotId, SCOPE_B)).isEmpty();
     }
 }

@@ -1,5 +1,7 @@
 package com.wzx.babiq.server.conversation.repository;
 
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
+
 import java.time.Instant;
 
 /**
@@ -33,8 +35,20 @@ public record TurnRecord(
         String approvalPolicy,
         Instant startedAt,
         Instant completedAt,
-        String failureReason
+        String failureReason,
+        BusinessIdentityScope businessIdentityScope
 ) {
+    public TurnRecord(String turnId, String threadId, String status, String inputText, String cwd,
+                      String providerId, String model, String sandboxMode, String approvalPolicy,
+                      Instant startedAt, Instant completedAt, String failureReason) {
+        this(turnId, threadId, status, inputText, cwd, providerId, model, sandboxMode, approvalPolicy,
+                startedAt, completedAt, failureReason, BusinessIdentityScope.UNSCOPED);
+    }
+
+    public TurnRecord {
+        businessIdentityScope = businessIdentityScope == null
+                ? BusinessIdentityScope.UNSCOPED : businessIdentityScope;
+    }
 
     /**
      * 创建一个刚开始运行的 turn 记录。
@@ -53,6 +67,14 @@ public record TurnRecord(
             String approvalPolicy,
             Instant startedAt) {
         return new TurnRecord(turnId, threadId, status, inputText, cwd, providerId, model,
-                sandboxMode, approvalPolicy, startedAt, null, null);
+                sandboxMode, approvalPolicy, startedAt, null, null, BusinessIdentityScope.UNSCOPED);
+    }
+
+    public static TurnRecord started(
+            String turnId, String threadId, String status, String inputText, String cwd,
+            String providerId, String model, String sandboxMode, String approvalPolicy,
+            Instant startedAt, BusinessIdentityScope scope) {
+        return new TurnRecord(turnId, threadId, status, inputText, cwd, providerId, model,
+                sandboxMode, approvalPolicy, startedAt, null, null, scope);
     }
 }

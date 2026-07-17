@@ -165,7 +165,9 @@ public class ContextWindowRuntime {
      */
     public ContextWindowRuntimeResult prepare(ContextWindowRuntimeInput input) {
         Instant now = Instant.now();
-        ContextWindowRecord existingWindow = windowRepository.findByThreadId(input.threadId()).orElse(null);
+        ContextWindowRecord existingWindow = input.businessIdentityScope().scoped()
+                ? windowRepository.findByThreadId(input.threadId(), input.businessIdentityScope()).orElse(null)
+                : windowRepository.findByThreadId(input.threadId()).orElse(null);
         int modelWindow = effectiveModelWindow(input, existingWindow);
         ContextBudget budget = budget(modelWindow);
         int threshold = budget.autoCompactThresholdTokens();
@@ -222,7 +224,8 @@ public class ContextWindowRuntime {
         if (snapshotId == null || snapshotId.isBlank() || context == null || context.promptTokens() <= 0) {
             return;
         }
-        snapshotRepository.updateActualPromptTokens(snapshotId, context.promptTokens());
+        snapshotRepository.updateActualPromptTokens(
+                snapshotId, context.promptTokens(), context.businessIdentityScope());
     }
 
     private List<ThreadItem> historyItems(ContextWindowRuntimeInput input) {
@@ -271,7 +274,8 @@ public class ContextWindowRuntime {
                 writeJson(memoryReadResult.references()),
                 memoryReadResult.tokenEstimate(),
                 preview(input.userText()),
-                now);
+                now,
+                input.businessIdentityScope());
     }
 
     private ContextWindowRecord windowRecord(ContextWindowRuntimeInput input,
@@ -290,7 +294,8 @@ public class ContextWindowRuntime {
                 threshold,
                 snapshotId,
                 existingWindow == null ? now : existingWindow.createdAt(),
-                now);
+                now,
+                input.businessIdentityScope());
     }
 
     private int effectiveModelWindow(ContextWindowRuntimeInput input, ContextWindowRecord existingWindow) {
@@ -410,7 +415,8 @@ public class ContextWindowRuntime {
                         threshold,
                         replacementSnapshotId,
                         existingWindow == null ? now : existingWindow.createdAt(),
-                        now),
+                        now,
+                        input.businessIdentityScope()),
                 previousOrdinal,
                 existingWindow == null ? null : existingWindow.lastSnapshotId(),
                 replacementSnapshotId);

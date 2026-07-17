@@ -82,4 +82,25 @@ public class TurnEntity {
     /** 取消原因；用户取消或主动中断时写入，和失败原因区分开。 */
     @TableField("cancel_reason")
     private String cancelReason;
+
+    @TableField("desktop_instance_id")
+    private String desktopInstanceId;
+
+    @TableField("desktop_session_id")
+    private String desktopSessionId;
+
+    @TableField("auth_session_id")
+    private String authSessionId;
+
+    @TableField("identity_epoch")
+    private Long identityEpoch;
+
+    @TableField("user_id")
+    private String userId;
+
+    @TableField("tenant_id")
+    private String tenantId;
+
+    @TableField("platform_id")
+    private String platformId;
 }

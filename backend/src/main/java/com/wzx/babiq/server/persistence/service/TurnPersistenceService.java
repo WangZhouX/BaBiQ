@@ -2,6 +2,7 @@ package com.wzx.babiq.server.persistence.service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.wzx.babiq.server.conversation.repository.TurnRecord;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
 import com.wzx.babiq.server.persistence.entity.TurnEntity;
 import com.wzx.babiq.server.persistence.mapper.TurnMapper;
 import org.springframework.stereotype.Service;
@@ -9,6 +10,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 
 /**
@@ -45,8 +47,9 @@ public class TurnPersistenceService {
             turnMapper.insert(entity);
             return;
         }
-        entity.setId(existing.getId());
-        turnMapper.updateById(entity);
+        if (!sameImmutableMetadata(existing, entity)) {
+            throw new IllegalStateException("turn immutable metadata conflict");
+        }
     }
 
     /**
@@ -132,6 +135,17 @@ public class TurnPersistenceService {
         turnMapper.updateById(existing);
     }
 
+    @Transactional
+    public boolean markCanceled(String turnId, String status, String cancelReason, BusinessIdentityScope scope) {
+        TurnEntity existing = findTurn(turnId, scope).orElse(null);
+        if (existing == null) return false;
+        existing.setStatus(status);
+        existing.setCancelReason(cancelReason);
+        existing.setCompletedAt(PersistenceTime.write(Instant.now()));
+        turnMapper.updateById(existing);
+        return true;
+    }
+
     /**
      * 按 turnId 查询持久化记录。
      *
@@ -139,7 +153,12 @@ public class TurnPersistenceService {
      * @return 找到时返回实体
      */
     public Optional<TurnEntity> findTurn(String turnId) {
-        return Optional.ofNullable(turnMapper.selectOne(Wrappers.<TurnEntity>lambdaQuery()
+        return Optional.ofNullable(turnMapper.selectOne(scopedQuery(BusinessIdentityScope.UNSCOPED)
+                .eq(TurnEntity::getTurnId, turnId)));
+    }
+
+    public Optional<TurnEntity> findTurn(String turnId, BusinessIdentityScope scope) {
+        return Optional.ofNullable(turnMapper.selectOne(scopedQuery(scope)
                 .eq(TurnEntity::getTurnId, turnId)));
     }
 
@@ -168,12 +187,24 @@ public class TurnPersistenceService {
      */
     public List<TurnEntity> listTurns(String threadId, int limit, String beforeTurnId) {
         int safeLimit = Math.max(1, Math.min(limit, 200));
-        var query = Wrappers.<TurnEntity>lambdaQuery()
+        var query = scopedQuery(BusinessIdentityScope.UNSCOPED)
                 .eq(TurnEntity::getThreadId, threadId)
                 .orderByDesc(TurnEntity::getStartedAt)
                 .last("LIMIT " + safeLimit);
         if (beforeTurnId != null && !beforeTurnId.isBlank()) {
             findTurn(beforeTurnId).ifPresent(before -> query.lt(TurnEntity::getStartedAt, before.getStartedAt()));
+        }
+        return turnMapper.selectList(query);
+    }
+
+    public List<TurnEntity> listTurns(
+            String threadId, int limit, String beforeTurnId, BusinessIdentityScope scope) {
+        int safeLimit = Math.max(1, Math.min(limit, 200));
+        var query = scopedQuery(scope).eq(TurnEntity::getThreadId, threadId)
+                .orderByDesc(TurnEntity::getStartedAt).last("LIMIT " + safeLimit);
+        if (beforeTurnId != null && !beforeTurnId.isBlank()) {
+            findTurn(beforeTurnId, scope).ifPresent(before ->
+                    query.lt(TurnEntity::getStartedAt, before.getStartedAt()));
         }
         return turnMapper.selectList(query);
     }
@@ -192,6 +223,44 @@ public class TurnPersistenceService {
         entity.setStartedAt(PersistenceTime.write(record.startedAt()));
         entity.setCompletedAt(PersistenceTime.write(record.completedAt()));
         entity.setFailureReason(record.failureReason());
+        applyScope(entity, record.businessIdentityScope());
         return entity;
+    }
+
+    private static boolean sameImmutableMetadata(TurnEntity existing, TurnEntity candidate) {
+        return Objects.equals(existing.getThreadId(), candidate.getThreadId())
+                && Objects.equals(existing.getInputText(), candidate.getInputText())
+                && Objects.equals(existing.getCwd(), candidate.getCwd())
+                && Objects.equals(existing.getProviderId(), candidate.getProviderId())
+                && Objects.equals(existing.getModel(), candidate.getModel())
+                && Objects.equals(existing.getSandboxMode(), candidate.getSandboxMode())
+                && Objects.equals(existing.getApprovalPolicy(), candidate.getApprovalPolicy())
+                && Objects.equals(existing.getStartedAt(), candidate.getStartedAt())
+                && Objects.equals(existing.getDesktopInstanceId(), candidate.getDesktopInstanceId())
+                && Objects.equals(existing.getDesktopSessionId(), candidate.getDesktopSessionId())
+                && Objects.equals(existing.getAuthSessionId(), candidate.getAuthSessionId())
+                && Objects.equals(existing.getIdentityEpoch(), candidate.getIdentityEpoch())
+                && Objects.equals(existing.getUserId(), candidate.getUserId())
+                && Objects.equals(existing.getTenantId(), candidate.getTenantId())
+                && Objects.equals(existing.getPlatformId(), candidate.getPlatformId());
+    }
+
+    private com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<TurnEntity> scopedQuery(
+            BusinessIdentityScope scope) {
+        var query = Wrappers.<TurnEntity>lambdaQuery();
+        if (scope == null || !scope.scoped()) return query.isNull(TurnEntity::getDesktopInstanceId);
+        return query.eq(TurnEntity::getDesktopInstanceId, scope.desktopInstanceId())
+                .eq(TurnEntity::getDesktopSessionId, scope.desktopSessionId())
+                .eq(TurnEntity::getAuthSessionId, scope.authSessionId())
+                .eq(TurnEntity::getIdentityEpoch, scope.identityEpoch())
+                .eq(TurnEntity::getUserId, scope.userId()).eq(TurnEntity::getTenantId, scope.tenantId())
+                .eq(TurnEntity::getPlatformId, scope.platformId());
+    }
+
+    private static void applyScope(TurnEntity entity, BusinessIdentityScope scope) {
+        if (scope == null || !scope.scoped()) return;
+        entity.setDesktopInstanceId(scope.desktopInstanceId()); entity.setDesktopSessionId(scope.desktopSessionId());
+        entity.setAuthSessionId(scope.authSessionId()); entity.setIdentityEpoch(scope.identityEpoch());
+        entity.setUserId(scope.userId()); entity.setTenantId(scope.tenantId()); entity.setPlatformId(scope.platformId());
     }
 }

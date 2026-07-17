@@ -20,6 +20,7 @@ import com.wzx.babiq.server.persistence.mapper.ItemMapper;
 import com.wzx.babiq.server.persistence.service.ApprovalPersistenceService;
 import com.wzx.babiq.server.persistence.service.ToolCallPersistenceService;
 import com.wzx.babiq.server.persistence.service.TurnPersistenceService;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -93,6 +94,16 @@ public class RunRecordService {
         return new RunTurnListResult(turns, null);
     }
 
+    public RunTurnListResult listTurns(
+            String threadId, int limit, String cursor, BusinessIdentityScope scope) {
+        List<RunTurnSummaryDto> turns = turnPersistenceService.listTurns(threadId, limit, cursor, scope)
+                .stream().map(this::toTurnSummary).toList();
+        if (turns.isEmpty() && conversationRepository.findThread(threadId, scope).isEmpty()) {
+            throw new IllegalArgumentException("thread not found");
+        }
+        return new RunTurnListResult(turns, null);
+    }
+
     /**
      * 查询单个 turn 的完整运行详情。
      *
@@ -102,13 +113,31 @@ public class RunRecordService {
     public RunTurnDetailResult getTurn(String turnId) {
         TurnEntity turn = turnPersistenceService.findTurn(turnId)
                 .orElseThrow(() -> new IllegalArgumentException("turn 不存在: " + turnId));
+        BusinessIdentityScope scope = BusinessIdentityScope.UNSCOPED;
         return new RunTurnDetailResult(
                 toTurnSummary(turn),
-                listItemPayloads(turnId),
-                summaryJson(turn),
-                approvalPersistenceService.listByTurnId(turnId).stream().map(this::toApprovalDto).toList(),
-                toolCallPersistenceService.listByTurnId(turnId).stream().map(this::toToolCallDto).toList(),
+                listItemPayloads(turnId, scope),
+                summaryJson(turn, scope),
+                approvalPersistenceService.listByTurnId(turnId, scope).stream().map(this::toApprovalDto).toList(),
+                toolCallPersistenceService.listByTurnId(turnId, scope).stream().map(this::toToolCallDto).toList(),
                 contextStatusService.latestForTurn(turnId).orElse(null));
+    }
+
+    public RunTurnDetailResult getTurn(String turnId, BusinessIdentityScope scope) {
+        TurnEntity turn = turnPersistenceService.findTurn(turnId, scope)
+                .orElseThrow(() -> new IllegalArgumentException("turn not found"));
+        return new RunTurnDetailResult(
+                toTurnSummary(turn), listItemPayloads(turnId, scope), summaryJson(turn, scope),
+                approvalPersistenceService.listByTurnId(turnId, scope).stream().map(this::toApprovalDto).toList(),
+                toolCallPersistenceService.listByTurnId(turnId, scope).stream().map(this::toToolCallDto).toList(),
+                contextStatusService.latestForTurn(turnId, scope).orElse(null));
+    }
+
+    private List<JsonNode> listItemPayloads(String turnId, BusinessIdentityScope scope) {
+        return itemMapper.selectAuthorizedTurnItems(
+                        turnId, scoped(scope), desktopInstanceId(scope), desktopSessionId(scope), authSessionId(scope),
+                        identityEpoch(scope), userId(scope), tenantId(scope), platformId(scope))
+                .stream().map(this::parsePayload).toList();
     }
 
     private List<JsonNode> listItemPayloads(String turnId) {
@@ -133,6 +162,21 @@ public class RunRecordService {
                 .map(summary -> toSummaryJson(turn, summary))
                 .orElse(null);
     }
+
+    private JsonNode summaryJson(TurnEntity turn, BusinessIdentityScope scope) {
+        return conversationRepository.findTurnSummary(turn.getTurnId(), scope)
+                .map(summary -> toSummaryJson(turn, summary))
+                .orElse(null);
+    }
+
+    private static int scoped(BusinessIdentityScope scope) { return scope != null && scope.scoped() ? 1 : 0; }
+    private static String desktopInstanceId(BusinessIdentityScope scope) { return scoped(scope) == 1 ? scope.desktopInstanceId() : null; }
+    private static String desktopSessionId(BusinessIdentityScope scope) { return scoped(scope) == 1 ? scope.desktopSessionId() : null; }
+    private static String authSessionId(BusinessIdentityScope scope) { return scoped(scope) == 1 ? scope.authSessionId() : null; }
+    private static Long identityEpoch(BusinessIdentityScope scope) { return scoped(scope) == 1 ? scope.identityEpoch() : null; }
+    private static String userId(BusinessIdentityScope scope) { return scoped(scope) == 1 ? scope.userId() : null; }
+    private static String tenantId(BusinessIdentityScope scope) { return scoped(scope) == 1 ? scope.tenantId() : null; }
+    private static String platformId(BusinessIdentityScope scope) { return scoped(scope) == 1 ? scope.platformId() : null; }
 
     private ObjectNode toSummaryJson(TurnEntity turn, TurnSummaryRecord summary) {
         ObjectNode node = objectMapper.createObjectNode();

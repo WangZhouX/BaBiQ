@@ -22,6 +22,7 @@ public final class Turn {
     private final BusinessIdentityScope businessIdentityScope;
     /** turn 创建时间，后续可以用于历史排序和超时诊断。 */
     private final Instant createdAt;
+    private final Instant completedAt;
     private TurnStatus status;
     private String failureReason;
 
@@ -37,13 +38,38 @@ public final class Turn {
 
     /** 从 Thread 创建带不可变身份快照的 Turn。 */
     public Turn(String id, String threadId, BusinessIdentityScope businessIdentityScope) {
+        this(id, threadId, businessIdentityScope, TurnStatus.CREATED, Instant.now(), null, null);
+    }
+
+    /** 按持久化快照恢复 Turn，不重放生命周期迁移。 */
+    public static Turn restore(
+            String id,
+            String threadId,
+            BusinessIdentityScope businessIdentityScope,
+            TurnStatus status,
+            Instant createdAt,
+            Instant completedAt,
+            String failureReason) {
+        return new Turn(id, threadId, businessIdentityScope, status, createdAt, completedAt, failureReason);
+    }
+
+    private Turn(
+            String id,
+            String threadId,
+            BusinessIdentityScope businessIdentityScope,
+            TurnStatus status,
+            Instant createdAt,
+            Instant completedAt,
+            String failureReason) {
         this.id = id;
         this.threadId = threadId;
         this.businessIdentityScope = businessIdentityScope == null
                 ? BusinessIdentityScope.UNSCOPED
                 : businessIdentityScope;
-        this.createdAt = Instant.now();
-        this.status = TurnStatus.CREATED;
+        this.createdAt = createdAt == null ? Instant.now() : createdAt;
+        this.completedAt = completedAt;
+        this.status = status == null ? TurnStatus.CREATED : status;
+        this.failureReason = failureReason;
     }
 
     /**
@@ -93,6 +119,10 @@ public final class Turn {
      */
     public Instant createdAt() {
         return createdAt;
+    }
+
+    public Instant completedAt() {
+        return completedAt;
     }
 
     /**

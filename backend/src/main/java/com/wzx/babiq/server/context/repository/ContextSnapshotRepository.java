@@ -1,5 +1,7 @@
 package com.wzx.babiq.server.context.repository;
 
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
+
 import java.util.Optional;
 
 /**
@@ -24,6 +26,10 @@ public interface ContextSnapshotRepository {
      */
     Optional<ContextSnapshotRecord> findBySnapshotId(String snapshotId);
 
+    default Optional<ContextSnapshotRecord> findBySnapshotId(String snapshotId, BusinessIdentityScope scope) {
+        return findBySnapshotId(snapshotId).filter(record -> record.businessIdentityScope().equals(scope));
+    }
+
     /**
      * 查询某个 turn 最近生成的快照。
      *
@@ -31,6 +37,10 @@ public interface ContextSnapshotRepository {
      * @return 最近快照
      */
     Optional<ContextSnapshotRecord> findLatestByTurnId(String turnId);
+
+    default Optional<ContextSnapshotRecord> findLatestByTurnId(String turnId, BusinessIdentityScope scope) {
+        return findLatestByTurnId(turnId).filter(record -> record.businessIdentityScope().equals(scope));
+    }
 
     /**
      * 查询某个 thread 最近生成的快照。
@@ -40,6 +50,10 @@ public interface ContextSnapshotRepository {
      */
     Optional<ContextSnapshotRecord> findLatestByThreadId(String threadId);
 
+    default Optional<ContextSnapshotRecord> findLatestByThreadId(String threadId, BusinessIdentityScope scope) {
+        return findLatestByThreadId(threadId).filter(record -> record.businessIdentityScope().equals(scope));
+    }
+
     /**
      * 回填供应商返回的真实 prompt token。
      *
@@ -47,4 +61,11 @@ public interface ContextSnapshotRepository {
      * @param actualPromptTokens 真实 prompt token
      */
     void updateActualPromptTokens(String snapshotId, Long actualPromptTokens);
+
+    default void updateActualPromptTokens(
+            String snapshotId, Long actualPromptTokens, BusinessIdentityScope scope) {
+        if (!scope.scoped()) {
+            updateActualPromptTokens(snapshotId, actualPromptTokens);
+        }
+    }
 }
