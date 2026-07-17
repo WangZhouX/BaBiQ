@@ -4,14 +4,19 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
 import com.wzx.babiq.server.api.error.JsonRpcException;
+import com.wzx.babiq.server.application.api.BusinessJsonRpcAccessPolicy;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.WebSocketSession;
 
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * JSON-RPC 方法路由器。
@@ -28,6 +33,8 @@ public class JsonRpcDispatcher {
     private final Map<String, JsonRpcMethodHandler> handlers;
     /** Jackson JSON 编解码器，负责把 params 转成 handler 需要的 Java 类型。 */
     private final ObjectMapper objectMapper;
+    /** 仅 business profile 注入的 default-deny 策略；普通 profile 为 null。 */
+    private final BusinessJsonRpcAccessPolicy businessAccessPolicy;
 
     /**
      * 创建 dispatcher 并注册所有 method handler。
@@ -37,7 +44,19 @@ public class JsonRpcDispatcher {
      * @throws IllegalStateException 出现重复 method 时抛出
      */
     public JsonRpcDispatcher(List<JsonRpcMethodHandler> allHandlers, ObjectMapper objectMapper) {
+        this(allHandlers, objectMapper, null);
+    }
+
+    /** Spring 构造器通过 provider 保持普通 Agent profile 无业务策略依赖。 */
+    @Autowired
+    public JsonRpcDispatcher(
+            List<JsonRpcMethodHandler> allHandlers,
+            ObjectMapper objectMapper,
+            ObjectProvider<BusinessJsonRpcAccessPolicy> businessAccessPolicyProvider) {
         this.objectMapper = objectMapper;
+        this.businessAccessPolicy = businessAccessPolicyProvider == null
+                ? null
+                : businessAccessPolicyProvider.getIfAvailable();
         this.handlers = indexHandlers(allHandlers);
         log.info("JSON-RPC method 注册完成: count={}, methods={}", handlers.size(), handlers.keySet());
     }
@@ -51,7 +70,10 @@ public class JsonRpcDispatcher {
      */
     public JsonRpcMessage dispatch(JsonRpcMessage.Request request, WebSocketSession session) {
         JsonRpcMethodHandler handler = handlers.get(request.method());
-        if (handler == null) {
+        boolean accessDenied = businessAccessPolicy != null
+                && !businessAccessPolicy.isAllowed(
+                        request.method(), session == null ? null : session.getId());
+        if (handler == null || accessDenied) {
             log.warn("JSON-RPC 未知 method: requestId={}, method={}, availableMethods={}",
                     request.id(), request.method(), handlers.keySet());
             return JsonRpcMessage.ErrorResponse.of(
@@ -80,7 +102,9 @@ public class JsonRpcDispatcher {
                     handler.getClass().getSimpleName(),
                     session == null ? "null" : session.getId(),
                     JsonRpcLogSupport.paramsSummary(params));
-            Object responsePayload = handler.handle(params, session);
+            Object responsePayload = handler instanceof JsonRpcMultiMethodHandler multiMethodHandler
+                    ? multiMethodHandler.handle(request.method(), params, session)
+                    : handler.handle(params, session);
             log.info("JSON-RPC method 执行成功: requestId={}, method={}, handler={}, elapsedMs={}, resultType={}",
                     request.id(),
                     request.method(),
@@ -123,12 +147,49 @@ public class JsonRpcDispatcher {
     private Map<String, JsonRpcMethodHandler> indexHandlers(List<JsonRpcMethodHandler> allHandlers) {
         Map<String, JsonRpcMethodHandler> indexedHandlers = new LinkedHashMap<>();
         for (JsonRpcMethodHandler handler : allHandlers) {
-            // putIfAbsent 能在注册阶段直接发现重复 method，避免运行时路由到随机 handler。
-            JsonRpcMethodHandler previousHandler = indexedHandlers.putIfAbsent(handler.method(), handler);
-            if (previousHandler != null) {
-                throw new IllegalStateException("JSON-RPC method 重复注册: " + handler.method());
+            if (handler instanceof JsonRpcMultiMethodHandler multiMethodHandler) {
+                indexMultiMethodHandler(indexedHandlers, multiMethodHandler);
+            } else {
+                indexMethod(indexedHandlers, handler.method(), handler);
             }
         }
         return Map.copyOf(indexedHandlers);
+    }
+
+    /**
+     * 校验并注册一个多 method handler，避免空声明、空白名称或异常 Set 实现隐藏重复值。
+     */
+    private void indexMultiMethodHandler(
+            Map<String, JsonRpcMethodHandler> indexedHandlers,
+            JsonRpcMultiMethodHandler handler) {
+        Set<String> methods = handler.methods();
+        if (methods == null || methods.isEmpty()) {
+            throw new IllegalStateException("JSON-RPC 多 method handler 至少声明一个 method");
+        }
+
+        Set<String> declaredMethods = new LinkedHashSet<>();
+        for (String method : methods) {
+            if (method == null || method.isBlank()) {
+                throw new IllegalStateException("JSON-RPC method 不能为空");
+            }
+            if (!declaredMethods.add(method)) {
+                throw new IllegalStateException("JSON-RPC method 重复注册: " + method);
+            }
+            indexMethod(indexedHandlers, method, handler);
+        }
+    }
+
+    /**
+     * 注册单个 method，并统一检测 single/multi handler 之间的名称冲突。
+     */
+    private void indexMethod(
+            Map<String, JsonRpcMethodHandler> indexedHandlers,
+            String method,
+            JsonRpcMethodHandler handler) {
+        // putIfAbsent 能在注册阶段直接发现重复 method，避免运行时路由到随机 handler。
+        JsonRpcMethodHandler previousHandler = indexedHandlers.putIfAbsent(method, handler);
+        if (previousHandler != null) {
+            throw new IllegalStateException("JSON-RPC method 重复注册: " + method);
+        }
     }
 }
