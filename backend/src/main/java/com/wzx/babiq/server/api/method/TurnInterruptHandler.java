@@ -5,6 +5,7 @@ import com.wzx.babiq.server.agent.TurnExecutor;
 import com.wzx.babiq.server.api.JsonRpcMethodHandler;
 import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
 import com.wzx.babiq.server.api.error.JsonRpcException;
+import com.wzx.babiq.server.application.action.PendingApplicationActions;
 import com.wzx.babiq.server.persistence.service.TurnPersistenceService;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.WebSocketSession;
@@ -24,6 +25,7 @@ public class TurnInterruptHandler implements JsonRpcMethodHandler {
     private final TurnExecutor turnExecutor;
     /** 可选 turn 持久化服务，生产环境把主动中断写入 bq_turns。 */
     private final TurnPersistenceService turnPersistenceService;
+    private PendingApplicationActions pendingApplicationActions;
 
     /**
      * 创建 turn/interrupt handler。
@@ -46,6 +48,19 @@ public class TurnInterruptHandler implements JsonRpcMethodHandler {
         this.turnPersistenceService = turnPersistenceService;
     }
 
+    public TurnInterruptHandler(
+            TurnExecutor turnExecutor,
+            TurnPersistenceService turnPersistenceService,
+            PendingApplicationActions pendingApplicationActions) {
+        this(turnExecutor, turnPersistenceService);
+        this.pendingApplicationActions = pendingApplicationActions;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setPendingApplicationActions(PendingApplicationActions pendingApplicationActions) {
+        this.pendingApplicationActions = pendingApplicationActions;
+    }
+
     /**
      * 返回当前 handler 绑定的 JSON-RPC method。
      *
@@ -66,6 +81,9 @@ public class TurnInterruptHandler implements JsonRpcMethodHandler {
     @Override
     public Object handle(JsonNode params, WebSocketSession session) {
         String turnId = requiredText(params, "turnId");
+        if (pendingApplicationActions != null) {
+            pendingApplicationActions.cancelByTurn(turnId);
+        }
         boolean accepted = turnExecutor.interrupt(turnId);
         if (!accepted) {
             throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "turnId 不存在或已结束: " + turnId);

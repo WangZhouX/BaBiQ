@@ -86,6 +86,32 @@ public class JsonRpcDispatcher {
         return callHandler(request, session, handler);
     }
 
+    /**
+     * 路由客户端 notification；只允许显式声明该 method 的 multi-method handler，且不构造响应。
+     *
+     * @return 已找到并成功调用 handler 时为 true；未知或被策略拒绝时为 false
+     */
+    public boolean dispatchNotification(JsonRpcMessage.Notification notification, WebSocketSession session) {
+        JsonRpcMethodHandler handler = handlers.get(notification.method());
+        boolean accessDenied = businessAccessPolicy != null
+                && !businessAccessPolicy.isAllowed(
+                        notification.method(), session == null ? null : session.getId());
+        if (!(handler instanceof JsonRpcMultiMethodHandler multiMethodHandler) || accessDenied) {
+            return false;
+        }
+        try {
+            JsonNode params = notification.params() == null
+                    ? objectMapper.nullNode()
+                    : objectMapper.valueToTree(notification.params());
+            multiMethodHandler.handle(notification.method(), params, session);
+            return true;
+        } catch (Exception exception) {
+            log.warn("JSON-RPC notification 执行失败: method={}, handler={}",
+                    notification.method(), handler.getClass().getSimpleName(), exception);
+            return false;
+        }
+    }
+
     private JsonRpcMessage callHandler(
             JsonRpcMessage.Request request,
             WebSocketSession session,
@@ -101,7 +127,7 @@ public class JsonRpcDispatcher {
                     request.method(),
                     handler.getClass().getSimpleName(),
                     session == null ? "null" : session.getId(),
-                    JsonRpcLogSupport.paramsSummary(params));
+                    JsonRpcLogSupport.paramsSummary(request.method(), params));
             Object responsePayload = handler instanceof JsonRpcMultiMethodHandler multiMethodHandler
                     ? multiMethodHandler.handle(request.method(), params, session)
                     : handler.handle(params, session);

@@ -35,4 +35,16 @@ class JsonRpcLogSupportTest {
         assertThat(summary).doesNotContain("sk-secret");
         assertThat(summary.length()).isLessThan(360);
     }
+
+    @Test
+    @DisplayName("应用动作参数摘要始终固定脱敏")
+    void application_action_params_should_never_enter_logs() {
+        ObjectNode params = objectMapper.createObjectNode();
+        params.put("input", "secret-action-payload");
+
+        String summary = JsonRpcLogSupport.paramsSummary("application/action/request", params);
+
+        assertThat(summary).isEqualTo("[application-action-redacted]");
+        assertThat(summary).doesNotContain("secret-action-payload");
+    }
 }

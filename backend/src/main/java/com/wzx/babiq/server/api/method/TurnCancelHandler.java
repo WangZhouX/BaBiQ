@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.wzx.babiq.server.api.JsonRpcMethodHandler;
 import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
 import com.wzx.babiq.server.api.error.JsonRpcException;
+import com.wzx.babiq.server.application.action.PendingApplicationActions;
 import com.wzx.babiq.server.conversation.ConversationService;
 import com.wzx.babiq.server.conversation.Turn;
 import com.wzx.babiq.server.persistence.service.TurnPersistenceService;
@@ -25,6 +26,7 @@ public class TurnCancelHandler implements JsonRpcMethodHandler {
     private final ConversationService conversationService;
     /** 可选 turn 持久化服务，生产环境取消时同步 bq_turns。 */
     private final TurnPersistenceService turnPersistenceService;
+    private PendingApplicationActions pendingApplicationActions;
 
     /**
      * 创建 turn/cancel handler。
@@ -45,6 +47,19 @@ public class TurnCancelHandler implements JsonRpcMethodHandler {
     public TurnCancelHandler(ConversationService conversationService, TurnPersistenceService turnPersistenceService) {
         this.conversationService = conversationService;
         this.turnPersistenceService = turnPersistenceService;
+    }
+
+    public TurnCancelHandler(
+            ConversationService conversationService,
+            TurnPersistenceService turnPersistenceService,
+            PendingApplicationActions pendingApplicationActions) {
+        this(conversationService, turnPersistenceService);
+        this.pendingApplicationActions = pendingApplicationActions;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setPendingApplicationActions(PendingApplicationActions pendingApplicationActions) {
+        this.pendingApplicationActions = pendingApplicationActions;
     }
 
     /**
@@ -73,6 +88,9 @@ public class TurnCancelHandler implements JsonRpcMethodHandler {
                         JsonRpcErrorCode.INVALID_PARAMS,
                         "turnId=" + turnId + " 不存在,无法取消"));
 
+        if (pendingApplicationActions != null) {
+            pendingApplicationActions.cancelByTurn(turnId);
+        }
         try {
             turn.cancel();
         } catch (IllegalStateException exception) {

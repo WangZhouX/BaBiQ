@@ -5,6 +5,11 @@ import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.core.rolling.RollingFileAppender;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.wzx.babiq.server.agent.team.TeamMemoryProperties;
+import com.wzx.babiq.server.api.method.TurnCancelHandler;
+import com.wzx.babiq.server.api.method.TurnInterruptHandler;
+import com.wzx.babiq.server.application.action.PendingApplicationActions;
+import com.wzx.babiq.server.application.action.ApplicationMessageSequence;
+import com.wzx.babiq.server.application.api.ApplicationActionProtocolHandler;
 import com.wzx.babiq.server.conversation.repository.ConversationRepository;
 import com.wzx.babiq.server.conversation.repository.TurnRecord;
 import com.wzx.babiq.server.memory.LongTermMemoryProperties;
@@ -23,6 +28,7 @@ import org.springframework.core.env.Environment;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import javax.sql.DataSource;
 import java.nio.charset.StandardCharsets;
@@ -101,6 +107,21 @@ class BusinessDesktopProfileIsolationIT {
 
     @Autowired
     private TurnMapper turnMapper;
+
+    @Autowired
+    private PendingApplicationActions pendingApplicationActions;
+
+    @Autowired
+    private TurnCancelHandler turnCancelHandler;
+
+    @Autowired
+    private TurnInterruptHandler turnInterruptHandler;
+
+    @Autowired
+    private ApplicationMessageSequence applicationMessageSequence;
+
+    @Autowired
+    private ApplicationActionProtocolHandler applicationActionProtocolHandler;
 
     private BusinessDesktopRuntimePaths testLoggingPaths;
 
@@ -338,6 +359,20 @@ class BusinessDesktopProfileIsolationIT {
         assertThat(properties.memoryRoot()).isNotEqualTo(commonRoot.resolve("memories"));
         assertThat(properties.teamRoot()).isNotEqualTo(commonRoot.resolve("teams"));
         assertThat(properties.backendLockPath()).isNotEqualTo(commonRoot.resolve("instance.lock"));
+    }
+
+    @Test
+    void springInjectsPendingApplicationActionsIntoBothTurnCancellationHandlers() {
+        assertThat(ReflectionTestUtils.getField(turnCancelHandler, "pendingApplicationActions"))
+                .isSameAs(pendingApplicationActions);
+        assertThat(ReflectionTestUtils.getField(turnInterruptHandler, "pendingApplicationActions"))
+                .isSameAs(pendingApplicationActions);
+    }
+
+    @Test
+    void springInjectsTheSharedApplicationMessageSequenceIntoTheProtocolHandler() {
+        assertThat(ReflectionTestUtils.getField(applicationActionProtocolHandler, "messageSequence"))
+                .isSameAs(applicationMessageSequence);
     }
 
     private BusinessDesktopModeProperties propertiesForRuntime(Path runtime) {

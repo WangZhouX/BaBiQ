@@ -20,6 +20,9 @@ import java.util.concurrent.TimeUnit;
  */
 public final class JsonRpcLogSupport {
 
+    private static final String APPLICATION_ACTION_PREFIX = "application/action/";
+    private static final String APPLICATION_ACTION_REDACTED = "[application-action-redacted]";
+
     /** 日志摘要专用 ObjectMapper，只做安全序列化，不参与业务请求反序列化。 */
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     /** 文本字段预览长度上限，避免用户长 prompt 把控制台刷屏。 */
@@ -46,6 +49,14 @@ public final class JsonRpcLogSupport {
         } catch (JsonProcessingException exception) {
             return "<params-summary-error:" + exception.getMessage() + ">";
         }
+    }
+
+    /** 应用动作参数永不进入日志，其他方法继续使用通用安全摘要。 */
+    public static String paramsSummary(String method, JsonNode params) {
+        if (method != null && method.startsWith(APPLICATION_ACTION_PREFIX)) {
+            return APPLICATION_ACTION_REDACTED;
+        }
+        return paramsSummary(params);
     }
 
     /**
