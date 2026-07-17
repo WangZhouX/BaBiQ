@@ -1,6 +1,7 @@
 package com.wzx.babiq.server.context.runtime;
 
 import com.wzx.babiq.server.agent.AgentRunPolicy;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
 import com.wzx.babiq.server.conversation.ItemEmitter;
 import org.springframework.ai.tool.ToolCallback;
 
@@ -30,7 +31,8 @@ public record ContextWindowRuntimeInput(
         AgentRunPolicy runPolicy,
         int modelContextWindow,
         ToolCallback[] toolCallbacks,
-        ItemEmitter emitter
+        ItemEmitter emitter,
+        BusinessIdentityScope businessIdentityScope
 ) {
     /**
      * 兼容旧测试和旧调用点：没有 emitter 时仍可正常装配上下文。
@@ -46,11 +48,28 @@ public record ContextWindowRuntimeInput(
                                      int modelContextWindow,
                                      ToolCallback[] toolCallbacks) {
         this(threadId, turnId, userText, providerId, model, cwd, projectId,
-                runPolicy, modelContextWindow, toolCallbacks, null);
+                runPolicy, modelContextWindow, toolCallbacks, null, BusinessIdentityScope.UNSCOPED);
+    }
+
+    /** 兼容 Task 25 之前已携带 emitter 的调用点。 */
+    public ContextWindowRuntimeInput(String threadId, String turnId, String userText, String providerId,
+                                     String model, String cwd, String projectId, AgentRunPolicy runPolicy,
+                                     int modelContextWindow, ToolCallback[] toolCallbacks, ItemEmitter emitter) {
+        this(threadId, turnId, userText, providerId, model, cwd, projectId, runPolicy,
+                modelContextWindow, toolCallbacks, emitter, BusinessIdentityScope.UNSCOPED);
     }
 
     public ContextWindowRuntimeInput {
         runPolicy = runPolicy == null ? new AgentRunPolicy(null, null) : runPolicy;
         toolCallbacks = toolCallbacks == null ? new ToolCallback[0] : toolCallbacks.clone();
+        businessIdentityScope = businessIdentityScope == null
+                ? BusinessIdentityScope.UNSCOPED
+                : businessIdentityScope;
+    }
+
+    /** record 默认数组访问器会暴露内部引用，这里继续防御复制以保持输入快照不可变。 */
+    @Override
+    public ToolCallback[] toolCallbacks() {
+        return toolCallbacks.clone();
     }
 }

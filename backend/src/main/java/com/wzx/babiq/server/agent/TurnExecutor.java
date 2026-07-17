@@ -5,7 +5,10 @@ import com.wzx.babiq.server.conversation.ItemEmitter;
 import com.wzx.babiq.server.conversation.Turn;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
+
+import jakarta.annotation.PreDestroy;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -21,7 +24,7 @@ import java.util.concurrent.Future;
  * 并让 turn/interrupt 能取消正在运行的任务。</p>
  */
 @Component
-public class TurnExecutor {
+public class TurnExecutor implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(TurnExecutor.class);
 
@@ -29,7 +32,9 @@ public class TurnExecutor {
     private final AgentLoop agentLoop;
 
     /** P1 使用 cachedThreadPool 简化本机异步执行；P2 可根据资源隔离需求换成受控线程池。 */
-    private final ExecutorService executor = Executors.newCachedThreadPool();
+    private final ExecutorService executor;
+    /** true 表示线程池由本组件创建，关闭组件时才负责 shutdown。 */
+    private final boolean ownedExecutor;
 
     /** turnId -> Future，用于 turn/interrupt 找到正在运行的 worker。 */
     private final Map<String, Future<?>> running = new ConcurrentHashMap<>();
@@ -39,8 +44,20 @@ public class TurnExecutor {
      *
      * @param agentLoop Agent 主流程
      */
+    @Autowired
     public TurnExecutor(AgentLoop agentLoop) {
+        this(agentLoop, Executors.newCachedThreadPool(), true);
+    }
+
+    /** 测试和宿主可注入外部线程池；组件只取消自身任务，不取得线程池所有权。 */
+    public TurnExecutor(AgentLoop agentLoop, ExecutorService executor) {
+        this(agentLoop, executor, false);
+    }
+
+    private TurnExecutor(AgentLoop agentLoop, ExecutorService executor, boolean ownedExecutor) {
         this.agentLoop = agentLoop;
+        this.executor = java.util.Objects.requireNonNull(executor, "executor");
+        this.ownedExecutor = ownedExecutor;
     }
 
     /**
@@ -145,6 +162,17 @@ public class TurnExecutor {
         running.remove(turnId, future);
         log.info("turn/interrupt 已请求取消: turnId={}, canceled={}", turnId, canceled);
         return canceled;
+    }
+
+    /** 容器销毁时取消本组件仍持有的 turn；只有自建线程池才随组件关闭。 */
+    @Override
+    @PreDestroy
+    public void close() {
+        running.values().forEach(future -> future.cancel(true));
+        running.clear();
+        if (ownedExecutor) {
+            executor.shutdownNow();
+        }
     }
 
     /**

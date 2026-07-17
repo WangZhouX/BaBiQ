@@ -1,5 +1,6 @@
 package com.wzx.babiq.server.conversation;
 
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
 import com.wzx.babiq.server.conversation.items.CommandExecutionItem;
 import com.wzx.babiq.server.conversation.items.FileChangeItem;
 import com.wzx.babiq.server.conversation.items.ReasoningItem;
@@ -82,8 +83,13 @@ public class ConversationService {
      * @return 已写入内存 registry 的 Thread
      */
     public Thread createThread(String cwd) {
+        return createThread(cwd, BusinessIdentityScope.UNSCOPED);
+    }
+
+    /** 在请求边界冻结身份后创建 Thread；后续 Turn 只从 Thread 复制。 */
+    public Thread createThread(String cwd, BusinessIdentityScope businessIdentityScope) {
         String threadId = newId("thr_");
-        Thread thread = Thread.newThread(threadId, cwd);
+        Thread thread = Thread.newThread(threadId, cwd, businessIdentityScope);
         threads.put(threadId, thread);
         persistThreadIfEnabled(thread);
         return thread;
@@ -122,12 +128,13 @@ public class ConversationService {
      * @throws IllegalArgumentException threadId 不存在时抛出
      */
     public Turn startTurn(String threadId) {
-        if (findThread(threadId).isEmpty()) {
+        Thread thread = findThread(threadId).orElse(null);
+        if (thread == null) {
             throw new IllegalArgumentException("threadId=" + threadId + " 不存在,无法创建 Turn");
         }
 
         String turnId = newId("turn_");
-        Turn turn = new Turn(turnId, threadId);
+        Turn turn = new Turn(turnId, threadId, thread.businessIdentityScope());
         turns.put(turnId, turn);
         return turn;
     }

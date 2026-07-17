@@ -1,5 +1,7 @@
 package com.wzx.babiq.server.observability;
 
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
+
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -22,6 +24,8 @@ public final class TurnObservationContext {
     private final String providerId;
     /** 实际调用的模型名称，运行反馈条和日志都会展示它。 */
     private final String model;
+    /** 本轮创建时的业务身份快照，工具链禁止回查全局当前身份。 */
+    private final BusinessIdentityScope businessIdentityScope;
     /** turn 开始时的纳秒时间戳，用 nanoTime 计算耗时可以避免系统时钟回拨影响。 */
     private final long startedNanos;
     /** 可注入的纳秒时钟，测试里可以替换成可控时间源。 */
@@ -41,11 +45,15 @@ public final class TurnObservationContext {
                                    String turnId,
                                    String providerId,
                                    String model,
+                                   BusinessIdentityScope businessIdentityScope,
                                    LongSupplier nanoTime) {
         this.threadId = threadId;
         this.turnId = turnId;
         this.providerId = providerId == null ? "_active" : providerId;
         this.model = model == null || model.isBlank() ? "_unknown" : model;
+        this.businessIdentityScope = businessIdentityScope == null
+                ? BusinessIdentityScope.UNSCOPED
+                : businessIdentityScope;
         this.nanoTime = nanoTime;
         this.startedNanos = nanoTime.getAsLong();
     }
@@ -54,12 +62,23 @@ public final class TurnObservationContext {
         return start(threadId, turnId, providerId, model, System::nanoTime);
     }
 
+    public static TurnObservationContext start(String threadId, String turnId, String providerId, String model,
+                                               BusinessIdentityScope businessIdentityScope) {
+        return start(threadId, turnId, providerId, model, businessIdentityScope, System::nanoTime);
+    }
+
     public static TurnObservationContext start(String threadId,
                                                String turnId,
                                                String providerId,
                                                String model,
                                                LongSupplier nanoTime) {
-        return new TurnObservationContext(threadId, turnId, providerId, model, nanoTime);
+        return start(threadId, turnId, providerId, model, BusinessIdentityScope.UNSCOPED, nanoTime);
+    }
+
+    public static TurnObservationContext start(String threadId, String turnId, String providerId, String model,
+                                               BusinessIdentityScope businessIdentityScope,
+                                               LongSupplier nanoTime) {
+        return new TurnObservationContext(threadId, turnId, providerId, model, businessIdentityScope, nanoTime);
     }
 
     public void recordTokens(long prompt, long completion) {
@@ -86,6 +105,10 @@ public final class TurnObservationContext {
 
     public String model() {
         return model;
+    }
+
+    public BusinessIdentityScope businessIdentityScope() {
+        return businessIdentityScope;
     }
 
     public long promptTokens() {

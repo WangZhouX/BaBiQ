@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.wzx.babiq.server.api.JsonRpcMethodHandler;
 import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
 import com.wzx.babiq.server.api.error.JsonRpcException;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScopeService;
 import com.wzx.babiq.server.conversation.ConversationService;
 import com.wzx.babiq.server.conversation.Thread;
 import org.springframework.stereotype.Component;
@@ -22,6 +23,8 @@ public class ThreadCreateHandler implements JsonRpcMethodHandler {
 
     /** 会话服务，负责创建 thread 并保存它绑定的工作目录 cwd。 */
     private final ConversationService conversationService;
+    /** 仅在 thread/create 边界解析一次当前可信业务身份。 */
+    private final BusinessIdentityScopeService businessIdentityScopeService;
 
     /**
      * 创建 thread/create handler。
@@ -29,7 +32,15 @@ public class ThreadCreateHandler implements JsonRpcMethodHandler {
      * @param conversationService 对话生命周期服务
      */
     public ThreadCreateHandler(ConversationService conversationService) {
+        this(conversationService, null);
+    }
+
+    /** Spring 生产构造器；普通模式依然会解析为 UNSCOPED。 */
+    @org.springframework.beans.factory.annotation.Autowired
+    public ThreadCreateHandler(ConversationService conversationService,
+                               BusinessIdentityScopeService businessIdentityScopeService) {
         this.conversationService = conversationService;
+        this.businessIdentityScopeService = businessIdentityScopeService;
     }
 
     /**
@@ -53,7 +64,9 @@ public class ThreadCreateHandler implements JsonRpcMethodHandler {
     @Override
     public Object handle(JsonNode params, WebSocketSession session) {
         String cwd = requiredText(params, "cwd");
-        Thread thread = conversationService.createThread(cwd);
+        Thread thread = businessIdentityScopeService == null
+                ? conversationService.createThread(cwd)
+                : conversationService.createThread(cwd, businessIdentityScopeService.resolve(session));
         return Map.of(
                 "threadId", thread.id(),
                 "title", conversationService.defaultTitleFor(thread.cwd()),

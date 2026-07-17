@@ -47,7 +47,8 @@ public class AgentLoop {
     public void invoke(Turn turn, String userText, String providerId, String cwd, ItemEmitter emitter, AgentRunPolicy runPolicy) { invoke(turn, userText, providerId, cwd, emitter, runPolicy, null); }
     /** 执行普通用户输入，并可选把本轮工具运行绑定到工作容器目标。 */
     public void invoke(Turn turn, String userText, String providerId, String cwd, ItemEmitter emitter, AgentRunPolicy runPolicy, String workUnitGoalId) {
-        TurnObservationContext context = observationRegistry.start(turn.threadId(), turn.id(), providerId, strategy.resolveModelName(providerId));
+        TurnObservationContext context = observationRegistry.start(turn.threadId(), turn.id(), providerId,
+                strategy.resolveModelName(providerId), turn.businessIdentityScope());
         if (workUnitGoalId != null && !workUnitGoalId.isBlank()) context.rememberWorkUnitGoalId(workUnitGoalId);
         long startedNanos = System.nanoTime();
         ContextWindowRuntimeResult contextInput = null;
@@ -85,7 +86,8 @@ public class AgentLoop {
         }
         return contextWindowRuntime.prepare(new ContextWindowRuntimeInput(turn.threadId(), turn.id(), userText,
                 providerId, strategy.resolveModelName(providerId), cwd, projectId(cwd), runPolicy,
-                strategy.resolveContextWindow(providerId), strategy.currentToolCallbacks(exposurePlan), emitter));
+                strategy.resolveContextWindow(providerId), strategy.currentToolCallbacks(exposurePlan), emitter,
+                turn.businessIdentityScope()));
     }
     private void recordContextUsage(ContextWindowRuntimeResult contextInput, TurnObservationContext context) {
         if (contextWindowRuntime != null && contextInput != null) contextWindowRuntime.recordUsage(contextInput.snapshotId(), context);

@@ -54,7 +54,8 @@ final class AgentLoopOutputHandler {
     /** 处理审批响应：找回暂停中的 Agent，并从 SAA HITL 暂停点继续执行。 */
     void invokeResume(Turn turn, InterruptionMetadata feedback, String cwd,
                       ItemEmitter emitter, AgentRunPolicy runPolicy) {
-        TurnObservationContext context = observationRegistry.getOrStart(turn.threadId(), turn.id(), null, strategy.resolveModelName(null));
+        TurnObservationContext context = observationRegistry.getOrStart(
+                turn.threadId(), turn.id(), null, strategy.resolveModelName(null), turn.businessIdentityScope());
         ReactAgent agent = pausedAgents.take(turn.threadId());
         if (agent == null) {
             AgentLoopSupport.fail(log, turn, emitter,

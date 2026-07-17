@@ -4,6 +4,7 @@ import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.action.InterruptionMetadata;
 import com.wzx.babiq.server.approval.ApprovalPolicy;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
 import com.wzx.babiq.server.approval.ApprovalRuleService;
 import com.wzx.babiq.server.hook.BaBiQTokenUsageHook;
 import com.wzx.babiq.server.hook.ResumeJumpCleanupHook;
@@ -19,6 +20,7 @@ import com.wzx.babiq.server.tool.ToolRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -63,6 +65,23 @@ class ReActStrategyTest {
         assertThat(config.metadata(BaBiQSandboxInterceptor.CONTEXT_SANDBOX_MODE).orElseThrow())
                 .as("工具节点只看 RunnableConfig/toolContext，必须能拿到本轮设置页切换后的沙箱模式")
                 .isEqualTo("DANGER_FULL_ACCESS");
+    }
+
+    @Test
+    void tool_and_runnable_contexts_should_carry_the_same_immutable_business_scope() {
+        ReActStrategy strategy = newStrategy();
+        BusinessIdentityScope scope = BusinessIdentityScope.scoped(
+                "desktop-a", "desktop-session-a", "auth-a", 1,
+                "user-a", "tenant-a", "platform-a");
+        TurnObservationContext context = TurnObservationContext.start(
+                "thr_1", "turn_1", "provider-a", "qwen-plus", scope, () -> 0L);
+        AgentRunPolicy runPolicy = AgentRunPolicy.of(SandboxMode.READ_ONLY, ApprovalPolicy.NEVER);
+
+        Map<String, Object> toolContext = strategy.buildToolContext("H:\\aaa", null, context, runPolicy);
+        RunnableConfig config = strategy.buildConfig("thr_1", "H:\\aaa", null, context, runPolicy);
+
+        assertThat(toolContext).containsEntry(BusinessIdentityScope.METADATA_KEY, scope);
+        assertThat(config.metadata(BusinessIdentityScope.METADATA_KEY)).contains(scope);
     }
 
     @Test

@@ -21,6 +21,7 @@ import com.wzx.babiq.server.interceptor.SpotlightingToolInterceptor;
 import com.wzx.babiq.server.interceptor.ToolObservationInterceptor;
 import com.wzx.babiq.server.model.ChatClientFactory;
 import com.wzx.babiq.server.observability.TurnObservationContext;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
 import com.wzx.babiq.server.approval.ApprovalPolicy;
 import com.wzx.babiq.server.approval.ApprovalRuleService;
 import com.wzx.babiq.server.persistence.service.TurnPersistenceService;
@@ -180,12 +181,7 @@ public class ReActStrategy {
 
         // toolContext 是 SAA 在工具调用和拦截器之间传递上下文的 Map。
         // BaBiQ 把 cwd、额外可写根、emitter 和观测上下文都放进去，避免工具自己依赖全局状态。
-        Map<String, Object> toolContext = new LinkedHashMap<>();
-        toolContext.put(BaBiQSandboxInterceptor.CONTEXT_CWD, cwd);
-        toolContext.put(BaBiQSandboxInterceptor.CONTEXT_WRITABLE_ROOTS, stringify(properties.writableRoots()));
-        toolContext.put(BaBiQSandboxInterceptor.CONTEXT_ITEM_EMITTER, emitter);
-        toolContext.put(BaBiQSandboxInterceptor.CONTEXT_SANDBOX_MODE, effectivePolicy.sandboxMode().name());
-        toolContext.put(TurnObservationContext.METADATA_KEY, context);
+        Map<String, Object> toolContext = buildToolContext(cwd, emitter, context, effectivePolicy);
 
         ModelCallLimitHook limitHook = ModelCallLimitHook.builder()
                 .runLimit(properties.maxIterations())
@@ -217,6 +213,19 @@ public class ReActStrategy {
             builder.hooks(buildHitlHook(effectivePolicy.approvalPolicy()), limitHook, resumeJumpCleanupHook, tokenUsageHook);
         }
         return builder.build();
+    }
+
+    /** 组装模型工具节点共享的显式上下文；独立方法便于验证其中没有全局身份读取。 */
+    Map<String, Object> buildToolContext(String cwd, ItemEmitter emitter,
+                                         TurnObservationContext context, AgentRunPolicy runPolicy) {
+        Map<String, Object> toolContext = new LinkedHashMap<>();
+        toolContext.put(BaBiQSandboxInterceptor.CONTEXT_CWD, cwd);
+        toolContext.put(BaBiQSandboxInterceptor.CONTEXT_WRITABLE_ROOTS, stringify(properties.writableRoots()));
+        toolContext.put(BaBiQSandboxInterceptor.CONTEXT_ITEM_EMITTER, emitter);
+        toolContext.put(BaBiQSandboxInterceptor.CONTEXT_SANDBOX_MODE, runPolicy.sandboxMode().name());
+        toolContext.put(TurnObservationContext.METADATA_KEY, context);
+        toolContext.put(BusinessIdentityScope.METADATA_KEY, context.businessIdentityScope());
+        return toolContext;
     }
 
     /**
@@ -284,6 +293,7 @@ public class ReActStrategy {
         RunnableConfig.Builder builder = RunnableConfig.builder()
                 .threadId(threadId)
                 .addMetadata(TurnObservationContext.METADATA_KEY, context)
+                .addMetadata(BusinessIdentityScope.METADATA_KEY, context.businessIdentityScope())
                 .addMetadata(BaBiQSandboxInterceptor.CONTEXT_WRITABLE_ROOTS, stringify(properties.writableRoots()))
                 .addMetadata(BaBiQSandboxInterceptor.CONTEXT_SANDBOX_MODE, effectivePolicy.sandboxMode().name());
         if (cwd != null && !cwd.isBlank()) {
@@ -342,6 +352,7 @@ public class ReActStrategy {
         RunnableConfig.Builder builder = RunnableConfig.builder()
                 .threadId(threadId)
                 .addMetadata(TurnObservationContext.METADATA_KEY, context)
+                .addMetadata(BusinessIdentityScope.METADATA_KEY, context.businessIdentityScope())
                 .addMetadata(BaBiQSandboxInterceptor.CONTEXT_WRITABLE_ROOTS, stringify(properties.writableRoots()))
                 .addMetadata(BaBiQSandboxInterceptor.CONTEXT_SANDBOX_MODE, effectivePolicy.sandboxMode().name())
                 // 2026-05-25 Bug 修复记录：ReactAgent 恢复只需要真实审批反馈。

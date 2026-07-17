@@ -1,5 +1,7 @@
 package com.wzx.babiq.server.conversation;
 
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
+
 import java.time.Instant;
 
 /**
@@ -16,6 +18,8 @@ public final class Turn {
     private final String id;
     /** turn 所属 thread id，用来把多轮对话归到同一个工作目录和会话上下文。 */
     private final String threadId;
+    /** 从所属 Thread 复制的不可变业务身份，worker 只能读这份快照。 */
+    private final BusinessIdentityScope businessIdentityScope;
     /** turn 创建时间，后续可以用于历史排序和超时诊断。 */
     private final Instant createdAt;
     private TurnStatus status;
@@ -28,8 +32,16 @@ public final class Turn {
      * @param threadId 所属 Thread 标识
      */
     public Turn(String id, String threadId) {
+        this(id, threadId, BusinessIdentityScope.UNSCOPED);
+    }
+
+    /** 从 Thread 创建带不可变身份快照的 Turn。 */
+    public Turn(String id, String threadId, BusinessIdentityScope businessIdentityScope) {
         this.id = id;
         this.threadId = threadId;
+        this.businessIdentityScope = businessIdentityScope == null
+                ? BusinessIdentityScope.UNSCOPED
+                : businessIdentityScope;
         this.createdAt = Instant.now();
         this.status = TurnStatus.CREATED;
     }
@@ -50,6 +62,10 @@ public final class Turn {
      */
     public String threadId() {
         return threadId;
+    }
+
+    public BusinessIdentityScope businessIdentityScope() {
+        return businessIdentityScope;
     }
 
     /**

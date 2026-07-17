@@ -3,6 +3,8 @@ package com.wzx.babiq.server.api.method;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wzx.babiq.server.agent.TurnExecutor;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScopeService;
 import com.wzx.babiq.server.api.JsonRpcLogSupport;
 import com.wzx.babiq.server.api.JsonRpcMethodHandler;
 import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
@@ -57,6 +59,8 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
     /** 应用设置服务，用来读取下一轮 turn 生效的沙箱和审批策略。 */
     private final AppSettingsService appSettingsService;
     private final WorkUnitService workUnitService;
+    /** 用当前连接 scope 验证 Thread 归属，严格在创建 Turn 之前执行。 */
+    private final BusinessIdentityScopeService businessIdentityScopeService;
 
     /**
      * 创建 turn/start handler。
@@ -69,7 +73,7 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
             ConversationService conversationService,
             ObjectMapper objectMapper,
             TurnExecutor turnExecutor) {
-        this(conversationService, objectMapper, turnExecutor, null, null, null, null, null);
+        this(conversationService, objectMapper, turnExecutor, null, null, null, null, null, null);
     }
 
     /**
@@ -92,7 +96,20 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
             ConversationEventRecorder eventRecorder,
             AppSettingsService appSettingsService) {
         this(conversationService, objectMapper, turnExecutor, providerRegistry, agentLoopProperties,
-                eventRecorder, appSettingsService, null);
+                eventRecorder, appSettingsService, null, null);
+    }
+
+    public TurnStartHandler(
+            ConversationService conversationService,
+            ObjectMapper objectMapper,
+            TurnExecutor turnExecutor,
+            ModelProviderRegistry providerRegistry,
+            AgentLoopProperties agentLoopProperties,
+            ConversationEventRecorder eventRecorder,
+            AppSettingsService appSettingsService,
+            WorkUnitService workUnitService) {
+        this(conversationService, objectMapper, turnExecutor, providerRegistry, agentLoopProperties,
+                eventRecorder, appSettingsService, workUnitService, null);
     }
 
     @Autowired
@@ -104,7 +121,8 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
             AgentLoopProperties agentLoopProperties,
             ConversationEventRecorder eventRecorder,
             AppSettingsService appSettingsService,
-            WorkUnitService workUnitService) {
+            WorkUnitService workUnitService,
+            BusinessIdentityScopeService businessIdentityScopeService) {
         this.conversationService = conversationService;
         this.objectMapper = objectMapper;
         this.turnExecutor = turnExecutor;
@@ -113,6 +131,7 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
         this.eventRecorder = eventRecorder;
         this.appSettingsService = appSettingsService;
         this.workUnitService = workUnitService;
+        this.businessIdentityScopeService = businessIdentityScopeService;
     }
 
     /**
@@ -145,6 +164,12 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
         Thread thread = conversationService.findThread(threadId)
                 .orElseThrow(() -> new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS,
                         "threadId=" + threadId + " 不存在，无法创建 Turn"));
+        BusinessIdentityScope requestScope = businessIdentityScopeService == null
+                ? BusinessIdentityScope.UNSCOPED
+                : resolveBusinessScope(session, threadId);
+        if (!thread.businessIdentityScope().equals(requestScope)) {
+            throw threadNotFound(threadId);
+        }
         Turn turn = conversationService.startTurn(threadId);
         turn.start();
         ModelProviderConfig provider = resolveProvider(providerId);
@@ -201,6 +226,19 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
                 turn.id(),
                 providerId == null ? "<active-provider>" : providerId);
         return Map.of("turnId", turn.id());
+    }
+
+    private BusinessIdentityScope resolveBusinessScope(WebSocketSession session, String threadId) {
+        try {
+            return businessIdentityScopeService.resolve(session);
+        } catch (IllegalStateException exception) {
+            throw threadNotFound(threadId);
+        }
+    }
+
+    private JsonRpcException threadNotFound(String threadId) {
+        return new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS,
+                "threadId=" + threadId + " 不存在，无法创建 Turn");
     }
 
     private ModelProviderConfig resolveProvider(String providerId) {
