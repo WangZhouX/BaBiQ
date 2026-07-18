@@ -67,7 +67,7 @@ sealed interface AgentSupervisorState {
  * @param scope 仅作为父作用域，Supervisor 不会主动取消它。
  * @param reconnectPolicy 连续瞬时失败到等待时长的确定性映射。
  * @param delayMillis 等待端口；生产默认真实 delay，测试可注入记录器。
- * @param incomingCapacity Supervisor 对 UI/协议层暴露的文本缓冲容量，满时丢弃最旧帧。
+ * @param incomingCapacity 单个 transport generation 的有界缓冲容量；满时对当前连接施加背压而不丢帧。
  */
 class AgentConnectionSupervisor(
     private val transport: AgentTransport,
@@ -75,14 +75,14 @@ class AgentConnectionSupervisor(
     scope: CoroutineScope,
     private val reconnectPolicy: AgentReconnectPolicy = AgentReconnectPolicy(),
     private val delayMillis: suspend (Long) -> Unit = { delay(it) },
-    incomingCapacity: Int = 128,
+    private val incomingCapacity: Int = 128,
 ) {
     private val lifecycleMutex = Mutex()
     private val outboundMutex = Mutex()
     private val supervisorJob = SupervisorJob(scope.coroutineContext[Job])
     private val supervisorScope = CoroutineScope(scope.coroutineContext + supervisorJob)
     private val mutableState = MutableStateFlow<AgentSupervisorState>(AgentSupervisorState.Idle)
-    private val mutableIncoming = Channel<String>(capacity = incomingCapacity)
+    private val mutableIncoming = Channel<String>(capacity = Channel.RENDEZVOUS)
     private var loopJob: Job? = null
     private var active: ActiveConnection? = null
     private var nextGeneration: Long = 0
@@ -253,9 +253,16 @@ class AgentConnectionSupervisor(
     ): ObservedConnection = coroutineScope {
         val connection = installed.connection
         val generation = installed.generation
+        val generationQueue = Channel<String>(capacity = incomingCapacity)
         val incomingJob = launch(start = CoroutineStart.UNDISPATCHED) {
             for (text in connection.incoming) {
-                forwardIfCurrent(generation, connection, text)
+                if (!isCurrent(generation, connection)) break
+                generationQueue.send(text)
+            }
+        }
+        val deliveryJob = launch(start = CoroutineStart.UNDISPATCHED) {
+            for (text in generationQueue) {
+                mutableIncoming.send(text)
             }
         }
         val terminalJob = async(start = CoroutineStart.UNDISPATCHED) {
@@ -284,6 +291,8 @@ class AgentConnectionSupervisor(
             )
         } finally {
             incomingJob.cancelAndJoin()
+            generationQueue.close()
+            deliveryJob.cancelAndJoin()
             terminalJob.cancelAndJoin()
         }
     }
@@ -339,29 +348,15 @@ class AgentConnectionSupervisor(
         }
     }
 
-    /** generation 核对和有界入队在同一锁内完成，避免重连清队列后旧 reader 再写入。 */
-    private suspend fun forwardIfCurrent(
+    /** 在读取 transport 帧后再次核对 generation，避免旧 reader 向其 generation relay 继续入队。 */
+    private suspend fun isCurrent(
         generation: Long,
         connection: AgentConnection,
-        text: String,
-    ) {
-        val overflow = lifecycleMutex.withLock {
-            val current = active
-            if (shutdown || current?.generation != generation || current.connection !== connection) {
-                return@withLock false
-            }
-            mutableIncoming.trySend(text).isFailure
-        }
-        if (overflow) {
-            try {
-                connection.close()
-            } finally {
-                throw IncomingBufferOverflowException()
-            }
-        }
+    ): Boolean = lifecycleMutex.withLock {
+        val current = active
+        !shutdown && current?.generation == generation && current.connection === connection
     }
 
-    /** 新连接安装时丢弃仍排队的旧 generation 文本。 */
     /** 连接观察结束后只清理仍属于自己的 active 引用。 */
     private suspend fun clearIfCurrent(generation: Long) {
         lifecycleMutex.withLock {
@@ -392,7 +387,4 @@ class AgentConnectionSupervisor(
         val connection: AgentConnection?,
     )
 
-    private class IncomingBufferOverflowException : IllegalStateException(
-        "Agent incoming buffer overflowed; reconnecting",
-    )
 }

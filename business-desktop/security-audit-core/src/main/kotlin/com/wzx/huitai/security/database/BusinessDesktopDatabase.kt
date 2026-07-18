@@ -1,9 +1,9 @@
 package com.wzx.huitai.security.database
 
-import java.nio.file.Files
 import java.nio.file.Path
 import java.sql.Connection
 import java.sql.DriverManager
+import com.wzx.huitai.security.path.SecureRuntimeFile
 import org.flywaydb.core.Flyway
 
 class BusinessDesktopDatabase(
@@ -16,7 +16,7 @@ class BusinessDesktopDatabase(
 
     init {
         require(databasePath.fileName != null) { "database path must identify a file" }
-        Files.createDirectories(databasePath.parent)
+        SecureRuntimeFile.prepare(databasePath)
         connection().use { connection ->
             connection.createStatement().use { statement ->
                 statement.executeQuery("PRAGMA journal_mode = WAL").use { result ->
@@ -26,11 +26,13 @@ class BusinessDesktopDatabase(
                 }
             }
         }
+        val migrationIdentity = SecureRuntimeFile.capture(databasePath)
         Flyway.configure()
             .dataSource(jdbcUrl, null, null)
             .locations("classpath:db/migration")
             .load()
             .migrate()
+        SecureRuntimeFile.verifyUnchanged(migrationIdentity)
     }
 
     fun <T> read(block: (Connection) -> T): T = connection().use(block)
@@ -48,8 +50,10 @@ class BusinessDesktopDatabase(
     }
 
     internal fun connection(): Connection {
+        val expectedIdentity = SecureRuntimeFile.capture(databasePath)
         val connection = connectionFactory(jdbcUrl)
         try {
+            SecureRuntimeFile.verifyUnchanged(expectedIdentity)
             connectionInitializer(connection)
             return connection
         } catch (failure: Throwable) {

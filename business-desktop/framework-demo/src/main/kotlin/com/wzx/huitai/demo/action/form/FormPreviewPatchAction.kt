@@ -19,6 +19,7 @@ import com.wzx.huitai.demo.action.requiredString
 import com.wzx.huitai.demo.action.strictSchema
 import com.wzx.huitai.demo.model.DemoScreenModel
 import com.wzx.huitai.demo.model.DemoFormState
+import com.wzx.huitai.demo.model.DemoFormEvent
 import com.wzx.huitai.presentation.form.FormPatch
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -27,7 +28,7 @@ import kotlinx.serialization.json.put
 /** 表单补丁预览动作的强类型输入。 */
 data class FormPreviewPatchInput(val executionId: String, val patch: FormPatch)
 
-/** 只读取并展示补丁，不改变页面建议或已提交值。 */
+/** 校验补丁并安装为瞬态 UI 建议；不修改任何已提交字段值。 */
 class FormPreviewPatchAction private constructor(
     private val screen: DemoScreenModel,
 ) : ApplicationAction<FormPreviewPatchInput, JsonObject> {
@@ -53,12 +54,23 @@ class FormPreviewPatchAction private constructor(
         },
     )
 
-    /** 返回补丁摘要，不安装建议也不修改页面。 */
+    /** 原子安装与当前 page/revision 绑定的建议补丁，并返回不含字段正文的摘要。 */
     override suspend fun execute(input: FormPreviewPatchInput, context: ActionContext): ActionResult<JsonObject> {
         if (input.patch.pageId != DemoFormState.PAGE_ID) {
             return ActionResult.Failure(
                 input.executionId,
                 ActionError(ActionErrorCode.VALIDATION_FAILED, "补丁页面不匹配"),
+            )
+        }
+        val transition = screen.dispatchWithExpectedContext(
+            event = DemoFormEvent.SuggestPatch(input.patch),
+            expectedPageId = context.pageId,
+            expectedRevision = context.contextRevision,
+        )
+        if (transition == null || transition.after.suggestionPatch != input.patch) {
+            return ActionResult.Failure(
+                input.executionId,
+                ActionError(ActionErrorCode.CONTEXT_STALE, "form suggestion context changed"),
             )
         }
         return ActionResult.Success(

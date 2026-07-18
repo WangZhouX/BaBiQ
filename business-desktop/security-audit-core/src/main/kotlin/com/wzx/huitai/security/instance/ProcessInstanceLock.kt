@@ -13,6 +13,7 @@ import java.nio.file.attribute.AclFileAttributeView
 import java.nio.file.attribute.PosixFileAttributeView
 import java.nio.file.attribute.PosixFilePermission
 import java.util.EnumSet
+import com.wzx.huitai.security.path.SecureRuntimeFile
 
 class ProcessInstanceLock private constructor(
     private val channel: FileChannel,
@@ -65,7 +66,7 @@ class ProcessInstanceLock private constructor(
         fun acquire(path: Path): ProcessInstanceLock = acquire(
             path = path,
             channelOpener = { normalized ->
-                FileChannel.open(normalized, StandardOpenOption.CREATE, StandardOpenOption.WRITE)
+                SecureRuntimeFile.openChannel(normalized, StandardOpenOption.WRITE)
             },
             tryLocker = FileChannel::tryLock,
             lockReleaser = FileLock::release,
@@ -75,7 +76,7 @@ class ProcessInstanceLock private constructor(
         internal fun acquire(
             path: Path,
             channelOpener: (Path) -> FileChannel = { normalized ->
-                FileChannel.open(normalized, StandardOpenOption.CREATE, StandardOpenOption.WRITE)
+                SecureRuntimeFile.openChannel(normalized, StandardOpenOption.WRITE)
             },
             tryLocker: (FileChannel) -> FileLock? = FileChannel::tryLock,
             lockReleaser: (FileLock) -> Unit = FileLock::release,
@@ -86,8 +87,9 @@ class ProcessInstanceLock private constructor(
             var channel: FileChannel? = null
             var lock: FileLock? = null
             try {
-                Files.createDirectories(normalized.parent)
+                val expectedIdentity = SecureRuntimeFile.prepare(normalized)
                 channel = channelOpener(normalized)
+                SecureRuntimeFile.verifyUnchanged(expectedIdentity)
                 applyBestEffortPermissions(normalized)
                 lock = try {
                     tryLocker(channel)

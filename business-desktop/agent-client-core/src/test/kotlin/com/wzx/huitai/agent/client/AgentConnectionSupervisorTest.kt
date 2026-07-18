@@ -278,7 +278,7 @@ class AgentConnectionSupervisorTest {
     }
 
     @Test
-    fun `incoming overflow preserves the first frame closes the connection and reconnects`() = runTest {
+    fun `queued old generation frames are canceled and cannot occupy the new generation relay`() = runTest {
         val first = FakeConnection("connection-1", AgentConnectionState.Connected)
         val second = FakeConnection("connection-2", AgentConnectionState.Connected)
         val transport = RecordingTransport(listOf(first, second))
@@ -286,19 +286,40 @@ class AgentConnectionSupervisorTest {
 
         supervisor.start()
         awaitConnected(supervisor, "connection-1")
-        first.emitIncoming("first-frame")
-        first.emitIncoming("overflow-frame")
+        first.emitIncoming("old-frame-1")
+        first.emitIncoming("old-frame-2")
         runCurrent()
 
-        assertEquals("first-frame", supervisor.incoming.receive())
-        assertEquals(1, first.closeCount)
+        first.emitState(AgentConnectionState.TransportFailure())
         awaitConnected(supervisor, "connection-2")
-        first.emitState(AgentConnectionState.Connected)
         second.emitIncoming("fresh-frame")
         runCurrent()
 
         assertEquals("fresh-frame", supervisor.incoming.receive())
         assertTrue(supervisor.incoming.tryReceive().isFailure)
+        supervisor.shutdown()
+    }
+
+    @Test
+    fun `current generation backpressure is lossless and never reconnects on a full relay`() = runTest {
+        val connection = FakeConnection("connection-1", AgentConnectionState.Connected)
+        val transport = RecordingTransport(listOf(connection))
+        val supervisor = supervisor(transport, incomingCapacity = 1)
+        supervisor.start()
+        awaitConnected(supervisor, "connection-1")
+
+        connection.emitIncoming("frame-1")
+        connection.emitIncoming("frame-2")
+        connection.emitIncoming("frame-3")
+        runCurrent()
+
+        assertEquals(
+            listOf("frame-1", "frame-2", "frame-3"),
+            List(3) { withTimeout(2_000) { supervisor.incoming.receive() } },
+        )
+        assertEquals(1, transport.requests.size)
+        assertEquals(0, connection.closeCount)
+        assertEquals(AgentSupervisorState.Connected("connection-1"), supervisor.state.value)
         supervisor.shutdown()
     }
 

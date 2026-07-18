@@ -321,15 +321,6 @@ class ApplicationRegistrationTest {
         )
         connection.serverSend(
             ApplicationProtocol.JSON.encodeToString(
-                com.wzx.huitai.agent.protocol.JsonRpcNotification.serializer(),
-                com.wzx.huitai.agent.protocol.JsonRpcNotification(
-                    method = ApplicationMethod.IDENTITY_UPDATE.wireName,
-                    params = identity(sequence = 3, identityEpoch = 3),
-                ),
-            ),
-        )
-        connection.serverSend(
-            ApplicationProtocol.JSON.encodeToString(
                 JsonRpcSuccessResponse.serializer(),
                 JsonRpcSuccessResponse(id = requestId, result = buildJsonObject { put("ok", true) }),
             ),

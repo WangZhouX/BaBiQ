@@ -8,7 +8,7 @@ import ch.qos.logback.core.rolling.RollingFileAppender
 import ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy
 import ch.qos.logback.core.util.FileSize
 import com.wzx.huitai.desktop.runtime.RuntimeFilePermissions
-import java.nio.file.Files
+import com.wzx.huitai.security.path.SecureRuntimeFile
 import java.nio.file.Path
 import org.slf4j.LoggerFactory
 
@@ -30,7 +30,7 @@ object DesktopLoggingBootstrap {
             check(existing == normalized) { "desktop logging is already configured" }
             return
         }
-        Files.createDirectories(normalized.parent)
+        val logIdentity = SecureRuntimeFile.prepare(normalized)
         RuntimeFilePermissions.applyOwnerOnly(normalized.parent, directory = true)
         val context = LoggerFactory.getILoggerFactory() as? LoggerContext
             ?: error("Logback is required for business desktop logging")
@@ -60,6 +60,14 @@ object DesktopLoggingBootstrap {
         appender.rollingPolicy = policy
         appender.start()
         check(appender.isStarted) { "desktop file logging could not start" }
+        try {
+            SecureRuntimeFile.verifyUnchanged(logIdentity)
+        } catch (failure: Throwable) {
+            appender.stop()
+            policy.stop()
+            encoder.stop()
+            throw failure
+        }
         root.addAppender(appender)
         configuredPath = normalized
         runCatching { RuntimeFilePermissions.applyOwnerOnly(normalized, directory = false) }

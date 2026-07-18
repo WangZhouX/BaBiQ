@@ -6,6 +6,7 @@ import java.nio.CharBuffer
 import java.nio.channels.FileChannel
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
@@ -22,6 +23,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.locks.ReentrantLock
 import javax.crypto.spec.SecretKeySpec
 import kotlin.concurrent.withLock
+import com.wzx.huitai.security.path.SecureRuntimeFile
 
 class JceksSecretStore(
     storePath: Path,
@@ -112,8 +114,9 @@ class JceksSecretStore(
     private fun <T> withStoreLock(block: () -> T): T = processLockEntry.lock.withLock {
         checkOpen()
         try {
-            Files.createDirectories(parent)
-            FileChannel.open(lockPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE).use { channel ->
+            val lockIdentity = SecureRuntimeFile.prepare(lockPath)
+            SecureRuntimeFile.openChannel(lockPath, StandardOpenOption.WRITE).use { channel ->
+                SecureRuntimeFile.verifyUnchanged(lockIdentity)
                 applyBestEffortPermissions(lockPath)
                 channel.lock().use { block() }
             }
@@ -130,8 +133,13 @@ class JceksSecretStore(
 
     private fun loadStore(): KeyStore = try {
         KeyStore.getInstance(STORE_TYPE).apply {
-            if (Files.notExists(storePath)) load(null, password)
-            else Files.newInputStream(storePath).use { load(it, password) }
+            val storeIdentity = SecureRuntimeFile.captureIfExists(storePath)
+            if (storeIdentity == null) {
+                load(null, password)
+            } else {
+                Files.newInputStream(storePath, LinkOption.NOFOLLOW_LINKS).use { load(it, password) }
+                SecureRuntimeFile.verifyUnchanged(storeIdentity)
+            }
         }
     } catch (failure: Exception) {
         throw storeFailure("Unable to open local secret store", failure)
@@ -174,20 +182,29 @@ class JceksSecretStore(
     }
 
     private fun persist(keyStore: KeyStore) {
+        SecureRuntimeFile.validateParent(storePath)
         val temp = Files.createTempFile(parent, ".${storePath.fileName}.", ".tmp")
         try {
+            val tempIdentity = SecureRuntimeFile.capture(temp)
             val encodedStore = WipeableByteArrayOutputStream()
             try {
                 keyStore.store(encodedStore, password)
-                FileChannel.open(temp, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING).use { channel ->
+                SecureRuntimeFile.openChannel(
+                    temp,
+                    StandardOpenOption.WRITE,
+                    StandardOpenOption.TRUNCATE_EXISTING,
+                ).use { channel ->
                     encodedStore.writeTo(channel)
                     channel.force(true)
                 }
+                SecureRuntimeFile.verifyUnchanged(tempIdentity)
             } finally {
                 encodedStore.wipe()
             }
             applyBestEffortPermissions(temp)
+            SecureRuntimeFile.captureIfExists(storePath)
             moveAtomically(temp, storePath)
+            SecureRuntimeFile.capture(storePath)
             runCatching {
                 FileChannel.open(parent, StandardOpenOption.READ).use { it.force(true) }
             }

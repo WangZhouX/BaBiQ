@@ -140,6 +140,29 @@ class BusinessAgentProcessLauncherTest {
     }
 
     @Test
+    fun `launcher detects log leaf replacement at process start and terminates the child`() = runTest {
+        val fixture = fixture(port = 43125)
+        val process = FakeProcess(alive = true, gracefulExit = true)
+        val launcher = BusinessAgentProcessLauncher(
+            processStarter = {
+                Files.delete(fixture.paths.agentLog)
+                Files.createDirectory(fixture.paths.agentLog)
+                process
+            },
+            readinessProbe = BusinessAgentReadinessProbe(
+                authenticator = AuthenticatedWebSocketProbe { true },
+                retryDelayMillis = { },
+            ),
+        )
+
+        assertFailsWith<IllegalArgumentException> { launcher.launch(fixture.request) }
+
+        assertEquals(1, process.destroyCount)
+        assertFalse(process.isAlive)
+        assertFalse(Files.exists(fixture.paths.agentSessionToken))
+    }
+
+    @Test
     fun `readiness fails immediately when child exits before authenticated websocket`() = runTest {
         val fixture = fixture(port = 43122)
         var authenticationAttempts = 0

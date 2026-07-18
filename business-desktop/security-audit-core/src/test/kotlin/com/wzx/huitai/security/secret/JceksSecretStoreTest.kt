@@ -73,6 +73,25 @@ class JceksSecretStoreTest {
     }
 
     @Test
+    fun `keystore and lock leaves must remain regular files at their actual open points`() {
+        val root = Files.createTempDirectory("jceks-secret-unsafe-leaf")
+        val storePath = root.resolve("store.jceks")
+        Files.createDirectory(storePath)
+        JceksSecretStore(storePath, "password".toCharArray()).use { store ->
+            assertFailsWith<SecretStoreException> { store.load(SecretRef.parse("provider.safe")) }
+        }
+
+        Files.delete(storePath)
+        Files.delete(root.resolve("store.jceks.lock"))
+        Files.createDirectory(root.resolve("store.jceks.lock"))
+        JceksSecretStore(storePath, "password".toCharArray()).use { store ->
+            assertFailsWith<IllegalArgumentException> {
+                store.save("provider.safe", "secret".toCharArray())
+            }
+        }
+    }
+
+    @Test
     fun `concurrent operations on one instance are serialized safely`() = runBlocking {
         val path = Files.createTempDirectory("jceks-secret-concurrent").resolve("store.jceks")
         val store = JceksSecretStore(path, "password".toCharArray())

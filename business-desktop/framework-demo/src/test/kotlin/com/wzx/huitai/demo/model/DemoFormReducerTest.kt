@@ -6,7 +6,6 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertTrue
 
 class DemoFormReducerTest {
     private val reducer = DemoFormReducer()
@@ -45,6 +44,8 @@ class DemoFormReducerTest {
         assertEquals("建议名称", accepted.values.name)
         assertEquals(initial.values.status, accepted.values.status)
         assertEquals(initial.revision + 1, accepted.revision)
+        assertEquals(listOf(DemoFormState.FIELD_STATUS), accepted.suggestionPatch?.changes?.map(FieldChange::fieldId))
+        assertEquals(accepted.revision, accepted.suggestionPatch?.baseRevision)
     }
 
     @Test
@@ -68,12 +69,16 @@ class DemoFormReducerTest {
     }
 
     @Test
-    fun `建议生成后用户编辑会使旧补丁失效且不能覆盖新输入`() {
+    fun `用户编辑一个建议字段只移除该字段并把其余建议重基到新版本`() {
         val initial = DemoFormState()
         val suggested = reducer.reduce(
             initial,
             DemoFormEvent.SuggestPatch(
-                patch(initial, DemoFormState.FIELD_NAME to "旧建议"),
+                patch(
+                    initial,
+                    DemoFormState.FIELD_NAME to "旧建议",
+                    DemoFormState.FIELD_STATUS to "保留建议",
+                ),
             ),
         )
 
@@ -81,11 +86,16 @@ class DemoFormReducerTest {
             suggested,
             DemoFormEvent.EditField(DemoFormState.FIELD_NAME, "用户新输入"),
         )
-        val rejected = reducer.reduce(edited, DemoFormEvent.AcceptAllSuggestions)
+        val accepted = reducer.reduce(edited, DemoFormEvent.AcceptAllSuggestions)
 
-        assertTrue(edited.suggestionIsStale)
-        assertEquals("用户新输入", rejected.values.name)
-        assertEquals(edited.revision, rejected.revision)
+        assertFalse(edited.suggestionIsStale)
+        assertEquals("用户新输入", edited.values.name)
+        assertEquals(listOf(DemoFormState.FIELD_STATUS), edited.suggestionPatch?.changes?.map(FieldChange::fieldId))
+        assertEquals(edited.revision, edited.suggestionPatch?.baseRevision)
+        assertEquals("用户新输入", accepted.values.name)
+        assertEquals("保留建议", accepted.values.status)
+        assertEquals(edited.revision + 1, accepted.revision)
+        assertEquals(null, accepted.suggestionPatch)
     }
 
     @Test

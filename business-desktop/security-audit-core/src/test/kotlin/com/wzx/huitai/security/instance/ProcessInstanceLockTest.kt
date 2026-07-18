@@ -105,6 +105,31 @@ class ProcessInstanceLockTest {
     }
 
     @Test
+    fun `lock leaf replacement between prepare and channel open fails closed`() {
+        val root = Files.createTempDirectory("process-instance-leaf-swap")
+        val path = root.resolve("desktop.lock")
+        val alternate = root.resolve("alternate.lock")
+        lateinit var opened: FileChannel
+
+        assertFailsWith<ProcessInstanceLockException> {
+            ProcessInstanceLock.acquire(
+                path = path,
+                channelOpener = {
+                    Files.delete(path)
+                    Files.createDirectory(path)
+                    FileChannel.open(
+                        alternate,
+                        StandardOpenOption.CREATE,
+                        StandardOpenOption.WRITE,
+                    ).also { opened = it }
+                },
+            )
+        }
+
+        assertFalse(opened.isOpen)
+    }
+
+    @Test
     fun `close retries release and channel cleanup after both fail once`() {
         val path = Files.createTempDirectory("process-instance-close-retry").resolve("desktop.lock")
         var releaseAttempts = 0

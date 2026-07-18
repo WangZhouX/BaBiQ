@@ -8,6 +8,11 @@ import com.wzx.huitai.agent.client.AgentConnectionState
 import com.wzx.huitai.agent.client.ApplicationSequenceTracker
 import com.wzx.huitai.agent.client.DesktopSessionIdentity
 import com.wzx.huitai.agent.client.AgentSupervisorState
+import com.wzx.huitai.agent.protocol.ActionEnvelope
+import com.wzx.huitai.agent.protocol.ApplicationMethod
+import com.wzx.huitai.agent.protocol.ApplicationProtocol
+import com.wzx.huitai.agent.protocol.CommonApplicationFields
+import com.wzx.huitai.agent.protocol.JsonRpcRequest
 import com.wzx.huitai.desktop.runtime.ManagedBusinessAgentConnection
 import com.wzx.huitai.desktop.decision.ActionDecisionPhase
 import com.wzx.huitai.demo.action.DemoActionCatalog
@@ -17,6 +22,9 @@ import com.wzx.huitai.demo.model.DemoFormEvent
 import com.wzx.huitai.demo.model.DemoFormState
 import com.wzx.huitai.presentation.context.FieldContext
 import com.wzx.huitai.presentation.context.FieldSensitivity
+import com.wzx.huitai.presentation.form.FieldChange
+import com.wzx.huitai.presentation.form.FormPatch
+import com.wzx.huitai.presentation.form.SourceReference
 import com.wzx.huitai.desktop.state.BusinessConnectionStatus
 import com.wzx.huitai.security.approval.InMemoryApprovalPort
 import com.wzx.huitai.security.approval.InMemoryConfirmationPort
@@ -33,6 +41,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
+import kotlin.test.assertNotNull
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
@@ -45,6 +54,9 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -53,6 +65,7 @@ import kotlinx.serialization.json.long
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.encodeToString
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class BusinessDesktopCompositionRootTest {
@@ -203,6 +216,100 @@ class BusinessDesktopCompositionRootTest {
                 .getValue("value").jsonPrimitive.content,
         )
 
+        val activeIdentity = requireNotNull(view.desktopState.value.identity)
+        val agentSuggestionPatch = FormPatch(
+            pageId = DemoFormState.PAGE_ID,
+            baseRevision = storage.screen.state.value.revision,
+            changes = listOf(
+                FieldChange(
+                    fieldId = DemoFormState.FIELD_CONTACT,
+                    previousValue = JsonPrimitive(storage.screen.state.value.values.contact),
+                    newValue = JsonPrimitive("Agent suggested contact"),
+                    reason = "Agent preview result",
+                    confidence = 0.93,
+                    sourceReferences = listOf(SourceReference("agent", "preview-1", "Agent preview")),
+                ),
+                FieldChange(
+                    fieldId = DemoFormState.FIELD_AMOUNT,
+                    previousValue = JsonPrimitive(storage.screen.state.value.values.amount),
+                    newValue = JsonPrimitive("1500"),
+                    reason = "Agent preview result",
+                    confidence = 0.88,
+                    sourceReferences = listOf(SourceReference("agent", "preview-2", "Agent preview")),
+                ),
+            ),
+        )
+        val previewExecutionId = "agent-preview-${System.nanoTime()}"
+        connection.serverSend(
+            ApplicationProtocol.JSON.encodeToString(
+                JsonRpcRequest.serializer(),
+                JsonRpcRequest(
+                    id = 9001,
+                    method = ApplicationMethod.ACTION_REQUEST.wireName,
+                    params = ActionEnvelope(
+                        common = CommonApplicationFields(
+                            protocolVersion = ApplicationProtocol.PROTOCOL_VERSION,
+                            desktopInstanceId = activeIdentity.desktopInstanceId,
+                            desktopSessionId = activeIdentity.desktopSessionId,
+                            authSessionId = activeIdentity.authSessionId,
+                            identityEpoch = activeIdentity.identityEpoch,
+                            sequence = 9_001,
+                            generatedAt = Instant.now().toString(),
+                            userId = activeIdentity.userId,
+                            tenantId = activeIdentity.tenantId,
+                            platformId = activeIdentity.platformId,
+                        ),
+                        threadId = "thread-preview",
+                        turnId = "turn-preview",
+                        toolCallId = "tool-preview",
+                        executionId = previewExecutionId,
+                        payload = buildJsonObject {
+                            put("actionId", "form.preview_patch")
+                            put("actionVersion", 1)
+                            put("input", buildJsonObject {
+                                put("executionId", previewExecutionId)
+                                put(
+                                    "patch",
+                                    ApplicationProtocol.JSON.encodeToJsonElement(
+                                        FormPatch.serializer(),
+                                        agentSuggestionPatch,
+                                    ).jsonObject,
+                                )
+                            })
+                            put("pageId", DemoFormState.PAGE_ID)
+                            put("contextRevision", agentSuggestionPatch.baseRevision)
+                        },
+                    ),
+                ),
+            ),
+        )
+        val installedSuggestion = withTimeoutOrNull(5_000) {
+            storage.screen.state.first { it.suggestionPatch == agentSuggestionPatch }
+        }
+        assertNotNull(installedSuggestion)
+        withTimeout(5_000) {
+            view.desktopState.first { DemoFormState.FIELD_CONTACT in it.suggestions }
+        }
+        assertTrue(
+            connection.sent.any { it.contains("\"id\":9001") && it.contains("\"accepted\":true") },
+            connection.sent.joinToString("\n"),
+        )
+        assertEquals(agentSuggestionPatch, storage.screen.state.value.suggestionPatch)
+        val projectedSuggestion = view.desktopState.value.suggestions.getValue(DemoFormState.FIELD_CONTACT)
+        assertEquals(JsonPrimitive("Agent suggested contact"), projectedSuggestion.value)
+        assertEquals("Agent preview", projectedSuggestion.source)
+        assertEquals(0.93, projectedSuggestion.confidence)
+        storage.screen.dispatch(DemoFormEvent.EditField(DemoFormState.FIELD_CONTACT, "User override"))
+        withTimeout(5_000) {
+            view.desktopState.first {
+                DemoFormState.FIELD_CONTACT !in it.suggestions && DemoFormState.FIELD_AMOUNT in it.suggestions
+            }
+        }
+        assertEquals(
+            storage.screen.state.value.revision,
+            storage.screen.state.value.suggestionPatch?.baseRevision,
+        )
+
         val sensitiveSnapshot = storage.screen.pageContext().copy(
             revision = 100,
             fields = storage.screen.pageContext().fields + listOf(
@@ -261,7 +368,7 @@ class BusinessDesktopCompositionRootTest {
             .map { Json.parseToJsonElement(it).jsonObject }
             .last { it["method"]?.jsonPrimitive?.content == "application/context/publish" }
             .getValue("params").jsonObject.getValue("payload").jsonObject
-        assertEquals(2L, latestContextPayload.getValue("contextRevision").jsonPrimitive.long)
+        assertEquals(3L, latestContextPayload.getValue("contextRevision").jsonPrimitive.long)
         assertEquals(
             "第二版",
             latestContextPayload.getValue("fields").jsonArray
@@ -554,6 +661,10 @@ class BusinessDesktopCompositionRootTest {
         override suspend fun close() {
             closeCount += 1
             incomingChannel.close()
+        }
+
+        suspend fun serverSend(text: String) {
+            incomingChannel.send(text)
         }
 
         override suspend fun manualRetry(): Boolean = true

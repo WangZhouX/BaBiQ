@@ -269,7 +269,12 @@ class AgentJsonRpcClient(
                 } else {
                     runCatching {
                         ApplicationProtocol.JSON.decodeFromJsonElement(JsonRpcNotification.serializer(), value)
-                    }.getOrNull()?.let { mutableInbound.trySend(AgentJsonRpcInbound.Notification(it)) }
+                    }.getOrNull()?.let { notification ->
+                        if (mutableInbound.trySend(AgentJsonRpcInbound.Notification(notification)).isFailure) {
+                            requestCleanupFromOverload()
+                            throw AgentJsonRpcClosedCancellation()
+                        }
+                    }
                 }
             }
         }

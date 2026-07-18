@@ -47,6 +47,7 @@ import com.wzx.huitai.desktop.security.JceksAuthCredentialPersistence
 import com.wzx.huitai.desktop.state.BusinessDesktopReducer
 import com.wzx.huitai.desktop.state.BusinessDesktopState
 import com.wzx.huitai.desktop.state.BusinessDesktopStore
+import com.wzx.huitai.desktop.state.BusinessFieldSuggestion
 import com.wzx.huitai.desktop.state.BusinessIdentity
 import com.wzx.huitai.demo.action.DemoActionCatalog
 import com.wzx.huitai.demo.gateway.FakeHuitaiGateway
@@ -55,6 +56,7 @@ import com.wzx.huitai.demo.model.DemoScreenModel
 import com.wzx.huitai.presentation.context.PageContextPublisher
 import com.wzx.huitai.presentation.context.PageContextSanitizer
 import com.wzx.huitai.presentation.context.TrustedPageContextIdentity
+import com.wzx.huitai.presentation.form.FormPatch
 import com.wzx.huitai.security.approval.SQLiteApprovalRecordStore
 import com.wzx.huitai.security.audit.SQLiteActionAuditPort
 import com.wzx.huitai.security.database.BusinessDesktopDatabase
@@ -87,6 +89,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withContext
@@ -579,6 +582,7 @@ class ProductionBusinessDesktopCompositionFactory(
         var desktopCoordinator: BusinessDesktopCoordinator? = null
         var actionHandler: ApplicationActionRequestHandler? = null
         var decisionConnectionObserver: Job? = null
+        var suggestionObserver: Job? = null
         try {
         val businessAgentClient = BusinessAgentClient(rpc, scope)
         conversation = BusinessConversationController(businessAgentClient, this.storage.desktopStore, scope)
@@ -641,6 +645,16 @@ class ProductionBusinessDesktopCompositionFactory(
             publishedContextSequence = 1,
         )
         desktopCoordinator.start()
+        suggestionObserver = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            this@ProductionBusinessDesktopCompositionFactory.storage.screen.state
+                .map { state ->
+                    state.suggestionPatch
+                        ?.takeUnless { state.suggestionIsStale }
+                        .toBusinessSuggestions()
+                }
+                .distinctUntilChanged()
+                .collect(workspace::updateSuggestions)
+        }
         decisionConnectionObserver = scope.launch {
             lifecycle.state.collect { state ->
                 if (state is AgentSupervisorState.Connected) {
@@ -668,13 +682,25 @@ class ProductionBusinessDesktopCompositionFactory(
             agentRequestActionBus = this.storage.actionBus,
             runtimeView = view,
             resource = CompositionResource {
-                closeUiStage(desktopCoordinator, decisionConnectionObserver, conversation, actionHandler)
+                closeUiStage(
+                    desktopCoordinator,
+                    suggestionObserver,
+                    decisionConnectionObserver,
+                    conversation,
+                    actionHandler,
+                )
             },
         )
         } catch (failure: Throwable) {
             withContext(NonCancellable) {
                 runCatching {
-                    closeUiStage(desktopCoordinator, decisionConnectionObserver, conversation, actionHandler)
+                    closeUiStage(
+                        desktopCoordinator,
+                        suggestionObserver,
+                        decisionConnectionObserver,
+                        conversation,
+                        actionHandler,
+                    )
                 }.exceptionOrNull()
             }?.let(failure::addSuppressed)
             throw failure
@@ -684,6 +710,7 @@ class ProductionBusinessDesktopCompositionFactory(
     /** 单个 UI stage 内也保证全量逆序清理，避免 stage 尚未返回 root 时泄漏 reader/controller。 */
     private suspend fun closeUiStage(
         desktopCoordinator: BusinessDesktopCoordinator?,
+        suggestionObserver: Job?,
         decisionConnectionObserver: Job?,
         conversation: BusinessConversationController?,
         actionHandler: ApplicationActionRequestHandler?,
@@ -697,12 +724,27 @@ class ProductionBusinessDesktopCompositionFactory(
             }
         }
         close { desktopCoordinator?.shutdown() }
+        close { suggestionObserver?.cancelAndJoin() }
         close { decisionConnectionObserver?.cancelAndJoin() }
         close { conversation?.close() }
         close { actionHandler?.close() }
         close { storage.decisions.shutdown() }
         first?.let { throw it }
     }
+
+    private fun FormPatch?.toBusinessSuggestions(): List<BusinessFieldSuggestion> =
+        this?.changes.orEmpty().mapNotNull { change ->
+            val value = change.newValue ?: return@mapNotNull null
+            val source = change.sourceReferences.firstOrNull()?.let { reference ->
+                reference.label ?: reference.type
+            } ?: "Agent"
+            BusinessFieldSuggestion(
+                fieldId = change.fieldId,
+                value = value,
+                source = source,
+                confidence = change.confidence,
+            )
+        }
 
     private fun identityEnvelope(value: BusinessIdentity = identity): IdentityEnvelope = IdentityEnvelope(
         common = common(value),

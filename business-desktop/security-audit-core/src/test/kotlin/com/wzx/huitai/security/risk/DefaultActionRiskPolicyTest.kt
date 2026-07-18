@@ -70,6 +70,25 @@ class DefaultActionRiskPolicyTest {
     }
 
     @Test
+    fun `内置业务桌面复合操作使用显式白名单而不被误判为未知操作`() {
+        val expected = mapOf(
+            "read_context" to ActionRiskLevel.READ_ONLY,
+            "read_state" to ActionRiskLevel.READ_ONLY,
+            "preview_patch" to ActionRiskLevel.READ_ONLY,
+            "navigate" to ActionRiskLevel.REVERSIBLE_WRITE,
+            "apply_patch" to ActionRiskLevel.REVERSIBLE_WRITE,
+            "save_draft" to ActionRiskLevel.REVERSIBLE_WRITE,
+        )
+
+        expected.forEach { (operation, risk) ->
+            val result = policy.evaluate(descriptor(operation = operation), command(), context())
+
+            assertEquals(risk, result.effectiveRisk, operation)
+            assertTrue(result.isAllowed, operation)
+        }
+    }
+
+    @Test
     fun `动作标题和标识中的提交发送删除用语同样按高风险处理`() {
         listOf("提交资料", "send-notification", "delete-record").forEach { wording ->
             val result = policy.evaluate(

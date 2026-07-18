@@ -316,6 +316,28 @@ class DemoActionCatalogTest {
         assertEquals(initial.revision + 1, screen.state.value.revision)
     }
 
+    @Test
+    fun `agent preview patch atomically installs a suggestion without changing submitted values`() = runTest {
+        val screen = DemoScreenModel()
+        val before = screen.state.value
+        val patch = singleFieldPatch(before, DemoFormState.FIELD_CONTACT, "Agent suggestion")
+        val registered = DemoActionCatalog(screen, FakeHuitaiGateway()).actions
+            .single { it.descriptor.id == "form.preview_patch" }
+
+        val invocation = registered.invokeExecute(
+            buildJsonObject {
+                put("executionId", "agent-preview-installs")
+                put("patch", Json.parseToJsonElement(Json.encodeToString(patch)).jsonObject)
+            },
+            context(before),
+        )
+
+        assertIs<ActionResult.Success<*>>(assertIs<ActionInvocationResult.Executed>(invocation).result)
+        assertEquals(before.values, screen.state.value.values)
+        assertEquals(before.revision, screen.state.value.revision)
+        assertEquals(patch, screen.state.value.suggestionPatch)
+    }
+
     private fun validInputs(): Map<String, JsonObject> {
         val state = DemoFormState()
         val patch = FormPatch(

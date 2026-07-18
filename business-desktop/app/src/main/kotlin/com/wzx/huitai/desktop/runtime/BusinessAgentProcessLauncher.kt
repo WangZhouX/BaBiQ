@@ -1,6 +1,7 @@
 package com.wzx.huitai.desktop.runtime
 
 import java.nio.file.Files
+import com.wzx.huitai.security.path.SecureRuntimeFile
 
 /** 测试可捕获 ProcessBuilder；生产默认直接启动参数数组对应的子进程。 */
 fun interface BusinessAgentProcessStarter {
@@ -22,6 +23,7 @@ class BusinessAgentProcessLauncher(
     suspend fun launch(request: BusinessAgentLaunchRequest): BusinessAgentRuntimeSession {
         var process: Process? = null
         try {
+            val logIdentity = SecureRuntimeFile.prepare(request.paths.agentLog)
             val builder = ProcessBuilder(request.command())
                 .redirectErrorStream(true)
                 .redirectOutput(ProcessBuilder.Redirect.appendTo(request.paths.agentLog.toFile()))
@@ -33,6 +35,7 @@ class BusinessAgentProcessLauncher(
             }
             builder.environment().putAll(request.environment())
             process = processStarter.start(builder)
+            SecureRuntimeFile.verifyUnchanged(logIdentity)
             builder.environment().remove(BusinessAgentLaunchRequest.BACKEND_KEYSTORE_PASSWORD_ENV)
             readinessProbe.await(process, request.connectRequest)
             check(Files.notExists(request.paths.agentSessionToken)) {

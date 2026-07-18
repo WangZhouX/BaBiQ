@@ -11,8 +11,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import com.wzx.huitai.demo.model.DemoFormEvent
-import com.wzx.huitai.demo.model.DemoFormState
-import com.wzx.huitai.desktop.state.BusinessFieldSuggestion
 import com.wzx.huitai.desktop.app.BusinessDesktopCompositionRoot
 import com.wzx.huitai.desktop.app.BusinessDesktopProductionConfiguration
 import com.wzx.huitai.desktop.app.ProductionBusinessDesktopCompositionFactory
@@ -24,7 +22,6 @@ import com.wzx.huitai.desktop.ui.layout.CompactContentTab
 import com.wzx.huitai.desktop.ui.shell.BusinessDesktopShell
 import com.wzx.huitai.desktop.ui.theme.HuitaiBusinessTheme
 import com.wzx.huitai.agent.protocol.ApplicationProtocol
-import com.wzx.huitai.presentation.form.FieldChange
 import com.wzx.huitai.presentation.form.FormPatch
 import java.nio.file.Path
 import java.util.UUID
@@ -34,7 +31,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
@@ -85,17 +81,6 @@ fun main() {
                     runCatching { view.production.conversationController.refreshProviders() }
                 }
 
-                LaunchedEffect(desktopState.suggestions, formState.revision) {
-                    suggestionPatch(formState, desktopState.suggestions)?.let { patch ->
-                        if (formState.suggestionPatch != patch) {
-                            storage.screen.dispatchIfRevision(
-                                DemoFormEvent.SuggestPatch(patch),
-                                expectedRevision = patch.baseRevision,
-                            )
-                        }
-                    }
-                }
-
                 HuitaiBusinessTheme {
                     BusinessDesktopShell(
                         state = desktopState,
@@ -125,10 +110,6 @@ fun main() {
                                         actionVersion = 1,
                                         input = actionInput(executionId, patch),
                                     )
-                                    if (storage.screen.state.value.revision == baseRevision + 1) {
-                                        val remaining = view.desktopState.value.suggestions - fieldId
-                                        view.production.workspaceController.updateSuggestions(remaining.values.toList())
-                                    }
                                     view.production.workspaceController.publishPage(storage.screen.pageContext())
                                 }
                             }
@@ -144,9 +125,6 @@ fun main() {
                                         actionVersion = 1,
                                         input = actionInput(executionId, patch),
                                     )
-                                    if (storage.screen.state.value.revision == baseRevision + 1) {
-                                        view.production.workspaceController.updateSuggestions(emptyList())
-                                    }
                                     view.production.workspaceController.publishPage(storage.screen.pageContext())
                                 }
                             }
@@ -219,27 +197,6 @@ fun main() {
         } finally {
             runtimeScope.cancel()
         }
-    }
-}
-
-private fun suggestionPatch(
-    state: DemoFormState,
-    suggestions: Map<String, BusinessFieldSuggestion>,
-): FormPatch? {
-    val changes = suggestions.values.mapNotNull { suggestion ->
-        if (suggestion.fieldId !in DemoFormState.FIELD_IDS) return@mapNotNull null
-        val newValue = suggestion.value as? JsonPrimitive
-        if (newValue?.isString != true) return@mapNotNull null
-        FieldChange(
-            fieldId = suggestion.fieldId,
-            previousValue = JsonPrimitive(state.values.valueOf(suggestion.fieldId)),
-            newValue = newValue,
-            reason = "Agent field suggestion",
-            confidence = suggestion.confidence?.takeIf(Double::isFinite)?.coerceIn(0.0, 1.0) ?: 0.5,
-        )
-    }
-    return changes.takeIf(List<FieldChange>::isNotEmpty)?.let {
-        FormPatch(DemoFormState.PAGE_ID, state.revision, it)
     }
 }
 

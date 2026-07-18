@@ -23,14 +23,27 @@ class DemoFormReducer : ScreenReducer<DemoFormState, DemoFormEvent> {
             ?.let { applyPatch(state, it) }
             ?: state
         is DemoFormEvent.ApplyPatch -> applyPatch(state, event.patch)
-        is DemoFormEvent.Navigate -> state.copy(route = event.route, revision = state.revision + 1)
+        is DemoFormEvent.Navigate -> state.copy(
+            route = event.route,
+            revision = state.revision + 1,
+            suggestionPatch = null,
+        )
     }
 
     private fun editField(state: DemoFormState, fieldId: String, value: String): DemoFormState {
         if (fieldId !in DemoFormState.FIELD_IDS) return state
+        val nextRevision = state.revision + 1
+        val remainingSuggestions = state.suggestionPatch
+            ?.takeUnless { state.suggestionIsStale }
+            ?.changes
+            ?.filterNot { it.fieldId == fieldId }
+            .orEmpty()
         return state.copy(
             values = state.values.withValue(fieldId, value),
-            revision = state.revision + 1,
+            revision = nextRevision,
+            suggestionPatch = remainingSuggestions.takeIf(List<FieldChange>::isNotEmpty)?.let { changes ->
+                FormPatch(DemoFormState.PAGE_ID, nextRevision, changes)
+            },
         )
     }
 
@@ -61,10 +74,19 @@ class DemoFormReducer : ScreenReducer<DemoFormState, DemoFormEvent> {
                 ?: return state
             nextValues = nextValues.withValue(change.fieldId, nextValue)
         }
+        val nextRevision = state.revision + 1
+        val appliedFields = patch.changes.mapTo(linkedSetOf(), FieldChange::fieldId)
+        val remainingSuggestions = state.suggestionPatch
+            ?.takeIf { it.pageId == patch.pageId && it.baseRevision == patch.baseRevision }
+            ?.changes
+            ?.filterNot { it.fieldId in appliedFields }
+            .orEmpty()
         return state.copy(
             values = nextValues,
-            revision = state.revision + 1,
-            suggestionPatch = null,
+            revision = nextRevision,
+            suggestionPatch = remainingSuggestions.takeIf(List<FieldChange>::isNotEmpty)?.let { changes ->
+                FormPatch(DemoFormState.PAGE_ID, nextRevision, changes)
+            },
         )
     }
 }

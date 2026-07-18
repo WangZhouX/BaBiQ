@@ -44,6 +44,36 @@ class BusinessDesktopMigrationTest {
     }
 
     @Test
+    fun `database leaf replacement between validation and jdbc open fails closed`() {
+        val path = Files.createTempDirectory("business-database-leaf-swap").resolve("business.db")
+        var closeCalled = false
+        val connection = Proxy.newProxyInstance(
+            Connection::class.java.classLoader,
+            arrayOf(Connection::class.java),
+        ) { _, method, _ ->
+            when (method.name) {
+                "close" -> { closeCalled = true; Unit }
+                "isClosed" -> closeCalled
+                "toString" -> "ReplacementRaceConnection"
+                else -> throw UnsupportedOperationException(method.name)
+            }
+        } as Connection
+
+        assertFailsWith<IllegalArgumentException> {
+            BusinessDesktopDatabase(
+                path = path,
+                connectionFactory = {
+                    Files.delete(path)
+                    Files.createDirectory(path)
+                    connection
+                },
+            )
+        }
+
+        assertTrue(closeCalled)
+    }
+
+    @Test
     fun `bootstrap creates exact action audit schema constraints indexes and pragmas`() {
         val path = Files.createTempDirectory("business-desktop-db").resolve("nested/business.db")
         BusinessDesktopDatabase(path).use { database ->

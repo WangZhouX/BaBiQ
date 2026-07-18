@@ -68,8 +68,14 @@ class DefaultActionRiskPolicy : ActionRiskPolicy {
         const val SENSITIVE_WRITE_REASON = "SENSITIVE_WRITE"
         const val HIGH_RISK_OPERATION_REASON = "HIGH_RISK_OPERATION"
 
-        val READ_OPERATIONS = setOf("get", "list", "query", "search", "view", "load", "preview", "refresh")
-        val WRITE_OPERATIONS = setOf("save", "update", "edit", "fill", "patch", "create", "upload")
+        val READ_OPERATIONS = setOf(
+            "get", "list", "query", "search", "view", "load", "preview", "refresh",
+            "read_context", "read_state", "preview_patch",
+        )
+        val WRITE_OPERATIONS = setOf(
+            "save", "update", "edit", "fill", "patch", "create", "upload",
+            "navigate", "apply_patch", "save_draft",
+        )
         val KNOWN_OPERATIONS = READ_OPERATIONS + WRITE_OPERATIONS
         val HIGH_RISK_OPERATION = Regex(
             pattern = "(?:^|[._\\-\\s])(?:submit|send|delete)(?:$|[A-Z0-9._\\-\\s])|提交|发送|删除",

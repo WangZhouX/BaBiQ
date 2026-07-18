@@ -2,6 +2,10 @@ package com.wzx.huitai.agent.client
 
 import com.wzx.huitai.agent.conversation.BusinessAgentClient
 import com.wzx.huitai.agent.conversation.BusinessAgentEvent
+import com.wzx.huitai.agent.protocol.ActionEnvelope
+import com.wzx.huitai.agent.protocol.ApplicationMethod
+import com.wzx.huitai.agent.protocol.CommonApplicationFields
+import com.wzx.huitai.agent.protocol.JsonRpcNotification
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -28,6 +32,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import kotlinx.serialization.encodeToString
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class AgentJsonRpcNotificationLifecycleTest {
@@ -145,6 +150,26 @@ class AgentJsonRpcNotificationLifecycleTest {
     }
 
     @Test
+    fun `action cancel overload fails closed instead of silently dropping the cancellation`() = runTest {
+        val connection = NotificationConnection()
+        val rpc = AgentJsonRpcClient(connection, this, inboundCapacity = 1)
+        connection.notifyApplication(ApplicationMethod.ACTION_CANCEL, actionEnvelope(sequence = 1))
+        connection.notifyApplication(ApplicationMethod.ACTION_CANCEL, actionEnvelope(sequence = 2))
+
+        runCurrent()
+
+        val retained = assertIs<AgentJsonRpcInbound.Notification>(rpc.incoming.tryReceive().getOrNull())
+        assertEquals(ApplicationMethod.ACTION_CANCEL.wireName, retained.value.method)
+        assertEquals(1L, (retained.value.params as ActionEnvelope).common.sequence)
+        withTimeout(500) { connection.state.first { it is AgentConnectionState.Closed } }
+        assertTrue(connection.closeCount > 0)
+        assertFailsWith<AgentJsonRpcClosedException> {
+            rpc.request("thread/create", buildJsonObject { })
+        }
+        rpc.close()
+    }
+
+    @Test
     fun `rpc close completes typed business event flow`() = runTest {
         val connection = NotificationConnection()
         val rpc = AgentJsonRpcClient(connection, this)
@@ -184,6 +209,14 @@ class AgentJsonRpcNotificationLifecycleTest {
         suspend fun notify(method: String, params: JsonObject = JsonObject(emptyMap())) {
             incomingChannel.send(notificationText(method, params))
         }
+        suspend fun notifyApplication(method: ApplicationMethod, params: ActionEnvelope) {
+            incomingChannel.send(
+                ApplicationProtocol.JSON.encodeToString(
+                    JsonRpcNotification.serializer(),
+                    JsonRpcNotification(method = method.wireName, params = params),
+                ),
+            )
+        }
         override suspend fun close() {
             closeCount += 1
             state.value = AgentConnectionState.Closed(code = null, reasonPresent = false)
@@ -199,4 +232,24 @@ class AgentJsonRpcNotificationLifecycleTest {
             put("params", params)
         }.toString()
     }
+
+    private fun actionEnvelope(sequence: Long) = ActionEnvelope(
+        common = CommonApplicationFields(
+            protocolVersion = ApplicationProtocol.PROTOCOL_VERSION,
+            desktopInstanceId = "desktop-1",
+            desktopSessionId = "session-1",
+            authSessionId = "auth-1",
+            identityEpoch = 1,
+            sequence = sequence,
+            generatedAt = "2026-07-18T00:00:00Z",
+            userId = "user-1",
+            tenantId = "tenant-1",
+            platformId = "platform-1",
+        ),
+        threadId = "thread-1",
+        turnId = "turn-1",
+        toolCallId = "tool-1",
+        executionId = "execution-1",
+        payload = buildJsonObject { },
+    )
 }
