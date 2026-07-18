@@ -6,6 +6,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
@@ -16,16 +17,18 @@ import com.wzx.huitai.agent.conversation.BusinessPlanStep
 import com.wzx.huitai.agent.conversation.BusinessProvider
 import com.wzx.huitai.agent.conversation.BusinessProviderModel
 import com.wzx.huitai.agent.conversation.BusinessThreadItem
+import com.wzx.huitai.agent.conversation.BusinessThread
 import com.wzx.huitai.demo.model.DemoFormState
 import com.wzx.huitai.desktop.state.BusinessConnectionStatus
+import com.wzx.huitai.desktop.state.BusinessAuthenticationStatus
 import com.wzx.huitai.desktop.state.BusinessDesktopError
 import com.wzx.huitai.desktop.state.BusinessDesktopState
+import com.wzx.huitai.desktop.state.BusinessIdentity
 import com.wzx.huitai.presentation.form.FieldChange
 import com.wzx.huitai.presentation.form.FormPatch
 import com.wzx.huitai.presentation.form.SourceReference
 import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
@@ -53,14 +56,26 @@ class BusinessAgentPanelTest {
         rule.onNodeWithText("核对资料", substring = true).assertExists()
         rule.onNodeWithText("等待确认").assertExists()
         listOf(
-            "received" to "已接收",
-            "preview" to "预览中",
-            "approval" to "等待审批",
-            "running" to "执行中",
-            "success" to "已完成",
-        ).forEach { (executionId, label) ->
+            "requested",
+            "accepted",
+            "previewed",
+            "approval",
+            "executing",
+            "succeeded",
+            "completed",
+            "failed",
+        ).forEach { executionId ->
             rule.onNodeWithTag("application-action-execution-$executionId").performScrollTo()
-            rule.onNodeWithText(label).assertExists()
+        }
+        mapOf(
+            "已接收" to 2,
+            "预览中" to 1,
+            "等待审批" to 1,
+            "执行中" to 1,
+            "已完成" to 2,
+            "失败" to 1,
+        ).forEach { (label, expectedCount) ->
+            rule.onAllNodesWithText(label).assertCountEquals(expectedCount)
         }
         rule.onNodeWithTag("application-action-execution-unknown").performScrollTo()
         rule.onNodeWithText("结果未知，请先按执行编号对账，确认远端结果后再决定是否重试。", substring = true).assertExists()
@@ -108,11 +123,43 @@ class BusinessAgentPanelTest {
 
         rule.onNodeWithTag("provider-selector").performClick()
         rule.onNodeWithTag("provider-option-provider-b").performClick()
+        assertEquals("provider-b" to "model-b-active", selections.last())
         rule.onNodeWithTag("model-selector").performClick()
-        rule.onNodeWithTag("model-option-model-b").performClick()
-        assertTrue(selections.contains("provider-b" to "model-b"))
+        rule.onNodeWithTag("model-option-model-b-first").performClick()
+        assertEquals("provider-b" to "model-b-first", selections.last())
+        rule.onNodeWithTag("provider-selector").performClick()
+        rule.onNodeWithTag("provider-option-provider-c").performClick()
+        assertEquals("provider-c" to "model-c-first", selections.last())
         rule.onNodeWithText("下轮对话生效").assertExists()
         rule.onAllNodesWithText("super-secret-key", substring = true).assertCountEquals(0)
+    }
+
+    @Test
+    fun `composer enables only for connected authenticated identity with current thread`() {
+        val uiState = mutableStateOf(composerState(BusinessAuthenticationStatus.SIGNED_OUT))
+        rule.setContent {
+            BusinessAgentPanel(state = uiState.value)
+        }
+
+        rule.onNodeWithTag("agent-composer-input").assertIsNotEnabled()
+        listOf(
+            composerState(BusinessAuthenticationStatus.EXPIRED, identity(), thread()),
+            composerState(BusinessAuthenticationStatus.MEMBERSHIP_EXPIRED, identity(), thread()),
+            composerState(BusinessAuthenticationStatus.AUTHENTICATED, identity = null, thread = thread()),
+            composerState(BusinessAuthenticationStatus.AUTHENTICATED, identity = identity(), thread = null),
+        ).forEach { invalid ->
+            rule.runOnIdle { uiState.value = invalid }
+            rule.onNodeWithTag("agent-composer-input").assertIsNotEnabled()
+        }
+
+        rule.runOnIdle {
+            uiState.value = composerState(
+                BusinessAuthenticationStatus.AUTHENTICATED,
+                identity = identity(),
+                thread = thread(),
+            )
+        }
+        rule.onNodeWithTag("agent-composer-input").assertIsEnabled()
     }
 
     private fun richState(): BusinessDesktopState = BusinessDesktopState(
@@ -128,11 +175,14 @@ class BusinessAgentPanelTest {
             steps = listOf(BusinessPlanStep(1, "核对资料", "pending")),
         ),
         applicationActions = linkedMapOf(
-            "received" to action("received", "accepted"),
-            "preview" to action("preview", "previewed"),
+            "requested" to action("requested", "requested"),
+            "accepted" to action("accepted", "accepted"),
+            "previewed" to action("previewed", "previewed"),
             "approval" to action("approval", "approval_required"),
-            "running" to action("running", "executing"),
-            "success" to action("success", "succeeded"),
+            "executing" to action("executing", "executing"),
+            "succeeded" to action("succeeded", "succeeded"),
+            "completed" to action("completed", "completed"),
+            "failed" to action("failed", "failed"),
             "unknown" to action("unknown", "OUTCOME_UNKNOWN"),
         ),
         turnSummary = BusinessThreadItem.TurnSummary(
@@ -157,7 +207,21 @@ class BusinessAgentPanelTest {
             BusinessProvider(
                 id = "provider-b",
                 displayName = "通用模型 B",
-                models = listOf(BusinessProviderModel("model-b", "模型 B")),
+                models = listOf(
+                    BusinessProviderModel("model-b-first", "模型 B1"),
+                    BusinessProviderModel("model-b-active", "模型 B2", active = true),
+                ),
+                authMode = "api_key",
+                hasApiKey = true,
+                active = false,
+            ),
+            BusinessProvider(
+                id = "provider-c",
+                displayName = "通用模型 C",
+                models = listOf(
+                    BusinessProviderModel("model-c-first", "模型 C1"),
+                    BusinessProviderModel("model-c-second", "模型 C2"),
+                ),
                 authMode = "api_key",
                 hasApiKey = true,
                 active = false,
@@ -177,6 +241,31 @@ class BusinessAgentPanelTest {
             risk = "SAFE",
             status = status,
         )
+
+    private fun composerState(
+        authenticationStatus: BusinessAuthenticationStatus,
+        identity: BusinessIdentity? = null,
+        thread: BusinessThread? = null,
+    ): BusinessDesktopState = BusinessDesktopState(
+        connectionStatus = BusinessConnectionStatus.CONNECTED,
+        authenticationStatus = authenticationStatus,
+        identity = identity,
+        currentThread = thread,
+    )
+
+    private fun identity(): BusinessIdentity = BusinessIdentity(
+        desktopInstanceId = "desktop-instance",
+        desktopSessionId = "desktop-session",
+        authSessionId = "auth-session",
+        identityEpoch = 1,
+        userId = "user-1",
+        tenantId = "tenant-1",
+        platformId = "platform-1",
+        roles = emptySet(),
+        permissions = emptySet(),
+    )
+
+    private fun thread(): BusinessThread = BusinessThread("thread-1", "通用会话", "E:/workspace")
 
     private fun patch(): FormPatch = FormPatch(
         pageId = DemoFormState.PAGE_ID,

@@ -24,6 +24,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.wzx.huitai.agent.conversation.BusinessThreadItem
+import com.wzx.huitai.desktop.state.BusinessAuthenticationStatus
 import com.wzx.huitai.desktop.state.BusinessConnectionStatus
 import com.wzx.huitai.desktop.state.BusinessDesktopState
 import com.wzx.huitai.desktop.ui.common.ConnectionBanner
@@ -100,7 +101,10 @@ fun BusinessAgentPanel(
             HorizontalDivider()
             AgentComposer(
                 value = composerText,
-                enabled = state.connectionStatus == BusinessConnectionStatus.CONNECTED,
+                enabled = state.connectionStatus == BusinessConnectionStatus.CONNECTED &&
+                    state.authenticationStatus == BusinessAuthenticationStatus.AUTHENTICATED &&
+                    state.identity != null &&
+                    state.currentThread != null,
                 onValueChanged = onComposerTextChanged,
                 onSend = onSend,
             )

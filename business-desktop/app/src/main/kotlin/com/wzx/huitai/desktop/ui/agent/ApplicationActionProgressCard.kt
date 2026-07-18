@@ -49,7 +49,7 @@ fun ApplicationActionProgressCard(
 }
 
 private fun actionStatusLabel(status: String): String = when (status) {
-    "RECEIVED", "ACCEPTED", "VALIDATING" -> "已接收"
+    "REQUESTED", "RECEIVED", "ACCEPTED", "VALIDATING" -> "已接收"
     "PREVIEW", "PREVIEWED" -> "预览中"
     "APPROVAL", "APPROVAL_REQUIRED", "WAITING_APPROVAL", "AWAITING_APPROVAL" -> "等待审批"
     "RUNNING", "EXECUTING" -> "执行中"

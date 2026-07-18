@@ -17,6 +17,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.wzx.huitai.agent.conversation.BusinessProvider
+import com.wzx.huitai.agent.conversation.BusinessProviderModel
+
+/** Provider 切换时优先选择服务端标记的 active 模型，否则稳定回退到首个模型。 */
+internal fun defaultModelFor(provider: BusinessProvider): BusinessProviderModel? =
+    provider.models.firstOrNull { it.active } ?: provider.models.firstOrNull()
 
 /**
  * 只展示 Provider/模型公开标签并回调稳定 ID；认证模式、密钥和地址永不进入组件。
@@ -51,7 +56,7 @@ fun BusinessProviderSelector(
                         text = { Text(provider.displayName) },
                         onClick = {
                             providerExpanded = false
-                            provider.models.firstOrNull()?.let { model -> onSelected(provider.id, model.id) }
+                            defaultModelFor(provider)?.let { model -> onSelected(provider.id, model.id) }
                         },
                         modifier = Modifier.testTag("provider-option-${provider.id}"),
                     )

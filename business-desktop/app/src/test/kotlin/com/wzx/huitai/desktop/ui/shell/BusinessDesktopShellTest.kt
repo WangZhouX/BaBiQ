@@ -7,6 +7,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertContentDescriptionEquals
+import androidx.compose.ui.test.assertWidthIsEqualTo
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
@@ -66,6 +68,33 @@ class BusinessDesktopShellTest {
         rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertDoesNotExist()
         rule.onNodeWithText("Agent").performClick()
         rule.onNodeWithTag(BusinessUiTags.FORM_PANEL).assertDoesNotExist()
+        rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertExists()
+    }
+
+    @Test
+    fun `medium shell keeps 72 dp accessible navigation beside form and agent`() {
+        rule.setContent {
+            HuitaiBusinessTheme {
+                BusinessDesktopShell(
+                    state = BusinessDesktopState(),
+                    formState = DemoFormState(),
+                    modifier = Modifier.widthForTest(1024.dp),
+                )
+            }
+        }
+
+        rule.onNodeWithTag(BusinessUiTags.SIDEBAR).assertWidthIsEqualTo(72.dp)
+        mapOf(
+            "workbench" to "工作台",
+            "data_entry" to "资料录入",
+            "run_history" to "运行记录",
+            "settings" to "设置",
+        ).forEach { (tagSuffix, label) ->
+            rule.onNodeWithTag("navigation-$tagSuffix")
+                .assertExists()
+                .assertContentDescriptionEquals(label)
+        }
+        rule.onNodeWithTag(BusinessUiTags.FORM_PANEL).assertExists()
         rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertExists()
     }
 }

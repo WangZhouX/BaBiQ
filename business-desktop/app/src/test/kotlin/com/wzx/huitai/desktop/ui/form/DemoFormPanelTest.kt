@@ -2,6 +2,7 @@ package com.wzx.huitai.desktop.ui.form
 
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -31,8 +32,17 @@ class DemoFormPanelTest {
             )
         }
 
-        listOf("资料名称", "资料类型", "联系人", "金额", "日期", "状态", "详细说明").forEach {
-            rule.onNodeWithText(it).assertExists()
+        mapOf(
+            DemoFormState.FIELD_NAME to "资料名称",
+            DemoFormState.FIELD_TYPE to "资料类型",
+            DemoFormState.FIELD_CONTACT to "联系人",
+            DemoFormState.FIELD_AMOUNT to "金额",
+            DemoFormState.FIELD_DATE to "日期",
+            DemoFormState.FIELD_STATUS to "状态",
+            DemoFormState.FIELD_DETAILS to "详细说明",
+        ).forEach { (fieldId, label) ->
+            rule.onNodeWithText(label).assertExists()
+            rule.onNodeWithTag("form-field-$fieldId").assertContentDescriptionEquals(label)
         }
         rule.onAllNodesWithText("来源：用户输入").assertCountEquals(2)
         rule.onNodeWithText("置信度 92%").assertExists()
@@ -59,21 +69,27 @@ class DemoFormPanelTest {
     }
 
     @Test
-    fun `user edit callback identifies one field and helper removes only its suggestion`() {
+    fun `user edit callback removes only that field suggestion from hoisted ui state`() {
         var edited: Pair<String, String>? = null
+        val uiSuggestions = androidx.compose.runtime.mutableStateOf(suggestions())
         rule.setContent {
             DemoFormPanel(
                 state = suggestedFormState(),
-                suggestions = suggestions(),
+                suggestions = uiSuggestions.value,
                 onFieldEdited = { fieldId, value -> edited = fieldId to value },
+                onSuggestionsChanged = { uiSuggestions.value = it },
             )
         }
 
+        rule.onNodeWithTag("suggestion-${DemoFormState.FIELD_NAME}").assertExists()
+        rule.onNodeWithTag("suggestion-${DemoFormState.FIELD_CONTACT}").assertExists()
         rule.onNodeWithTag("form-field-${DemoFormState.FIELD_NAME}").performTextReplacement("用户新名称")
 
         assertEquals(DemoFormState.FIELD_NAME to "用户新名称", edited)
-        val remaining = suggestionsAfterUserEdit(suggestions(), DemoFormState.FIELD_NAME)
-        assertEquals(setOf(DemoFormState.FIELD_CONTACT), remaining.keys)
+        rule.onNodeWithTag("suggestion-${DemoFormState.FIELD_NAME}").assertDoesNotExist()
+        rule.onNodeWithTag("accept-suggestion-${DemoFormState.FIELD_NAME}").assertDoesNotExist()
+        rule.onNodeWithTag("suggestion-${DemoFormState.FIELD_CONTACT}").assertExists()
+        rule.onAllNodesWithText("来源：用户输入").assertCountEquals(1)
     }
 
     private fun suggestedFormState(): DemoFormState = DemoFormState(

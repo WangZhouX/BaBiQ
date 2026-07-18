@@ -13,6 +13,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.wzx.huitai.demo.model.DemoFormState
+import com.wzx.huitai.desktop.state.BusinessFieldSuggestion
 import com.wzx.huitai.desktop.state.BusinessDesktopState
 import com.wzx.huitai.desktop.ui.agent.BusinessAgentPanel
 import com.wzx.huitai.desktop.ui.form.DemoFormPanel
@@ -41,6 +42,7 @@ fun BusinessDesktopShell(
     composerText: String = "",
     onCompactContentTabSelected: (CompactContentTab) -> Unit = {},
     onFieldEdited: (fieldId: String, value: String) -> Unit = { _, _ -> },
+    onSuggestionsChanged: (Map<String, BusinessFieldSuggestion>) -> Unit = {},
     onAcceptSuggestion: (fieldId: String, baseRevision: Long) -> Unit = { _, _ -> },
     onAcceptAllSuggestions: (baseRevision: Long) -> Unit = {},
     onComposerTextChanged: (String) -> Unit = {},
@@ -73,6 +75,7 @@ fun BusinessDesktopShell(
                         state = formState,
                         suggestions = state.suggestions,
                         onFieldEdited = onFieldEdited,
+                        onSuggestionsChanged = onSuggestionsChanged,
                         onAcceptSuggestion = onAcceptSuggestion,
                         onAcceptAllSuggestions = onAcceptAllSuggestions,
                         modifier = Modifier.weight(1f),
@@ -93,11 +96,15 @@ fun BusinessDesktopShell(
             }
         } else {
             Row(Modifier.fillMaxSize()) {
-                BusinessSidebar(modifier = Modifier.width(layout.navigationWidth))
+                BusinessSidebar(
+                    compact = layout.mode == BusinessDesktopLayoutMode.MEDIUM,
+                    modifier = Modifier.width(layout.navigationWidth),
+                )
                 DemoFormPanel(
                     state = formState,
                     suggestions = state.suggestions,
                     onFieldEdited = onFieldEdited,
+                    onSuggestionsChanged = onSuggestionsChanged,
                     onAcceptSuggestion = onAcceptSuggestion,
                     onAcceptAllSuggestions = onAcceptAllSuggestions,
                     modifier = Modifier.width(layout.formWidth),

@@ -16,6 +16,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.wzx.huitai.demo.model.DemoFormState
 import com.wzx.huitai.desktop.state.BusinessFieldSuggestion
@@ -49,6 +51,7 @@ fun DemoFormPanel(
     state: DemoFormState,
     suggestions: Map<String, BusinessFieldSuggestion> = emptyMap(),
     onFieldEdited: (fieldId: String, value: String) -> Unit = { _, _ -> },
+    onSuggestionsChanged: (Map<String, BusinessFieldSuggestion>) -> Unit = {},
     onAcceptSuggestion: (fieldId: String, baseRevision: Long) -> Unit = { _, _ -> },
     onAcceptAllSuggestions: (baseRevision: Long) -> Unit = {},
     modifier: Modifier = Modifier,
@@ -73,10 +76,16 @@ fun DemoFormPanel(
                     Text(definition.label, style = MaterialTheme.typography.labelMedium)
                     OutlinedTextField(
                         value = state.values.valueOf(definition.fieldId),
-                        onValueChange = { onFieldEdited(definition.fieldId, it) },
+                        onValueChange = { value ->
+                            onFieldEdited(definition.fieldId, value)
+                            if (definition.fieldId in suggestions) {
+                                onSuggestionsChanged(suggestionsAfterUserEdit(suggestions, definition.fieldId))
+                            }
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(min = if (definition.multiline) 88.dp else 52.dp)
+                            .semantics { contentDescription = definition.label }
                             .testTag("form-field-${definition.fieldId}"),
                         singleLine = !definition.multiline,
                         minLines = if (definition.multiline) 3 else 1,
