@@ -8,6 +8,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
@@ -60,6 +61,30 @@ class AgentJsonRpcNotificationLifecycleTest {
         } finally {
             client.close()
             rpc.close()
+        }
+    }
+
+    @Test
+    fun `prebuffered overflow cannot access the reader job before initialization completes`() = runTest {
+        val failures = Channel<Throwable>(Channel.UNLIMITED)
+        val clientJob = SupervisorJob()
+        val clientScope = CoroutineScope(
+            coroutineContext + clientJob + CoroutineExceptionHandler { _, failure -> failures.trySend(failure) },
+        )
+        val connection = NotificationConnection(preloadedMethods = listOf("future/pre-one", "future/pre-two"))
+        val rpc = AgentJsonRpcClient(connection, clientScope, inboundCapacity = 1)
+        runCurrent()
+        val client = BusinessAgentClient(rpc, clientScope)
+
+        try {
+            val events = withTimeout(500) { client.events.toList() }
+            assertEquals(listOf("future/pre-one"), events.map { assertIs<BusinessAgentEvent.Unknown>(it).method })
+            assertTrue(failures.tryReceive().isFailure)
+            assertIs<AgentConnectionState.Closed>(connection.state.value)
+        } finally {
+            client.close()
+            rpc.close()
+            clientJob.cancel()
         }
     }
 
@@ -117,6 +142,7 @@ class AgentJsonRpcNotificationLifecycleTest {
 
     private class NotificationConnection(
         private val burstOnRequest: Int = 0,
+        preloadedMethods: List<String> = emptyList(),
     ) : AgentConnection {
         private val incomingChannel = Channel<String>(Channel.UNLIMITED)
         override val connectionId: String = "notification-lifecycle"
@@ -124,6 +150,11 @@ class AgentJsonRpcNotificationLifecycleTest {
         override val state = MutableStateFlow<AgentConnectionState>(AgentConnectionState.Connected)
         override val hasConnected: Boolean = true
         var closeCount: Int = 0
+
+        init {
+            preloadedMethods.forEach { method -> incomingChannel.trySend(notificationText(method)) }
+        }
+
         override suspend fun send(text: String) {
             if (burstOnRequest == 0) return
             val request = ApplicationProtocol.JSON.parseToJsonElement(text).jsonObject
@@ -135,16 +166,21 @@ class AgentJsonRpcNotificationLifecycleTest {
             }.toString())
         }
         suspend fun notify(method: String, params: JsonObject = JsonObject(emptyMap())) {
-            incomingChannel.send(buildJsonObject {
-                put("jsonrpc", "2.0")
-                put("method", method)
-                put("params", params)
-            }.toString())
+            incomingChannel.send(notificationText(method, params))
         }
         override suspend fun close() {
             closeCount += 1
             state.value = AgentConnectionState.Closed(code = null, reasonPresent = false)
             incomingChannel.close()
         }
+
+        private fun notificationText(
+            method: String,
+            params: JsonObject = JsonObject(emptyMap()),
+        ): String = buildJsonObject {
+            put("jsonrpc", "2.0")
+            put("method", method)
+            put("params", params)
+        }.toString()
     }
 }

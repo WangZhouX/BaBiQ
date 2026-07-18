@@ -90,11 +90,12 @@ class AgentJsonRpcClient(
             }
         }
     }
-    private val readerJob: Job = scope.launch(start = CoroutineStart.UNDISPATCHED) { readIncoming() }
+    private val readerJob: Job = scope.launch(start = CoroutineStart.LAZY) { readIncoming() }
 
     init {
         require(requestTimeoutMillis > 0) { "requestTimeoutMillis must be positive" }
         require(inboundCapacity > 0) { "inboundCapacity must be positive" }
+        if (!readerJob.start()) closeFromCancelledConstruction()
     }
 
     val connectionId: String
@@ -269,6 +270,16 @@ class AgentJsonRpcClient(
 
     private fun checkOpen() {
         if (closed.get()) throw AgentJsonRpcClosedException()
+    }
+
+    private fun closeFromCancelledConstruction() {
+        closed.set(true)
+        cleanupOwner.compareAndSet(null, CleanupOwner.READER)
+        overloadResponses.close()
+        overloadWriter.cancel()
+        mutableInbound.close()
+        mutableRawNotifications.close()
+        cleanupComplete.complete(Unit)
     }
 
     private fun failPendingRequests() {
