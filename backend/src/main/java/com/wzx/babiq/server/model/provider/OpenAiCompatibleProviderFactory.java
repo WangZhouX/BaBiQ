@@ -48,9 +48,10 @@ public class OpenAiCompatibleProviderFactory implements ProviderFactory {
     public ChatModel build(ModelProviderConfig config) {
         requireText(config.baseUrl(), "base-url", config);
         requireText(config.apiKey(), "api-key", config);
+        String baseUrl = normalizeOpenAiBaseUrl(config.baseUrl());
 
         OpenAiApi openAiApi = OpenAiApi.builder()
-                .baseUrl(config.baseUrl())
+                .baseUrl(baseUrl)
                 .apiKey(config.apiKey())
                 .build();
         boolean deepSeekV4Official = isDeepSeekV4Official(config);
@@ -90,7 +91,7 @@ public class OpenAiCompatibleProviderFactory implements ProviderFactory {
     }
 
     private static boolean isDeepSeekV4Official(ModelProviderConfig config) {
-        String baseUrl = normalize(config.baseUrl());
+        String baseUrl = normalize(normalizeOpenAiBaseUrl(config.baseUrl()));
         String model = normalize(config.model());
         return baseUrl.equals("https://api.deepseek.com")
                 && (model.startsWith("deepseek-v4-pro") || model.startsWith("deepseek-v4-flash"));
@@ -103,6 +104,18 @@ public class OpenAiCompatibleProviderFactory implements ProviderFactory {
         String normalized = value.strip().toLowerCase(Locale.ROOT);
         while (normalized.endsWith("/")) {
             normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        return normalized;
+    }
+
+    /** Spring AI 会追加 /v1/chat/completions，因此兼容用户常填的 OpenAI 风格 /v1 根路径。 */
+    private static String normalizeOpenAiBaseUrl(String value) {
+        String normalized = value.strip();
+        while (normalized.endsWith("/")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        if (normalized.toLowerCase(Locale.ROOT).endsWith("/v1")) {
+            normalized = normalized.substring(0, normalized.length() - 3);
         }
         return normalized;
     }

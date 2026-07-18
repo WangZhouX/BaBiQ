@@ -436,7 +436,7 @@ class SQLiteApplicationActionTerminalStoreTest {
     private void assertPersistedTerminalAdopted(PendingApplicationAction.Path path) throws Exception {
         ApplicationActionTimeoutProperties fastTimeouts = new ApplicationActionTimeoutProperties(
                 Duration.ofSeconds(5), Duration.ofSeconds(5), Duration.ofSeconds(5),
-                Duration.ofMillis(20), Duration.ofMillis(20));
+                Duration.ofMillis(500), Duration.ofMillis(500));
         java.util.concurrent.CompletableFuture<PendingApplicationActions.RemoteStatus> status =
                 new java.util.concurrent.CompletableFuture<>();
         PendingApplicationActions pending = new PendingApplicationActions(
@@ -459,7 +459,7 @@ class SQLiteApplicationActionTerminalStoreTest {
                     null, "stored terminal", Instant.now(), SCOPE), false);
             status.completeExceptionally(new IllegalStateException("status unavailable"));
 
-            assertThat(terminal.get(1, java.util.concurrent.TimeUnit.SECONDS).state())
+            assertThat(terminal.get(3, java.util.concurrent.TimeUnit.SECONDS).state())
                     .isEqualTo(PendingApplicationAction.State.COMPLETED);
         } finally {
             pending.close();

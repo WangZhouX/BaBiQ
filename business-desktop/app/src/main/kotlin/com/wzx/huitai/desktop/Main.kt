@@ -89,7 +89,16 @@ fun main() {
             Window(
                 title = "汇泰业务桌面 Agent",
                 state = androidx.compose.ui.window.rememberWindowState(width = 1440.dp, height = 900.dp),
-                onCloseRequest = { exitApplication() },
+                onCloseRequest = {
+                    closeBusinessDesktop(
+                        shutdown = { root.shutdown() },
+                        cancelRuntime = runtimeScope::cancel,
+                        exitApplication = ::exitApplication,
+                    )?.let {
+                        LoggerFactory.getLogger("BusinessDesktopShutdown")
+                            .error("Business desktop resource shutdown failed")
+                    }
+                },
             ) {
                 val desktopState by view.desktopState.collectAsState()
                 val formState by view.formState.collectAsState()
@@ -230,4 +239,21 @@ private data class DesktopStartup(
 private fun actionInput(executionId: String, patch: FormPatch) = buildJsonObject {
     put("executionId", executionId)
     put("patch", ApplicationProtocol.JSON.encodeToJsonElement(FormPatch.serializer(), patch).jsonObject)
+}
+
+/** Compose 窗口退出前同步收束 composition root，避免原生 launcher 退出后遗留 Agent 子进程。 */
+internal fun closeBusinessDesktop(
+    shutdown: suspend () -> Unit,
+    cancelRuntime: () -> Unit,
+    exitApplication: () -> Unit,
+): Throwable? {
+    var first: Throwable? = null
+    fun record(failure: Throwable) {
+        first?.addSuppressed(failure) ?: run { first = failure }
+    }
+
+    runCatching { runBlocking { shutdown() } }.exceptionOrNull()?.let(::record)
+    runCatching(cancelRuntime).exceptionOrNull()?.let(::record)
+    runCatching(exitApplication).exceptionOrNull()?.let(::record)
+    return first
 }

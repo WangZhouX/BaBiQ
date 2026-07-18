@@ -37,6 +37,7 @@ class BusinessAgentProcessLauncher(
             process = processStarter.start(builder)
             SecureRuntimeFile.verifyUnchanged(logIdentity)
             builder.environment().remove(BusinessAgentLaunchRequest.BACKEND_KEYSTORE_PASSWORD_ENV)
+            SENSITIVE_PROVIDER_ENVIRONMENT_KEYS.forEach(builder.environment()::remove)
             readinessProbe.await(process, request.connectRequest)
             check(Files.notExists(request.paths.agentSessionToken)) {
                 "business Agent did not consume the one-shot session token"
@@ -67,6 +68,20 @@ class BusinessAgentProcessLauncher(
             "TMPDIR",
             "LANG",
             "LC_ALL",
+            "PATH",
+            // 只允许后端 application.yml 已声明的 Provider 引导变量，仍拒绝任意父进程 Token/密码。
+            "AI_DASHSCOPE_API_KEY",
+            "DEEPSEEK_API_KEY",
+            "ONEAPI_BASE_URL",
+            "ONEAPI_KEY",
+            "ONEAPI_MODEL",
+            "ANTHROPIC_CLI_PATH",
+        )
+
+        val SENSITIVE_PROVIDER_ENVIRONMENT_KEYS = setOf(
+            "AI_DASHSCOPE_API_KEY",
+            "DEEPSEEK_API_KEY",
+            "ONEAPI_KEY",
         )
     }
 }

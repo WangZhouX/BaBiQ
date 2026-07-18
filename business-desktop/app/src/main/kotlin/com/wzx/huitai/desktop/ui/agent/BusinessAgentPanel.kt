@@ -103,8 +103,7 @@ fun BusinessAgentPanel(
                 value = composerText,
                 enabled = state.connectionStatus == BusinessConnectionStatus.CONNECTED &&
                     state.authenticationStatus == BusinessAuthenticationStatus.AUTHENTICATED &&
-                    state.identity != null &&
-                    state.currentThread != null,
+                    state.identity != null,
                 onValueChanged = onComposerTextChanged,
                 onSend = onSend,
             )

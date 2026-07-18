@@ -135,7 +135,7 @@ class BusinessAgentPanelTest {
     }
 
     @Test
-    fun `composer enables only for connected authenticated identity with current thread`() {
+    fun `composer enables for connected authenticated identity before the first thread exists`() {
         val uiState = mutableStateOf(composerState(BusinessAuthenticationStatus.SIGNED_OUT))
         rule.setContent {
             BusinessAgentPanel(state = uiState.value)
@@ -146,7 +146,6 @@ class BusinessAgentPanelTest {
             composerState(BusinessAuthenticationStatus.EXPIRED, identity(), thread()),
             composerState(BusinessAuthenticationStatus.MEMBERSHIP_EXPIRED, identity(), thread()),
             composerState(BusinessAuthenticationStatus.AUTHENTICATED, identity = null, thread = thread()),
-            composerState(BusinessAuthenticationStatus.AUTHENTICATED, identity = identity(), thread = null),
         ).forEach { invalid ->
             rule.runOnIdle { uiState.value = invalid }
             rule.onNodeWithTag("agent-composer-input").assertIsNotEnabled()
@@ -156,7 +155,7 @@ class BusinessAgentPanelTest {
             uiState.value = composerState(
                 BusinessAuthenticationStatus.AUTHENTICATED,
                 identity = identity(),
-                thread = thread(),
+                thread = null,
             )
         }
         rule.onNodeWithTag("agent-composer-input").assertIsEnabled()

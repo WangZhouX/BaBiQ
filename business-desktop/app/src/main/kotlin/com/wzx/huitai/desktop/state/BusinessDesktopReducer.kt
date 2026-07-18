@@ -201,6 +201,7 @@ class BusinessDesktopReducer {
             activeTurn = turn,
             turnStatus = "starting",
             applicationActions = emptyMap(),
+            error = null,
         )
     }
 
@@ -224,6 +225,7 @@ class BusinessDesktopReducer {
                 latestObservedTurnId = event.turnId,
                 activeTurn = BusinessTurn(event.turnId, event.threadId),
                 turnStatus = "running",
+                error = null,
             )
         }
     }
@@ -248,7 +250,7 @@ class BusinessDesktopReducer {
                 terminalTurnStatuses = terminals,
                 activeTurn = null,
                 turnStatus = status,
-                error = error ?: state.error,
+                error = error,
             )
         } else {
             state.copy(terminalTurnStatuses = terminals, unknownEventCount = state.unknownEventCount + 1)

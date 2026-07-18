@@ -31,7 +31,7 @@ import kotlinx.coroutines.flow.StateFlow
 @OptIn(ExperimentalCoroutinesApi::class)
 class BusinessAgentProcessLauncherTest {
     @Test
-    fun `launcher clears inherited environment and copies only required operating system variables`() = runTest {
+    fun `launcher copies only required runtime and explicit provider bootstrap variables`() = runTest {
         val fixture = fixture(port = 43116)
         val process = FakeProcess()
         var capturedEnvironment = emptyMap<String, String>()
@@ -52,6 +52,11 @@ class BusinessAgentProcessLauncherTest {
                     "SystemRoot" to "C:\\Windows",
                     "TEMP" to "C:\\Temp",
                     "LANG" to "zh_CN.UTF-8",
+                    "PATH" to "C:\\Tools",
+                    "ONEAPI_BASE_URL" to "http://127.0.0.1:18765/v1",
+                    "ONEAPI_KEY" to "provider-bootstrap-secret",
+                    "ONEAPI_MODEL" to "manual-model",
+                    "ANTHROPIC_CLI_PATH" to "C:\\Tools\\ant.exe",
                     "API_TOKEN" to "must-not-leak",
                     "DATABASE_PASSWORD" to "must-not-leak",
                     "HUITAI_DESKTOP_KEYSTORE_PASSWORD" to "must-not-leak",
@@ -64,6 +69,11 @@ class BusinessAgentProcessLauncherTest {
         assertEquals("C:\\Windows", capturedEnvironment["SystemRoot"])
         assertEquals("C:\\Temp", capturedEnvironment["TEMP"])
         assertEquals("zh_CN.UTF-8", capturedEnvironment["LANG"])
+        assertEquals("C:\\Tools", capturedEnvironment["PATH"])
+        assertEquals("http://127.0.0.1:18765/v1", capturedEnvironment["ONEAPI_BASE_URL"])
+        assertEquals("provider-bootstrap-secret", capturedEnvironment["ONEAPI_KEY"])
+        assertEquals("manual-model", capturedEnvironment["ONEAPI_MODEL"])
+        assertEquals("C:\\Tools\\ant.exe", capturedEnvironment["ANTHROPIC_CLI_PATH"])
         assertEquals(BACKEND_PASSWORD, capturedEnvironment[BusinessAgentLaunchRequest.BACKEND_KEYSTORE_PASSWORD_ENV])
         assertFalse("API_TOKEN" in capturedEnvironment)
         assertFalse("DATABASE_PASSWORD" in capturedEnvironment)

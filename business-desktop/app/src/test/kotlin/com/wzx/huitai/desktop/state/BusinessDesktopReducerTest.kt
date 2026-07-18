@@ -150,6 +150,30 @@ class BusinessDesktopReducerTest {
     }
 
     @Test
+    fun `a new turn and its successful completion clear the previous turn failure`() {
+        var state = conversationState()
+        state = reducer.reduce(state, BusinessDesktopEvent.AgentEventReceived(
+            BusinessAgentEvent.TurnStarted("thread-1", "turn-failed"),
+        ))
+        state = reducer.reduce(state, BusinessDesktopEvent.AgentEventReceived(
+            BusinessAgentEvent.TurnFailed("thread-1", "turn-failed", "old failure"),
+        ))
+        assertEquals("TURN_FAILED", state.error?.code)
+
+        state = reducer.reduce(state, BusinessDesktopEvent.TurnRequested(BusinessTurn("turn-success", "thread-1")))
+        assertNull(state.error)
+        state = reducer.reduce(state, BusinessDesktopEvent.AgentEventReceived(
+            BusinessAgentEvent.TurnStarted("thread-1", "turn-success"),
+        ))
+        state = reducer.reduce(state, BusinessDesktopEvent.AgentEventReceived(
+            BusinessAgentEvent.TurnCompleted("thread-1", "turn-success", "completed"),
+        ))
+
+        assertEquals("completed", state.turnStatus)
+        assertNull(state.error)
+    }
+
+    @Test
     fun `thread and turn correlation rejects stale events and unbound actions`() {
         var state = conversationState()
         state = reducer.reduce(state, BusinessDesktopEvent.TurnRequested(BusinessTurn("turn-old", "thread-1")))

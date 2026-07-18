@@ -112,7 +112,9 @@ $desktopProcess = $null
 $reportedChildPid = $null
 $primaryFailure = $null
 try {
-    $msi = Get-ChildItem -LiteralPath $appBuild -Recurse -File -Filter '*.msi' |
+    $msiRoot = Join-Path $appBuild 'compose\binaries\main\msi'
+    Assert-Smoke (Test-Path -LiteralPath $msiRoot -PathType Container) 'Canonical packaged MSI directory is missing.'
+    $msi = Get-ChildItem -LiteralPath $msiRoot -File -Filter '*.msi' |
         Sort-Object LastWriteTimeUtc -Descending |
         Select-Object -First 1
     Assert-Smoke ($null -ne $msi) 'Packaged MSI was not produced.'
