@@ -89,6 +89,22 @@ class AgentJsonRpcNotificationLifecycleTest {
     }
 
     @Test
+    fun `scope cancellation after reader start but before first dispatch still closes synchronously`() = runTest {
+        val parent = Job()
+        val clientScope = CoroutineScope(coroutineContext + parent)
+        val rpc = AgentJsonRpcClient(NotificationConnection(), clientScope)
+
+        parent.cancel()
+
+        assertFailsWith<AgentJsonRpcClosedException> {
+            rpc.request("thread/create", buildJsonObject { })
+        }
+        assertTrue(rpc.incoming.tryReceive().isClosed)
+        assertTrue(rpc.rawNotifications.tryReceive().isClosed)
+        rpc.close()
+    }
+
+    @Test
     fun `full typed notification path cannot leak a blocked pump after rpc close`() = runTest {
         val connection = NotificationConnection()
         val rpc = AgentJsonRpcClient(connection, this, inboundCapacity = 1)

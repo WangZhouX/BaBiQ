@@ -78,6 +78,7 @@ class AgentJsonRpcClient(
     private val mutableInbound = Channel<AgentJsonRpcInbound>(capacity = inboundCapacity)
     private val mutableRawNotifications = Channel<AgentRawNotification>(capacity = inboundCapacity)
     private val overloadResponses = Channel<Long>(capacity = OVERLOAD_RESPONSE_CAPACITY)
+    private val readerEntered = AtomicBoolean(false)
     private val overloadWriter = scope.launch(start = CoroutineStart.UNDISPATCHED) {
         for (id in overloadResponses) {
             try {
@@ -90,11 +91,17 @@ class AgentJsonRpcClient(
             }
         }
     }
-    private val readerJob: Job = scope.launch(start = CoroutineStart.LAZY) { readIncoming() }
+    private val readerJob: Job = scope.launch(start = CoroutineStart.LAZY) {
+        readerEntered.set(true)
+        readIncoming()
+    }
 
     init {
         require(requestTimeoutMillis > 0) { "requestTimeoutMillis must be positive" }
         require(inboundCapacity > 0) { "inboundCapacity must be positive" }
+        readerJob.invokeOnCompletion {
+            if (!readerEntered.get()) closeFromCancelledConstruction()
+        }
         if (!readerJob.start()) closeFromCancelledConstruction()
     }
 
@@ -269,12 +276,15 @@ class AgentJsonRpcClient(
     }
 
     private fun checkOpen() {
+        if (!closed.get() && readerJob.isCancelled && !readerEntered.get()) {
+            closeFromCancelledConstruction()
+        }
         if (closed.get()) throw AgentJsonRpcClosedException()
     }
 
     private fun closeFromCancelledConstruction() {
+        if (!cleanupOwner.compareAndSet(null, CleanupOwner.READER)) return
         closed.set(true)
-        cleanupOwner.compareAndSet(null, CleanupOwner.READER)
         overloadResponses.close()
         overloadWriter.cancel()
         mutableInbound.close()
