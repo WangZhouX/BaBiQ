@@ -256,6 +256,66 @@ class DemoActionCatalogTest {
         assertEquals(ActionErrorCode.VALIDATION_FAILED, failure.error.code)
     }
 
+    @Test
+    fun `应用补丁在context页面错误时拒绝且状态零变更`() = runTest {
+        val initial = DemoFormState()
+        val screen = DemoScreenModel(initial)
+        val registered = DemoActionCatalog(screen, FakeHuitaiGateway()).actions
+            .single { it.descriptor.id == "form.apply_patch" }
+        val patch = singleFieldPatch(initial, DemoFormState.FIELD_NAME, "不应写入")
+
+        val invocation = registered.invokeExecute(
+            applyPatchInput("wrong-context-page", patch),
+            context(initial).copy(pageId = "other.page"),
+        )
+
+        val failure = assertIs<ActionResult.Failure>(
+            assertIs<ActionInvocationResult.Executed>(invocation).result,
+        )
+        assertEquals(ActionErrorCode.CONTEXT_STALE, failure.error.code)
+        assertEquals(initial, screen.state.value)
+    }
+
+    @Test
+    fun `应用补丁在context版本与patch和页面不一致时零变更`() = runTest {
+        val initial = DemoFormState()
+        val screen = DemoScreenModel(initial)
+        val registered = DemoActionCatalog(screen, FakeHuitaiGateway()).actions
+            .single { it.descriptor.id == "form.apply_patch" }
+        val patch = singleFieldPatch(initial, DemoFormState.FIELD_STATUS, "不应写入")
+
+        val invocation = registered.invokeExecute(
+            applyPatchInput("wrong-context-revision", patch),
+            context(initial).copy(contextRevision = initial.revision + 1),
+        )
+
+        val failure = assertIs<ActionResult.Failure>(
+            assertIs<ActionInvocationResult.Executed>(invocation).result,
+        )
+        assertEquals(ActionErrorCode.CONTEXT_STALE, failure.error.code)
+        assertEquals(initial, screen.state.value)
+    }
+
+    @Test
+    fun `应用补丁在context与patch页面版本一致时成功`() = runTest {
+        val initial = DemoFormState()
+        val screen = DemoScreenModel(initial)
+        val registered = DemoActionCatalog(screen, FakeHuitaiGateway()).actions
+            .single { it.descriptor.id == "form.apply_patch" }
+        val patch = singleFieldPatch(initial, DemoFormState.FIELD_NAME, "正常写入")
+
+        val invocation = registered.invokeExecute(
+            applyPatchInput("valid-context-patch", patch),
+            context(initial),
+        )
+
+        assertIs<ActionResult.Success<*>>(
+            assertIs<ActionInvocationResult.Executed>(invocation).result,
+        )
+        assertEquals("正常写入", screen.state.value.values.name)
+        assertEquals(initial.revision + 1, screen.state.value.revision)
+    }
+
     private fun validInputs(): Map<String, JsonObject> {
         val state = DemoFormState()
         val patch = FormPatch(
@@ -291,6 +351,29 @@ class DemoActionCatalogTest {
             "demo.save_draft" to executionOnly,
             "demo.submit" to executionOnly,
         )
+    }
+
+    private fun singleFieldPatch(
+        state: DemoFormState,
+        fieldId: String,
+        value: String,
+    ): FormPatch = FormPatch(
+        pageId = DemoFormState.PAGE_ID,
+        baseRevision = state.revision,
+        changes = listOf(
+            FieldChange(
+                fieldId = fieldId,
+                previousValue = JsonPrimitive(state.values.valueOf(fieldId)),
+                newValue = JsonPrimitive(value),
+                reason = "动作上下文验证",
+                confidence = 1.0,
+            ),
+        ),
+    )
+
+    private fun applyPatchInput(executionId: String, patch: FormPatch): JsonObject = buildJsonObject {
+        put("executionId", executionId)
+        put("patch", Json.parseToJsonElement(Json.encodeToString(patch)).jsonObject)
     }
 
     private fun context(state: DemoFormState): ActionContext = ActionContext(

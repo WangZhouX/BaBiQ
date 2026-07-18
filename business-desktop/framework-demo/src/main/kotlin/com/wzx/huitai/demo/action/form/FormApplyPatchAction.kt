@@ -55,7 +55,17 @@ class FormApplyPatchAction private constructor(
 
     /** 只派发强类型补丁事件，并依据该事件的原子迁移结果确认是否应用。 */
     override suspend fun execute(input: FormApplyPatchInput, context: ActionContext): ActionResult<JsonObject> {
-        val transition = screen.dispatchWithResult(DemoFormEvent.ApplyPatch(input.patch))
+        val transition = screen.dispatchWithExpectedContext(
+            event = DemoFormEvent.ApplyPatch(input.patch),
+            expectedPageId = context.pageId,
+            expectedRevision = context.contextRevision,
+        )
+        if (transition == null) {
+            return ActionResult.Failure(
+                input.executionId,
+                ActionError(ActionErrorCode.CONTEXT_STALE, "表单补丁上下文已变化"),
+            )
+        }
         if (!transition.applied(input.patch)) {
             return ActionResult.Failure(
                 input.executionId,

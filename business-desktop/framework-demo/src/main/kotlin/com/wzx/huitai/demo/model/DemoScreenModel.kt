@@ -57,7 +57,11 @@ class DemoScreenModel(
         expectedRevision: Long,
     ): DemoDispatchResult? = synchronized(dispatchMonitor) {
         val current = mutableState.value
-        if (expectedPageId != DemoFormState.PAGE_ID || current.revision != expectedRevision) {
+        if (
+            expectedPageId != DemoFormState.PAGE_ID ||
+            current.revision != expectedRevision ||
+            !event.matchesExpectedContext(expectedPageId, expectedRevision)
+        ) {
             null
         } else {
             reduceAndPublish(event)
@@ -144,4 +148,15 @@ class DemoScreenModel(
             enabled = true,
         )
     }
+}
+
+/** 携带页面版本的 typed event 必须与动作上下文使用同一绑定。 */
+private fun DemoFormEvent.matchesExpectedContext(pageId: String, revision: Long): Boolean = when (this) {
+    is DemoFormEvent.ApplyPatch -> patch.pageId == pageId && patch.baseRevision == revision
+    is DemoFormEvent.SuggestPatch -> patch.pageId == pageId && patch.baseRevision == revision
+    is DemoFormEvent.EditField,
+    is DemoFormEvent.AcceptSuggestion,
+    DemoFormEvent.AcceptAllSuggestions,
+    is DemoFormEvent.Navigate,
+    -> true
 }
