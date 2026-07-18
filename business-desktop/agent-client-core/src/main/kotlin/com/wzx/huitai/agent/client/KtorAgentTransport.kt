@@ -21,7 +21,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -40,7 +39,7 @@ import kotlinx.coroutines.withContext
  *
  * @param httpClient 已安装 Ktor WebSockets 插件的客户端，生命周期由调用方管理。
  * @param scope reader 协程作用域；作用域取消会主动关闭已建立的 session。
- * @param incomingCapacity 文本输入通道容量，满时丢弃最旧帧保护网络 reader。
+ * @param incomingCapacity 文本输入通道容量，满时通过协程背压保持帧顺序和完整性。
  * @param connectionIdFactory 每次连接尝试生成唯一 ID 的工厂，测试可注入确定值。
  */
 class KtorAgentTransport(
@@ -80,10 +79,7 @@ class KtorAgentTransport(
         override val connectionId: String,
         private val request: AgentConnectRequest,
     ) : AgentConnection {
-        private val mutableIncoming = Channel<String>(
-            capacity = incomingCapacity,
-            onBufferOverflow = BufferOverflow.DROP_OLDEST,
-        )
+        private val mutableIncoming = Channel<String>(capacity = incomingCapacity)
         private val mutableState = MutableStateFlow<AgentConnectionState>(AgentConnectionState.Connecting)
         private val session = AtomicReference<DefaultClientWebSocketSession?>(null)
         private val explicitlyClosed = AtomicBoolean(false)
@@ -139,7 +135,7 @@ class KtorAgentTransport(
                     connectedOnce.set(true)
                     mutableState.value = AgentConnectionState.Connected
                     for (frame in connected.incoming) {
-                        if (frame is Frame.Text) mutableIncoming.trySend(frame.readText())
+                        if (frame is Frame.Text) mutableIncoming.send(frame.readText())
                     }
                     val closeReason = connected.closeReason.await()
                     mutableState.value = AgentConnectionState.Closed(

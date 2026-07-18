@@ -3,12 +3,9 @@ package com.wzx.huitai.agent.conversation
 import com.wzx.huitai.agent.client.AgentJsonRpcClient
 import java.io.Closeable
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
-import kotlinx.coroutines.launch
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -29,22 +26,13 @@ interface BusinessConversationGateway : Closeable {
 
 class BusinessAgentClient(
     private val rpc: AgentJsonRpcClient,
+    @Suppress("UNUSED_PARAMETER")
     scope: CoroutineScope,
 ) : BusinessConversationGateway {
-    private val mutableEvents = Channel<BusinessAgentEvent>(capacity = 64)
-    private val collector: Job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
-        try {
-            for (notification in rpc.rawNotifications) {
-                runCatching { BusinessAgentEventCodec.decode(notification) }
-                    .getOrElse { BusinessAgentEvent.Unknown(notification.method) }
-                    .let { mutableEvents.send(it) }
-            }
-        } finally {
-            mutableEvents.close()
-        }
+    override val events: Flow<BusinessAgentEvent> = rpc.rawNotifications.receiveAsFlow().map { notification ->
+        runCatching { BusinessAgentEventCodec.decode(notification) }
+            .getOrElse { BusinessAgentEvent.Unknown(notification.method) }
     }
-
-    override val events: Flow<BusinessAgentEvent> = mutableEvents.receiveAsFlow()
 
     override suspend fun listProviders(): List<BusinessProvider> =
         BusinessProviderCodec.decodeList(rpc.request("provider/list", buildJsonObject { }))
@@ -96,6 +84,7 @@ class BusinessAgentClient(
     }
 
     override fun close() {
-        collector.cancel()
+        // Event collection is owned and canceled by BusinessConversationController.
+        // The shared JSON-RPC lifecycle remains owned by its connection composition.
     }
 }

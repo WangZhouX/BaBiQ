@@ -133,6 +133,23 @@ class BusinessDesktopReducerTest {
     }
 
     @Test
+    fun `first terminal status wins when a conflicting terminal arrives late`() {
+        var state = conversationState()
+        state = reducer.reduce(state, BusinessDesktopEvent.AgentEventReceived(
+            BusinessAgentEvent.TurnStarted("thread-1", "turn-terminal"),
+        ))
+        state = reducer.reduce(state, BusinessDesktopEvent.AgentEventReceived(
+            BusinessAgentEvent.TurnCompleted("thread-1", "turn-terminal", "completed"),
+        ))
+        state = reducer.reduce(state, BusinessDesktopEvent.AgentEventReceived(
+            BusinessAgentEvent.TurnFailed("thread-1", "turn-terminal", "late_failure"),
+        ))
+
+        assertEquals("completed", state.turnStatus)
+        assertNull(state.error)
+    }
+
+    @Test
     fun `thread and turn correlation rejects stale events and unbound actions`() {
         var state = conversationState()
         state = reducer.reduce(state, BusinessDesktopEvent.TurnRequested(BusinessTurn("turn-old", "thread-1")))

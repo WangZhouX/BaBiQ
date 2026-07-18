@@ -141,7 +141,7 @@ class KtorAgentTransportTest {
     }
 
     @Test
-    fun `incoming buffer is bounded and drops oldest text frames`() = runBlocking {
+    fun `incoming buffer backpressures and preserves every text frame in order`() = runBlocking {
         val fixture = serverFixture {
             install(ServerWebSockets)
             routing {
@@ -156,11 +156,12 @@ class KtorAgentTransportTest {
         val transport = fixture.transport(incomingCapacity = 2)
         try {
             val connection = transport.connect(AgentConnectRequest(fixture.wsUrl("/ws/agent"), identity()))
-            withTimeout(TIMEOUT) { connection.state.first { it is AgentConnectionState.Closed } }
-
+            awaitConnected(connection)
             assertTrue(connection.hasConnected)
+            assertEquals("one", withTimeout(TIMEOUT) { connection.incoming.receive() })
             assertEquals("two", connection.incoming.receive())
             assertEquals("three", connection.incoming.receive())
+            withTimeout(TIMEOUT) { connection.state.first { it is AgentConnectionState.Closed } }
             assertTrue(connection.incoming.tryReceive().isFailure)
         } finally {
             transport.close()

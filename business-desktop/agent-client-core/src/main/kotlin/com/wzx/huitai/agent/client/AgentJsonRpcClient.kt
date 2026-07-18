@@ -254,7 +254,10 @@ class AgentJsonRpcClient(
                 val applicationMethod = ApplicationMethod.entries.firstOrNull { it.wireName == method }
                 if (applicationMethod == null) {
                     val params = runCatching { value.getValue("params").jsonObject }.getOrNull() ?: JsonObject(emptyMap())
-                    mutableRawNotifications.send(AgentRawNotification(method, params))
+                    if (mutableRawNotifications.trySend(AgentRawNotification(method, params)).isFailure) {
+                        requestCleanupFromOverload()
+                        throw AgentJsonRpcClosedCancellation()
+                    }
                 } else {
                     runCatching {
                         ApplicationProtocol.JSON.decodeFromJsonElement(JsonRpcNotification.serializer(), value)
@@ -309,6 +312,9 @@ class AgentJsonRpcClient(
             if (coroutineContext[Job] !== overloadWriter) overloadWriter.cancelAndJoin()
             mutableInbound.close()
             mutableRawNotifications.close()
+            if (cleanupOwner.get() == CleanupOwner.OVERLOAD) {
+                runCatching { connection.close() }
+            }
         } finally {
             cleanupComplete.complete(Unit)
         }

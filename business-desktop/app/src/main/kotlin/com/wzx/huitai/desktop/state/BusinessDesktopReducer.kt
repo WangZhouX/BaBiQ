@@ -238,6 +238,7 @@ class BusinessDesktopReducer {
         val currentThread = state.currentThread ?: return stale(state)
         val binding = state.turnBindings[turnId] ?: return stale(state)
         if (currentThread.id != threadId || binding.threadId != threadId) return stale(state)
+        if (turnId in state.terminalTurnStatuses) return stale(state)
         val terminals = state.terminalTurnStatuses + (turnId to status)
         return if (
             state.activeTurn?.id == turnId ||
