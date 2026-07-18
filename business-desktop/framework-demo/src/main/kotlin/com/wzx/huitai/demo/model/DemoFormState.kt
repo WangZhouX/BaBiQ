@@ -49,7 +49,7 @@ data class DemoFormState(
     /** 已提交到页面状态的七字段值。 */
     val values: DemoFormValues = DemoFormValues(),
     /** 每次页面写入成功后递增的上下文版本。 */
-    val revision: Long = 0,
+    val revision: Long = 1,
     /** 当前演示页面路由。 */
     val route: String = DEFAULT_ROUTE,
     /** 绑定生成时版本的待处理建议补丁。 */

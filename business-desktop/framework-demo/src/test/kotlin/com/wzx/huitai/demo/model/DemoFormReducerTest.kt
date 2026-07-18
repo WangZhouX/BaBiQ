@@ -14,6 +14,7 @@ class DemoFormReducerTest {
     @Test
     fun `用户编辑字段后只更新目标字段并递增版本`() {
         val initial = DemoFormState()
+        assertEquals(1, initial.revision)
 
         val updated = reducer.reduce(
             initial,
@@ -22,7 +23,7 @@ class DemoFormReducerTest {
 
         assertEquals("季度资料", updated.values.name)
         assertEquals(initial.values.type, updated.values.type)
-        assertEquals(1, updated.revision)
+        assertEquals(2, updated.revision)
     }
 
     @Test

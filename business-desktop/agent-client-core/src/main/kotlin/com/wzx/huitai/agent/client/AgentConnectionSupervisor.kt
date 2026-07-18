@@ -76,6 +76,7 @@ class AgentConnectionSupervisor(
     incomingCapacity: Int = 128,
 ) {
     private val lifecycleMutex = Mutex()
+    private val outboundMutex = Mutex()
     private val supervisorJob = SupervisorJob(scope.coroutineContext[Job])
     private val supervisorScope = CoroutineScope(scope.coroutineContext + supervisorJob)
     private val mutableState = MutableStateFlow<AgentSupervisorState>(AgentSupervisorState.Idle)
@@ -98,6 +99,26 @@ class AgentConnectionSupervisor(
 
     /** 当前 active connection 的文本帧；旧 generation 的帧在写入前被丢弃。 */
     val incoming: ReceiveChannel<String> = mutableIncoming
+
+    /**
+     * 只向当前 generation 的已认证连接发送文本。
+     *
+     * outbound mutex 保证应用帧顺序；生命周期锁只用于捕获当前 generation，外部发送在锁外执行，
+     * 因此背压不能阻塞重连或关闭。捕获后发生切换时旧句柄会被关闭，帧至多发送失败而不会改投新连接。
+     */
+    suspend fun send(text: String) = outboundMutex.withLock {
+        val connection = lifecycleMutex.withLock {
+            val current = active ?: error("Agent WebSocket is not connected")
+            val connected = mutableState.value as? AgentSupervisorState.Connected
+                ?: error("Agent WebSocket is not connected")
+            check(connected.connectionId == current.connection.connectionId) {
+                "Agent WebSocket generation changed"
+            }
+            current.connection
+        }
+        // 外部 I/O 绝不能持有生命周期锁；shutdown/重连可并发关闭本句柄并使发送失败。
+        connection.send(text)
+    }
 
     /** 幂等启动首次连接循环；连接行为在 Supervisor 自己的 child job 中运行。 */
     suspend fun start() {

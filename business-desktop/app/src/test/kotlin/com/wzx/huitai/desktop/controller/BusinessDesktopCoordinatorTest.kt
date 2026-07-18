@@ -108,6 +108,32 @@ class BusinessDesktopCoordinatorTest {
     }
 
     @Test
+    fun `attaching an already published snapshot suppresses duplicate and continues at next context sequence`() = runTest {
+        val calls = mutableListOf<String>()
+        val store = BusinessDesktopStore(BusinessDesktopReducer())
+        val workspace = BusinessWorkspaceController(
+            store,
+            BusinessContextPublicationPort { _, _, sequence, snapshot ->
+                calls += "$sequence:${snapshot.revision}"
+            },
+            RecordingActionPort(),
+        )
+
+        workspace.attachPublishedIdentity(
+            identity = identity(1),
+            catalogEpoch = 3,
+            snapshot = page(7),
+            lifecycleGeneration = 1,
+            publishedContextSequence = 1,
+        )
+
+        assertFalse(workspace.publishPage(page(7)))
+        assertTrue(workspace.publishPage(page(8)))
+        assertEquals(listOf("2:8"), calls)
+        assertEquals(8, store.state.value.page?.revision)
+    }
+
+    @Test
     fun `disconnect reconnect manual retry expiry and shutdown are reflected without restarting old scope`() = runTest {
         val store = BusinessDesktopStore(BusinessDesktopReducer())
         val connection = FakeConnectionLifecycle()

@@ -76,7 +76,7 @@ class DemoActionBusIntegrationTest {
 
         assertFalse(result.stateChanged)
         assertEquals(result.before, result.after)
-        assertEquals(1, result.after.revision)
+        assertEquals(2, result.after.revision)
         assertEquals(initial.values.name, result.after.values.name)
     }
 
@@ -129,14 +129,14 @@ class DemoActionBusIntegrationTest {
 
                 assertTrue(editResult.stateChanged)
                 if (patchResult.stateChanged) {
-                    assertEquals(0, patchResult.before.revision)
-                    assertEquals(1, patchResult.after.revision)
-                    assertEquals(2, finalState.revision)
+                    assertEquals(1, patchResult.before.revision)
+                    assertEquals(2, patchResult.after.revision)
+                    assertEquals(3, finalState.revision)
                     assertEquals("补丁值", finalState.values.name)
                 } else {
-                    assertEquals(1, patchResult.before.revision)
+                    assertEquals(2, patchResult.before.revision)
                     assertEquals(patchResult.before, patchResult.after)
-                    assertEquals(1, finalState.revision)
+                    assertEquals(2, finalState.revision)
                     assertEquals(initial.values.name, finalState.values.name)
                 }
                 assertEquals("用户更新", finalState.values.status)
@@ -153,14 +153,14 @@ class DemoActionBusIntegrationTest {
         val navigation = screen.dispatchWithExpectedContext(
             event = DemoFormEvent.Navigate("/demo/owned"),
             expectedPageId = DemoFormState.PAGE_ID,
-            expectedRevision = 0,
+            expectedRevision = 1,
         )
         screen.dispatch(DemoFormEvent.EditField(DemoFormState.FIELD_STATUS, "随后编辑"))
 
         val owned = requireNotNull(navigation)
         assertEquals("/demo/owned", owned.after.route)
-        assertEquals(1, owned.after.revision)
-        assertEquals(2, screen.state.value.revision)
+        assertEquals(2, owned.after.revision)
+        assertEquals(3, screen.state.value.revision)
     }
 
     @Test
@@ -180,7 +180,7 @@ class DemoActionBusIntegrationTest {
         assertIs<ActionResult.Success<*>>(assertIs<ActionBusResult.Completed>(agentResult).result)
         assertEquals("用户值", fixture.screen.state.value.values.name)
         assertEquals("Agent值", fixture.screen.state.value.values.status)
-        assertEquals(2, fixture.screen.state.value.revision)
+        assertEquals(3, fixture.screen.state.value.revision)
         assertEquals(listOf(ActionOrigin.USER, ActionOrigin.AGENT), fixture.confirmedOrigins)
         listOf("apply-user", "apply-agent").forEach { executionId ->
             assertEquals(

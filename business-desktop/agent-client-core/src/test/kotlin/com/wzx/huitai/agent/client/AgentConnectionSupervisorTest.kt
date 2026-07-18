@@ -2,11 +2,13 @@ package com.wzx.huitai.agent.client
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -117,6 +119,56 @@ class AgentConnectionSupervisorTest {
         assertEquals(1, transport.requests.size)
         assertEquals(AgentSupervisorState.Connected("connection-1"), supervisor.state.value)
         supervisor.shutdown()
+    }
+
+    @Test
+    fun `send always targets the current generation and rejects disconnected state`() = runTest {
+        val first = FakeConnection("connection-1", AgentConnectionState.Connected)
+        val second = FakeConnection("connection-2", AgentConnectionState.Connected)
+        val retryEntered = CompletableDeferred<Unit>()
+        val allowRetry = CompletableDeferred<Unit>()
+        val supervisor = supervisor(RecordingTransport(listOf(first, second))) {
+            retryEntered.complete(Unit)
+            allowRetry.await()
+        }
+
+        supervisor.start()
+        awaitConnected(supervisor, "connection-1")
+        supervisor.send("first")
+        first.emitState(AgentConnectionState.TransportFailure())
+        retryEntered.await()
+        assertFailsWith<IllegalStateException> { supervisor.send("gap") }
+        allowRetry.complete(Unit)
+        awaitConnected(supervisor, "connection-2")
+        supervisor.send("second")
+
+        assertEquals(listOf("first"), first.sent)
+        assertEquals(listOf("second"), second.sent)
+        supervisor.shutdown()
+    }
+
+    @Test
+    fun `a backpressured send never blocks shutdown or lifecycle progress`() = runTest {
+        val sendEntered = CompletableDeferred<Unit>()
+        val releaseSend = CompletableDeferred<Unit>()
+        val connection = FakeConnection(
+            "connection-1",
+            AgentConnectionState.Connected,
+            sendEntered = sendEntered,
+            releaseSend = releaseSend,
+        )
+        val supervisor = supervisor(RecordingTransport(listOf(connection)))
+        supervisor.start()
+        awaitConnected(supervisor, "connection-1")
+
+        val sending = async { supervisor.send("blocked") }
+        sendEntered.await()
+
+        withTimeout(2_000) { supervisor.shutdown() }
+        assertEquals(AgentSupervisorState.Shutdown, supervisor.state.value)
+
+        releaseSend.complete(Unit)
+        sending.await()
     }
 
     @Test
@@ -289,6 +341,8 @@ class AgentConnectionSupervisorTest {
         override val connectionId: String,
         initialState: AgentConnectionState,
         initiallyConnected: Boolean = initialState == AgentConnectionState.Connected,
+        private val sendEntered: CompletableDeferred<Unit>? = null,
+        private val releaseSend: CompletableDeferred<Unit>? = null,
     ) : AgentConnection {
         private val mutableIncoming = Channel<String>(Channel.UNLIMITED)
         private val mutableState = MutableStateFlow(initialState)
@@ -298,6 +352,7 @@ class AgentConnectionSupervisorTest {
             private set
         var closeCount: Int = 0
             private set
+        val sent: MutableList<String> = mutableListOf()
 
         fun emitState(state: AgentConnectionState) {
             if (state == AgentConnectionState.Connected) hasConnected = true
@@ -308,7 +363,11 @@ class AgentConnectionSupervisorTest {
             mutableIncoming.trySend(text).getOrThrow()
         }
 
-        override suspend fun send(text: String) = Unit
+        override suspend fun send(text: String) {
+            sendEntered?.complete(Unit)
+            releaseSend?.await()
+            sent += text
+        }
 
         override suspend fun close() {
             closeCount += 1

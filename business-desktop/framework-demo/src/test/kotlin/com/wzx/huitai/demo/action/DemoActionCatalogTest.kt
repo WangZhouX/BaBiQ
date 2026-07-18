@@ -220,7 +220,7 @@ class DemoActionCatalogTest {
         )
         assertEquals(ActionErrorCode.CONTEXT_STALE, failure.error.code)
         assertEquals(DemoFormState.DEFAULT_ROUTE, screen.state.value.route)
-        assertEquals(1, screen.state.value.revision)
+        assertEquals(2, screen.state.value.revision)
     }
 
     @Test

@@ -71,6 +71,34 @@ class BusinessWorkspaceController(
         return accepted && publishPage(initialPage)
     }
 
+    /**
+     * 安装已由当前认证连接成功发布的首个页面快照，不再次发送 context。
+     *
+     * composition root 在 identity/catalog/context 三阶段完成远端注册后调用此 seam，把本地水位
+     * 原子推进到同一事实；后续 [publishPage] 从下一个 sequence 继续，避免重复初始 publication。
+     */
+    suspend fun attachPublishedIdentity(
+        identity: BusinessIdentity,
+        catalogEpoch: Long,
+        snapshot: PageContextSnapshot,
+        lifecycleGeneration: Long,
+        publishedContextSequence: Long,
+    ): Boolean = publicationMutex.withLock {
+        require(catalogEpoch > 0) { "catalogEpoch must be positive" }
+        require(publishedContextSequence > 0) { "publishedContextSequence must be positive" }
+        stateMutex.withLock {
+            if (lifecycleGeneration < this.lifecycleGeneration) return@withLock false
+            this.lifecycleGeneration = lifecycleGeneration
+            activeIdentity = identity
+            this.catalogEpoch = catalogEpoch
+            contextSequence = publishedContextSequence
+            lastPublished = PublicationKey(identity.identityEpoch, snapshot.pageId, snapshot.revision)
+            store.dispatch(BusinessDesktopEvent.IdentityAuthenticated(identity))
+            store.dispatch(BusinessDesktopEvent.PageChanged(snapshot))
+            true
+        }
+    }
+
     suspend fun publishPage(snapshot: PageContextSnapshot): Boolean = publicationMutex.withLock {
         val candidate = stateMutex.withLock {
             val identity = activeIdentity ?: return@withLock null
