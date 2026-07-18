@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -69,7 +70,7 @@ public class ExecShellTool implements Tool {
             }
             joinQuietly(gobbler);
             int exitCode = process.exitValue();
-            String result = output.toString(StandardCharsets.UTF_8);
+            String result = output.toString(shellOutputCharset());
             if (exitCode != 0) {
                 return ToolResult.failure("Exit " + exitCode + ": " + result);
             }
@@ -96,13 +97,53 @@ public class ExecShellTool implements Tool {
      * 根据当前操作系统选择 shell 包装命令，并把工作目录切换到当前 turn 的 cwd。
      */
     private ProcessBuilder buildProcess(String command, ToolContext toolContext) {
-        boolean isWindows = System.getProperty("os.name").toLowerCase().contains("win");
-        ProcessBuilder processBuilder = isWindows
+        ProcessBuilder processBuilder = isWindows()
                 ? new ProcessBuilder(List.of("cmd.exe", "/c", command))
                 : new ProcessBuilder(List.of("sh", "-c", command));
         processBuilder.redirectErrorStream(true);
         Path workingDirectory = ToolPathResolver.workingDirectory(toolContext);
         return processBuilder.directory(workingDirectory.toFile());
+    }
+
+    /**
+     * Windows 的 {@code cmd.exe} 管道输出使用本机代码页，而不是 JVM 的 {@code file.encoding}。
+     */
+    private Charset shellOutputCharset() {
+        return shellOutputCharset(
+                isWindows(),
+                System.getProperty("stdout.encoding"),
+                System.getProperty("native.encoding"),
+                Charset.defaultCharset());
+    }
+
+    static Charset shellOutputCharset(boolean windows,
+                                      String stdoutEncoding,
+                                      String nativeEncoding,
+                                      Charset fallback) {
+        if (!windows) {
+            return StandardCharsets.UTF_8;
+        }
+        Charset stdoutCharset = supportedCharset(stdoutEncoding);
+        if (stdoutCharset != null) {
+            return stdoutCharset;
+        }
+        Charset nativeCharset = supportedCharset(nativeEncoding);
+        return nativeCharset != null ? nativeCharset : fallback;
+    }
+
+    private static Charset supportedCharset(String charsetName) {
+        if (charsetName == null || charsetName.isBlank()) {
+            return null;
+        }
+        try {
+            return Charset.forName(charsetName);
+        } catch (IllegalArgumentException ignored) {
+            return null;
+        }
+    }
+
+    private boolean isWindows() {
+        return System.getProperty("os.name").toLowerCase().contains("win");
     }
 
     /**

@@ -22,6 +22,7 @@ import java.nio.file.attribute.AclFileAttributeView;
 import java.nio.file.attribute.PosixFileAttributeView;
 import java.nio.file.attribute.PosixFilePermission;
 import java.time.Duration;
+import java.util.Base64;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
@@ -209,9 +210,10 @@ class DesktopSessionTokenProviderTest {
 
     @Test
     void rejectsAReparsePointInTheTokenPathAndDeletesOnlyTheLink() throws Exception {
-        Path outside = Files.createDirectories(tempDir.resolve("outside"));
+        Path nonAsciiRoot = Files.createDirectories(tempDir.resolve("中文路径"));
+        Path outside = Files.createDirectories(nonAsciiRoot.resolve("outside"));
         Path realToken = writeRestrictedToken(outside.resolve("real-token"), TOKEN);
-        Path junction = tempDir.resolve("token-junction");
+        Path junction = nonAsciiRoot.resolve("token-junction");
         createDirectoryJunction(junction, outside);
         Path linkedToken = junction.resolve("real-token");
 
@@ -308,17 +310,19 @@ class DesktopSessionTokenProviderTest {
     }
 
     private static void createDirectoryJunction(Path junction, Path target) throws Exception {
-        Process process = new ProcessBuilder(
-                "powershell", "-NoProfile", "-NonInteractive", "-Command", "-")
-                .redirectErrorStream(true)
-                .start();
-        String command = "New-Item -ItemType Junction -Path '"
+        assertThat(Files.isDirectory(target)).isTrue();
+        String command = "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); "
+                + "New-Item -ItemType Junction -Path '"
                 + escapePowerShellLiteral(junction.toString())
                 + "' -Target '"
                 + escapePowerShellLiteral(target.toString())
-                + "' | Out-Null\n";
-        process.getOutputStream().write(command.getBytes(StandardCharsets.UTF_8));
-        process.getOutputStream().close();
+                + "' | Out-Null";
+        String encodedCommand = Base64.getEncoder().encodeToString(
+                command.getBytes(StandardCharsets.UTF_16LE));
+        Process process = new ProcessBuilder(
+                "powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodedCommand)
+                .redirectErrorStream(true)
+                .start();
         String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
         assertThat(process.waitFor()).as(output).isZero();
     }

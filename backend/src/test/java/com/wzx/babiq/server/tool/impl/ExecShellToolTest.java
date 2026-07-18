@@ -5,6 +5,8 @@ import org.springframework.ai.chat.model.ToolContext;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
@@ -32,6 +34,25 @@ class ExecShellToolTest {
 
         assertThat(result.ok()).isTrue();
         assertThat(result.output()).contains("babiq");
+    }
+
+    @Test
+    void exec_shell_preserves_non_ascii_stdout() {
+        ToolResult result = tool.execShell("echo 汇泰");
+
+        assertThat(result.ok()).isTrue();
+        assertThat(result.output().trim()).isEqualTo("汇泰");
+    }
+
+    @Test
+    void windows_shell_output_charset_falls_back_to_native_encoding() {
+        Charset gbk = Charset.forName("GBK");
+
+        Charset resolved = ExecShellTool.shellOutputCharset(
+                true, "not-a-charset", "GBK", StandardCharsets.UTF_8);
+
+        assertThat(resolved).isEqualTo(gbk);
+        assertThat(new String("汇泰".getBytes(gbk), resolved)).isEqualTo("汇泰");
     }
 
     @Test

@@ -49,6 +49,7 @@ import java.sql.ResultSet;
 import java.sql.Statement;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Base64;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -412,17 +413,19 @@ class BusinessDesktopProfileIsolationIT {
     }
 
     private static void createDirectoryJunction(Path junction, Path target) throws Exception {
-        Process process = new ProcessBuilder(
-                "powershell", "-NoProfile", "-NonInteractive", "-Command", "-")
-                .redirectErrorStream(true)
-                .start();
-        String command = "New-Item -ItemType Junction -Path '"
+        assertThat(Files.isDirectory(target)).isTrue();
+        String command = "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); "
+                + "New-Item -ItemType Junction -Path '"
                 + escapePowerShellLiteral(junction.toString())
                 + "' -Target '"
                 + escapePowerShellLiteral(target.toString())
-                + "' | Out-Null\n";
-        process.getOutputStream().write(command.getBytes(StandardCharsets.UTF_8));
-        process.getOutputStream().close();
+                + "' | Out-Null";
+        String encodedCommand = Base64.getEncoder().encodeToString(
+                command.getBytes(StandardCharsets.UTF_16LE));
+        Process process = new ProcessBuilder(
+                "powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodedCommand)
+                .redirectErrorStream(true)
+                .start();
         String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
         assertThat(process.waitFor()).as(output).isZero();
     }
