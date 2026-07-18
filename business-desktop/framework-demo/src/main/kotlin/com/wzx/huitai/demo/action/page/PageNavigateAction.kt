@@ -4,6 +4,8 @@ import com.wzx.huitai.action.ActionContext
 import com.wzx.huitai.action.ActionInputCodec
 import com.wzx.huitai.action.ApplicationAction
 import com.wzx.huitai.action.RegisteredAction
+import com.wzx.huitai.action.model.ActionError
+import com.wzx.huitai.action.model.ActionErrorCode
 import com.wzx.huitai.action.model.ActionPreview
 import com.wzx.huitai.action.model.ActionPreviewChange
 import com.wzx.huitai.action.model.ActionReplayPolicy
@@ -53,13 +55,19 @@ class PageNavigateAction private constructor(
 
     /** 只派发强类型导航事件。 */
     override suspend fun execute(input: PageNavigateInput, context: ActionContext): ActionResult<JsonObject> {
-        screen.dispatch(DemoFormEvent.Navigate(input.route))
-        val state = screen.state.value
+        val transition = screen.dispatchWithExpectedContext(
+            event = DemoFormEvent.Navigate(input.route),
+            expectedPageId = context.pageId,
+            expectedRevision = context.contextRevision,
+        ) ?: return ActionResult.Failure(
+            executionId = input.executionId,
+            error = ActionError(ActionErrorCode.CONTEXT_STALE, "页面导航上下文已变化"),
+        )
         return ActionResult.Success(
             executionId = input.executionId,
             output = buildJsonObject {
-                put("route", state.route)
-                put("revision", state.revision)
+                put("route", transition.after.route)
+                put("revision", transition.after.revision)
             },
         )
     }

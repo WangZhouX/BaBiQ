@@ -18,6 +18,7 @@ import com.wzx.huitai.demo.action.strictSchema
 import com.wzx.huitai.demo.gateway.FakeGatewayResult
 import com.wzx.huitai.demo.gateway.FakeHuitaiGateway
 import com.wzx.huitai.demo.model.DemoScreenModel
+import com.wzx.huitai.demo.model.DemoFormState
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -45,13 +46,20 @@ class DemoSubmitAction private constructor(
     override suspend fun preview(input: DemoSubmitInput, context: ActionContext): ActionPreview =
         ActionPreview(
             executionId = input.executionId,
-            summary = "提交 revision ${screen.state.value.revision} 的资料",
+            summary = "提交 revision ${screen.readWithRevision().revision} 的资料",
             warnings = listOf("提交后必须以远端事实为准"),
         )
 
     /** 调用假远端一次，并把发送后响应丢失显式收口为 OUTCOME_UNKNOWN。 */
-    override suspend fun execute(input: DemoSubmitInput, context: ActionContext): ActionResult<JsonObject> =
-        when (val result = gateway.submit(input.executionId, screen.state.value)) {
+    override suspend fun execute(input: DemoSubmitInput, context: ActionContext): ActionResult<JsonObject> {
+        val snapshot = screen.readWithRevision()
+        if (context.pageId != DemoFormState.PAGE_ID || snapshot.revision != context.contextRevision) {
+            return ActionResult.Failure(
+                input.executionId,
+                ActionError(ActionErrorCode.CONTEXT_STALE, "提交页面上下文已变化"),
+            )
+        }
+        return when (val result = gateway.submit(input.executionId, snapshot)) {
             is FakeGatewayResult.Confirmed -> ActionResult.Success(
                 executionId = input.executionId,
                 output = buildJsonObject { put("submitted", true) },
@@ -64,6 +72,7 @@ class DemoSubmitAction private constructor(
                 reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
             )
         }
+    }
 
     /** 结果不确定后只查询远端提交事实，绝不再次调用 submit。 */
     override suspend fun reconcile(

@@ -47,10 +47,26 @@ class DemoScreenModel(
 
     /** 在所有页面写入共用的临界区内计算并发布一个 typed event 的精确迁移。 */
     internal fun dispatchWithResult(event: DemoFormEvent): DemoDispatchResult = synchronized(dispatchMonitor) {
-        val before = mutableState.value
-        val after = reducer.reduce(before, event)
-        mutableState.value = after
-        DemoDispatchResult(before, after)
+        reduceAndPublish(event)
+    }
+
+    /** 仅当页面标识和 revision 仍与已确认上下文一致时，原子派发 typed event。 */
+    internal fun dispatchWithExpectedContext(
+        event: DemoFormEvent,
+        expectedPageId: String,
+        expectedRevision: Long,
+    ): DemoDispatchResult? = synchronized(dispatchMonitor) {
+        val current = mutableState.value
+        if (expectedPageId != DemoFormState.PAGE_ID || current.revision != expectedRevision) {
+            null
+        } else {
+            reduceAndPublish(event)
+        }
+    }
+
+    /** 与所有 dispatch 共用临界区，读取将被远端动作使用的单一不可变快照。 */
+    internal fun readWithRevision(): DemoFormState = synchronized(dispatchMonitor) {
+        mutableState.value
     }
 
     /** 从同一次状态读取生成字段值与 revision 完全一致的页面快照。 */
@@ -101,6 +117,13 @@ class DemoScreenModel(
             if (state.values.status.isBlank()) add("状态不能为空")
         }
         return ValidationSummary(valid = messages.isEmpty(), messages = messages)
+    }
+
+    private fun reduceAndPublish(event: DemoFormEvent): DemoDispatchResult {
+        val before = mutableState.value
+        val after = reducer.reduce(before, event)
+        mutableState.value = after
+        return DemoDispatchResult(before, after)
     }
 
     private companion object {

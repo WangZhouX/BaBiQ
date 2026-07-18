@@ -3,11 +3,14 @@ package com.wzx.huitai.demo.action
 import com.wzx.huitai.action.ActionContext
 import com.wzx.huitai.action.ActionInputDecodeResult
 import com.wzx.huitai.action.ActionInvocationResult
+import com.wzx.huitai.action.model.ActionErrorCode
 import com.wzx.huitai.action.model.ActionIdentityScope
 import com.wzx.huitai.action.model.ActionReplayPolicy
 import com.wzx.huitai.action.model.ActionRiskLevel
 import com.wzx.huitai.action.model.ReconciliationPolicy
+import com.wzx.huitai.action.model.ActionResult
 import com.wzx.huitai.demo.gateway.FakeHuitaiGateway
+import com.wzx.huitai.demo.model.DemoFormEvent
 import com.wzx.huitai.demo.model.DemoFormState
 import com.wzx.huitai.demo.model.DemoScreenModel
 import com.wzx.huitai.presentation.form.FieldChange
@@ -150,6 +153,107 @@ class DemoActionCatalogTest {
             listOf("资料名称", "资料类型", "联系人", "金额", "日期", "状态", "详细说明"),
             snapshot.fields.map { it.label },
         )
+    }
+
+    @Test
+    fun `保存草稿在确认后页面版本变化时拒绝且不调用远端`() = runTest {
+        val screen = DemoScreenModel()
+        val gateway = FakeHuitaiGateway()
+        val registered = DemoActionCatalog(screen, gateway).actions
+            .single { it.descriptor.id == "demo.save_draft" }
+        val approvedContext = context(screen.state.value)
+        screen.dispatch(DemoFormEvent.EditField(DemoFormState.FIELD_NAME, "确认后编辑"))
+
+        val invocation = registered.invokeExecute(
+            buildJsonObject { put("executionId", "stale-draft") },
+            approvedContext,
+        )
+
+        val failure = assertIs<ActionResult.Failure>(
+            assertIs<ActionInvocationResult.Executed>(invocation).result,
+        )
+        assertEquals(ActionErrorCode.CONTEXT_STALE, failure.error.code)
+        assertEquals(0, gateway.draftRequestCount)
+        assertEquals(0, gateway.draftWriteCount)
+    }
+
+    @Test
+    fun `提交在审批后页面版本变化时拒绝且不调用远端`() = runTest {
+        val screen = DemoScreenModel()
+        val gateway = FakeHuitaiGateway()
+        val registered = DemoActionCatalog(screen, gateway).actions
+            .single { it.descriptor.id == "demo.submit" }
+        val approvedContext = context(screen.state.value)
+        screen.dispatch(DemoFormEvent.EditField(DemoFormState.FIELD_STATUS, "审批后编辑"))
+
+        val invocation = registered.invokeExecute(
+            buildJsonObject { put("executionId", "stale-submit") },
+            approvedContext,
+        )
+
+        val failure = assertIs<ActionResult.Failure>(
+            assertIs<ActionInvocationResult.Executed>(invocation).result,
+        )
+        assertEquals(ActionErrorCode.CONTEXT_STALE, failure.error.code)
+        assertEquals(0, gateway.submissionRequestCount)
+        assertEquals(0, gateway.submissionWriteCount)
+    }
+
+    @Test
+    fun `页面导航上下文过期时拒绝且不派发导航事件`() = runTest {
+        val screen = DemoScreenModel()
+        val registered = DemoActionCatalog(screen, FakeHuitaiGateway()).actions
+            .single { it.descriptor.id == "page.navigate" }
+        val staleContext = context(screen.state.value)
+        screen.dispatch(DemoFormEvent.EditField(DemoFormState.FIELD_STATUS, "用户编辑"))
+
+        val invocation = registered.invokeExecute(
+            buildJsonObject {
+                put("executionId", "stale-navigation")
+                put("route", "/demo/stale")
+            },
+            staleContext,
+        )
+
+        val failure = assertIs<ActionResult.Failure>(
+            assertIs<ActionInvocationResult.Executed>(invocation).result,
+        )
+        assertEquals(ActionErrorCode.CONTEXT_STALE, failure.error.code)
+        assertEquals(DemoFormState.DEFAULT_ROUTE, screen.state.value.route)
+        assertEquals(1, screen.state.value.revision)
+    }
+
+    @Test
+    fun `表单补丁预览拒绝其他页面的补丁`() = runTest {
+        val screen = DemoScreenModel()
+        val registered = DemoActionCatalog(screen, FakeHuitaiGateway()).actions
+            .single { it.descriptor.id == "form.preview_patch" }
+        val wrongPagePatch = FormPatch(
+            pageId = "other.page",
+            baseRevision = screen.state.value.revision,
+            changes = listOf(
+                FieldChange(
+                    fieldId = DemoFormState.FIELD_NAME,
+                    previousValue = JsonPrimitive(screen.state.value.values.name),
+                    newValue = JsonPrimitive("其他页面值"),
+                    reason = "错误页面",
+                    confidence = 1.0,
+                ),
+            ),
+        )
+
+        val invocation = registered.invokeExecute(
+            buildJsonObject {
+                put("executionId", "wrong-page-preview")
+                put("patch", Json.parseToJsonElement(Json.encodeToString(wrongPagePatch)).jsonObject)
+            },
+            context(screen.state.value),
+        )
+
+        val failure = assertIs<ActionResult.Failure>(
+            assertIs<ActionInvocationResult.Executed>(invocation).result,
+        )
+        assertEquals(ActionErrorCode.VALIDATION_FAILED, failure.error.code)
     }
 
     private fun validInputs(): Map<String, JsonObject> {

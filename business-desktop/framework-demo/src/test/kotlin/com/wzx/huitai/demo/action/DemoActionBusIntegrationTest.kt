@@ -57,6 +57,7 @@ import kotlinx.serialization.json.put
 import java.time.Instant
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -122,8 +123,8 @@ class DemoActionBusIntegrationTest {
                 }
                 start.countDown()
 
-                val patchResult = patchFuture.get()
-                val editResult = editFuture.get()
+                val patchResult = patchFuture.get(5, TimeUnit.SECONDS)
+                val editResult = editFuture.get(5, TimeUnit.SECONDS)
                 val finalState = screen.state.value
 
                 assertTrue(editResult.stateChanged)
@@ -143,6 +144,23 @@ class DemoActionBusIntegrationTest {
                 executor.shutdownNow()
             }
         }
+    }
+
+    @Test
+    fun `导航事件返回自己的after且不受随后页面事件污染`() {
+        val screen = DemoScreenModel()
+
+        val navigation = screen.dispatchWithExpectedContext(
+            event = DemoFormEvent.Navigate("/demo/owned"),
+            expectedPageId = DemoFormState.PAGE_ID,
+            expectedRevision = 0,
+        )
+        screen.dispatch(DemoFormEvent.EditField(DemoFormState.FIELD_STATUS, "随后编辑"))
+
+        val owned = requireNotNull(navigation)
+        assertEquals("/demo/owned", owned.after.route)
+        assertEquals(1, owned.after.revision)
+        assertEquals(2, screen.state.value.revision)
     }
 
     @Test

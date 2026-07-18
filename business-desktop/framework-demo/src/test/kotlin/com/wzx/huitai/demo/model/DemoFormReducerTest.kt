@@ -87,6 +87,24 @@ class DemoFormReducerTest {
         assertEquals(edited.revision, rejected.revision)
     }
 
+    @Test
+    fun `错误页面或基础版本的建议不会安装到状态`() {
+        val initial = DemoFormState()
+        val wrongPage = FormPatch(
+            pageId = "other.page",
+            baseRevision = initial.revision,
+            changes = patch(initial, DemoFormState.FIELD_NAME to "建议值").changes,
+        )
+        val wrongRevision = FormPatch(
+            pageId = DemoFormState.PAGE_ID,
+            baseRevision = initial.revision + 1,
+            changes = patch(initial, DemoFormState.FIELD_NAME to "建议值").changes,
+        )
+
+        assertEquals(initial, reducer.reduce(initial, DemoFormEvent.SuggestPatch(wrongPage)))
+        assertEquals(initial, reducer.reduce(initial, DemoFormEvent.SuggestPatch(wrongRevision)))
+    }
+
     private fun patch(
         state: DemoFormState,
         vararg replacements: Pair<String, String>,

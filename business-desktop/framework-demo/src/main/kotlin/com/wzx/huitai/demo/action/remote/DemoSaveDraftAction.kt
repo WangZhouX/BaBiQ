@@ -18,6 +18,7 @@ import com.wzx.huitai.demo.action.strictSchema
 import com.wzx.huitai.demo.gateway.FakeGatewayResult
 import com.wzx.huitai.demo.gateway.FakeHuitaiGateway
 import com.wzx.huitai.demo.model.DemoScreenModel
+import com.wzx.huitai.demo.model.DemoFormState
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -43,11 +44,18 @@ class DemoSaveDraftAction private constructor(
 
     /** 保存预览只读取 revision，不调用远端。 */
     override suspend fun preview(input: DemoSaveDraftInput, context: ActionContext): ActionPreview =
-        ActionPreview(input.executionId, "保存 revision ${screen.state.value.revision} 的草稿")
+        ActionPreview(input.executionId, "保存 revision ${screen.readWithRevision().revision} 的草稿")
 
     /** 把当前状态交给假远端一次。 */
-    override suspend fun execute(input: DemoSaveDraftInput, context: ActionContext): ActionResult<JsonObject> =
-        when (val result = gateway.saveDraft(input.executionId, screen.state.value)) {
+    override suspend fun execute(input: DemoSaveDraftInput, context: ActionContext): ActionResult<JsonObject> {
+        val snapshot = screen.readWithRevision()
+        if (context.pageId != DemoFormState.PAGE_ID || snapshot.revision != context.contextRevision) {
+            return ActionResult.Failure(
+                input.executionId,
+                ActionError(ActionErrorCode.CONTEXT_STALE, "草稿页面上下文已变化"),
+            )
+        }
+        return when (val result = gateway.saveDraft(input.executionId, snapshot)) {
             is FakeGatewayResult.Confirmed -> ActionResult.Success(
                 executionId = input.executionId,
                 output = buildJsonObject { put("saved", true) },
@@ -60,6 +68,7 @@ class DemoSaveDraftAction private constructor(
                 reconciliationPolicy = ReconciliationPolicy.QUERY_REMOTE,
             )
         }
+    }
 
     /** 只按 executionId 查询假远端事实，不回退到 execute。 */
     override suspend fun reconcile(

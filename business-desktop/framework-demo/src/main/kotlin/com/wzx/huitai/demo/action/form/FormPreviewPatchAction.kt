@@ -4,6 +4,8 @@ import com.wzx.huitai.action.ActionContext
 import com.wzx.huitai.action.ActionInputCodec
 import com.wzx.huitai.action.ApplicationAction
 import com.wzx.huitai.action.RegisteredAction
+import com.wzx.huitai.action.model.ActionError
+import com.wzx.huitai.action.model.ActionErrorCode
 import com.wzx.huitai.action.model.ActionPreview
 import com.wzx.huitai.action.model.ActionPreviewChange
 import com.wzx.huitai.action.model.ActionReplayPolicy
@@ -16,6 +18,7 @@ import com.wzx.huitai.demo.action.requiredPatch
 import com.wzx.huitai.demo.action.requiredString
 import com.wzx.huitai.demo.action.strictSchema
 import com.wzx.huitai.demo.model.DemoScreenModel
+import com.wzx.huitai.demo.model.DemoFormState
 import com.wzx.huitai.presentation.form.FormPatch
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -44,12 +47,21 @@ class FormPreviewPatchAction private constructor(
         changes = input.patch.changes.map { change ->
             ActionPreviewChange(change.fieldId, change.previousValue, change.newValue)
         },
-        warnings = if (input.patch.baseRevision == screen.state.value.revision) emptyList() else listOf("补丁版本已过期"),
+        warnings = buildList {
+            if (input.patch.pageId != DemoFormState.PAGE_ID) add("补丁页面不匹配")
+            if (input.patch.baseRevision != screen.state.value.revision) add("补丁版本已过期")
+        },
     )
 
     /** 返回补丁摘要，不安装建议也不修改页面。 */
-    override suspend fun execute(input: FormPreviewPatchInput, context: ActionContext): ActionResult<JsonObject> =
-        ActionResult.Success(
+    override suspend fun execute(input: FormPreviewPatchInput, context: ActionContext): ActionResult<JsonObject> {
+        if (input.patch.pageId != DemoFormState.PAGE_ID) {
+            return ActionResult.Failure(
+                input.executionId,
+                ActionError(ActionErrorCode.VALIDATION_FAILED, "补丁页面不匹配"),
+            )
+        }
+        return ActionResult.Success(
             input.executionId,
             buildJsonObject {
                 put("baseRevision", input.patch.baseRevision)
@@ -57,6 +69,7 @@ class FormPreviewPatchAction private constructor(
                 put("stale", input.patch.baseRevision != screen.state.value.revision)
             },
         )
+    }
 
     companion object {
         private val INPUT_CODEC = ActionInputCodec<FormPreviewPatchInput> { input ->

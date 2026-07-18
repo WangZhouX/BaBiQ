@@ -10,7 +10,13 @@ class DemoFormReducer : ScreenReducer<DemoFormState, DemoFormEvent> {
     /** 根据当前不可变状态和强类型事件计算下一状态。 */
     override fun reduce(state: DemoFormState, event: DemoFormEvent): DemoFormState = when (event) {
         is DemoFormEvent.EditField -> editField(state, event.fieldId, event.value)
-        is DemoFormEvent.SuggestPatch -> state.copy(suggestionPatch = event.patch)
+        is DemoFormEvent.SuggestPatch -> if (
+            event.patch.pageId == DemoFormState.PAGE_ID && event.patch.baseRevision == state.revision
+        ) {
+            state.copy(suggestionPatch = event.patch)
+        } else {
+            state
+        }
         is DemoFormEvent.AcceptSuggestion -> acceptSuggestion(state, event.fieldId)
         DemoFormEvent.AcceptAllSuggestions -> state.suggestionPatch
             ?.takeUnless { state.suggestionIsStale }
