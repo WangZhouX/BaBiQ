@@ -31,6 +31,7 @@ import kotlinx.serialization.json.JsonPrimitive
  */
 class ComposeActionDecisionCoordinator(
     private val decisionTimeoutMillis: Long = DEFAULT_DECISION_TIMEOUT_MILLIS,
+    private val recentTombstoneLimit: Int = DEFAULT_RECENT_TOMBSTONE_LIMIT,
     private val clock: () -> Instant = Instant::now,
     private val actionTitleResolver: (String) -> String = { it },
     private val redactor: AuditRedactor = AuditRedactor(),
@@ -41,8 +42,7 @@ class ComposeActionDecisionCoordinator(
 ) {
     private val monitor = Any()
     private val pendingByExecution = linkedMapOf<String, PendingDecision>()
-    private val consumedPhases = mutableMapOf<String, MutableSet<ActionDecisionPhase>>()
-    private val terminalExecutions = mutableSetOf<String>()
+    private val recentTombstones = linkedMapOf<String, DecisionTombstone>()
     private val mutableState = MutableStateFlow(ActionDecisionState())
     private var stopped = false
     private var agentConnected = true
@@ -50,8 +50,13 @@ class ComposeActionDecisionCoordinator(
     /** Compose 只获得只读 StateFlow，不能绕过协调器直接修改决策。 */
     val state: StateFlow<ActionDecisionState> = mutableState.asStateFlow()
 
+    /** 只暴露当前保留数量用于有界性验证，不泄漏 tombstone 内容或可变集合。 */
+    internal val retainedTombstoneCount: Int
+        get() = synchronized(monitor) { recentTombstones.size }
+
     init {
         require(decisionTimeoutMillis > 0) { "动作决策超时必须为正数" }
+        require(recentTombstoneLimit > 0) { "近期决策墓碑上限必须为正数" }
     }
 
     /** 注册并等待当前 execution 的单次预览确认。 */
@@ -201,9 +206,10 @@ class ComposeActionDecisionCoordinator(
     /** 统一检查 execution 与 phase 的一次性注册约束，断线立即取消也必须留下同样的消费事实。 */
     private fun requireCanRegisterLocked(pending: PendingDecision) {
         val executionId = pending.dialog.executionId
-        check(executionId !in terminalExecutions) { "当前 execution 已完成决策" }
+        val tombstone = recentTombstones[executionId]
+        check(tombstone?.terminal != true) { "当前 execution 已完成决策" }
         check(pendingByExecution[executionId] == null) { "当前 execution 已有待处理决策" }
-        check(pending.phase !in consumedPhases.orEmpty(executionId)) { "当前 execution 的该决策阶段已消费" }
+        check(pending.phase !in tombstone?.consumedPhases.orEmpty()) { "当前 execution 的该决策阶段已消费" }
     }
 
     /** 原子消费普通确认，phase 不匹配时不触碰任何 waiter。 */
@@ -214,11 +220,19 @@ class ComposeActionDecisionCoordinator(
     ): Boolean {
         val resolution = synchronized(monitor) {
             val pending = pendingByExecution[executionId] as? PendingConfirmation ?: return false
-            removeLocked(pending, terminal = decision != ConfirmationDecision.ACCEPTED)
-            pending to confirmationResult(pending, decision, reason)
+            val decidedAt = clock()
+            val expired = decidedAt.toEpochMilli() >= pending.dialog.expiresAtEpochMillis
+            val effectiveDecision = if (expired) ConfirmationDecision.EXPIRED else decision
+            val effectiveReason = if (expired) CONFIRMATION_EXPIRED_REASON else reason
+            removeLocked(pending, terminal = effectiveDecision != ConfirmationDecision.ACCEPTED)
+            Triple(
+                pending,
+                confirmationResult(pending, effectiveDecision, effectiveReason, decidedAt),
+                !expired,
+            )
         }
         resolution.first.deferred.complete(resolution.second)
-        return true
+        return resolution.third
     }
 
     /** 原子消费高风险审批；任何审批决定都是该 execution 的最终 UI 决策。 */
@@ -229,11 +243,19 @@ class ComposeActionDecisionCoordinator(
     ): Boolean {
         val resolution = synchronized(monitor) {
             val pending = pendingByExecution[executionId] as? PendingApproval ?: return false
+            val decidedAt = clock()
+            val expired = decidedAt.toEpochMilli() >= pending.dialog.expiresAtEpochMillis
+            val effectiveDecision = if (expired) ApprovalDecision.EXPIRED else decision
+            val effectiveReason = if (expired) APPROVAL_EXPIRED_REASON else reason
             removeLocked(pending, terminal = true)
-            pending to approvalResult(pending, decision, reason)
+            Triple(
+                pending,
+                approvalResult(pending, effectiveDecision, effectiveReason, decidedAt),
+                !expired,
+            )
         }
         resolution.first.deferred.complete(resolution.second)
-        return true
+        return resolution.third
     }
 
     /** 只在原 pending 仍占有 execution 时过期，迟到 timeout 不会关闭后续 execution。 */
@@ -309,8 +331,17 @@ class ComposeActionDecisionCoordinator(
 
     /** 记录 phase 已消费；拒绝、过期、断线与审批决定同时终结整个 execution。 */
     private fun markConsumedLocked(pending: PendingDecision, terminal: Boolean) {
-        consumedPhases.getOrPut(pending.dialog.executionId) { mutableSetOf() } += pending.phase
-        if (terminal) terminalExecutions += pending.dialog.executionId
+        val executionId = pending.dialog.executionId
+        val previous = recentTombstones.remove(executionId) ?: DecisionTombstone()
+        recentTombstones[executionId] = previous.copy(
+            consumedPhases = previous.consumedPhases + pending.phase,
+            terminal = previous.terminal || terminal,
+        )
+        while (recentTombstones.size > recentTombstoneLimit) {
+            val oldest = recentTombstones.entries.iterator()
+            oldest.next()
+            oldest.remove()
+        }
     }
 
     /** 每次只发布复制后的不可变 List，内部 pending/deferred 从不进入 Compose。 */
@@ -407,11 +438,12 @@ class ComposeActionDecisionCoordinator(
         pending: PendingConfirmation,
         decision: ConfirmationDecision,
         reason: String,
+        decidedAt: Instant = clock(),
     ): ActionConfirmation = ActionConfirmation(
         decisionId = pending.dialog.decisionId,
         executionId = pending.dialog.executionId,
         decision = decision,
-        decidedAt = clock(),
+        decidedAt = decidedAt,
         reason = reason,
     )
 
@@ -420,11 +452,12 @@ class ComposeActionDecisionCoordinator(
         pending: PendingApproval,
         decision: ApprovalDecision,
         reason: String,
+        decidedAt: Instant = clock(),
     ): ActionApproval = ActionApproval(
         approvalId = pending.dialog.decisionId,
         executionId = pending.dialog.executionId,
         decision = decision,
-        decidedAt = clock(),
+        decidedAt = decidedAt,
         decidedBy = if (decision == ApprovalDecision.APPROVED) pending.actorId else null,
         reason = reason,
     )
@@ -446,8 +479,15 @@ class ComposeActionDecisionCoordinator(
         val deferred: CompletableDeferred<ActionApproval>,
     ) : PendingDecision
 
+    /** 只保留近期 execution 的 phase 与终态摘要；ActionBus 仍负责全生命周期 duplicate 权威。 */
+    private data class DecisionTombstone(
+        val consumedPhases: Set<ActionDecisionPhase> = emptySet(),
+        val terminal: Boolean = false,
+    )
+
     companion object {
         private const val DEFAULT_DECISION_TIMEOUT_MILLIS = 60_000L
+        private const val DEFAULT_RECENT_TOMBSTONE_LIMIT = 4_096
         private const val SHUTDOWN_REASON = "桌面正在关闭，动作未执行"
         private const val DISCONNECTED_REASON = "Agent 连接已断开，动作未执行"
         private const val CONFIRMATION_EXPIRED_REASON = "动作预览确认已过期"
@@ -465,7 +505,3 @@ private fun JsonElement?.toDisplayText(): String = when (this) {
     is JsonPrimitive -> if (isString) content else toString()
     else -> toString()
 }
-
-/** 返回指定 execution 已消费的 phase 集合，避免把内部可变集合泄漏给调用方。 */
-private fun Map<String, Set<ActionDecisionPhase>>.orEmpty(executionId: String): Set<ActionDecisionPhase> =
-    this[executionId].orEmpty()

@@ -4,13 +4,16 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import com.wzx.huitai.action.model.ActionOrigin
 import com.wzx.huitai.desktop.decision.ActionDecisionDifference
 import com.wzx.huitai.desktop.decision.ConfirmationDecisionDialogState
@@ -114,6 +117,7 @@ class ActionDecisionDialogTest {
         listOf("raw-secret", "raw-user", "raw-tenant", "始终允许", "记住选择", "会话授权").forEach {
             rule.onAllNodesWithText(it, substring = true).assertCountEquals(0)
         }
+        rule.onNodeWithContentDescription("仅批准本次高风险动作").assertExists()
 
         rule.onNodeWithTag("high-risk-approve-execution-risk").assertIsNotEnabled()
         rule.onNodeWithTag("high-risk-consent-execution-risk").performClick()
@@ -153,6 +157,57 @@ class ActionDecisionDialogTest {
         rule.onNodeWithTag("high-risk-approval-dialog-execution-risk").assertExists()
         rule.runOnIdle { dialog = null }
         rule.onNodeWithTag("high-risk-approval-dialog-execution-risk").assertDoesNotExist()
+    }
+
+    @Test
+    fun `long preview content scrolls to its last warning while action buttons remain reachable`() {
+        val state = confirmationState().copy(
+            executionId = "execution-long-preview",
+            decisionId = "confirmation-long-preview",
+            differences = (1..40).map { index ->
+                ActionDecisionDifference("通用字段 $index", "旧值 $index", "新值 $index", redacted = false)
+            },
+            warnings = (1..20).map { index ->
+                if (index == 20) "末项预览警告" else "预览警告 $index"
+            },
+        )
+        rule.setContent {
+            HuitaiBusinessTheme {
+                ActionPreviewDialog(state, onConfirm = {}, onCancel = {})
+            }
+        }
+
+        rule.onNodeWithTag("action-preview-scroll-execution-long-preview").assertExists()
+        rule.onNodeWithText("末项预览警告").performScrollTo().assertIsDisplayed()
+        rule.onNodeWithTag("action-preview-confirm-execution-long-preview").assertIsDisplayed()
+        rule.onNodeWithTag("action-preview-cancel-execution-long-preview").assertIsDisplayed()
+    }
+
+    @Test
+    fun `long high risk content scrolls through final reason while approval controls remain reachable`() {
+        val state = approvalState().copy(
+            executionId = "execution-long-risk",
+            decisionId = "approval-long-risk",
+            differences = (1..30).map { index ->
+                ActionDecisionDifference("审批字段 $index", "原值 $index", "目标值 $index", redacted = false)
+            },
+            warnings = (1..10).map { "审批警告 $it" },
+            riskReasons = (1..20).map { index ->
+                if (index == 20) "末项高风险原因" else "高风险原因 $index"
+            },
+        )
+        rule.setContent {
+            HuitaiBusinessTheme {
+                HighRiskApprovalDialog(state, onApprove = {}, onDeny = {})
+            }
+        }
+
+        rule.onNodeWithTag("high-risk-scroll-execution-long-risk").assertExists()
+        rule.onNodeWithTag("high-risk-consent-execution-long-risk").assertIsDisplayed()
+        rule.onNodeWithText("风险原因：末项高风险原因").performScrollTo().assertIsDisplayed()
+        rule.onNodeWithTag("high-risk-consent-execution-long-risk").assertIsDisplayed()
+        rule.onNodeWithTag("high-risk-approve-execution-long-risk").assertIsDisplayed()
+        rule.onNodeWithTag("high-risk-deny-execution-long-risk").assertIsDisplayed()
     }
 
     private fun confirmationState(): ConfirmationDecisionDialogState = ConfirmationDecisionDialogState(

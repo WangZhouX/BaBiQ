@@ -4,7 +4,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
@@ -48,7 +51,17 @@ fun ActionPreviewDialog(
         modifier = modifier.testTag("action-preview-dialog-${state.executionId}"),
         onDismissRequest = ::cancelOnce,
         title = { Text("确认动作预览") },
-        text = { ActionDecisionBody(state) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = DECISION_CONTENT_MAX_HEIGHT)
+                    .verticalScroll(rememberScrollState())
+                    .testTag("action-preview-scroll-${state.executionId}"),
+            ) {
+                ActionDecisionBody(state)
+            }
+        },
         confirmButton = {
             Button(
                 modifier = Modifier.testTag("action-preview-confirm-${state.executionId}"),
@@ -108,3 +121,5 @@ private fun ActionOrigin.toDisplayLabel(): String = when (this) {
     ActionOrigin.USER -> "用户操作"
     ActionOrigin.AGENT -> "Agent 建议"
 }
+
+private val DECISION_CONTENT_MAX_HEIGHT = 360.dp

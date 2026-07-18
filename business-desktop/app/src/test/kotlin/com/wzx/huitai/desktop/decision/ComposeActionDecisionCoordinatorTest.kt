@@ -133,6 +133,65 @@ class ComposeActionDecisionCoordinatorTest {
     }
 
     @Test
+    fun `late confirmation clicks expire atomically even when timeout scheduler has not advanced`() = runTest {
+        listOf<(ComposeActionDecisionCoordinator, String) -> Boolean>(
+            ComposeActionDecisionCoordinator::accept,
+            ComposeActionDecisionCoordinator::reject,
+        ).forEachIndexed { index, click ->
+            var now = Instant.parse("2026-07-18T00:00:00Z")
+            val coordinator = coordinator(timeoutMillis = 1_000, clock = { now })
+            val executionId = "execution-late-confirmation-$index"
+            val pending = async(start = CoroutineStart.UNDISPATCHED) {
+                coordinator.requestConfirmation(command(executionId), preview(executionId), context())
+            }
+
+            now = Instant.ofEpochMilli(coordinator.state.value.activeDialog!!.expiresAtEpochMillis)
+
+            assertFalse(click(coordinator, executionId))
+            assertEquals(ConfirmationDecision.EXPIRED, pending.await().decision)
+            assertTrue(coordinator.state.value.dialogs.isEmpty())
+        }
+    }
+
+    @Test
+    fun `late approval clicks expire atomically even when timeout scheduler has not advanced`() = runTest {
+        listOf<(ComposeActionDecisionCoordinator, String) -> Boolean>(
+            ComposeActionDecisionCoordinator::approve,
+            ComposeActionDecisionCoordinator::deny,
+        ).forEachIndexed { index, click ->
+            var now = Instant.parse("2026-07-18T00:00:00Z")
+            val coordinator = coordinator(timeoutMillis = 1_000, clock = { now })
+            val executionId = "execution-late-approval-$index"
+            val pending = async(start = CoroutineStart.UNDISPATCHED) {
+                coordinator.requestApproval(command(executionId), preview(executionId), risk(), context())
+            }
+
+            now = Instant.ofEpochMilli(coordinator.state.value.activeDialog!!.expiresAtEpochMillis)
+
+            assertFalse(click(coordinator, executionId))
+            assertEquals(ApprovalDecision.EXPIRED, pending.await().decision)
+            assertTrue(coordinator.state.value.dialogs.isEmpty())
+        }
+    }
+
+    @Test
+    fun `decision just before deadline wins and later deadline callbacks are ignored`() = runTest {
+        var now = Instant.parse("2026-07-18T00:00:00Z")
+        val coordinator = coordinator(timeoutMillis = 1_000, clock = { now })
+        val pending = async(start = CoroutineStart.UNDISPATCHED) {
+            coordinator.requestConfirmation(command("execution-race"), preview("execution-race"), context())
+        }
+        val deadline = coordinator.state.value.activeDialog!!.expiresAtEpochMillis
+
+        now = Instant.ofEpochMilli(deadline - 1)
+        assertTrue(coordinator.accept("execution-race"))
+        now = Instant.ofEpochMilli(deadline)
+        assertFalse(coordinator.reject("execution-race"))
+
+        assertEquals(ConfirmationDecision.ACCEPTED, pending.await().decision)
+    }
+
+    @Test
     fun `agent disconnect cancels every pre execution phase without cross execution sharing`() = runTest {
         val coordinator = coordinator()
         val confirmation = async(start = CoroutineStart.UNDISPATCHED) {
@@ -243,10 +302,50 @@ class ComposeActionDecisionCoordinatorTest {
         pending.await()
     }
 
-    private fun coordinator(timeoutMillis: Long = 10_000): ComposeActionDecisionCoordinator =
+    @Test
+    fun `recent execution tombstones stay bounded while protecting the newest duplicate decisions`() = runTest {
+        val coordinator = coordinator(recentTombstoneLimit = 3)
+        repeat(20) { index ->
+            val executionId = "execution-bounded-$index"
+            val pending = async(start = CoroutineStart.UNDISPATCHED) {
+                coordinator.requestConfirmation(command(executionId), preview(executionId), context())
+            }
+            assertTrue(coordinator.accept(executionId))
+            assertEquals(ConfirmationDecision.ACCEPTED, pending.await().decision)
+        }
+
+        assertEquals(3, coordinator.retainedTombstoneCount)
+        val recentDuplicate = runCatching {
+            coordinator.requestConfirmation(
+                command("execution-bounded-19"),
+                preview("execution-bounded-19"),
+                context(),
+            )
+        }.exceptionOrNull()
+        assertTrue(recentDuplicate is IllegalStateException)
+
+        val evictedOldExecution = async(start = CoroutineStart.UNDISPATCHED) {
+            coordinator.requestConfirmation(
+                command("execution-bounded-0"),
+                preview("execution-bounded-0"),
+                context(),
+            )
+        }
+        assertEquals("execution-bounded-0", coordinator.state.value.activeDialog?.executionId)
+        assertTrue(coordinator.reject("execution-bounded-0"))
+        assertEquals(ConfirmationDecision.REJECTED, evictedOldExecution.await().decision)
+        assertEquals(3, coordinator.retainedTombstoneCount)
+    }
+
+    private fun coordinator(
+        timeoutMillis: Long = 10_000,
+        clock: () -> Instant = { Instant.parse("2026-07-18T00:00:00Z") },
+        recentTombstoneLimit: Int = 4_096,
+    ): ComposeActionDecisionCoordinator =
         ComposeActionDecisionCoordinator(
             decisionTimeoutMillis = timeoutMillis,
-            clock = { Instant.parse("2026-07-18T00:00:00Z") },
+            clock = clock,
+            recentTombstoneLimit = recentTombstoneLimit,
             actionTitleResolver = { "通用动作 raw-secret" },
             redactor = AuditRedactor(setOf("secretField")),
             sensitiveValues = { setOf("raw-secret", "raw-tenant-id", "raw-user-id") },

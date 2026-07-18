@@ -4,6 +4,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
@@ -18,6 +22,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.wzx.huitai.desktop.decision.HighRiskApprovalDialogState
@@ -50,30 +57,47 @@ fun HighRiskApprovalDialog(
         title = { Text("高风险动作审批") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                ActionDecisionBody(state)
-                state.riskReasons.forEach { reason ->
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = HIGH_RISK_CONTENT_MAX_HEIGHT)
+                        .verticalScroll(rememberScrollState())
+                        .testTag("high-risk-scroll-${state.executionId}"),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    ActionDecisionBody(state)
+                    state.riskReasons.forEach { reason ->
+                        Text(
+                            "风险原因：$reason",
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.Medium,
+                        )
+                    }
+                    Text(state.identitySummary, style = MaterialTheme.typography.bodySmall)
                     Text(
-                        "风险原因：$reason",
+                        state.remoteSideEffectWarning,
                         color = MaterialTheme.colorScheme.error,
-                        fontWeight = FontWeight.Medium,
+                        style = MaterialTheme.typography.bodySmall,
                     )
                 }
-                Text(state.identitySummary, style = MaterialTheme.typography.bodySmall)
-                Text(
-                    state.remoteSideEffectWarning,
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall,
-                )
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("high-risk-consent-${state.executionId}")
+                        .toggleable(
+                            value = consentChecked,
+                            enabled = !submitted,
+                            role = Role.Checkbox,
+                            onValueChange = { consentChecked = it },
+                        )
+                        .semantics { contentDescription = "仅批准本次高风险动作" },
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Checkbox(
                         checked = consentChecked,
                         enabled = !submitted,
-                        onCheckedChange = { consentChecked = it },
-                        modifier = Modifier.testTag("high-risk-consent-${state.executionId}"),
+                        onCheckedChange = null,
                     )
                     Text("我已核对差异，并仅批准本次执行")
                 }
@@ -104,3 +128,5 @@ fun HighRiskApprovalDialog(
         },
     )
 }
+
+private val HIGH_RISK_CONTENT_MAX_HEIGHT = 360.dp
