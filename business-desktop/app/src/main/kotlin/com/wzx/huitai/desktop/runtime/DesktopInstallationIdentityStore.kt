@@ -8,6 +8,8 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.util.UUID
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 /**
  * 原子创建并稳定读取单次安装的桌面实例 ID。
@@ -25,8 +27,8 @@ class DesktopInstallationIdentityStore(
     }
 
     /** 返回已有合法 UUID，或原子持久化一个新 UUID。 */
-    fun loadOrCreate(): String {
-        readExisting()?.let { return it }
+    fun loadOrCreate(): String = withPathLock(path) {
+        readExisting()?.let { return@withPathLock it }
         Files.createDirectories(path.parent)
         val candidate = UUID.randomUUID().toString()
         val temporary = path.resolveSibling("${path.fileName}.${UUID.randomUUID()}.tmp")
@@ -60,5 +62,29 @@ class DesktopInstallationIdentityStore(
             .getOrElse { throw IllegalStateException("installation identity is invalid") }
         check(parsed.toString() == value) { "installation identity is invalid" }
         return value
+    }
+
+    private companion object {
+        private val pathLocksMonitor = Any()
+        private val pathLocks = mutableMapOf<Path, PathLock>()
+
+        private inline fun <T> withPathLock(path: Path, action: () -> T): T {
+            val pathLock = synchronized(pathLocksMonitor) {
+                pathLocks.getOrPut(path) { PathLock() }.also { it.users += 1 }
+            }
+            try {
+                return pathLock.lock.withLock(action)
+            } finally {
+                synchronized(pathLocksMonitor) {
+                    pathLock.users -= 1
+                    if (pathLock.users == 0) pathLocks.remove(path, pathLock)
+                }
+            }
+        }
+
+        private class PathLock(
+            val lock: ReentrantLock = ReentrantLock(),
+            var users: Int = 0,
+        )
     }
 }

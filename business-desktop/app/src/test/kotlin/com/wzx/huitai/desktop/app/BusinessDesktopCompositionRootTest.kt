@@ -9,10 +9,14 @@ import com.wzx.huitai.agent.client.ApplicationSequenceTracker
 import com.wzx.huitai.agent.client.DesktopSessionIdentity
 import com.wzx.huitai.agent.client.AgentSupervisorState
 import com.wzx.huitai.desktop.runtime.ManagedBusinessAgentConnection
+import com.wzx.huitai.desktop.decision.ActionDecisionPhase
 import com.wzx.huitai.demo.action.DemoActionCatalog
 import com.wzx.huitai.demo.gateway.FakeHuitaiGateway
 import com.wzx.huitai.demo.model.DemoScreenModel
 import com.wzx.huitai.demo.model.DemoFormEvent
+import com.wzx.huitai.demo.model.DemoFormState
+import com.wzx.huitai.presentation.context.FieldContext
+import com.wzx.huitai.presentation.context.FieldSensitivity
 import com.wzx.huitai.desktop.state.BusinessConnectionStatus
 import com.wzx.huitai.security.approval.InMemoryApprovalPort
 import com.wzx.huitai.security.approval.InMemoryConfirmationPort
@@ -26,10 +30,16 @@ import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
@@ -40,6 +50,9 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.long
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class BusinessDesktopCompositionRootTest {
@@ -190,13 +203,60 @@ class BusinessDesktopCompositionRootTest {
                 .getValue("value").jsonPrimitive.content,
         )
 
+        val sensitiveSnapshot = storage.screen.pageContext().copy(
+            revision = 100,
+            fields = storage.screen.pageContext().fields + listOf(
+                FieldContext(
+                    id = "internal_note",
+                    label = "Internal note",
+                    type = "text",
+                    value = JsonPrimitive("sensitive-value"),
+                    editable = true,
+                    required = false,
+                    sensitivity = FieldSensitivity.SENSITIVE,
+                ),
+                FieldContext(
+                    id = "internal_secret",
+                    label = "Internal secret",
+                    type = "text",
+                    value = JsonPrimitive("must-not-leak"),
+                    editable = true,
+                    required = false,
+                    sensitivity = FieldSensitivity.SECRET,
+                ),
+                FieldContext(
+                    id = "api_token",
+                    label = "API token",
+                    type = "text",
+                    value = JsonPrimitive("must-not-leak"),
+                    editable = true,
+                    required = false,
+                    sensitivity = FieldSensitivity.INTERNAL,
+                ),
+            ),
+        )
+        view.production.workspaceController.publishPage(sensitiveSnapshot)
+        val sanitizedPayload = connection.sent
+            .map { Json.parseToJsonElement(it).jsonObject }
+            .last { it["method"]?.jsonPrimitive?.content == "application/context/publish" }
+            .getValue("params").jsonObject.getValue("payload").jsonObject
+        val sanitizedFields = sanitizedPayload.getValue("fields").jsonArray.map { it.jsonObject }
+        assertEquals(8, sanitizedFields.size, sanitizedFields.map { it.getValue("id") }.toString())
+        assertEquals(
+            "[MASKED]",
+            sanitizedFields.single { it.getValue("id").jsonPrimitive.content == "internal_note" }
+                .getValue("value").jsonPrimitive.content,
+        )
+        assertTrue(sanitizedFields.none { it.getValue("id").jsonPrimitive.content == "internal_secret" })
+        assertTrue(sanitizedFields.none { it.getValue("id").jsonPrimitive.content == "api_token" })
+
         storage.screen.dispatch(DemoFormEvent.EditField("material_name", "第二版"))
         view.production.workspaceController.publishPage(storage.screen.pageContext())
         val contextSequences = connection.sent
             .map { Json.parseToJsonElement(it).jsonObject }
             .filter { it["method"]?.jsonPrimitive?.content == "application/context/publish" }
             .map { it.getValue("params").jsonObject.getValue("contextSequence").jsonPrimitive.long }
-        assertEquals(listOf(1L, 2L), contextSequences)
+        assertEquals(listOf(1L, 2L, 3L), contextSequences)
         val latestContextPayload = connection.sent
             .map { Json.parseToJsonElement(it).jsonObject }
             .last { it["method"]?.jsonPrimitive?.content == "application/context/publish" }
@@ -214,22 +274,112 @@ class BusinessDesktopCompositionRootTest {
         advanceUntilIdle()
         assertEquals(BusinessConnectionStatus.RECONNECTING, view.desktopState.value.connectionStatus)
 
+        connection.contextRegistrationFailuresRemaining = 1
         connection.emitSupervisorState(AgentSupervisorState.Connected("production-test-connection-2"))
         advanceUntilIdle()
         val republished = connection.sent.map { Json.parseToJsonElement(it).jsonObject }
-        assertEquals(2, republished.count { it["method"]?.jsonPrimitive?.content == "application/identity/bind" })
-        assertEquals(2, republished.count { it["method"]?.jsonPrimitive?.content == "application/catalog/register" })
-        assertEquals(3, republished.count { it["method"]?.jsonPrimitive?.content == "application/context/publish" })
+        assertEquals(3, republished.count { it["method"]?.jsonPrimitive?.content == "application/identity/bind" })
+        assertEquals(3, republished.count { it["method"]?.jsonPrimitive?.content == "application/catalog/register" })
+        assertEquals(5, republished.count { it["method"]?.jsonPrimitive?.content == "application/context/publish" })
+        val reconnectContexts = republished
+            .filter { it["method"]?.jsonPrimitive?.content == "application/context/publish" }
+            .takeLast(2)
+            .map { it.getValue("params").jsonObject }
+        assertEquals(listOf(1L, 1L), reconnectContexts.map { it.getValue("contextSequence").jsonPrimitive.long })
+        assertEquals(7, reconnectContexts.last().getValue("payload").jsonObject.getValue("fields").jsonArray.size)
+        assertEquals(BusinessConnectionStatus.CONNECTED, view.desktopState.value.connectionStatus)
         val identitySessions = republished
             .filter { it["method"]?.jsonPrimitive?.content == "application/identity/bind" }
             .map { it.getValue("params").jsonObject.getValue("desktopSessionId").jsonPrimitive.content }
         assertEquals(1, identitySessions.distinct().size)
 
+        val contextCountBeforeConcurrentReconnect = connection.sent.count {
+            Json.parseToJsonElement(it).jsonObject["method"]?.jsonPrimitive?.content == "application/context/publish"
+        }
+        val registrationEntered = CompletableDeferred<Unit>()
+        val releaseRegistration = CompletableDeferred<Unit>()
+        connection.contextRegistrationEntered = registrationEntered
+        connection.contextRegistrationRelease = releaseRegistration
+        connection.emitSupervisorState(AgentSupervisorState.Reconnecting(1, 1_000))
+        connection.emitSupervisorState(AgentSupervisorState.Connected("production-test-connection-4"))
+        registrationEntered.await()
+        storage.screen.dispatch(DemoFormEvent.EditField(DemoFormState.FIELD_CONTACT, "concurrent edit"))
+        val concurrentPublication = async {
+            view.production.workspaceController.publishPage(storage.screen.pageContext())
+        }
+        runCurrent()
+        assertFalse(concurrentPublication.isCompleted)
+        releaseRegistration.complete(Unit)
+        advanceUntilIdle()
+        assertTrue(concurrentPublication.await())
+        val serializedReconnectContexts = connection.sent
+            .map { Json.parseToJsonElement(it).jsonObject }
+            .filter { it["method"]?.jsonPrimitive?.content == "application/context/publish" }
+            .drop(contextCountBeforeConcurrentReconnect)
+            .map { it.getValue("params").jsonObject.getValue("contextSequence").jsonPrimitive.long }
+        assertEquals(listOf(1L, 4L), serializedReconnectContexts)
+
+        val decisionResponder = launch {
+            view.decisions.state.collect { decisionState ->
+                decisionState.activeDialog?.let { dialog ->
+                    when (dialog.phase) {
+                        ActionDecisionPhase.CONFIRMATION -> view.decisions.accept(dialog.executionId)
+                        ActionDecisionPhase.HIGH_RISK_APPROVAL -> view.decisions.approve(dialog.executionId)
+                    }
+                }
+            }
+        }
+        val saveExecutionId = "save-policy-${System.nanoTime()}"
+        view.production.workspaceController.executeUserAction(
+            executionId = saveExecutionId,
+            actionId = "demo.save_draft",
+            actionVersion = 1,
+            input = buildJsonObject { put("executionId", saveExecutionId) },
+        )
+        val submitExecutionId = "submit-policy-${System.nanoTime()}"
+        view.production.workspaceController.executeUserAction(
+            executionId = submitExecutionId,
+            actionId = "demo.submit",
+            actionVersion = 1,
+            input = buildJsonObject { put("executionId", submitExecutionId) },
+        )
+        decisionResponder.cancelAndJoin()
+
         root.shutdown()
 
         assertEquals(listOf(true), childClosed)
         assertEquals(1, connection.closeCount)
-        BusinessDesktopDatabase(databasePath).close()
+        val reopenedDatabase = BusinessDesktopDatabase(databasePath)
+        val persistedPolicies = reopenedDatabase.read { sql ->
+            sql.prepareStatement(
+                "SELECT action_id,replay_policy,reconciliation_policy FROM bd_action_executions " +
+                    "WHERE execution_id IN (?,?) ORDER BY action_id",
+            ).use { statement ->
+                statement.setString(1, saveExecutionId)
+                statement.setString(2, submitExecutionId)
+                statement.executeQuery().use { rows ->
+                    buildList {
+                        while (rows.next()) {
+                            add(
+                                Triple(
+                                    rows.getString("action_id"),
+                                    rows.getString("replay_policy"),
+                                    rows.getString("reconciliation_policy"),
+                                ),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        reopenedDatabase.close()
+        assertEquals(
+            listOf(
+                Triple("demo.save_draft", "IDEMPOTENCY_KEY_REQUIRED", "QUERY_REMOTE"),
+                Triple("demo.submit", "NEVER", "QUERY_REMOTE"),
+            ),
+            persistedPolicies,
+        )
         JceksSecretStore(keyStorePath, desktopPassword.copyOf()).use { reopened ->
             val backendPassword = reopened.load(SecretRef.parse("huitai.backend.keystore.password.v1"))
             assertEquals(43, requireNotNull(backendPassword).size)
@@ -255,6 +405,36 @@ class BusinessDesktopCompositionRootTest {
         lifecycle.shutdown()
         advanceUntilIdle()
         assertEquals(AgentSupervisorState.Shutdown, lifecycle.state.value)
+    }
+
+    @Test
+    fun `registered lifecycle never exposes connected before bounded reconnect registration succeeds`() = runTest {
+        val source = MutableBusinessConnectionLifecycle(AgentSupervisorState.Connected("connection-1"))
+        var registrationAttempts = 0
+        val lifecycle = RegisteredAgentConnectionLifecycle(
+            source = source,
+            initialRegisteredConnectionId = "connection-1",
+            scope = this,
+            maximumRegistrationAttempts = 3,
+            retryDelayMillis = { },
+            register = {
+                registrationAttempts += 1
+                if (registrationAttempts <= 3) error("registration unavailable")
+            },
+        )
+
+        source.mutableState.value = AgentSupervisorState.Reconnecting(1, 1_000)
+        advanceUntilIdle()
+        source.mutableState.value = AgentSupervisorState.Connected("connection-2")
+        advanceUntilIdle()
+
+        assertEquals(3, registrationAttempts)
+        assertEquals(AgentSupervisorState.ManualRetryRequired, lifecycle.state.value)
+        assertTrue(lifecycle.manualRetry())
+        advanceUntilIdle()
+        assertEquals(4, registrationAttempts)
+        assertEquals(AgentSupervisorState.Connected("connection-5"), lifecycle.state.value)
+        lifecycle.shutdown()
     }
 
     @Test
@@ -348,12 +528,25 @@ class BusinessDesktopCompositionRootTest {
         override val supervisorState: StateFlow<AgentSupervisorState> = mutableSupervisorState
         override val hasConnected: Boolean = true
         val sent = mutableListOf<String>()
+        var contextRegistrationFailuresRemaining: Int = 0
+        var contextRegistrationEntered: CompletableDeferred<Unit>? = null
+        var contextRegistrationRelease: CompletableDeferred<Unit>? = null
         var closeCount: Int = 0
             private set
 
         override suspend fun send(text: String) {
             sent += text
             val request = Json.parseToJsonElement(text).jsonObject
+            val method = request["method"]?.jsonPrimitive?.content
+            if (method == "application/context/publish" && contextRegistrationFailuresRemaining > 0) {
+                contextRegistrationFailuresRemaining -= 1
+                throw IllegalStateException("context registration send failed")
+            }
+            contextRegistrationRelease?.let { release ->
+                contextRegistrationRelease = null
+                contextRegistrationEntered?.complete(Unit)
+                release.await()
+            }
             val id = request["id"]?.jsonPrimitive?.content ?: return
             incomingChannel.send("{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}")
         }
@@ -364,6 +557,14 @@ class BusinessDesktopCompositionRootTest {
         }
 
         override suspend fun manualRetry(): Boolean = true
+
+        override suspend fun reconnect(expectedConnectionId: String): Boolean {
+            if (activeConnectionId != expectedConnectionId) return false
+            val nextOrdinal = activeConnectionId.substringAfterLast('-').toIntOrNull()?.plus(1) ?: 2
+            emitSupervisorState(AgentSupervisorState.Reconnecting(1, 0))
+            emitSupervisorState(AgentSupervisorState.Connected("production-test-connection-$nextOrdinal"))
+            return true
+        }
 
         fun emitSupervisorState(value: AgentSupervisorState) {
             if (value is AgentSupervisorState.Connected) activeConnectionId = value.connectionId
@@ -378,6 +579,25 @@ class BusinessDesktopCompositionRootTest {
                 AgentSupervisorState.AuthenticationFailed -> AgentConnectionState.AuthenticationFailed
                 AgentSupervisorState.Shutdown -> AgentConnectionState.Closed(1000, false)
             }
+        }
+    }
+
+    private class MutableBusinessConnectionLifecycle(
+        initialState: AgentSupervisorState,
+    ) : com.wzx.huitai.desktop.controller.BusinessConnectionLifecycle {
+        val mutableState = MutableStateFlow(initialState)
+        private var nextConnectionOrdinal: Int = 3
+        override val state: StateFlow<AgentSupervisorState> = mutableState
+        override suspend fun start() = Unit
+        override suspend fun manualRetry(): Boolean = false
+        override suspend fun reconnect(expectedConnectionId: String): Boolean {
+            if ((mutableState.value as? AgentSupervisorState.Connected)?.connectionId != expectedConnectionId) return false
+            mutableState.value = AgentSupervisorState.Reconnecting(1, 0)
+            mutableState.value = AgentSupervisorState.Connected("connection-${nextConnectionOrdinal++}")
+            return true
+        }
+        override suspend fun shutdown() {
+            mutableState.value = AgentSupervisorState.Shutdown
         }
     }
 }

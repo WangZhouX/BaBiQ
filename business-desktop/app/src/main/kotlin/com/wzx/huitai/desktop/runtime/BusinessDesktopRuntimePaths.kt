@@ -91,7 +91,19 @@ class BusinessDesktopRuntimePaths private constructor(
             desktopKeyStore.parent,
             desktopLog.parent,
         )
-        rejectExistingLinks(directories)
+        val controlledLeaves = linkedSetOf(
+            agentDatabase,
+            agentKeyStore,
+            agentLog,
+            agentInstanceLock,
+            agentSessionToken,
+            desktopDatabase,
+            desktopKeyStore,
+            desktopLog,
+            desktopInstanceLock,
+            desktopInstallationId,
+        )
+        rejectExistingLinks(directories + controlledLeaves)
         directories.forEach(Files::createDirectories)
         val realRoot = root.toRealPath()
         directories.forEach { directory ->

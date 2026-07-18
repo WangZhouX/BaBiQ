@@ -45,6 +45,14 @@ class DemoScreenModel(
         dispatchWithResult(event)
     }
 
+    /** Atomically dispatches a typed event only while the page still has the expected revision. */
+    fun dispatchIfRevision(event: DemoFormEvent, expectedRevision: Long): Boolean =
+        dispatchWithExpectedContext(
+            event = event,
+            expectedPageId = DemoFormState.PAGE_ID,
+            expectedRevision = expectedRevision,
+        ) != null
+
     /** 在所有页面写入共用的临界区内计算并发布一个 typed event 的精确迁移。 */
     internal fun dispatchWithResult(event: DemoFormEvent): DemoDispatchResult = synchronized(dispatchMonitor) {
         reduceAndPublish(event)

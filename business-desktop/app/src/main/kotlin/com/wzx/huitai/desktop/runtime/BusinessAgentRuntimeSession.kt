@@ -12,6 +12,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.ReceiveChannel
@@ -21,12 +22,14 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withContext
 
 /** composition root 用于显式人工重试的 supervisor-backed 连接扩展。 */
 interface ManagedBusinessAgentConnection : AgentConnection {
     /** 保留 supervisor 的真实退避次数、等待时长、manual/auth/shutdown 状态。 */
     val supervisorState: StateFlow<AgentSupervisorState>
     suspend fun manualRetry(): Boolean
+    suspend fun reconnect(expectedConnectionId: String): Boolean
 }
 
 /**
@@ -80,7 +83,9 @@ class BusinessAgentRuntimeSession internal constructor(
             check(terminal is AgentSupervisorState.Connected) { "business Agent connection was not authenticated" }
             return SupervisorAgentConnection(supervisor, scope, terminal.connectionId)
         } catch (failure: Throwable) {
-            runCatching { supervisor.shutdown() }
+            withContext(NonCancellable) {
+                runCatching { supervisor.shutdown() }
+            }.exceptionOrNull()?.let(failure::addSuppressed)
             connectionAttached.set(false)
             throw failure
         }
@@ -105,10 +110,13 @@ class BusinessAgentRuntimeSession internal constructor(
             process.destroy()
             if (process.waitFor(GRACEFUL_SHUTDOWN_SECONDS, TimeUnit.SECONDS)) return
             process.destroyForcibly()
-            process.waitFor()
+            check(process.waitFor(FORCED_SHUTDOWN_SECONDS, TimeUnit.SECONDS)) {
+                "business Agent did not terminate after forced shutdown"
+            }
         }
 
         private const val GRACEFUL_SHUTDOWN_SECONDS = 5L
+        private const val FORCED_SHUTDOWN_SECONDS = 5L
     }
 }
 
@@ -154,6 +162,9 @@ private class SupervisorAgentConnection(
     override suspend fun send(text: String) = supervisor.send(text)
 
     override suspend fun manualRetry(): Boolean = supervisor.manualRetry()
+
+    override suspend fun reconnect(expectedConnectionId: String): Boolean =
+        supervisor.requestReconnect(expectedConnectionId)
 
     override suspend fun close() {
         try {

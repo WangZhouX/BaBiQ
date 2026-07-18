@@ -148,6 +148,23 @@ class AgentConnectionSupervisorTest {
     }
 
     @Test
+    fun `explicit reconnect invalidates the active generation and installs a fresh connection`() = runTest {
+        val first = FakeConnection("connection-1", AgentConnectionState.Connected)
+        val second = FakeConnection("connection-2", AgentConnectionState.AuthenticationFailed)
+        val transport = RecordingTransport(listOf(first, second))
+        val supervisor = supervisor(transport)
+        supervisor.start()
+        awaitConnected(supervisor, "connection-1")
+
+        assertTrue(supervisor.requestReconnect("connection-1"))
+        runCurrent()
+
+        assertEquals(1, first.closeCount)
+        assertEquals(listOf("connection-1", "connection-2"), transport.connections.map { it.connectionId })
+        assertEquals(AgentSupervisorState.AuthenticationFailed, supervisor.state.value)
+    }
+
+    @Test
     fun `a backpressured send never blocks shutdown or lifecycle progress`() = runTest {
         val sendEntered = CompletableDeferred<Unit>()
         val releaseSend = CompletableDeferred<Unit>()
@@ -186,6 +203,25 @@ class AgentConnectionSupervisorTest {
         assertEquals(1, transport.requests.size)
         assertEquals(1, active.closeCount)
         assertEquals(1, transport.closeCount)
+        assertEquals(AgentSupervisorState.Shutdown, supervisor.state.value)
+    }
+
+    @Test
+    fun `shutdown continues closing transport and incoming channel when connection close fails`() = runTest {
+        val active = FakeConnection(
+            "connection-1",
+            AgentConnectionState.Connected,
+            closeFailure = IllegalStateException("close failed"),
+        )
+        val transport = RecordingTransport(listOf(active))
+        val supervisor = supervisor(transport)
+        supervisor.start()
+        awaitConnected(supervisor, "connection-1")
+
+        assertFailsWith<IllegalStateException> { supervisor.shutdown() }
+
+        assertEquals(1, transport.closeCount)
+        assertTrue(supervisor.incoming.receiveCatching().isClosed)
         assertEquals(AgentSupervisorState.Shutdown, supervisor.state.value)
     }
 
@@ -242,28 +278,26 @@ class AgentConnectionSupervisorTest {
     }
 
     @Test
-    fun `queued old connection events are discarded and supervisor buffering stays bounded`() = runTest {
+    fun `incoming overflow preserves the first frame closes the connection and reconnects`() = runTest {
         val first = FakeConnection("connection-1", AgentConnectionState.Connected)
         val second = FakeConnection("connection-2", AgentConnectionState.Connected)
         val transport = RecordingTransport(listOf(first, second))
-        val supervisor = supervisor(transport, incomingCapacity = 2)
+        val supervisor = supervisor(transport, incomingCapacity = 1)
 
         supervisor.start()
         awaitConnected(supervisor, "connection-1")
-        first.emitIncoming("old-1")
-        first.emitIncoming("old-2")
-        first.emitIncoming("old-3")
+        first.emitIncoming("first-frame")
+        first.emitIncoming("overflow-frame")
         runCurrent()
 
-        first.emitState(AgentConnectionState.TransportFailure())
+        assertEquals("first-frame", supervisor.incoming.receive())
+        assertEquals(1, first.closeCount)
         awaitConnected(supervisor, "connection-2")
-        second.emitIncoming("fresh-1")
-        second.emitIncoming("fresh-2")
-        second.emitIncoming("fresh-3")
+        first.emitState(AgentConnectionState.Connected)
+        second.emitIncoming("fresh-frame")
         runCurrent()
 
-        assertEquals("fresh-2", supervisor.incoming.receive())
-        assertEquals("fresh-3", supervisor.incoming.receive())
+        assertEquals("fresh-frame", supervisor.incoming.receive())
         assertTrue(supervisor.incoming.tryReceive().isFailure)
         supervisor.shutdown()
     }
@@ -343,6 +377,7 @@ class AgentConnectionSupervisorTest {
         initiallyConnected: Boolean = initialState == AgentConnectionState.Connected,
         private val sendEntered: CompletableDeferred<Unit>? = null,
         private val releaseSend: CompletableDeferred<Unit>? = null,
+        private val closeFailure: RuntimeException? = null,
     ) : AgentConnection {
         private val mutableIncoming = Channel<String>(Channel.UNLIMITED)
         private val mutableState = MutableStateFlow(initialState)
@@ -372,6 +407,7 @@ class AgentConnectionSupervisorTest {
         override suspend fun close() {
             closeCount += 1
             mutableIncoming.close()
+            closeFailure?.let { throw it }
         }
     }
 }

@@ -14,6 +14,7 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.unit.dp
 import com.wzx.huitai.demo.model.DemoFormState
 import com.wzx.huitai.desktop.state.BusinessDesktopState
@@ -96,6 +97,28 @@ class BusinessDesktopShellTest {
         }
         rule.onNodeWithTag(BusinessUiTags.FORM_PANEL).assertExists()
         rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertExists()
+    }
+    @Test
+    fun `shell forwards form save and submit callbacks`() {
+        var saved = false
+        var submitted = false
+        rule.setContent {
+            HuitaiBusinessTheme {
+                BusinessDesktopShell(
+                    state = BusinessDesktopState(),
+                    formState = DemoFormState(),
+                    onSaveDraft = { saved = true },
+                    onSubmit = { submitted = true },
+                    modifier = Modifier.widthForTest(1280.dp),
+                )
+            }
+        }
+
+        rule.onNodeWithTag("save-draft-action").performScrollTo().performClick()
+        rule.onNodeWithTag("submit-action").performScrollTo().performClick()
+
+        org.junit.Assert.assertTrue(saved)
+        org.junit.Assert.assertTrue(submitted)
     }
 }
 

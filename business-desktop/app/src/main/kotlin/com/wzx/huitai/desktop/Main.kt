@@ -11,6 +11,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import com.wzx.huitai.demo.model.DemoFormEvent
+import com.wzx.huitai.demo.model.DemoFormState
+import com.wzx.huitai.desktop.state.BusinessFieldSuggestion
 import com.wzx.huitai.desktop.app.BusinessDesktopCompositionRoot
 import com.wzx.huitai.desktop.app.BusinessDesktopProductionConfiguration
 import com.wzx.huitai.desktop.app.ProductionBusinessDesktopCompositionFactory
@@ -21,13 +23,21 @@ import com.wzx.huitai.desktop.ui.action.HighRiskApprovalDialog
 import com.wzx.huitai.desktop.ui.layout.CompactContentTab
 import com.wzx.huitai.desktop.ui.shell.BusinessDesktopShell
 import com.wzx.huitai.desktop.ui.theme.HuitaiBusinessTheme
+import com.wzx.huitai.agent.protocol.ApplicationProtocol
+import com.wzx.huitai.presentation.form.FieldChange
+import com.wzx.huitai.presentation.form.FormPatch
 import java.nio.file.Path
+import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
 
 /**
@@ -75,6 +85,17 @@ fun main() {
                     runCatching { view.production.conversationController.refreshProviders() }
                 }
 
+                LaunchedEffect(desktopState.suggestions, formState.revision) {
+                    suggestionPatch(formState, desktopState.suggestions)?.let { patch ->
+                        if (formState.suggestionPatch != patch) {
+                            storage.screen.dispatchIfRevision(
+                                DemoFormEvent.SuggestPatch(patch),
+                                expectedRevision = patch.baseRevision,
+                            )
+                        }
+                    }
+                }
+
                 HuitaiBusinessTheme {
                     BusinessDesktopShell(
                         state = desktopState,
@@ -92,19 +113,64 @@ fun main() {
                             view.production.workspaceController.updateSuggestions(suggestions.values.toList())
                         },
                         onAcceptSuggestion = { fieldId, baseRevision ->
-                            if (storage.screen.state.value.revision == baseRevision) {
-                                storage.screen.dispatch(DemoFormEvent.AcceptSuggestion(fieldId))
+                            val installed = storage.screen.state.value.suggestionPatch
+                            val change = installed?.changes?.singleOrNull { it.fieldId == fieldId }
+                            if (installed?.baseRevision == baseRevision && change != null) {
+                                val patch = FormPatch(installed.pageId, installed.baseRevision, listOf(change))
                                 uiScope.launch {
+                                    val executionId = UUID.randomUUID().toString()
+                                    view.production.workspaceController.executeUserAction(
+                                        executionId = executionId,
+                                        actionId = "form.apply_patch",
+                                        actionVersion = 1,
+                                        input = actionInput(executionId, patch),
+                                    )
+                                    if (storage.screen.state.value.revision == baseRevision + 1) {
+                                        val remaining = view.desktopState.value.suggestions - fieldId
+                                        view.production.workspaceController.updateSuggestions(remaining.values.toList())
+                                    }
                                     view.production.workspaceController.publishPage(storage.screen.pageContext())
                                 }
                             }
                         },
                         onAcceptAllSuggestions = { baseRevision ->
-                            if (storage.screen.state.value.revision == baseRevision) {
-                                storage.screen.dispatch(DemoFormEvent.AcceptAllSuggestions)
+                            val patch = storage.screen.state.value.suggestionPatch
+                            if (patch?.baseRevision == baseRevision) {
                                 uiScope.launch {
+                                    val executionId = UUID.randomUUID().toString()
+                                    view.production.workspaceController.executeUserAction(
+                                        executionId = executionId,
+                                        actionId = "form.apply_patch",
+                                        actionVersion = 1,
+                                        input = actionInput(executionId, patch),
+                                    )
+                                    if (storage.screen.state.value.revision == baseRevision + 1) {
+                                        view.production.workspaceController.updateSuggestions(emptyList())
+                                    }
                                     view.production.workspaceController.publishPage(storage.screen.pageContext())
                                 }
+                            }
+                        },
+                        onSaveDraft = {
+                            uiScope.launch {
+                                val executionId = UUID.randomUUID().toString()
+                                view.production.workspaceController.executeUserAction(
+                                    executionId = executionId,
+                                    actionId = "demo.save_draft",
+                                    actionVersion = 1,
+                                    input = buildJsonObject { put("executionId", executionId) },
+                                )
+                            }
+                        },
+                        onSubmit = {
+                            uiScope.launch {
+                                val executionId = UUID.randomUUID().toString()
+                                view.production.workspaceController.executeUserAction(
+                                    executionId = executionId,
+                                    actionId = "demo.submit",
+                                    actionVersion = 1,
+                                    input = buildJsonObject { put("executionId", executionId) },
+                                )
                             }
                         },
                         onComposerTextChanged = { composerText = it },
@@ -154,4 +220,30 @@ fun main() {
             runtimeScope.cancel()
         }
     }
+}
+
+private fun suggestionPatch(
+    state: DemoFormState,
+    suggestions: Map<String, BusinessFieldSuggestion>,
+): FormPatch? {
+    val changes = suggestions.values.mapNotNull { suggestion ->
+        if (suggestion.fieldId !in DemoFormState.FIELD_IDS) return@mapNotNull null
+        val newValue = suggestion.value as? JsonPrimitive
+        if (newValue?.isString != true) return@mapNotNull null
+        FieldChange(
+            fieldId = suggestion.fieldId,
+            previousValue = JsonPrimitive(state.values.valueOf(suggestion.fieldId)),
+            newValue = newValue,
+            reason = "Agent field suggestion",
+            confidence = suggestion.confidence?.takeIf(Double::isFinite)?.coerceIn(0.0, 1.0) ?: 0.5,
+        )
+    }
+    return changes.takeIf(List<FieldChange>::isNotEmpty)?.let {
+        FormPatch(DemoFormState.PAGE_ID, state.revision, it)
+    }
+}
+
+private fun actionInput(executionId: String, patch: FormPatch) = buildJsonObject {
+    put("executionId", executionId)
+    put("patch", ApplicationProtocol.JSON.encodeToJsonElement(FormPatch.serializer(), patch).jsonObject)
 }

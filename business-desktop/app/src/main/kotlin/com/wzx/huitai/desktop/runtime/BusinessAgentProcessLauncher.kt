@@ -16,6 +16,7 @@ fun interface BusinessAgentProcessStarter {
 class BusinessAgentProcessLauncher(
     private val processStarter: BusinessAgentProcessStarter = BusinessAgentProcessStarter { it.start() },
     private val readinessProbe: BusinessAgentReadinessProbe,
+    private val parentEnvironment: () -> Map<String, String> = { System.getenv() },
 ) {
     /** 以参数数组启动子进程，认证就绪后返回可幂等关闭的会话。 */
     suspend fun launch(request: BusinessAgentLaunchRequest): BusinessAgentRuntimeSession {
@@ -24,6 +25,12 @@ class BusinessAgentProcessLauncher(
             val builder = ProcessBuilder(request.command())
                 .redirectErrorStream(true)
                 .redirectOutput(ProcessBuilder.Redirect.appendTo(request.paths.agentLog.toFile()))
+            val environment = builder.environment()
+            environment.clear()
+            val parent = parentEnvironment()
+            INHERITED_ENVIRONMENT_KEYS.forEach { key ->
+                parent[key]?.takeIf(String::isNotBlank)?.let { environment[key] = it }
+            }
             builder.environment().putAll(request.environment())
             process = processStarter.start(builder)
             builder.environment().remove(BusinessAgentLaunchRequest.BACKEND_KEYSTORE_PASSWORD_ENV)
@@ -33,9 +40,30 @@ class BusinessAgentProcessLauncher(
             }
             return BusinessAgentRuntimeSession(process, request)
         } catch (failure: Throwable) {
-            process?.let(BusinessAgentRuntimeSession::terminateProcess)
-            request.close()
+            try {
+                process?.let(BusinessAgentRuntimeSession::terminateProcess)
+            } catch (cleanupFailure: Throwable) {
+                failure.addSuppressed(cleanupFailure)
+            } finally {
+                try {
+                    request.close()
+                } catch (cleanupFailure: Throwable) {
+                    failure.addSuppressed(cleanupFailure)
+                }
+            }
             throw failure
         }
+    }
+
+    private companion object {
+        val INHERITED_ENVIRONMENT_KEYS = listOf(
+            "SystemRoot",
+            "WINDIR",
+            "TEMP",
+            "TMP",
+            "TMPDIR",
+            "LANG",
+            "LC_ALL",
+        )
     }
 }

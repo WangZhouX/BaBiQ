@@ -1,13 +1,14 @@
 package com.wzx.huitai.agent.client
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.coroutineScope
@@ -20,6 +21,7 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.selects.select
 import kotlin.coroutines.coroutineContext
 
 /** Supervisor 对 UI 暴露的脱敏连接状态。 */
@@ -80,10 +82,7 @@ class AgentConnectionSupervisor(
     private val supervisorJob = SupervisorJob(scope.coroutineContext[Job])
     private val supervisorScope = CoroutineScope(scope.coroutineContext + supervisorJob)
     private val mutableState = MutableStateFlow<AgentSupervisorState>(AgentSupervisorState.Idle)
-    private val mutableIncoming = Channel<String>(
-        capacity = incomingCapacity,
-        onBufferOverflow = BufferOverflow.DROP_OLDEST,
-    )
+    private val mutableIncoming = Channel<String>(capacity = incomingCapacity)
     private var loopJob: Job? = null
     private var active: ActiveConnection? = null
     private var nextGeneration: Long = 0
@@ -148,6 +147,18 @@ class AgentConnectionSupervisor(
         return accepted
     }
 
+    /** Invalidates only the active transport generation so the existing supervisor loop reconnects. */
+    suspend fun requestReconnect(expectedConnectionId: String? = null): Boolean {
+        val current = lifecycleMutex.withLock {
+            if (shutdown) null else active?.takeIf {
+                expectedConnectionId == null || it.connection.connectionId == expectedConnectionId
+            }
+        } ?: return false
+        if (!current.reconnectRequested.complete(Unit)) return false
+        runCatching { current.connection.close() }
+        return true
+    }
+
     /**
      * 幂等停止自身 jobs，关闭 active connection 与 transport，但不取消注入的父 scope。
      */
@@ -166,11 +177,20 @@ class AgentConnectionSupervisor(
             }
         }
 
-        resources.loopJob?.cancelAndJoin()
-        resources.connection?.close()
-        transport.close()
-        mutableIncoming.close()
-        supervisorJob.cancel()
+        var first: Throwable? = null
+        suspend fun close(block: suspend () -> Unit) {
+            try {
+                block()
+            } catch (failure: Throwable) {
+                first?.addSuppressed(failure) ?: run { first = failure }
+            }
+        }
+        close { resources.loopJob?.cancelAndJoin() }
+        close { resources.connection?.close() }
+        close { transport.close() }
+        close { mutableIncoming.close() }
+        close { supervisorJob.cancel() }
+        first?.let { throw it }
     }
 
     /** 锁外立即启动 loop，随后在 lifecycleMutex 内登记 job；人工重试从零失败计数开始。 */
@@ -205,19 +225,19 @@ class AgentConnectionSupervisor(
                 continue
             }
 
-            val generation = installConnection(connection) ?: return
+            val installed = installConnection(connection) ?: return
             val observed = try {
-                observeConnection(connection, generation)
+                observeConnection(installed)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
                 ObservedConnection(transientFailure = true, connected = false)
             } finally {
-                clearIfCurrent(generation)
+                clearIfCurrent(installed.generation)
             }
 
             if (observed.authenticationFailed) {
-                publishIfGenerationOrRunning(generation, AgentSupervisorState.AuthenticationFailed)
+                publishIfGenerationOrRunning(installed.generation, AgentSupervisorState.AuthenticationFailed)
                 return
             }
             if (observed.connected) consecutiveFailures = 0
@@ -229,16 +249,17 @@ class AgentConnectionSupervisor(
 
     /** 同时转发文本并等待连接终态；reader 在离开该 generation 时总会取消。 */
     private suspend fun observeConnection(
-        connection: AgentConnection,
-        generation: Long,
+        installed: ActiveConnection,
     ): ObservedConnection = coroutineScope {
+        val connection = installed.connection
+        val generation = installed.generation
         val incomingJob = launch(start = CoroutineStart.UNDISPATCHED) {
             for (text in connection.incoming) {
                 forwardIfCurrent(generation, connection, text)
             }
         }
-        try {
-            val terminal = connection.state
+        val terminalJob = async(start = CoroutineStart.UNDISPATCHED) {
+            connection.state
                 .onEach { observedState ->
                     if (observedState == AgentConnectionState.Connected &&
                         publishIfCurrent(generation, connection, AgentSupervisorState.Connected(connection.connectionId))
@@ -249,6 +270,12 @@ class AgentConnectionSupervisor(
                         observedState is AgentConnectionState.TransportFailure ||
                         observedState is AgentConnectionState.Closed
                 }
+        }
+        try {
+            val terminal = select<AgentConnectionState> {
+                terminalJob.onAwait { it }
+                installed.reconnectRequested.onAwait { AgentConnectionState.TransportFailure() }
+            }
             ObservedConnection(
                 authenticationFailed = terminal == AgentConnectionState.AuthenticationFailed,
                 transientFailure = terminal is AgentConnectionState.TransportFailure ||
@@ -257,21 +284,19 @@ class AgentConnectionSupervisor(
             )
         } finally {
             incomingJob.cancelAndJoin()
+            terminalJob.cancelAndJoin()
         }
     }
 
     /** 安装连接并分配新 generation；shutdown 与安装竞争时拒绝该连接并关闭它。 */
-    private suspend fun installConnection(connection: AgentConnection): Long? {
-        val generation = lifecycleMutex.withLock {
+    private suspend fun installConnection(connection: AgentConnection): ActiveConnection? {
+        val installed = lifecycleMutex.withLock {
             if (shutdown) return@withLock null
             nextGeneration += 1
-            nextGeneration.also {
-                active = ActiveConnection(it, connection)
-                clearQueuedIncomingLocked()
-            }
+            ActiveConnection(nextGeneration, connection).also { active = it }
         }
-        if (generation == null) connection.close()
-        return generation
+        if (installed == null) connection.close()
+        return installed
     }
 
     /** 根据失败计数发布 retry/manual 状态，返回 null 时连接循环必须停止。 */
@@ -319,18 +344,24 @@ class AgentConnectionSupervisor(
         generation: Long,
         connection: AgentConnection,
         text: String,
-    ) = lifecycleMutex.withLock {
-        val current = active
-        if (!shutdown && current?.generation == generation && current.connection === connection) {
-            mutableIncoming.trySend(text)
+    ) {
+        val overflow = lifecycleMutex.withLock {
+            val current = active
+            if (shutdown || current?.generation != generation || current.connection !== connection) {
+                return@withLock false
+            }
+            mutableIncoming.trySend(text).isFailure
+        }
+        if (overflow) {
+            try {
+                connection.close()
+            } finally {
+                throw IncomingBufferOverflowException()
+            }
         }
     }
 
     /** 新连接安装时丢弃仍排队的旧 generation 文本。 */
-    private fun clearQueuedIncomingLocked() {
-        while (mutableIncoming.tryReceive().isSuccess) Unit
-    }
-
     /** 连接观察结束后只清理仍属于自己的 active 引用。 */
     private suspend fun clearIfCurrent(generation: Long) {
         lifecycleMutex.withLock {
@@ -345,6 +376,7 @@ class AgentConnectionSupervisor(
     private data class ActiveConnection(
         val generation: Long,
         val connection: AgentConnection,
+        val reconnectRequested: CompletableDeferred<Unit> = CompletableDeferred(),
     )
 
     /** 一次连接观察的终态分类，connected 用于重置连续失败计数。 */
@@ -358,5 +390,9 @@ class AgentConnectionSupervisor(
     private data class ShutdownResources(
         val loopJob: Job?,
         val connection: AgentConnection?,
+    )
+
+    private class IncomingBufferOverflowException : IllegalStateException(
+        "Agent incoming buffer overflowed; reconnecting",
     )
 }

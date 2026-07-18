@@ -45,6 +45,8 @@ fun BusinessDesktopShell(
     onSuggestionsChanged: (Map<String, BusinessFieldSuggestion>) -> Unit = {},
     onAcceptSuggestion: (fieldId: String, baseRevision: Long) -> Unit = { _, _ -> },
     onAcceptAllSuggestions: (baseRevision: Long) -> Unit = {},
+    onSaveDraft: () -> Unit = {},
+    onSubmit: () -> Unit = {},
     onComposerTextChanged: (String) -> Unit = {},
     onSend: () -> Unit = {},
     onReconnect: () -> Unit = {},
@@ -78,6 +80,8 @@ fun BusinessDesktopShell(
                         onSuggestionsChanged = onSuggestionsChanged,
                         onAcceptSuggestion = onAcceptSuggestion,
                         onAcceptAllSuggestions = onAcceptAllSuggestions,
+                        onSaveDraft = onSaveDraft,
+                        onSubmit = onSubmit,
                         modifier = Modifier.weight(1f),
                     )
                 } else {
@@ -107,6 +111,8 @@ fun BusinessDesktopShell(
                     onSuggestionsChanged = onSuggestionsChanged,
                     onAcceptSuggestion = onAcceptSuggestion,
                     onAcceptAllSuggestions = onAcceptAllSuggestions,
+                    onSaveDraft = onSaveDraft,
+                    onSubmit = onSubmit,
                     modifier = Modifier.width(layout.formWidth),
                 )
                 AgentPanelForShell(

@@ -1,6 +1,8 @@
 package com.wzx.huitai.desktop.runtime
 
 import java.nio.file.Files
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.UUID
 import kotlin.io.path.exists
 import kotlin.test.Test
@@ -66,6 +68,45 @@ class BusinessDesktopRuntimePathsTest {
 
         assertFailsWith<IllegalArgumentException> {
             BusinessDesktopRuntimePaths.create(home)
+        }
+    }
+
+    @Test
+    fun `rejects an existing controlled leaf symbolic link without touching its target`() {
+        val home = Files.createTempDirectory("huitai-linked-leaf-home")
+        val outside = Files.createTempFile("huitai-outside-installation", ".txt")
+        Files.writeString(outside, "outside-value")
+        val desktop = home.resolve(".huitai-agent-desktop/desktop")
+        Files.createDirectories(desktop)
+        val leaf = desktop.resolve("installation-id")
+        val linkCreated = runCatching { Files.createSymbolicLink(leaf, outside) }.isSuccess
+        if (!linkCreated) return
+
+        assertFailsWith<IllegalArgumentException> {
+            BusinessDesktopRuntimePaths.create(home)
+        }
+        assertEquals("outside-value", Files.readString(outside))
+    }
+
+    @Test
+    fun `concurrent same JVM installation identity creation returns one stable value`() {
+        val paths = BusinessDesktopRuntimePaths.create(Files.createTempDirectory("huitai-installation-race"))
+        val executor = Executors.newFixedThreadPool(12)
+        val start = CountDownLatch(1)
+        try {
+            val futures = (1..48).map {
+                executor.submit<String> {
+                    start.await()
+                    DesktopInstallationIdentityStore(paths.desktopInstallationId).loadOrCreate()
+                }
+            }
+            start.countDown()
+            val values = futures.map { it.get() }
+
+            assertEquals(1, values.toSet().size)
+            assertEquals(values.first(), Files.readString(paths.desktopInstallationId))
+        } finally {
+            executor.shutdownNow()
         }
     }
 }

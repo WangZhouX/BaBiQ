@@ -92,6 +92,25 @@ class DemoFormPanelTest {
         rule.onAllNodesWithText("来源：用户输入").assertCountEquals(1)
     }
 
+    @Test
+    fun `save draft and submit buttons invoke explicit action callbacks`() {
+        var saveCount = 0
+        var submitCount = 0
+        rule.setContent {
+            DemoFormPanel(
+                state = DemoFormState(),
+                onSaveDraft = { saveCount += 1 },
+                onSubmit = { submitCount += 1 },
+            )
+        }
+
+        rule.onNodeWithTag("save-draft-action").performScrollTo().performClick()
+        rule.onNodeWithTag("submit-action").performScrollTo().performClick()
+
+        assertEquals(1, saveCount)
+        assertEquals(1, submitCount)
+    }
+
     private fun suggestedFormState(): DemoFormState = DemoFormState(
         revision = 7,
         suggestionPatch = FormPatch(

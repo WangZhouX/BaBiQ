@@ -1,6 +1,7 @@
 package com.wzx.huitai.desktop.runtime
 
 import com.wzx.huitai.agent.client.AgentConnectRequest
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 
 /** 生产实现必须执行带 Bearer 和桌面身份头的真实 WebSocket 握手，而不是探测 TCP 端口。 */
@@ -28,7 +29,13 @@ class BusinessAgentReadinessProbe(
         val deadline = System.nanoTime() + timeoutMillis * 1_000_000
         while (true) {
             check(process.isAlive) { "business Agent exited before authenticated readiness" }
-            val authenticated = runCatching { authenticator.authenticate(request) }.getOrDefault(false)
+            val authenticated = try {
+                authenticator.authenticate(request)
+            } catch (failure: CancellationException) {
+                throw failure
+            } catch (_: Exception) {
+                false
+            }
             if (authenticated) {
                 check(process.isAlive) { "business Agent exited during authenticated readiness" }
                 return

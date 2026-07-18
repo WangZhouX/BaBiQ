@@ -20,6 +20,7 @@ interface BusinessConnectionLifecycle {
     val state: StateFlow<AgentSupervisorState>
     suspend fun start()
     suspend fun manualRetry(): Boolean
+    suspend fun reconnect(expectedConnectionId: String): Boolean = false
     suspend fun shutdown()
 }
 
@@ -29,6 +30,8 @@ class AgentConnectionLifecycleAdapter(
     override val state: StateFlow<AgentSupervisorState> = supervisor.state
     override suspend fun start() = supervisor.start()
     override suspend fun manualRetry(): Boolean = supervisor.manualRetry()
+    override suspend fun reconnect(expectedConnectionId: String): Boolean =
+        supervisor.requestReconnect(expectedConnectionId)
     override suspend fun shutdown() = supervisor.shutdown()
 }
 

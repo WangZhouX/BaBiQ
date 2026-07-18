@@ -2,6 +2,9 @@ package com.wzx.huitai.desktop.app
 
 import com.wzx.huitai.action.ActionExecutionContextValidator
 import com.wzx.huitai.action.ApplicationActionBus
+import com.wzx.huitai.action.ActionResolution
+import com.wzx.huitai.action.model.ActionReplayPolicy
+import com.wzx.huitai.action.model.ReconciliationPolicy
 import com.wzx.huitai.action.port.ActionClock
 import com.wzx.huitai.agent.application.ApplicationActionRequestHandler
 import com.wzx.huitai.agent.application.ApplicationCatalogClient
@@ -41,7 +44,6 @@ import com.wzx.huitai.desktop.runtime.DesktopInstallationIdentityStore
 import com.wzx.huitai.desktop.runtime.BusinessAgentLaunchRequest
 import com.wzx.huitai.desktop.runtime.ManagedBusinessAgentConnection
 import com.wzx.huitai.desktop.security.JceksAuthCredentialPersistence
-import com.wzx.huitai.desktop.state.BusinessDesktopEvent
 import com.wzx.huitai.desktop.state.BusinessDesktopReducer
 import com.wzx.huitai.desktop.state.BusinessDesktopState
 import com.wzx.huitai.desktop.state.BusinessDesktopStore
@@ -50,10 +52,15 @@ import com.wzx.huitai.demo.action.DemoActionCatalog
 import com.wzx.huitai.demo.gateway.FakeHuitaiGateway
 import com.wzx.huitai.demo.model.DemoFormState
 import com.wzx.huitai.demo.model.DemoScreenModel
+import com.wzx.huitai.presentation.context.PageContextPublisher
+import com.wzx.huitai.presentation.context.PageContextSanitizer
+import com.wzx.huitai.presentation.context.TrustedPageContextIdentity
 import com.wzx.huitai.security.approval.SQLiteApprovalRecordStore
 import com.wzx.huitai.security.audit.SQLiteActionAuditPort
 import com.wzx.huitai.security.database.BusinessDesktopDatabase
 import com.wzx.huitai.security.execution.SQLiteActionExecutionStore
+import com.wzx.huitai.security.execution.ActionExecutionPolicies
+import com.wzx.huitai.security.execution.ActionExecutionPolicyResolver
 import com.wzx.huitai.security.instance.ProcessInstanceLock
 import com.wzx.huitai.security.risk.DefaultActionRiskPolicy
 import com.wzx.huitai.security.secret.JceksSecretStore
@@ -71,8 +78,10 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -80,8 +89,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -165,7 +178,9 @@ class BusinessDesktopCompositionRoot private constructor(
     /** 幂等按严格逆序关闭；第一个失败作为主异常，其余关闭失败附加 suppressed。 */
     suspend fun shutdown() {
         if (!closed.compareAndSet(false, true)) return
-        closeAll(listOf(ui, connection, child, storage, desktopLock))?.let { throw it }
+        withContext(NonCancellable) {
+            closeAll(listOf(ui, connection, child, storage, desktopLock))?.let { throw it }
+        }
     }
 
     companion object {
@@ -204,9 +219,9 @@ class BusinessDesktopCompositionRoot private constructor(
                     desktopLock = desktopLock,
                 )
             } catch (failure: Throwable) {
-                val rollbackFailure = closeAll(
-                    listOfNotNull(ui?.resource, connection, child, storage?.resource, desktopLock),
-                )
+                val rollbackFailure = withContext(NonCancellable) {
+                    closeAll(listOfNotNull(ui?.resource, connection, child, storage?.resource, desktopLock))
+                }
                 rollbackFailure?.let(failure::addSuppressed)
                 throw failure
             }
@@ -364,6 +379,10 @@ class ProductionBusinessDesktopCompositionFactory(
     private lateinit var identity: BusinessIdentity
     private var startupRegistrationConnectionId: String? = null
     private var lastRegisteredConnectionId: String? = null
+    private val contextPublisherLock = Any()
+    private var contextPublisherConnectionId: String? = null
+    private var pageContextPublisher: PageContextPublisher? = null
+    private val registrationPublicationMutex = Mutex()
     private val catalogEpoch = 1L
 
     init {
@@ -372,8 +391,19 @@ class ProductionBusinessDesktopCompositionFactory(
     }
 
     override suspend fun acquireDesktopLock(): CompositionResource {
-        val lock = ProcessInstanceLock.acquire(paths.desktopInstanceLock)
-        return CompositionResource { lock.close() }
+        val lock = try {
+            ProcessInstanceLock.acquire(paths.desktopInstanceLock)
+        } catch (failure: Throwable) {
+            scopeJob.cancel()
+            throw failure
+        }
+        return CompositionResource {
+            try {
+                lock.close()
+            } finally {
+                scopeJob.cancel()
+            }
+        }
     }
 
     override suspend fun openStorage(): BusinessDesktopStorageAssembly {
@@ -388,14 +418,32 @@ class ProductionBusinessDesktopCompositionFactory(
             backendPassword = loadOrCreateBackendPassword(secretStore)
             val screen = DemoScreenModel()
             val catalog = DemoActionCatalog(screen, FakeHuitaiGateway())
-            val executionStore = SQLiteActionExecutionStore(database)
+            val registry = catalog.createRegistry()
+            val executionStore = SQLiteActionExecutionStore(
+                database = database,
+                policyResolver = ActionExecutionPolicyResolver { record ->
+                    when (val resolution = registry.resolve(
+                        record.command.actionId,
+                        record.command.actionVersion,
+                    )) {
+                        is ActionResolution.Found -> ActionExecutionPolicies(
+                            replayPolicy = resolution.action.descriptor.replayPolicy,
+                            reconciliationPolicy = resolution.action.descriptor.reconciliationPolicy,
+                        )
+                        is ActionResolution.NotFound -> ActionExecutionPolicies(
+                            replayPolicy = ActionReplayPolicy.NEVER,
+                            reconciliationPolicy = ReconciliationPolicy.MANUAL,
+                        )
+                    }
+                },
+            )
             val decisions = ComposeActionDecisionCoordinator(
                 actionTitleResolver = { actionId ->
                     catalog.actions.firstOrNull { it.descriptor.id == actionId }?.descriptor?.title ?: actionId
                 },
             )
             val actionBus = ApplicationActionBus(
-                registry = catalog.createRegistry(),
+                registry = registry,
                 riskPolicy = DefaultActionRiskPolicy(),
                 confirmationPort = ComposeConfirmationPort(decisions),
                 approvalPort = ComposeApprovalPort(decisions),
@@ -420,16 +468,20 @@ class ProductionBusinessDesktopCompositionFactory(
             )
             backendPassword = null // ownership transferred to storage close resource
             val close = CompositionResource {
-                storage.decisions.shutdown()
-                Arrays.fill(storage.backendKeyStorePassword, '\u0000')
-                storage.secretStore.close()
-                storage.database.close()
+                closeCompositionSteps(
+                    { storage.decisions.shutdown() },
+                    { Arrays.fill(storage.backendKeyStorePassword, '\u0000') },
+                    { storage.secretStore.close() },
+                    { storage.database.close() },
+                )?.let { throw it }
             }
             return BusinessDesktopStorageAssembly(actionBus, close, storage)
         } catch (failure: Throwable) {
             backendPassword?.let { Arrays.fill(it, '\u0000') }
-            secretStore?.close()
-            database.close()
+            closeCompositionSteps(
+                { secretStore?.close() },
+                { database.close() },
+            )?.let(failure::addSuppressed)
             throw failure
         } finally {
             desktopPassword?.let { Arrays.fill(it, '\u0000') }
@@ -476,14 +528,19 @@ class ProductionBusinessDesktopCompositionFactory(
                 permissions = setOf("demo.write", "demo.submit"),
             )
             return CompositionResource {
-                rpc.close()
-                agentConnection.resource.close()
-                scopeJob.cancel()
+                closeCompositionSteps(
+                    { rpc.close() },
+                    { agentConnection.resource.close() },
+                    { scopeJob.cancel() },
+                )?.let { throw it }
             }
         } catch (failure: Throwable) {
-            runCatching { agentConnection.resource.close() }
-                .exceptionOrNull()
-                ?.let(failure::addSuppressed)
+            withContext(NonCancellable) {
+                closeCompositionSteps(
+                    { agentConnection.resource.close() },
+                    { scopeJob.cancel() },
+                )
+            }?.let(failure::addSuppressed)
             throw failure
         }
     }
@@ -525,14 +582,26 @@ class ProductionBusinessDesktopCompositionFactory(
         try {
         val businessAgentClient = BusinessAgentClient(rpc, scope)
         conversation = BusinessConversationController(businessAgentClient, this.storage.desktopStore, scope)
+        val lifecycle = RegisteredAgentConnectionLifecycle(
+            source = connectionLifecycle,
+            initialRegisteredConnectionId = requireNotNull(lastRegisteredConnectionId) {
+                "initial Agent registration was not committed"
+            },
+            scope = scope,
+            register = { connectionId -> registerActiveConnection(connectionId) },
+        )
         val workspace = BusinessWorkspaceController(
             store = this.storage.desktopStore,
             contextPublication = BusinessContextPublicationPort { _, _, contextSequence, snapshot ->
-                contextClient.publish(contextEnvelope(contextSequence, snapshot))
+                registrationPublicationMutex.withLock {
+                    check(lastRegisteredConnectionId == rpc.connectionId) {
+                        "Agent connection is not fully registered"
+                    }
+                    contextClient.publish(contextEnvelope(contextSequence, snapshot))
+                }
             },
             actionPort = DirectUserApplicationActionPort(this.storage.actionBus),
         )
-        val lifecycle = connectionLifecycle
         val registration = object : BusinessRegistrationPort {
             override suspend fun bindIdentity(identity: BusinessIdentity) {
                 identityClient.bind(identityEnvelope(identity))
@@ -572,36 +641,10 @@ class ProductionBusinessDesktopCompositionFactory(
             publishedContextSequence = 1,
         )
         desktopCoordinator.start()
-        val initialRegisteredConnectionId = requireNotNull(lastRegisteredConnectionId) {
-            "initial Agent registration was not committed"
-        }
         decisionConnectionObserver = scope.launch {
-            var registeredConnectionId = initialRegisteredConnectionId
             lifecycle.state.collect { state ->
                 if (state is AgentSupervisorState.Connected) {
                     this@ProductionBusinessDesktopCompositionFactory.storage.decisions.onAgentConnected()
-                    if (state.connectionId != registeredConnectionId) {
-                        try {
-                            identityClient.bind(identityEnvelope())
-                            catalogClient.register(catalogEnvelope())
-                            contextClient.publish(
-                                contextEnvelope(
-                                    contextSequence = 1,
-                                    snapshot = this@ProductionBusinessDesktopCompositionFactory.storage.screen.pageContext(),
-                                ),
-                            )
-                            registeredConnectionId = state.connectionId
-                        } catch (cancelled: CancellationException) {
-                            throw cancelled
-                        } catch (_: Exception) {
-                            this@ProductionBusinessDesktopCompositionFactory.storage.desktopStore.dispatch(
-                                BusinessDesktopEvent.Failed(
-                                    "AGENT_REPUBLISH_FAILED",
-                                    "Agent reconnect registration failed",
-                                ),
-                            )
-                        }
-                    }
                 } else {
                     this@ProductionBusinessDesktopCompositionFactory.storage.decisions.onAgentDisconnected()
                 }
@@ -629,9 +672,11 @@ class ProductionBusinessDesktopCompositionFactory(
             },
         )
         } catch (failure: Throwable) {
-            runCatching { closeUiStage(desktopCoordinator, decisionConnectionObserver, conversation, actionHandler) }
-                .exceptionOrNull()
-                ?.let(failure::addSuppressed)
+            withContext(NonCancellable) {
+                runCatching {
+                    closeUiStage(desktopCoordinator, decisionConnectionObserver, conversation, actionHandler)
+                }.exceptionOrNull()
+            }?.let(failure::addSuppressed)
             throw failure
         }
     }
@@ -694,7 +739,26 @@ class ProductionBusinessDesktopCompositionFactory(
         contextSequence: Long,
         snapshot: com.wzx.huitai.presentation.context.PageContextSnapshot,
     ): ContextEnvelope {
-        val encodedSnapshot = ApplicationProtocol.JSON.encodeToJsonElement(snapshot).jsonObject
+        val connectionId = rpc.connectionId
+        val published = synchronized(contextPublisherLock) {
+            val publisher = if (contextPublisherConnectionId == connectionId) {
+                requireNotNull(pageContextPublisher)
+            } else {
+                PageContextPublisher(
+                    identity = TrustedPageContextIdentity(
+                        desktopInstanceId = identity.desktopInstanceId,
+                        authSessionId = identity.authSessionId,
+                        identityEpoch = identity.identityEpoch,
+                    ),
+                    sanitizer = PageContextSanitizer(),
+                ).also {
+                    contextPublisherConnectionId = connectionId
+                    pageContextPublisher = it
+                }
+            }
+            publisher.publish(snapshot, catalogEpoch, contextSequence)
+        }
+        val encodedSnapshot = ApplicationProtocol.JSON.encodeToJsonElement(published.payload).jsonObject
         val payload = JsonObject(
             encodedSnapshot + mapOf(
                 "contextRevision" to JsonPrimitive(snapshot.revision),
@@ -725,6 +789,22 @@ class ProductionBusinessDesktopCompositionFactory(
 
     private fun nextSequence(): Long = envelopeSequence.incrementAndGet()
 
+    private suspend fun registerActiveConnection(connectionId: String) = registrationPublicationMutex.withLock {
+        check(rpc.connectionId == connectionId) { "Agent connection changed before identity registration" }
+        identityClient.bind(identityEnvelope())
+        check(rpc.connectionId == connectionId) { "Agent connection changed during identity registration" }
+        catalogClient.register(catalogEnvelope())
+        check(rpc.connectionId == connectionId) { "Agent connection changed during catalog registration" }
+        contextClient.publish(
+            contextEnvelope(
+                contextSequence = 1,
+                snapshot = storage.screen.pageContext(),
+            ),
+        )
+        check(rpc.connectionId == connectionId) { "Agent connection changed during context registration" }
+        lastRegisteredConnectionId = connectionId
+    }
+
     private fun defaultChildLauncher(): BusinessAgentChildLauncher = BusinessAgentChildLauncher { context ->
         require(Files.isRegularFile(context.backendJar)) { "bundled business Agent jar is unavailable" }
         val request = BusinessAgentLaunchRequest.create(
@@ -754,12 +834,14 @@ class ProductionBusinessDesktopCompositionFactory(
             BusinessAgentConnectionHandle(
                 connection = facade,
                 resource = CompositionResource {
-                    facade.close()
-                    httpClient.close()
+                    closeCompositionSteps(
+                        { facade.close() },
+                        { httpClient.close() },
+                    )?.let { throw it }
                 },
             )
         } catch (failure: Throwable) {
-            httpClient.close()
+            runCatching { httpClient.close() }.exceptionOrNull()?.let(failure::addSuppressed)
             throw failure
         }
     }
@@ -771,17 +853,27 @@ class ProductionBusinessDesktopCompositionFactory(
         val probeScope = CoroutineScope(probeScopeJob)
         val transport = KtorAgentTransport(client, probeScope)
         var connection: AgentConnection? = null
+        var primaryFailure: Throwable? = null
         try {
             connection = transport.connect(request)
             val state = withTimeout(2_000) {
                 connection.state.first { it != AgentConnectionState.Connecting }
             }
             state == AgentConnectionState.Connected
+        } catch (failure: Throwable) {
+            primaryFailure = failure
+            throw failure
         } finally {
-            connection?.close()
-            transport.close()
-            probeScope.cancel()
-            client.close()
+            withContext(NonCancellable) {
+                closeCompositionSteps(
+                    { connection?.close() },
+                    { transport.close() },
+                    { probeScope.cancel() },
+                    { client.close() },
+                )
+            }?.let { cleanupFailure ->
+                primaryFailure?.addSuppressed(cleanupFailure) ?: throw cleanupFailure
+            }
         }
     }
 
@@ -829,7 +921,7 @@ internal class AgentConnectionLifecycleProjection(
                 }
             }
     private val mutableState = MutableStateFlow<AgentSupervisorState>(AgentSupervisorState.Connecting)
-    private val observer = scope.launch {
+    private val observer = scope.launch(start = CoroutineStart.UNDISPATCHED) {
         source.collect { next -> if (!stopped.get()) mutableState.value = next }
     }
     override val state: StateFlow<AgentSupervisorState> = mutableState
@@ -838,6 +930,9 @@ internal class AgentConnectionLifecycleProjection(
     override suspend fun manualRetry(): Boolean =
         (connection as? ManagedBusinessAgentConnection)?.manualRetry() ?: false
 
+    override suspend fun reconnect(expectedConnectionId: String): Boolean =
+        (connection as? ManagedBusinessAgentConnection)?.reconnect(expectedConnectionId) ?: false
+
     override suspend fun shutdown() {
         if (!stopped.compareAndSet(false, true)) return
         mutableState.value = AgentSupervisorState.Shutdown
@@ -845,4 +940,141 @@ internal class AgentConnectionLifecycleProjection(
     }
 }
 
+/**
+ * Exposes Connected only after identity, catalog, and initial context have all been registered on
+ * that exact transport connection. Registration failures are bounded and require an explicit
+ * manual retry instead of allowing UI actions through a partially registered connection.
+ */
+internal class RegisteredAgentConnectionLifecycle(
+    private val source: BusinessConnectionLifecycle,
+    initialRegisteredConnectionId: String,
+    scope: CoroutineScope,
+    private val maximumRegistrationAttempts: Int = 3,
+    private val retryDelayMillis: suspend (Long) -> Unit = { delay(it) },
+    private val register: suspend (String) -> Unit,
+) : BusinessConnectionLifecycle {
+    private val stopped = AtomicBoolean(false)
+    private val registrationMutex = Mutex()
+    private val mutableState = MutableStateFlow<AgentSupervisorState>(
+        AgentSupervisorState.Connected(initialRegisteredConnectionId),
+    )
+    @Volatile
+    private var registeredConnectionId: String? = initialRegisteredConnectionId
+    private var registrationFailureCount: Int = 0
+    private val observer = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+        source.state.collect { next ->
+            if (stopped.get()) return@collect
+            when (next) {
+                is AgentSupervisorState.Connected -> handleConnected(next.connectionId)
+                else -> {
+                    registeredConnectionId = null
+                    mutableState.value = next
+                }
+            }
+        }
+    }
+
+    init {
+        require(initialRegisteredConnectionId.isNotBlank()) { "initial registered connection id is required" }
+        require(maximumRegistrationAttempts > 0) { "maximum registration attempts must be positive" }
+    }
+
+    override val state: StateFlow<AgentSupervisorState> = mutableState
+
+    override suspend fun start() = source.start()
+
+    override suspend fun manualRetry(): Boolean {
+        if (stopped.get()) return false
+        val connected = source.state.value as? AgentSupervisorState.Connected
+        if (mutableState.value == AgentSupervisorState.ManualRetryRequired && connected != null) {
+            registrationFailureCount = 0
+            mutableState.value = AgentSupervisorState.Connecting
+            val accepted = source.reconnect(connected.connectionId)
+            if (!accepted) mutableState.value = AgentSupervisorState.ManualRetryRequired
+            return accepted
+        }
+        if (mutableState.value == AgentSupervisorState.ManualRetryRequired) registrationFailureCount = 0
+        return source.manualRetry()
+    }
+
+    override suspend fun shutdown() {
+        if (!stopped.compareAndSet(false, true)) return
+        mutableState.value = AgentSupervisorState.Shutdown
+        observer.cancelAndJoin()
+        source.shutdown()
+    }
+
+    private suspend fun handleConnected(connectionId: String) {
+        if (registeredConnectionId == connectionId) {
+            mutableState.value = AgentSupervisorState.Connected(connectionId)
+            return
+        }
+        if (mutableState.value !is AgentSupervisorState.Reconnecting) {
+            mutableState.value = AgentSupervisorState.Connecting
+        }
+        registerConnection(connectionId)
+    }
+
+    private suspend fun registerConnection(connectionId: String): Boolean = registrationMutex.withLock {
+        if (stopped.get()) return@withLock false
+        if (registeredConnectionId == connectionId) {
+            mutableState.value = AgentSupervisorState.Connected(connectionId)
+            return@withLock true
+        }
+        val active = source.state.value as? AgentSupervisorState.Connected
+        if (active?.connectionId != connectionId || stopped.get()) return@withLock false
+        try {
+            register(connectionId)
+            val stillActive = source.state.value as? AgentSupervisorState.Connected
+            if (stillActive?.connectionId != connectionId || stopped.get()) return@withLock false
+            registrationFailureCount = 0
+            registeredConnectionId = connectionId
+            mutableState.value = AgentSupervisorState.Connected(connectionId)
+            true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            registrationFailureCount += 1
+            if (registrationFailureCount >= maximumRegistrationAttempts) {
+                mutableState.value = AgentSupervisorState.ManualRetryRequired
+                return@withLock false
+            }
+            mutableState.value = AgentSupervisorState.Reconnecting(
+                consecutiveFailures = registrationFailureCount,
+                delayMillis = REGISTRATION_RETRY_DELAY_MILLIS,
+            )
+            retryDelayMillis(REGISTRATION_RETRY_DELAY_MILLIS)
+            val stillActive = source.state.value as? AgentSupervisorState.Connected
+            if (stillActive?.connectionId != connectionId || stopped.get()) return@withLock false
+            if (!source.reconnect(connectionId)) {
+                registrationFailureCount = maximumRegistrationAttempts
+                mutableState.value = AgentSupervisorState.ManualRetryRequired
+            }
+            false
+        }.also {
+            if (!it && registrationFailureCount >= maximumRegistrationAttempts && !stopped.get()) {
+                registeredConnectionId = null
+            }
+        }
+    }
+
+    private companion object {
+        const val REGISTRATION_RETRY_DELAY_MILLIS = 250L
+    }
+}
+
 private fun JsonObject.encodedSize(): Int = toString().toByteArray(Charsets.UTF_8).size
+
+private suspend fun closeCompositionSteps(
+    vararg steps: suspend () -> Unit,
+): Throwable? {
+    var first: Throwable? = null
+    steps.forEach { step ->
+        try {
+            step()
+        } catch (failure: Throwable) {
+            first?.addSuppressed(failure) ?: run { first = failure }
+        }
+    }
+    return first
+}

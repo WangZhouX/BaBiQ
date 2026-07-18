@@ -2,6 +2,7 @@ package com.wzx.huitai.desktop.ui.form
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -54,6 +55,8 @@ fun DemoFormPanel(
     onSuggestionsChanged: (Map<String, BusinessFieldSuggestion>) -> Unit = {},
     onAcceptSuggestion: (fieldId: String, baseRevision: Long) -> Unit = { _, _ -> },
     onAcceptAllSuggestions: (baseRevision: Long) -> Unit = {},
+    onSaveDraft: () -> Unit = {},
+    onSubmit: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val patchRevision = state.suggestionPatch?.baseRevision ?: state.revision
@@ -104,6 +107,23 @@ fun DemoFormPanel(
                     modifier = Modifier.testTag("accept-all-suggestions"),
                 ) {
                     Text("接受全部建议")
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Button(
+                    onClick = onSaveDraft,
+                    modifier = Modifier.testTag("save-draft-action"),
+                ) {
+                    Text("保存草稿")
+                }
+                Button(
+                    onClick = onSubmit,
+                    modifier = Modifier.testTag("submit-action"),
+                ) {
+                    Text("提交资料")
                 }
             }
         }
