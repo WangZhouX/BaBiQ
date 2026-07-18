@@ -9,6 +9,7 @@ import com.wzx.huitai.agent.protocol.JsonRpcError
 import com.wzx.huitai.agent.protocol.JsonRpcNotification
 import com.wzx.huitai.agent.protocol.JsonRpcRequest
 import com.wzx.huitai.agent.protocol.JsonRpcSuccessResponse
+import com.wzx.huitai.agent.protocol.toJsonObject
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -24,13 +25,25 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlin.coroutines.coroutineContext
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+
+/** 通用业务 notification 的原始结构；消费层必须在进入 UI state 前做白名单映射。 */
+data class AgentRawNotification(
+    val method: String,
+    val params: JsonObject,
+)
 
 /** 远端 JSON-RPC error 的脱敏本地投影，不保留远端 message 或 data。 */
 class AgentJsonRpcException(val remoteCode: Int) : IllegalStateException(
@@ -67,6 +80,10 @@ class AgentJsonRpcClient(
     private val cleanupOwner = AtomicReference<CleanupOwner?>(null)
     private val cleanupComplete = CompletableDeferred<Unit>()
     private val mutableInbound = Channel<AgentJsonRpcInbound>(capacity = inboundCapacity)
+    private val mutableRawNotifications = MutableSharedFlow<AgentRawNotification>(
+        extraBufferCapacity = inboundCapacity,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
     private val overloadResponses = Channel<String>(capacity = OVERLOAD_RESPONSE_CAPACITY)
     private val overloadWriter = scope.launch(start = CoroutineStart.UNDISPATCHED) {
         for (id in overloadResponses) {
@@ -92,18 +109,29 @@ class AgentJsonRpcClient(
 
     val incoming: ReceiveChannel<AgentJsonRpcInbound> = mutableInbound
 
+    /** application bridge 以外的 JSON-RPC notification 广播，不与双向 action request reader 竞争。 */
+    val rawNotifications: SharedFlow<AgentRawNotification> = mutableRawNotifications.asSharedFlow()
+
     internal val pendingRequestCount: Int
         get() = pendingResponses.size
 
     suspend fun request(method: ApplicationMethod, params: ApplicationEnvelope): JsonObject {
         ApplicationProtocolValidator.validate(params)
+        return request(method.wireName, params.toJsonObject())
+    }
+
+    /** 通用业务方法继续复用本对象唯一的 request ID 生成器和 pending map。 */
+    suspend fun request(method: String, params: JsonObject): JsonObject {
+        require(method.isNotBlank()) { "JSON-RPC method must not be blank" }
         val id = requestIds.incrementAndGet().toString()
         val response = CompletableDeferred<JsonObject>()
         try {
-            val text = ApplicationProtocol.JSON.encodeToString(
-                JsonRpcRequest.serializer(),
-                JsonRpcRequest(id = id, method = method.wireName, params = params),
-            )
+            val text = buildJsonObject {
+                put("jsonrpc", "2.0")
+                put("id", id)
+                put("method", method)
+                put("params", params)
+            }.toString()
             ApplicationProtocolValidator.validateEnvelopeSize(text.toByteArray(Charsets.UTF_8))
             return withTimeout(requestTimeoutMillis) {
                 checkOpen()
@@ -126,10 +154,16 @@ class AgentJsonRpcClient(
 
     suspend fun notify(method: ApplicationMethod, params: ApplicationEnvelope) {
         ApplicationProtocolValidator.validate(params)
-        val text = ApplicationProtocol.JSON.encodeToString(
-            JsonRpcNotification.serializer(),
-            JsonRpcNotification(method = method.wireName, params = params),
-        )
+        notify(method.wireName, params.toJsonObject())
+    }
+
+    suspend fun notify(method: String, params: JsonObject) {
+        require(method.isNotBlank()) { "JSON-RPC method must not be blank" }
+        val text = buildJsonObject {
+            put("jsonrpc", "2.0")
+            put("method", method)
+            put("params", params)
+        }.toString()
         ApplicationProtocolValidator.validateEnvelopeSize(text.toByteArray(Charsets.UTF_8))
         checkOpen()
         runSend(text)
@@ -222,9 +256,18 @@ class AgentJsonRpcClient(
                 },
             )
 
-            "method" in value -> runCatching {
-                ApplicationProtocol.JSON.decodeFromJsonElement(JsonRpcNotification.serializer(), value)
-            }.getOrNull()?.let { mutableInbound.trySend(AgentJsonRpcInbound.Notification(it)) }
+            "method" in value -> {
+                val method = runCatching { value.getValue("method").jsonPrimitive.content }.getOrNull() ?: return
+                val applicationMethod = ApplicationMethod.entries.firstOrNull { it.wireName == method }
+                if (applicationMethod == null) {
+                    val params = runCatching { value.getValue("params").jsonObject }.getOrNull() ?: JsonObject(emptyMap())
+                    mutableRawNotifications.tryEmit(AgentRawNotification(method, params))
+                } else {
+                    runCatching {
+                        ApplicationProtocol.JSON.decodeFromJsonElement(JsonRpcNotification.serializer(), value)
+                    }.getOrNull()?.let { mutableInbound.trySend(AgentJsonRpcInbound.Notification(it)) }
+                }
+            }
         }
     }
 
