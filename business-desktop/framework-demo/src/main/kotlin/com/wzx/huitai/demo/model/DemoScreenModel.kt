@@ -1,0 +1,104 @@
+package com.wzx.huitai.demo.model
+
+import com.wzx.huitai.presentation.context.AvailableAction
+import com.wzx.huitai.presentation.context.FieldContext
+import com.wzx.huitai.presentation.context.FieldSensitivity
+import com.wzx.huitai.presentation.context.PageContextSnapshot
+import com.wzx.huitai.presentation.context.PageMode
+import com.wzx.huitai.presentation.context.ValidationSummary
+import com.wzx.huitai.presentation.screen.AgentAwareScreen
+import com.wzx.huitai.presentation.screen.BusinessScreenContract
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.serialization.json.JsonPrimitive
+
+/**
+ * 通用七字段演示页面模型。
+ *
+ * 用户操作与 Agent 动作都只能通过 [dispatch] 进入同一个 reducer。
+ */
+class DemoScreenModel(
+    initialState: DemoFormState = DemoFormState(),
+    private val reducer: DemoFormReducer = DemoFormReducer(),
+) : BusinessScreenContract<DemoFormState, DemoFormEvent>, AgentAwareScreen {
+    private val mutableState = MutableStateFlow(initialState)
+
+    /** 当前不可变页面状态。 */
+    override val state: StateFlow<DemoFormState> = mutableState.asStateFlow()
+
+    /** 将强类型事件交给纯 reducer。 */
+    override fun dispatch(event: DemoFormEvent) {
+        mutableState.update { current -> reducer.reduce(current, event) }
+    }
+
+    /** 从同一次状态读取生成字段值与 revision 完全一致的页面快照。 */
+    override fun pageContext(): PageContextSnapshot {
+        val current = state.value
+        return PageContextSnapshot(
+            snapshotId = "demo-form-${current.revision}",
+            pageId = DemoFormState.PAGE_ID,
+            pageTitle = "通用资料演示",
+            route = current.route,
+            revision = current.revision,
+            mode = PageMode.EDIT,
+            fields = fields(current.values),
+            availableActions = ACTIONS,
+            validationSummary = validation(current),
+        )
+    }
+
+    private fun fields(values: DemoFormValues): List<FieldContext> = listOf(
+        field(DemoFormState.FIELD_NAME, "资料名称", values.name, required = true),
+        field(DemoFormState.FIELD_TYPE, "资料类型", values.type, required = true),
+        field(DemoFormState.FIELD_CONTACT, "联系人", values.contact),
+        field(DemoFormState.FIELD_AMOUNT, "金额", values.amount),
+        field(DemoFormState.FIELD_DATE, "日期", values.date),
+        field(DemoFormState.FIELD_STATUS, "状态", values.status, required = true),
+        field(DemoFormState.FIELD_DETAILS, "详细说明", values.details),
+    )
+
+    private fun field(
+        id: String,
+        label: String,
+        value: String,
+        required: Boolean = false,
+    ): FieldContext = FieldContext(
+        id = id,
+        label = label,
+        type = "string",
+        value = JsonPrimitive(value),
+        editable = true,
+        required = required,
+        sensitivity = FieldSensitivity.INTERNAL,
+    )
+
+    private fun validation(state: DemoFormState): ValidationSummary {
+        val messages = buildList {
+            if (state.values.name.isBlank()) add("资料名称不能为空")
+            if (state.values.type.isBlank()) add("资料类型不能为空")
+            if (state.values.status.isBlank()) add("状态不能为空")
+        }
+        return ValidationSummary(valid = messages.isEmpty(), messages = messages)
+    }
+
+    private companion object {
+        val ACTIONS = listOf(
+            action("page.navigate", "页面导航"),
+            action("page.read_context", "读取页面上下文"),
+            action("form.read_state", "读取表单状态"),
+            action("form.preview_patch", "预览表单补丁"),
+            action("form.apply_patch", "应用表单补丁"),
+            action("demo.save_draft", "保存草稿"),
+            action("demo.submit", "提交资料"),
+        )
+
+        fun action(id: String, title: String): AvailableAction = AvailableAction(
+            id = id,
+            title = title,
+            description = "通用框架演示动作",
+            enabled = true,
+        )
+    }
+}

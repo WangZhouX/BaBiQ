@@ -1,0 +1,75 @@
+package com.wzx.huitai.demo.action.form
+
+import com.wzx.huitai.action.ActionContext
+import com.wzx.huitai.action.ActionInputCodec
+import com.wzx.huitai.action.ApplicationAction
+import com.wzx.huitai.action.RegisteredAction
+import com.wzx.huitai.action.model.ActionPreview
+import com.wzx.huitai.action.model.ActionPreviewChange
+import com.wzx.huitai.action.model.ActionReplayPolicy
+import com.wzx.huitai.action.model.ActionResult
+import com.wzx.huitai.action.model.ActionRiskLevel
+import com.wzx.huitai.demo.action.DEMO_JSON_OUTPUT_CODEC
+import com.wzx.huitai.demo.action.decodeStrict
+import com.wzx.huitai.demo.action.demoDescriptor
+import com.wzx.huitai.demo.action.requiredPatch
+import com.wzx.huitai.demo.action.requiredString
+import com.wzx.huitai.demo.action.strictSchema
+import com.wzx.huitai.demo.model.DemoScreenModel
+import com.wzx.huitai.presentation.form.FormPatch
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+
+/** 表单补丁预览动作的强类型输入。 */
+data class FormPreviewPatchInput(val executionId: String, val patch: FormPatch)
+
+/** 只读取并展示补丁，不改变页面建议或已提交值。 */
+class FormPreviewPatchAction private constructor(
+    private val screen: DemoScreenModel,
+) : ApplicationAction<FormPreviewPatchInput, JsonObject> {
+    override val descriptor = demoDescriptor(
+        id = "form.preview_patch",
+        title = "预览表单补丁",
+        description = "预览绑定当前 revision 的字段变化",
+        risk = ActionRiskLevel.READ_ONLY,
+        replay = ActionReplayPolicy.SAFE,
+        inputSchema = strictSchema("executionId" to "string", "patch" to "object"),
+    )
+
+    /** 根据补丁值生成无副作用变化列表。 */
+    override suspend fun preview(input: FormPreviewPatchInput, context: ActionContext): ActionPreview = ActionPreview(
+        executionId = input.executionId,
+        summary = "预览 ${input.patch.changes.size} 项字段变化",
+        changes = input.patch.changes.map { change ->
+            ActionPreviewChange(change.fieldId, change.previousValue, change.newValue)
+        },
+        warnings = if (input.patch.baseRevision == screen.state.value.revision) emptyList() else listOf("补丁版本已过期"),
+    )
+
+    /** 返回补丁摘要，不安装建议也不修改页面。 */
+    override suspend fun execute(input: FormPreviewPatchInput, context: ActionContext): ActionResult<JsonObject> =
+        ActionResult.Success(
+            input.executionId,
+            buildJsonObject {
+                put("baseRevision", input.patch.baseRevision)
+                put("changeCount", input.patch.changes.size)
+                put("stale", input.patch.baseRevision != screen.state.value.revision)
+            },
+        )
+
+    companion object {
+        private val INPUT_CODEC = ActionInputCodec<FormPreviewPatchInput> { input ->
+            decodeStrict(input, setOf("executionId", "patch")) {
+                FormPreviewPatchInput(input.requiredString("executionId"), input.requiredPatch())
+            }
+        }
+
+        /** 创建绑定页面模型的注册项。 */
+        fun registered(screen: DemoScreenModel): RegisteredAction<FormPreviewPatchInput, JsonObject> = RegisteredAction(
+            FormPreviewPatchAction(screen),
+            INPUT_CODEC,
+            DEMO_JSON_OUTPUT_CODEC,
+        )
+    }
+}
