@@ -35,4 +35,31 @@ class PendingApprovalsTest {
 
         assertThat(pendingApprovals.peek("thr_1")).isNull();
     }
+
+    @Test
+    void claimOnlyConsumesTheExactPeekedMetadata() {
+        PendingApprovals pendingApprovals = new PendingApprovals();
+        InterruptionMetadata original = mock(InterruptionMetadata.class);
+        InterruptionMetadata replacement = mock(InterruptionMetadata.class);
+        pendingApprovals.put("thr_1", original);
+
+        assertThat(pendingApprovals.claim("thr_1", replacement)).isNull();
+        assertThat(pendingApprovals.peek("thr_1")).isSameAs(original);
+        assertThat(pendingApprovals.claim("thr_1", original)).isSameAs(original);
+        assertThat(pendingApprovals.peek("thr_1")).isNull();
+    }
+
+    @Test
+    void removeExactNeverDeletesAReplacementApproval() {
+        PendingApprovals pendingApprovals = new PendingApprovals();
+        InterruptionMetadata original = mock(InterruptionMetadata.class);
+        InterruptionMetadata replacement = mock(InterruptionMetadata.class);
+        pendingApprovals.put("thr_1", original);
+        pendingApprovals.put("thr_1", replacement);
+
+        assertThat(pendingApprovals.removeExact("thr_1", original)).isFalse();
+        assertThat(pendingApprovals.peek("thr_1")).isSameAs(replacement);
+        assertThat(pendingApprovals.removeExact("thr_1", replacement)).isTrue();
+        assertThat(pendingApprovals.peek("thr_1")).isNull();
+    }
 }

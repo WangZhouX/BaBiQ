@@ -64,6 +64,21 @@ class TurnStatusMachineTest {
     }
 
     @Test
+    void created_and_waiting_approval_can_expire_when_business_identity_changes() {
+        Turn created = new Turn("turn_created", "thr_001");
+        Turn waiting = new Turn("turn_waiting", "thr_001");
+        waiting.start();
+        waiting.waitApproval();
+
+        created.expire("business identity changed");
+        waiting.expire("business identity changed");
+
+        assertThat(created.status()).isEqualTo(TurnStatus.EXPIRED);
+        assertThat(waiting.status()).isEqualTo(TurnStatus.EXPIRED);
+        assertThat(created.failureReason()).isEqualTo("business identity changed");
+    }
+
+    @Test
     void terminal_states_reject_further_transitions() {
         Turn turn = new Turn("turn_001", "thr_001");
 

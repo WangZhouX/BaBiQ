@@ -1372,6 +1372,94 @@ class PendingApplicationActionsTest {
     }
 
     @Test
+    void acknowledgementFailureThatReadActiveEntryBeforeDisconnectReusesOutcomeUnknown() throws Exception {
+        ApplicationActionTerminalStore delayedAudit = new ApplicationActionTerminalStore() {
+            @Override
+            public Optional<PendingApplicationAction> findTerminal(
+                    String executionId, PendingApplicationAction.Correlation correlation) {
+                return Optional.empty();
+            }
+
+            @Override
+            public void recordTerminal(PendingApplicationAction terminal, boolean lateResult) {
+                throw new IllegalStateException("audit not committed yet");
+            }
+
+            @Override
+            public void queueReconciliation(PendingApplicationAction terminal) {
+            }
+        };
+        PendingApplicationActions local = actions(delayedAudit, action -> new CompletableFuture<>());
+        PendingApplicationAction.Correlation correlation = correlation("tool-ack-close-race");
+        PendingApplicationAction.ConnectionContext context = connectionContext("ws-ack-close-race");
+        CompletableFuture<PendingApplicationAction> terminal = local.register(
+                "execution-ack-close-race", correlation, PendingApplicationAction.Path.READ_ONLY, context);
+        local.accepted("execution-ack-close-race", correlation);
+        local.running("execution-ack-close-race", correlation);
+        Object entry = pendingEntry(local, "execution-ack-close-race");
+        AtomicReference<CompletableFuture<PendingApplicationAction>> reconciliation = new AtomicReference<>();
+        Thread acknowledgement = new Thread(() -> reconciliation.set(local.acknowledgementUncertain(
+                "execution-ack-close-race", correlation, context, "ack lost concurrently with close")));
+
+        synchronized (entry) {
+            acknowledgement.start();
+            awaitBlocked(acknowledgement);
+            local.onConnectionClosed("ws-ack-close-race", "desktop disconnected");
+        }
+        acknowledgement.join(1_000);
+
+        assertThat(acknowledgement.isAlive()).isFalse();
+        assertThat(reconciliation.get().join()).isSameAs(terminal.join());
+        assertThat(reconciliation.get().join().state()).isEqualTo(PendingApplicationAction.State.OUTCOME_UNKNOWN);
+    }
+
+    @Test
+    void negativeAcknowledgementThatReadActiveEntryBeforeDisconnectPreservesOutcomeUnknown() throws Exception {
+        ApplicationActionTerminalStore delayedAudit = new ApplicationActionTerminalStore() {
+            @Override
+            public Optional<PendingApplicationAction> findTerminal(
+                    String executionId, PendingApplicationAction.Correlation correlation) {
+                return Optional.empty();
+            }
+
+            @Override
+            public void recordTerminal(PendingApplicationAction terminal, boolean lateResult) {
+                throw new IllegalStateException("audit not committed yet");
+            }
+
+            @Override
+            public void queueReconciliation(PendingApplicationAction terminal) {
+            }
+        };
+        PendingApplicationActions local = actions(delayedAudit, action -> new CompletableFuture<>());
+        PendingApplicationAction.Correlation correlation = correlation("tool-negative-ack-close-race");
+        PendingApplicationAction.ConnectionContext context = connectionContext("ws-negative-ack-close-race");
+        CompletableFuture<PendingApplicationAction> terminal = local.register(
+                "execution-negative-ack-close-race",
+                correlation,
+                PendingApplicationAction.Path.READ_ONLY,
+                context);
+        local.accepted("execution-negative-ack-close-race", correlation);
+        local.running("execution-negative-ack-close-race", correlation);
+        Object entry = pendingEntry(local, "execution-negative-ack-close-race");
+        AtomicReference<CompletableFuture<PendingApplicationAction>> retained = new AtomicReference<>();
+        Thread acknowledgement = new Thread(() -> retained.set(local.confirmedRequestRejected(
+                "execution-negative-ack-close-race", correlation, context,
+                "remote_request_failed", "negative ack raced with close")));
+
+        synchronized (entry) {
+            acknowledgement.start();
+            awaitBlocked(acknowledgement);
+            local.onConnectionClosed("ws-negative-ack-close-race", "desktop disconnected");
+        }
+        acknowledgement.join(1_000);
+
+        assertThat(acknowledgement.isAlive()).isFalse();
+        assertThat(retained.get().join()).isSameAs(terminal.join());
+        assertThat(retained.get().join().state()).isEqualTo(PendingApplicationAction.State.OUTCOME_UNKNOWN);
+    }
+
+    @Test
     void acknowledgementUncertainCancelWithoutConfirmationBecomesOutcomeUnknown() {
         RecordingTerminalStore store = new RecordingTerminalStore();
         CompletableFuture<PendingApplicationActions.RemoteStatus> status = new CompletableFuture<>();
@@ -2481,6 +2569,18 @@ class PendingApplicationActionsTest {
         return new PendingApplicationAction.ConnectionContext(
                 "reservation-1", webSocketSessionId, "desktop-1", "desktop-session-1", "auth-session-1", 8,
                 "user-1", "tenant-1", "platform-1");
+    }
+
+    private static Object pendingEntry(PendingApplicationActions actions, String executionId) {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> pending = (Map<String, Object>) org.springframework.test.util.ReflectionTestUtils
+                .getField(actions, "pending");
+        return java.util.Objects.requireNonNull(pending.get(executionId));
+    }
+
+    private static void awaitBlocked(Thread thread) {
+        org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(1))
+                .until(() -> thread.getState() == Thread.State.BLOCKED);
     }
 
     private static void assertReconciliationEventuallyContains(

@@ -12,9 +12,14 @@ import com.wzx.babiq.server.application.auth.TrustedDesktopConnection;
 import com.wzx.babiq.server.application.catalog.ApplicationCatalogRegistry;
 import com.wzx.babiq.server.application.catalog.ApplicationPageContextRegistry;
 import com.wzx.babiq.server.application.protocol.ApplicationIdentityMessage;
+import com.wzx.babiq.server.application.action.ApplicationActionReconciliationService;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.WebSocketSession;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Map;
 import java.util.Objects;
@@ -25,6 +30,7 @@ import java.util.Set;
 @ConditionalOnProperty(prefix = "babiq.business", name = "enabled", havingValue = "true")
 public final class ApplicationIdentityProtocolHandler implements JsonRpcMultiMethodHandler {
 
+    private static final Logger log = LoggerFactory.getLogger(ApplicationIdentityProtocolHandler.class);
     private static final String BIND = "application/identity/bind";
     private static final String UPDATE = "application/identity/update";
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -33,16 +39,28 @@ public final class ApplicationIdentityProtocolHandler implements JsonRpcMultiMet
     private final ApplicationCatalogRegistry catalogs;
     private final ApplicationPageContextRegistry contexts;
     private final BusinessDesktopConnectionRegistry connections;
+    private final ApplicationActionReconciliationService reconciliation;
 
     public ApplicationIdentityProtocolHandler(
             ApplicationIdentityRegistry identities,
             ApplicationCatalogRegistry catalogs,
             ApplicationPageContextRegistry contexts,
             BusinessDesktopConnectionRegistry connections) {
+        this(identities, catalogs, contexts, connections, null);
+    }
+
+    @Autowired
+    public ApplicationIdentityProtocolHandler(
+            ApplicationIdentityRegistry identities,
+            ApplicationCatalogRegistry catalogs,
+            ApplicationPageContextRegistry contexts,
+            BusinessDesktopConnectionRegistry connections,
+            ObjectProvider<ApplicationActionReconciliationService> reconciliationProvider) {
         this.identities = Objects.requireNonNull(identities, "identities");
         this.catalogs = Objects.requireNonNull(catalogs, "catalogs");
         this.contexts = Objects.requireNonNull(contexts, "contexts");
         this.connections = Objects.requireNonNull(connections, "connections");
+        this.reconciliation = reconciliationProvider == null ? null : reconciliationProvider.getIfAvailable();
     }
 
     @Override
@@ -57,7 +75,15 @@ public final class ApplicationIdentityProtocolHandler implements JsonRpcMultiMet
             ApplicationIdentityMessage message = JSON.convertValue(params, ApplicationIdentityMessage.class);
             if (BIND.equals(method)) {
                 synchronized (connection) {
-                    identities.bind(connection, message);
+                    var identity = identities.bind(connection, message);
+                    if (reconciliation != null) {
+                        try {
+                            reconciliation.reconcile(connection, identity);
+                        } catch (RuntimeException failure) {
+                            log.warn("Application identity post-bind reconciliation failed: reasonType={}",
+                                    failure.getClass().getSimpleName());
+                        }
+                    }
                 }
             } else if (UPDATE.equals(method)) {
                 identities.update(connection, message, () -> {

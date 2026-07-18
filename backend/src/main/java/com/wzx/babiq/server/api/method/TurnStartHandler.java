@@ -14,6 +14,7 @@ import com.wzx.babiq.server.conversation.ConversationEventRecorder;
 import com.wzx.babiq.server.conversation.ItemEmitter;
 import com.wzx.babiq.server.conversation.Thread;
 import com.wzx.babiq.server.conversation.Turn;
+import com.wzx.babiq.server.conversation.TurnStatus;
 import com.wzx.babiq.server.conversation.items.WorkUnitItem;
 import com.wzx.babiq.server.agent.AgentRunPolicy;
 import com.wzx.babiq.server.agent.AgentLoopProperties;
@@ -156,6 +157,11 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
         String threadId = requiredText(params, "threadId");
         String userText = requiredInputText(params);
         String providerId = optionalText(params, "providerId");
+        WorkUnitCreateRequest workUnitRequest = parseWorkUnitCreateRequest(params);
+        if (workUnitRequest != null && workUnitService == null) {
+            throw new JsonRpcException(JsonRpcErrorCode.INTERNAL_ERROR, "工作容器服务未初始化");
+        }
+        String workUnitGoalId = workUnitRequest == null ? parseWorkUnitStartGoalId(params, threadId) : null;
         log.info("turn/start 收到请求: threadId={}, providerId={}, inputChars={}, inputPreview={}",
                 threadId,
                 providerId == null ? "<active-provider>" : providerId,
@@ -164,23 +170,18 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
         BusinessIdentityScope requestScope = businessIdentityScopeService == null
                 ? BusinessIdentityScope.UNSCOPED
                 : resolveBusinessScope(session, threadId);
-        Thread thread = conversationService.findThread(threadId, requestScope)
-                .orElseThrow(() -> threadNotFound(threadId));
-        Turn turn = conversationService.startTurn(threadId, requestScope);
-        turn.start();
         ModelProviderConfig provider = resolveProvider(providerId);
         AppSettings settings = appSettingsService == null ? null : appSettingsService.get();
         String sandboxMode = settings == null ? defaultSandboxMode() : settings.sandboxMode();
         String approvalPolicy = settings == null ? defaultApprovalPolicy() : settings.approvalPolicy();
         AgentRunPolicy runPolicy = AgentRunPolicy.fromSnapshots(sandboxMode, approvalPolicy, agentLoopProperties);
-        conversationService.persistTurnStarted(
-                turn,
-                userText,
-                provider == null ? providerId : provider.id(),
-                provider == null ? null : provider.model(),
-                thread.cwd(),
-                runPolicy.sandboxMode().name(),
-                runPolicy.approvalPolicy().name());
+        StartedTurn started = requestScope.scoped()
+                ? businessIdentityScopeService.withActiveConnectionScope(requestScope, active ->
+                        createAndStartTurn(threadId, requestScope, userText, providerId, provider, runPolicy))
+                        .orElseThrow(() -> threadNotFound(threadId))
+                : createAndStartTurn(threadId, requestScope, userText, providerId, provider, runPolicy);
+        Thread thread = started.thread();
+        Turn turn = started.turn();
         log.info("turn/start 已创建 Turn: threadId={}, turnId={}, cwd={}, providerId={}",
                 threadId,
                 turn.id(),
@@ -191,22 +192,26 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
         try {
             emitter.emitTurnStarted();
         } catch (Exception exception) {
-            log.warn("发送 turn/started 失败 turnId={}", turn.id(), exception);
+            failStartedTurn(turn, "turn/started", exception);
+            throw new JsonRpcException(JsonRpcErrorCode.INTERNAL_ERROR, "Turn 启动事件发送失败");
         }
-        WorkUnitCreateRequest workUnitRequest = parseWorkUnitCreateRequest(params);
         if (workUnitRequest != null) {
-            if (workUnitService == null) {
-                throw new JsonRpcException(JsonRpcErrorCode.INTERNAL_ERROR, "工作容器服务未初始化");
-            }
-            WorkUnitItem item = workUnitService.createOrAppend(workUnitRequest, thread, turn, thread.cwd(), runPolicy);
             try {
+                WorkUnitItem item = workUnitService.createOrAppend(
+                        workUnitRequest, thread, turn, thread.cwd(), runPolicy);
                 emitter.emitItemAdded(item);
-                turn.complete();
-                emitter.emitTurnCompleted("completed");
+                if (!conversationService.completeTurnIfRunning(turn)) {
+                    throw new IllegalStateException("work unit turn completion CAS failed");
+                }
             } catch (Exception exception) {
-                log.warn("发送 workUnit 创建事件失败 turnId={}, kind={}, name={}",
-                        turn.id(), workUnitRequest.kind(), workUnitRequest.name(), exception);
+                failStartedTurn(turn, "work_unit", exception);
                 throw new JsonRpcException(JsonRpcErrorCode.INTERNAL_ERROR, "工作容器创建事件发送失败");
+            }
+            try {
+                emitter.emitPersistedTurnCompleted("completed");
+            } catch (Exception notificationFailure) {
+                log.warn("Work unit completion notification failed: reasonType={}",
+                        notificationFailure.getClass().getSimpleName());
             }
             log.info("turn/start 已创建工作容器并跳过 AgentLoop: threadId={}, turnId={}, kind={}, name={}",
                     threadId,
@@ -215,13 +220,57 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
                     workUnitRequest.name());
             return Map.of("turnId", turn.id());
         }
-        String workUnitGoalId = parseWorkUnitStartGoalId(params, threadId);
-        turnExecutor.submit(turn, userText, providerId, thread.cwd(), emitter, runPolicy, workUnitGoalId);
+        try {
+            turnExecutor.submit(turn, userText, providerId, thread.cwd(), emitter, runPolicy, workUnitGoalId);
+        } catch (RuntimeException exception) {
+            failStartedTurn(turn, "executor_submit", exception);
+            throw new JsonRpcException(JsonRpcErrorCode.INTERNAL_ERROR, "Turn 提交失败");
+        }
         log.info("turn/start 已提交 AgentLoop: threadId={}, turnId={}, providerId={}",
                 threadId,
                 turn.id(),
                 providerId == null ? "<active-provider>" : providerId);
         return Map.of("turnId", turn.id());
+    }
+
+    private void failStartedTurn(Turn turn, String step, Throwable failure) {
+        conversationService.failTurnIfRunning(turn, "turn_start_submission_failed");
+        log.warn("Turn start failed before asynchronous execution: step={}, reasonType={}",
+                step, failure.getClass().getSimpleName());
+    }
+
+    /** 在业务 connection 临界区内完成精确归属校验、CREATED 持久化和 RUNNING CAS。 */
+    private StartedTurn createAndStartTurn(
+            String threadId,
+            BusinessIdentityScope requestScope,
+            String userText,
+            String requestedProviderId,
+            ModelProviderConfig provider,
+            AgentRunPolicy runPolicy) {
+        Thread thread = conversationService.findThread(threadId, requestScope)
+                .orElseThrow(() -> threadNotFound(threadId));
+        Turn turn = conversationService.startTurn(threadId, requestScope);
+        if (!requestScope.scoped()) {
+            turn.start();
+            conversationService.persistTurnStarted(
+                    turn, userText,
+                    provider == null ? requestedProviderId : provider.id(),
+                    provider == null ? null : provider.model(),
+                    thread.cwd(), runPolicy.sandboxMode().name(), runPolicy.approvalPolicy().name());
+            return new StartedTurn(thread, turn);
+        }
+        conversationService.persistTurnStarted(
+                turn, userText,
+                provider == null ? requestedProviderId : provider.id(),
+                provider == null ? null : provider.model(),
+                thread.cwd(), runPolicy.sandboxMode().name(), runPolicy.approvalPolicy().name());
+        if (!conversationService.transitionPreExecutionToRunning(turn, TurnStatus.CREATED)) {
+            throw threadNotFound(threadId);
+        }
+        return new StartedTurn(thread, turn);
+    }
+
+    private record StartedTurn(Thread thread, Turn turn) {
     }
 
     private BusinessIdentityScope resolveBusinessScope(WebSocketSession session, String threadId) {

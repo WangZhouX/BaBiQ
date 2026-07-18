@@ -181,6 +181,37 @@ public class SQLiteApplicationActionTerminalStore implements ApplicationActionTe
                 .orderByAsc(ApplicationActionEntity::getCreatedAt));
     }
 
+    public List<PendingApplicationAction> findOutcomeUnknownForDesktopIdentity(
+            String desktopInstanceId,
+            String desktopSessionId,
+            String authSessionId,
+            long identityEpoch,
+            String userId,
+            String tenantId,
+            String platformId,
+            String reservationId,
+            String webSocketSessionId) {
+        if (desktopInstanceId == null || desktopSessionId == null || authSessionId == null
+                || userId == null || tenantId == null || platformId == null
+                || reservationId == null || webSocketSessionId == null) {
+            return List.of();
+        }
+        PendingApplicationAction.ConnectionContext liveScope = new PendingApplicationAction.ConnectionContext(
+                reservationId, webSocketSessionId, desktopInstanceId, desktopSessionId, authSessionId,
+                identityEpoch, userId, tenantId, platformId);
+        return actions.selectList(Wrappers.<ApplicationActionEntity>lambdaQuery()
+                        .eq(ApplicationActionEntity::getDesktopInstanceId, desktopInstanceId)
+                        .eq(ApplicationActionEntity::getDesktopSessionId, desktopSessionId)
+                        .eq(ApplicationActionEntity::getAuthSessionId, authSessionId)
+                        .eq(ApplicationActionEntity::getIdentityEpoch, identityEpoch)
+                        .eq(ApplicationActionEntity::getUserId, userId)
+                        .eq(ApplicationActionEntity::getTenantId, tenantId)
+                        .eq(ApplicationActionEntity::getPlatformId, platformId)
+                        .eq(ApplicationActionEntity::getStatus, "OUTCOME_UNKNOWN")
+                        .orderByAsc(ApplicationActionEntity::getCreatedAt))
+                .stream().map(entity -> toPending(entity, liveScope)).toList();
+    }
+
     @Transactional(readOnly = true)
     public List<ApplicationActionEntity> findByStatuses(List<String> statuses) {
         if (statuses == null || statuses.isEmpty()) return List.of();

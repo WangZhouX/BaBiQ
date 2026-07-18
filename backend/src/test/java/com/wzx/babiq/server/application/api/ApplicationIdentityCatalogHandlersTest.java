@@ -11,10 +11,12 @@ import com.wzx.babiq.server.application.catalog.ApplicationPageContextRegistry;
 import com.wzx.babiq.server.application.protocol.ApplicationCatalogMessage;
 import com.wzx.babiq.server.application.protocol.ApplicationIdentityMessage;
 import com.wzx.babiq.server.application.protocol.ApplicationProtocol;
+import com.wzx.babiq.server.application.action.ApplicationActionReconciliationService;
 import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
 import com.wzx.babiq.server.api.error.JsonRpcException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.web.socket.WebSocketSession;
 
 import java.nio.charset.StandardCharsets;
@@ -235,7 +237,7 @@ class ApplicationIdentityCatalogHandlersTest {
     }
 
     @Test
-    void listenerInfrastructureFailureReturnsRedactedServerErrorAndDoesNotClearSnapshots() throws Exception {
+    void listenerInfrastructureFailureDoesNotFailCommittedUpdateAndSnapshotsAreCleared() throws Exception {
         ApplicationIdentityRegistry failingIdentities = new ApplicationIdentityRegistry(
                 (trustedConnection, oldIdentity, newIdentity) -> {
                     throw new IllegalStateException("listener secret failure");
@@ -246,19 +248,30 @@ class ApplicationIdentityCatalogHandlersTest {
                 failingIdentities, retainedCatalogs, retainedContexts, connections);
         failingIdentities.bind(trustedConnectionMessage(), identity(8, true));
 
-        assertThatThrownBy(() -> handler.handle(
-                "application/identity/update", node(identity(9, false)), session))
-                .isInstanceOfSatisfying(JsonRpcException.class, error -> {
-                    assertThat(error.errorCode()).isEqualTo(JsonRpcErrorCode.SERVER_ERROR);
-                    assertThat(error.getMessage()).isEqualTo("Application identity update failed");
-                    assertThat(error.getMessage()).doesNotContain("listener secret failure");
-                });
-        verify(retainedCatalogs, never()).clear(trustedConnectionMessage());
-        verify(retainedContexts, never()).clear(trustedConnectionMessage());
-        assertThat(failingIdentities.current(trustedConnectionMessage()))
-                .get()
-                .extracting(com.wzx.babiq.server.application.auth.TrustedBusinessIdentity::identityEpoch)
-                .isEqualTo(8L);
+        Object result = handler.handle(
+                "application/identity/update", node(identity(9, false)), session);
+
+        assertThat(result).isEqualTo(Map.of("authenticated", false, "identityEpoch", 9L));
+        verify(retainedCatalogs).clear(trustedConnectionMessage());
+        verify(retainedContexts).clear(trustedConnectionMessage());
+        assertThat(failingIdentities.current(trustedConnectionMessage())).isEmpty();
+    }
+
+    @Test
+    void reconciliationFailureDoesNotTurnACommittedIdentityBindIntoAnError() {
+        ApplicationActionReconciliationService reconciliation = mock(ApplicationActionReconciliationService.class);
+        org.mockito.Mockito.doThrow(new IllegalStateException("secret reconciliation payload"))
+                .when(reconciliation).reconcile(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        @SuppressWarnings("unchecked")
+        ObjectProvider<ApplicationActionReconciliationService> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(reconciliation);
+        ApplicationIdentityProtocolHandler handler = new ApplicationIdentityProtocolHandler(
+                identities, catalogs, contexts, connections, provider);
+
+        Object result = handler.handle("application/identity/bind", node(identity(8, true)), session);
+
+        assertThat(result).isEqualTo(Map.of("authenticated", true, "identityEpoch", 8L));
+        assertThat(identities.current(trustedConnectionMessage())).isPresent();
     }
 
     private WebSocketSession trustedSession() {

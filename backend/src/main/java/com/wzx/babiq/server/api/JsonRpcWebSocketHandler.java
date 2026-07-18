@@ -162,22 +162,26 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
      */
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
-        if (outboundRequestTracker != null) {
-            outboundRequestTracker.closePending(
-                    session.getId(), new IOException("business desktop WebSocket closed"));
-        }
-        if (pendingApplicationActions != null) {
-            pendingApplicationActions.onConnectionClosed(
-                    session.getId(), "business desktop WebSocket closed");
-        }
-        if (outboundJsonRpcClient != null) {
-            outboundJsonRpcClient.unregisterSession(session.getId(), session);
-        }
-        if (businessDesktopConnectionRegistry != null) {
-            String reservationId = stringAttribute(
-                    session, BusinessDesktopHandshakeInterceptor.RESERVATION_ID_ATTRIBUTE);
-            if (reservationId != null) {
-                businessDesktopConnectionRegistry.release(reservationId, session.getId());
+        try {
+            if (businessDesktopConnectionRegistry != null) {
+                String reservationId = stringAttribute(
+                        session, BusinessDesktopHandshakeInterceptor.RESERVATION_ID_ATTRIBUTE);
+                if (reservationId != null) {
+                    businessDesktopConnectionRegistry.release(reservationId, session.getId());
+                }
+            } else {
+                if (outboundRequestTracker != null) {
+                    outboundRequestTracker.closePending(
+                            session.getId(), new IOException("business desktop WebSocket closed"));
+                }
+                if (pendingApplicationActions != null) {
+                    pendingApplicationActions.onConnectionClosed(
+                            session.getId(), "business desktop WebSocket closed");
+                }
+            }
+        } finally {
+            if (outboundJsonRpcClient != null) {
+                outboundJsonRpcClient.unregisterSession(session.getId(), session);
             }
         }
         log.info("WebSocket 已关闭: sessionId={}, status={}", session.getId(), status);

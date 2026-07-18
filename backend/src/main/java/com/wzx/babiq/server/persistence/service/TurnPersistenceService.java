@@ -146,6 +146,67 @@ public class TurnPersistenceService {
         return true;
     }
 
+    /** 按不可变业务作用域只收束尚未执行的 turn，RUNNING 不受身份切换影响。 */
+    @Transactional
+    public boolean expirePreExecutionTurn(
+            String turnId, BusinessIdentityScope scope, String reason) {
+        if (scope == null || !scope.scoped()) {
+            return false;
+        }
+        String timestamp = PersistenceTime.write(Instant.now());
+        return turnMapper.expirePreExecutionIfCurrent(
+                turnId, scope.desktopInstanceId(), scope.desktopSessionId(), scope.authSessionId(),
+                scope.identityEpoch(), scope.userId(), scope.tenantId(), scope.platformId(),
+                reason, timestamp) == 1;
+    }
+
+    /** 按冻结身份和期望前置状态，把 turn 原子推进到 RUNNING。 */
+    @Transactional
+    public boolean transitionPreExecutionToRunning(
+            String turnId, BusinessIdentityScope scope, String expectedStatus) {
+        if (scope == null || !scope.scoped()
+                || expectedStatus == null
+                || (!"CREATED".equals(expectedStatus) && !"WAITING_APPROVAL".equals(expectedStatus))) {
+            return false;
+        }
+        return turnMapper.transitionPreExecutionToRunningIfCurrent(
+                turnId, scope.desktopInstanceId(), scope.desktopSessionId(), scope.authSessionId(),
+                scope.identityEpoch(), scope.userId(), scope.tenantId(), scope.platformId(),
+                expectedStatus) == 1;
+    }
+
+    /** 仅把仍处于 RUNNING 的同一冻结作用域 turn 原子收口为 FAILED。 */
+    @Transactional
+    public boolean failRunningTurn(String turnId, BusinessIdentityScope scope, String reason) {
+        if (turnId == null || turnId.isBlank() || reason == null || reason.isBlank()) {
+            return false;
+        }
+        String completedAt = PersistenceTime.write(Instant.now());
+        if (scope != null && scope.scoped()) {
+            return turnMapper.failScopedRunningIfCurrent(
+                    turnId, scope.desktopInstanceId(), scope.desktopSessionId(), scope.authSessionId(),
+                    scope.identityEpoch(), scope.userId(), scope.tenantId(), scope.platformId(),
+                    reason, completedAt) == 1;
+        }
+        return turnMapper.failUnscopedRunningIfCurrent(turnId, reason, completedAt) == 1;
+    }
+
+    /** 仅把仍处于 RUNNING 的同一冻结作用域 turn 原子收口为 COMPLETED。 */
+    @Transactional
+    public boolean completeRunningTurn(String turnId, BusinessIdentityScope scope) {
+        if (turnId == null || turnId.isBlank()) {
+            return false;
+        }
+        String completedAt = PersistenceTime.write(Instant.now());
+        if (scope != null && scope.scoped()) {
+            return turnMapper.completeScopedRunningIfCurrent(
+                    turnId, scope.desktopInstanceId(), scope.desktopSessionId(), scope.authSessionId(),
+                    scope.identityEpoch(), scope.userId(), scope.tenantId(), scope.platformId(),
+                    completedAt) == 1;
+        }
+        return turnMapper.completeUnscopedRunningIfCurrent(turnId, completedAt) == 1;
+    }
+
     /**
      * 按 turnId 查询持久化记录。
      *
@@ -160,6 +221,16 @@ public class TurnPersistenceService {
     public Optional<TurnEntity> findTurn(String turnId, BusinessIdentityScope scope) {
         return Optional.ofNullable(turnMapper.selectOne(scopedQuery(scope)
                 .eq(TurnEntity::getTurnId, turnId)));
+    }
+
+    /** 查询完整冻结身份下仍可被身份切换过期的持久化 turn。 */
+    public List<TurnEntity> findPreExecutionCandidates(BusinessIdentityScope scope) {
+        if (scope == null || !scope.scoped()) {
+            return List.of();
+        }
+        return turnMapper.selectList(scopedQuery(scope)
+                .in(TurnEntity::getStatus, "CREATED", "WAITING_APPROVAL")
+                .orderByAsc(TurnEntity::getStartedAt));
     }
 
     /**

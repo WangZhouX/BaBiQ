@@ -16,7 +16,9 @@ import org.springframework.stereotype.Service;
 
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -204,6 +206,73 @@ public class ConversationService {
     }
 
     /**
+     * 在调用方持有业务 connection monitor 时，把前置状态原子线性化为 RUNNING。
+     *
+     * <p>业务 scope 先做数据库 CAS，再更新同一个内存 Turn；身份更新要么先过期前置状态，
+     * 要么在本方法完成后只看到 RUNNING，从而不会出现旧请求漏过 cleanup 后继续提交模型。</p>
+     */
+    public boolean transitionPreExecutionToRunning(Turn turn, TurnStatus expectedStatus) {
+        if (turn == null || (expectedStatus != TurnStatus.CREATED
+                && expectedStatus != TurnStatus.WAITING_APPROVAL)) {
+            return false;
+        }
+        synchronized (turn) {
+            if (turn.status() != expectedStatus) {
+                return false;
+            }
+            if (turn.businessIdentityScope().scoped() && turnPersistenceService != null
+                    && !turnPersistenceService.transitionPreExecutionToRunning(
+                    turn.id(), turn.businessIdentityScope(), expectedStatus.name())) {
+                return false;
+            }
+            if (expectedStatus == TurnStatus.CREATED) {
+                turn.start();
+            } else {
+                turn.resume();
+            }
+            return true;
+        }
+    }
+
+    /** 同步调度失败时只允许把当前 RUNNING turn 收口为 FAILED，不能改写其他状态。 */
+    public boolean failTurnIfRunning(Turn turn, String reason) {
+        if (turn == null || reason == null || reason.isBlank()) {
+            return false;
+        }
+        synchronized (turn) {
+            if (turn.status() != TurnStatus.RUNNING) {
+                return false;
+            }
+            if (turnPersistenceService != null
+                    && !turnPersistenceService.failRunningTurn(
+                    turn.id(), turn.businessIdentityScope(), reason)) {
+                return false;
+            }
+            turn.fail(reason);
+            return true;
+        }
+    }
+
+    /** 工作容器短路完成时先持久化终态，再更新同一内存 Turn。 */
+    public boolean completeTurnIfRunning(Turn turn) {
+        if (turn == null) {
+            return false;
+        }
+        synchronized (turn) {
+            if (turn.status() != TurnStatus.RUNNING) {
+                return false;
+            }
+            if (turnPersistenceService != null
+                    && !turnPersistenceService.completeRunningTurn(
+                    turn.id(), turn.businessIdentityScope())) {
+                return false;
+            }
+            turn.complete();
+            return true;
+        }
+    }
+
+    /**
      * 创建并持久化一个已知输入快照的 turn。
      *
      * @param threadId 所属 thread id
@@ -278,6 +347,49 @@ public class ConversationService {
     public boolean hasActiveTurn(String threadId, BusinessIdentityScope scope) {
         return turns.values().stream().anyMatch(turn -> threadId.equals(turn.threadId())
                 && turn.businessIdentityScope().equals(scope) && !turn.status().isTerminal());
+    }
+
+    /** 身份切换时只过期完整旧作用域内的 CREATED/WAITING_APPROVAL turn。 */
+    public List<String> expirePreExecutionTurns(BusinessIdentityScope scope, String reason) {
+        if (scope == null || !scope.scoped()) {
+            return List.of();
+        }
+        Map<String, String> candidates = new LinkedHashMap<>();
+        if (turnPersistenceService != null) {
+            turnPersistenceService.findPreExecutionCandidates(scope).forEach(entity ->
+                    candidates.put(entity.getTurnId(), entity.getThreadId()));
+        }
+        turns.values().stream()
+                .filter(turn -> turn.businessIdentityScope().equals(scope))
+                .filter(turn -> turn.status() == TurnStatus.CREATED
+                        || turn.status() == TurnStatus.WAITING_APPROVAL)
+                .forEach(turn -> candidates.putIfAbsent(turn.id(), turn.threadId()));
+
+        java.util.LinkedHashSet<String> affectedThreadIds = new java.util.LinkedHashSet<>();
+        for (Map.Entry<String, String> candidate : candidates.entrySet()) {
+            Turn turn = turns.get(candidate.getKey());
+            if (turn == null) {
+                if (turnPersistenceService != null
+                        && turnPersistenceService.expirePreExecutionTurn(candidate.getKey(), scope, reason)) {
+                    affectedThreadIds.add(candidate.getValue());
+                }
+                continue;
+            }
+            synchronized (turn) {
+                if (!turn.businessIdentityScope().equals(scope)
+                        || (turn.status() != TurnStatus.CREATED
+                        && turn.status() != TurnStatus.WAITING_APPROVAL)) {
+                    continue;
+                }
+                if (turnPersistenceService != null
+                        && !turnPersistenceService.expirePreExecutionTurn(candidate.getKey(), scope, reason)) {
+                    continue;
+                }
+                turn.expire(reason);
+                affectedThreadIds.add(turn.threadId());
+            }
+        }
+        return List.copyOf(affectedThreadIds);
     }
 
     /**

@@ -4,6 +4,8 @@ import com.wzx.babiq.server.application.config.BusinessDesktopModeProperties;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -12,15 +14,19 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /** 管理业务桌面握手预留与已建立 WebSocket 的一对一绑定。 */
 @Component
 @ConditionalOnProperty(prefix = "babiq.business", name = "enabled", havingValue = "true")
 public final class BusinessDesktopConnectionRegistry {
+    private static final Logger log = LoggerFactory.getLogger(BusinessDesktopConnectionRegistry.class);
 
     private final Map<String, ConnectionSlot> slotsByDesktopSessionId = new HashMap<>();
     private final Clock clock;
     private final Duration pendingTtl;
+    private final CopyOnWriteArrayList<ConnectionCloseListener> closeListeners = new CopyOnWriteArrayList<>();
 
     @Autowired
     public BusinessDesktopConnectionRegistry(BusinessDesktopModeProperties properties) {
@@ -34,6 +40,14 @@ public final class BusinessDesktopConnectionRegistry {
     BusinessDesktopConnectionRegistry(Clock clock, Duration pendingTtl) {
         this.clock = clock;
         this.pendingTtl = pendingTtl;
+    }
+
+    /** coordinator 构造完成后显式注册，避免 Registry 构造期反向解析生命周期 bean。 */
+    public synchronized void addCloseListener(ConnectionCloseListener listener) {
+        if (listener == null) {
+            throw new IllegalArgumentException("listener must not be null");
+        }
+        closeListeners.add(listener);
     }
 
     public synchronized String reserve(String desktopInstanceId, String desktopSessionId) {
@@ -102,15 +116,33 @@ public final class BusinessDesktopConnectionRegistry {
         return slotsByDesktopSessionId.remove(desktopSessionId, pending);
     }
 
-    public synchronized boolean release(String reservationId, String webSocketSessionId) {
-        removeExpiredPending();
-        Optional<Map.Entry<String, ConnectionSlot>> active = slotsByDesktopSessionId.entrySet().stream()
-                .filter(entry -> entry.getValue().connection() != null)
-                .filter(entry -> entry.getValue().reservationId().equals(reservationId))
-                .filter(entry -> entry.getValue().connection().webSocketSessionId().equals(webSocketSessionId))
-                .findFirst();
-        active.ifPresent(entry -> slotsByDesktopSessionId.remove(entry.getKey(), entry.getValue()));
-        return active.isPresent();
+    public boolean release(String reservationId, String webSocketSessionId) {
+        TrustedDesktopConnection released;
+        synchronized (this) {
+            removeExpiredPending();
+            Optional<Map.Entry<String, ConnectionSlot>> active = slotsByDesktopSessionId.entrySet().stream()
+                    .filter(entry -> entry.getValue().connection() != null)
+                    .filter(entry -> entry.getValue().reservationId().equals(reservationId))
+                    .filter(entry -> entry.getValue().connection().webSocketSessionId().equals(webSocketSessionId))
+                    .findFirst();
+            if (active.isEmpty()) {
+                return false;
+            }
+            Map.Entry<String, ConnectionSlot> entry = active.orElseThrow();
+            if (!slotsByDesktopSessionId.remove(entry.getKey(), entry.getValue())) {
+                return false;
+            }
+            released = entry.getValue().connection();
+        }
+        for (ConnectionCloseListener listener : List.copyOf(closeListeners)) {
+            try {
+                listener.onConnectionClosed(released, "business desktop WebSocket closed");
+            } catch (RuntimeException failure) {
+                log.warn("Business desktop close listener failed: listenerType={}, reasonType={}",
+                        listener.getClass().getName(), failure.getClass().getSimpleName());
+            }
+        }
+        return true;
     }
 
     public synchronized Optional<TrustedDesktopConnection> findByDesktopSessionId(String desktopSessionId) {
@@ -140,5 +172,10 @@ public final class BusinessDesktopConnectionRegistry {
             Instant createdAt,
             TrustedDesktopConnection connection
     ) {
+    }
+
+    @FunctionalInterface
+    public interface ConnectionCloseListener {
+        void onConnectionClosed(TrustedDesktopConnection connection, String reason);
     }
 }

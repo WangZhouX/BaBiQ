@@ -76,6 +76,8 @@ public class AgentLoop {
     public void invokeResume(Turn turn, InterruptionMetadata feedback, String cwd, ItemEmitter emitter) { invokeResume(turn, feedback, cwd, emitter, strategy.defaultRunPolicy()); }
     /** 人工审批完成后，按原 turn 的权限快照恢复执行。 */
     public void invokeResume(Turn turn, InterruptionMetadata feedback, String cwd, ItemEmitter emitter, AgentRunPolicy runPolicy) { outputHandler.invokeResume(turn, feedback, cwd, emitter, runPolicy); }
+    /** 身份失效时清除不能再恢复的 ReactAgent 暂停现场。 */
+    public void forgetPaused(String threadId) { outputHandler.forgetPaused(threadId); }
     private ReactAgent buildAgent(String providerId, String cwd, ItemEmitter emitter, TurnObservationContext context, AgentRunPolicy runPolicy, CapabilityExposurePlan exposurePlan) {
         return exposurePlan == null ? strategy.buildAgent(providerId, cwd, emitter, context, runPolicy) : strategy.buildAgent(providerId, cwd, emitter, context, runPolicy, exposurePlan);
     }

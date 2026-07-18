@@ -8,6 +8,8 @@ import com.wzx.babiq.server.agent.AgentRunPolicy;
 import com.wzx.babiq.server.agent.PendingApprovals;
 import com.wzx.babiq.server.agent.TurnExecutor;
 import com.wzx.babiq.server.approval.ApprovalRuleService;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScopeService;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
 import com.wzx.babiq.server.api.JsonRpcMethodHandler;
 import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
 import com.wzx.babiq.server.api.error.JsonRpcException;
@@ -16,6 +18,7 @@ import com.wzx.babiq.server.conversation.ConversationEventRecorder;
 import com.wzx.babiq.server.conversation.ItemEmitter;
 import com.wzx.babiq.server.conversation.Thread;
 import com.wzx.babiq.server.conversation.Turn;
+import com.wzx.babiq.server.conversation.TurnStatus;
 import com.wzx.babiq.server.observability.BaBiQMetrics;
 import com.wzx.babiq.server.persistence.entity.TurnEntity;
 import com.wzx.babiq.server.persistence.service.ApprovalPersistenceService;
@@ -55,6 +58,8 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
     private final TurnPersistenceService turnPersistenceService;
     /** yml 默认配置；当历史 turn 缺少快照时作为兼容回退。 */
     private final AgentLoopProperties agentLoopProperties;
+    /** 业务模式下把审批恢复与身份切换线性化到同一个 connection monitor。 */
+    private final BusinessIdentityScopeService businessIdentityScopeService;
 
     /**
      * 创建 approval/respond handler。
@@ -71,7 +76,7 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
                                  TurnExecutor turnExecutor,
                                  BaBiQMetrics metrics) {
         this(pendingApprovals, conversationService, objectMapper, turnExecutor,
-                metrics, null, null, null, null, null);
+                metrics, null, null, null, null, null, null);
     }
 
     /**
@@ -93,7 +98,7 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
                                   ConversationEventRecorder eventRecorder,
                                   ApprovalRuleService approvalRuleService) {
         this(pendingApprovals, conversationService, objectMapper, turnExecutor,
-                metrics, eventRecorder, approvalRuleService, null, null, null);
+                metrics, eventRecorder, approvalRuleService, null, null, null, null);
     }
 
     /**
@@ -117,7 +122,7 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
                                   ApprovalRuleService approvalRuleService,
                                   ApprovalPersistenceService approvalPersistenceService) {
         this(pendingApprovals, conversationService, objectMapper, turnExecutor,
-                metrics, eventRecorder, approvalRuleService, approvalPersistenceService, null, null);
+                metrics, eventRecorder, approvalRuleService, approvalPersistenceService, null, null, null);
     }
 
     /**
@@ -144,7 +149,8 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
                                   ApprovalRuleService approvalRuleService,
                                   ApprovalPersistenceService approvalPersistenceService,
                                   TurnPersistenceService turnPersistenceService,
-                                  AgentLoopProperties agentLoopProperties) {
+                                  AgentLoopProperties agentLoopProperties,
+                                  BusinessIdentityScopeService businessIdentityScopeService) {
         this.pendingApprovals = pendingApprovals;
         this.conversationService = conversationService;
         this.objectMapper = objectMapper;
@@ -155,6 +161,7 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
         this.approvalPersistenceService = approvalPersistenceService;
         this.turnPersistenceService = turnPersistenceService;
         this.agentLoopProperties = agentLoopProperties;
+        this.businessIdentityScopeService = businessIdentityScopeService;
     }
 
     /**
@@ -181,23 +188,77 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
         String decision = requiredText(params, "decision");
         String editedArgs = optionalText(params, "editedArgs");
         String scope = optionalText(params, "scope");
-        InterruptionMetadata original = pendingApprovals.take(threadId);
+        BusinessIdentityScope requestScope = resolveScope(session);
+        InterruptionMetadata original = pendingApprovals.peek(threadId);
         if (original == null) {
-            throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "没有待审批请求: " + threadId);
+            throw unavailableApproval(threadId);
         }
-
-        Turn turn = conversationService.findTurn(turnId)
-                .orElseThrow(() -> new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "turn 不存在: " + turnId));
-        Thread thread = conversationService.findThread(threadId)
-                .orElseThrow(() -> new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "thread 不存在: " + threadId));
-        turn.resume();
-        ItemEmitter emitter = new ItemEmitter(session, objectMapper, threadId, turnId, eventRecorder);
+        String canonicalDecision = canonicalDecision(decision);
         InterruptionMetadata feedback = buildFeedback(original, decision, editedArgs);
-        rememberAlwaysRulesIfNeeded(threadId, decision, scope, original);
-        resolveApprovalIfPossible(threadId, turnId, decision, scope, editedArgs);
-        metrics.recordApprovalDecision(canonicalDecision(decision));
-        turnExecutor.submitResume(turn, feedback, thread.cwd(), emitter, runPolicyForTurn(turnId));
+        validateAlwaysDecision(decision, scope);
+        AgentRunPolicy runPolicy = prepareRunPolicy(turnId, requestScope);
+        PreparedResume prepared = requestScope.scoped()
+                ? businessIdentityScopeService.withActiveConnectionScope(requestScope,
+                        active -> prepareResume(threadId, turnId, requestScope, original))
+                        .orElseThrow(() -> unavailableApproval(threadId))
+                : prepareResume(threadId, turnId, requestScope, original);
+        Turn turn = prepared.turn();
+        Thread thread = prepared.thread();
+        ItemEmitter emitter = new ItemEmitter(session, objectMapper, threadId, turnId, eventRecorder);
+        try {
+            resolveApprovalIfPossible(threadId, turnId, canonicalDecision, scope, editedArgs);
+            rememberAlwaysRulesIfNeeded(threadId, decision, scope, original);
+            metrics.recordApprovalDecision(canonicalDecision);
+            turnExecutor.submitResume(turn, feedback, thread.cwd(), emitter, runPolicy);
+        } catch (RuntimeException exception) {
+            conversationService.failTurnIfRunning(turn, "resume_submission_failed");
+            pendingApprovals.removeExact(threadId, original);
+            throw new JsonRpcException(JsonRpcErrorCode.INTERNAL_ERROR, "审批恢复提交失败");
+        }
         return Map.of("delivered", true);
+    }
+
+    /** 在 connection monitor 内校验完整 scope、CAS 恢复 Turn 并单次消费审批元数据。 */
+    private PreparedResume prepareResume(
+            String threadId,
+            String turnId,
+            BusinessIdentityScope requestScope,
+            InterruptionMetadata expectedApproval) {
+        Turn turn = requestScope.scoped()
+                ? conversationService.findTurn(turnId, requestScope).orElse(null)
+                : conversationService.findTurn(turnId).orElse(null);
+        Thread thread = requestScope.scoped()
+                ? conversationService.findThread(threadId, requestScope).orElse(null)
+                : conversationService.findThread(threadId).orElse(null);
+        if (turn == null || thread == null || expectedApproval == null
+                || !turn.threadId().equals(threadId)
+                || !conversationService.transitionPreExecutionToRunning(turn, TurnStatus.WAITING_APPROVAL)) {
+            throw unavailableApproval(threadId);
+        }
+        InterruptionMetadata claimed = pendingApprovals.claim(threadId, expectedApproval);
+        if (claimed == null) {
+            conversationService.failTurnIfRunning(turn, "resume_submission_failed");
+            throw unavailableApproval(threadId);
+        }
+        return new PreparedResume(thread, turn, claimed);
+    }
+
+    private BusinessIdentityScope resolveScope(WebSocketSession session) {
+        if (businessIdentityScopeService == null) {
+            return BusinessIdentityScope.UNSCOPED;
+        }
+        try {
+            return businessIdentityScopeService.resolve(session);
+        } catch (IllegalStateException failure) {
+            throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "当前业务身份已失效");
+        }
+    }
+
+    private JsonRpcException unavailableApproval(String threadId) {
+        return new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "没有可恢复的待审批请求: " + threadId);
+    }
+
+    private record PreparedResume(Thread thread, Turn turn, InterruptionMetadata original) {
     }
 
     /**
@@ -261,7 +322,20 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
         }
     }
 
-    private void resolveApprovalIfPossible(String threadId, String turnId, String decision,
+    private void validateAlwaysDecision(String decision, String requestedScope) {
+        if (!"always".equalsIgnoreCase(decision)) {
+            return;
+        }
+        if (approvalRuleService == null) {
+            throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "当前后端未启用 always 审批规则");
+        }
+        String effectiveScope = requestedScope == null ? ApprovalRuleService.SCOPE_SESSION : requestedScope;
+        if (!ApprovalRuleService.SCOPE_SESSION.equalsIgnoreCase(effectiveScope)) {
+            throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "always 审批只支持 session scope");
+        }
+    }
+
+    private void resolveApprovalIfPossible(String threadId, String turnId, String canonicalDecision,
                                            String scope, String editedArgs) {
         if (approvalPersistenceService == null) {
             return;
@@ -269,7 +343,7 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
         approvalPersistenceService.resolvePending(
                 threadId,
                 turnId,
-                canonicalDecision(decision),
+                canonicalDecision,
                 scope,
                 editedArgs,
                 java.time.Instant.now());
@@ -281,13 +355,22 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
      * <p>用户在审批弹窗停留期间可能又去设置页切换权限；恢复时必须沿用原 turn 的快照，
      * 否则同一轮工具执行会在审批前后使用两套不同策略。</p>
      */
-    private AgentRunPolicy runPolicyForTurn(String turnId) {
+    private AgentRunPolicy runPolicyForTurn(String turnId, BusinessIdentityScope scope) {
         if (turnPersistenceService == null) {
             return AgentRunPolicy.fromDefaults(agentLoopProperties);
         }
-        return turnPersistenceService.findTurn(turnId)
+        return (scope.scoped() ? turnPersistenceService.findTurn(turnId, scope) : turnPersistenceService.findTurn(turnId))
                 .map(this::runPolicyFromEntity)
                 .orElseGet(() -> AgentRunPolicy.fromDefaults(agentLoopProperties));
+    }
+
+    /** 审批尚未消费前把策略读取异常收口为稳定协议错误，避免底层路径或 SQL 信息外泄。 */
+    private AgentRunPolicy prepareRunPolicy(String turnId, BusinessIdentityScope scope) {
+        try {
+            return runPolicyForTurn(turnId, scope);
+        } catch (RuntimeException failure) {
+            throw new JsonRpcException(JsonRpcErrorCode.INTERNAL_ERROR, "审批恢复准备失败");
+        }
     }
 
     private AgentRunPolicy runPolicyFromEntity(TurnEntity entity) {

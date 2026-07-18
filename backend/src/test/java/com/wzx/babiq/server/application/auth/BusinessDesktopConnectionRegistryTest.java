@@ -3,6 +3,9 @@ package com.wzx.babiq.server.application.auth;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wzx.babiq.server.api.JsonRpcDispatcher;
 import com.wzx.babiq.server.api.JsonRpcWebSocketHandler;
+import com.wzx.babiq.server.application.action.ApplicationOutboundRequestTracker;
+import com.wzx.babiq.server.application.action.PendingApplicationActions;
+import com.wzx.babiq.server.application.action.ApplicationOutboundJsonRpcClient;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.ObjectProvider;
@@ -24,6 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.when;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -101,6 +105,102 @@ class BusinessDesktopConnectionRegistryTest {
         assertThat(registry.findByDesktopSessionId(SESSION_ID)).contains(newer);
         assertThat(registry.release(newReservation, "ws-new")).isTrue();
         assertThat(registry.findByDesktopSessionId(SESSION_ID)).isEmpty();
+    }
+
+    @Test
+    void releaseNotifiesEveryCloseListenerOnceAndIsIdempotentWhenOneFails() {
+        BusinessDesktopConnectionRegistry registry = new BusinessDesktopConnectionRegistry();
+        java.util.concurrent.atomic.AtomicInteger first = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicInteger second = new java.util.concurrent.atomic.AtomicInteger();
+        registry.addCloseListener((connection, reason) -> {
+            first.incrementAndGet();
+            throw new IllegalStateException("first close listener failed");
+        });
+        registry.addCloseListener((connection, reason) -> second.incrementAndGet());
+        String reservation = registry.reserve(INSTANCE_ID, SESSION_ID);
+        registry.finalizeReservation(reservation, INSTANCE_ID, SESSION_ID, "ws-once");
+
+        assertThat(registry.release(reservation, "ws-once")).isTrue();
+        assertThat(registry.release(reservation, "ws-once")).isFalse();
+
+        assertThat(first).hasValue(1);
+        assertThat(second).hasValue(1);
+        assertThat(registry.findByDesktopSessionId(SESSION_ID)).isEmpty();
+    }
+
+    @Test
+    void closeListenerFailureLogDoesNotLeakExceptionMessage(CapturedOutput output) {
+        String secret = "secret-tenant-SQL-E:/private/case.db";
+        BusinessDesktopConnectionRegistry registry = new BusinessDesktopConnectionRegistry();
+        registry.addCloseListener((connection, reason) -> {
+            throw new IllegalStateException(secret);
+        });
+        String reservation = registry.reserve(INSTANCE_ID, SESSION_ID);
+        registry.finalizeReservation(reservation, INSTANCE_ID, SESSION_ID, "ws-safe-log");
+
+        assertThat(registry.release(reservation, "ws-safe-log")).isTrue();
+
+        assertThat(output).contains("IllegalStateException");
+        assertThat(output).doesNotContain(secret, "secret-tenant", "private/case.db");
+    }
+
+    @Test
+    void handlerUsesRegistryReleaseAsTheOnlyBusinessCloseLifecyclePath() {
+        BusinessDesktopConnectionRegistry connectionRegistry = new BusinessDesktopConnectionRegistry();
+        String reservation = connectionRegistry.reserve(INSTANCE_ID, SESSION_ID);
+        connectionRegistry.finalizeReservation(reservation, INSTANCE_ID, SESSION_ID, "ws-close-once");
+        ApplicationOutboundRequestTracker outbound = mock(ApplicationOutboundRequestTracker.class);
+        PendingApplicationActions pending = mock(PendingApplicationActions.class);
+        WebSocketSession session = mock(WebSocketSession.class);
+        when(session.getId()).thenReturn("ws-close-once");
+        when(session.getAttributes()).thenReturn(Map.of(
+                BusinessDesktopHandshakeInterceptor.RESERVATION_ID_ATTRIBUTE, reservation));
+        ObjectProvider<BusinessDesktopConnectionRegistry> connectionsProvider = mock(ObjectProvider.class);
+        ObjectProvider<ApplicationOutboundRequestTracker> outboundProvider = mock(ObjectProvider.class);
+        ObjectProvider<PendingApplicationActions> pendingProvider = mock(ObjectProvider.class);
+        when(connectionsProvider.getIfAvailable()).thenReturn(connectionRegistry);
+        when(outboundProvider.getIfAvailable()).thenReturn(outbound);
+        when(pendingProvider.getIfAvailable()).thenReturn(pending);
+        connectionRegistry.addCloseListener((connection, reason) -> {
+            outbound.closePending(connection.webSocketSessionId(), new java.io.IOException(reason));
+            pending.onConnectionClosed(connection.webSocketSessionId(), reason);
+        });
+        JsonRpcWebSocketHandler handler = new JsonRpcWebSocketHandler(
+                mock(JsonRpcDispatcher.class), new ObjectMapper(), connectionsProvider,
+                outboundProvider, pendingProvider);
+
+        handler.afterConnectionClosed(session, CloseStatus.NORMAL);
+        handler.afterConnectionClosed(session, CloseStatus.NORMAL);
+
+        verify(outbound, times(1)).closePending(eq("ws-close-once"), any(java.io.IOException.class));
+        verify(pending, times(1)).onConnectionClosed("ws-close-once", "business desktop WebSocket closed");
+    }
+
+    @Test
+    void handlerAlwaysUnregistersOutboundSessionWhenReleaseCleanupFails() {
+        BusinessDesktopConnectionRegistry connectionRegistry = new BusinessDesktopConnectionRegistry();
+        String reservation = connectionRegistry.reserve(INSTANCE_ID, SESSION_ID);
+        connectionRegistry.finalizeReservation(reservation, INSTANCE_ID, SESSION_ID, "ws-finally");
+        connectionRegistry.addCloseListener((connection, reason) -> {
+            throw new IllegalStateException("cleanup failed");
+        });
+        ApplicationOutboundJsonRpcClient outboundClient = mock(ApplicationOutboundJsonRpcClient.class);
+        WebSocketSession session = mock(WebSocketSession.class);
+        when(session.getId()).thenReturn("ws-finally");
+        when(session.getAttributes()).thenReturn(Map.of(
+                BusinessDesktopHandshakeInterceptor.RESERVATION_ID_ATTRIBUTE, reservation));
+        ObjectProvider<BusinessDesktopConnectionRegistry> connectionsProvider = mock(ObjectProvider.class);
+        ObjectProvider<ApplicationOutboundJsonRpcClient> clientProvider = mock(ObjectProvider.class);
+        when(connectionsProvider.getIfAvailable()).thenReturn(connectionRegistry);
+        when(clientProvider.getIfAvailable()).thenReturn(outboundClient);
+        JsonRpcWebSocketHandler handler = new JsonRpcWebSocketHandler(
+                mock(JsonRpcDispatcher.class), new ObjectMapper(), connectionsProvider,
+                mock(ObjectProvider.class), mock(ObjectProvider.class), clientProvider);
+
+        handler.afterConnectionClosed(session, CloseStatus.NORMAL);
+
+        verify(outboundClient).unregisterSession("ws-finally", session);
+        assertThat(connectionRegistry.findByDesktopSessionId(SESSION_ID)).isEmpty();
     }
 
     @Test

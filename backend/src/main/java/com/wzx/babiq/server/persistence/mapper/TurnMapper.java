@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.wzx.babiq.server.persistence.entity.TurnEntity;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 import java.util.List;
 import java.util.Map;
@@ -14,6 +15,127 @@ import java.util.Map;
  * <p>后续恢复未完成 turn、查询运行记录时都会从这里出发，但具体查询组合由 service 封装。</p>
  */
 public interface TurnMapper extends BaseMapper<TurnEntity> {
+
+    @Update("""
+            UPDATE bq_turns
+               SET status = 'RUNNING'
+             WHERE turn_id = #{turnId}
+               AND desktop_instance_id = #{desktopInstanceId}
+               AND desktop_session_id = #{desktopSessionId}
+               AND auth_session_id = #{authSessionId}
+               AND identity_epoch = #{identityEpoch}
+               AND user_id = #{userId}
+               AND tenant_id = #{tenantId}
+               AND platform_id = #{platformId}
+               AND status = #{expectedStatus}
+            """)
+    int transitionPreExecutionToRunningIfCurrent(
+            @Param("turnId") String turnId,
+            @Param("desktopInstanceId") String desktopInstanceId,
+            @Param("desktopSessionId") String desktopSessionId,
+            @Param("authSessionId") String authSessionId,
+            @Param("identityEpoch") long identityEpoch,
+            @Param("userId") String userId,
+            @Param("tenantId") String tenantId,
+            @Param("platformId") String platformId,
+            @Param("expectedStatus") String expectedStatus);
+
+    @Update("""
+            UPDATE bq_turns
+               SET status = 'FAILED', failure_reason = #{reason}, completed_at = #{completedAt}
+             WHERE turn_id = #{turnId}
+               AND desktop_instance_id = #{desktopInstanceId}
+               AND desktop_session_id = #{desktopSessionId}
+               AND auth_session_id = #{authSessionId}
+               AND identity_epoch = #{identityEpoch}
+               AND user_id = #{userId}
+               AND tenant_id = #{tenantId}
+               AND platform_id = #{platformId}
+               AND status = 'RUNNING'
+            """)
+    int failScopedRunningIfCurrent(
+            @Param("turnId") String turnId,
+            @Param("desktopInstanceId") String desktopInstanceId,
+            @Param("desktopSessionId") String desktopSessionId,
+            @Param("authSessionId") String authSessionId,
+            @Param("identityEpoch") long identityEpoch,
+            @Param("userId") String userId,
+            @Param("tenantId") String tenantId,
+            @Param("platformId") String platformId,
+            @Param("reason") String reason,
+            @Param("completedAt") String completedAt);
+
+    @Update("""
+            UPDATE bq_turns
+               SET status = 'FAILED', failure_reason = #{reason}, completed_at = #{completedAt}
+             WHERE turn_id = #{turnId}
+               AND desktop_instance_id IS NULL
+               AND status = 'RUNNING'
+            """)
+    int failUnscopedRunningIfCurrent(
+            @Param("turnId") String turnId,
+            @Param("reason") String reason,
+            @Param("completedAt") String completedAt);
+
+    @Update("""
+            UPDATE bq_turns
+               SET status = 'COMPLETED', completed_at = #{completedAt}
+             WHERE turn_id = #{turnId}
+               AND desktop_instance_id = #{desktopInstanceId}
+               AND desktop_session_id = #{desktopSessionId}
+               AND auth_session_id = #{authSessionId}
+               AND identity_epoch = #{identityEpoch}
+               AND user_id = #{userId}
+               AND tenant_id = #{tenantId}
+               AND platform_id = #{platformId}
+               AND status = 'RUNNING'
+            """)
+    int completeScopedRunningIfCurrent(
+            @Param("turnId") String turnId,
+            @Param("desktopInstanceId") String desktopInstanceId,
+            @Param("desktopSessionId") String desktopSessionId,
+            @Param("authSessionId") String authSessionId,
+            @Param("identityEpoch") long identityEpoch,
+            @Param("userId") String userId,
+            @Param("tenantId") String tenantId,
+            @Param("platformId") String platformId,
+            @Param("completedAt") String completedAt);
+
+    @Update("""
+            UPDATE bq_turns
+               SET status = 'COMPLETED', completed_at = #{completedAt}
+             WHERE turn_id = #{turnId}
+               AND desktop_instance_id IS NULL
+               AND status = 'RUNNING'
+            """)
+    int completeUnscopedRunningIfCurrent(
+            @Param("turnId") String turnId,
+            @Param("completedAt") String completedAt);
+
+    @Update("""
+            UPDATE bq_turns
+               SET status = 'EXPIRED', failure_reason = #{reason}, completed_at = #{completedAt}
+             WHERE turn_id = #{turnId}
+               AND desktop_instance_id = #{desktopInstanceId}
+               AND desktop_session_id = #{desktopSessionId}
+               AND auth_session_id = #{authSessionId}
+               AND identity_epoch = #{identityEpoch}
+               AND user_id = #{userId}
+               AND tenant_id = #{tenantId}
+               AND platform_id = #{platformId}
+               AND status IN ('CREATED', 'WAITING_APPROVAL')
+            """)
+    int expirePreExecutionIfCurrent(
+            @Param("turnId") String turnId,
+            @Param("desktopInstanceId") String desktopInstanceId,
+            @Param("desktopSessionId") String desktopSessionId,
+            @Param("authSessionId") String authSessionId,
+            @Param("identityEpoch") long identityEpoch,
+            @Param("userId") String userId,
+            @Param("tenantId") String tenantId,
+            @Param("platformId") String platformId,
+            @Param("reason") String reason,
+            @Param("completedAt") String completedAt);
 
     /**
      * 聚合统计窗口内的 turn 总量、失败数和 token。

@@ -6,11 +6,15 @@ import org.springframework.stereotype.Component;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * 以真实 WebSocket session 为键保存业务桌面身份及严格递增的 identity epoch。
@@ -22,27 +26,29 @@ import java.util.Optional;
 @ConditionalOnProperty(prefix = "babiq.business", name = "enabled", havingValue = "true")
 public class ApplicationIdentityRegistry {
 
-    private static final IdentityChangeListener NOOP_LISTENER = (connection, oldIdentity, newIdentity) -> {
-    };
+    private static final Logger log = LoggerFactory.getLogger(ApplicationIdentityRegistry.class);
 
     private final Map<String, ConnectionIdentityState> states = new HashMap<>();
-    private final IdentityChangeListener changeListener;
+    private final CopyOnWriteArrayList<IdentityChangeListener> changeListeners = new CopyOnWriteArrayList<>();
 
     /** 无 Spring 容器的测试和直接调用使用无副作用 listener。 */
     public ApplicationIdentityRegistry() {
-        this(NOOP_LISTENER);
     }
 
     /** Spring 生产构造器按顺序组合所有身份变化 listener，供后续工作失效链路接入。 */
     @Autowired
     public ApplicationIdentityRegistry(ObjectProvider<IdentityChangeListener> listenerProvider) {
-        this(listenerProvider.orderedStream()
-                .reduce(NOOP_LISTENER, ApplicationIdentityRegistry::compose));
+        changeListeners.addAll(listenerProvider.orderedStream().toList());
     }
 
     /** 测试或组合根可注入身份变更回调，用于使尚未执行的工作失效。 */
     public ApplicationIdentityRegistry(IdentityChangeListener changeListener) {
-        this.changeListener = Objects.requireNonNull(changeListener, "changeListener");
+        changeListeners.add(Objects.requireNonNull(changeListener, "changeListener"));
+    }
+
+    /** coordinator 构造完成后显式追加 listener，回调仍在 Registry 锁外执行。 */
+    public synchronized void addChangeListener(IdentityChangeListener listener) {
+        changeListeners.add(Objects.requireNonNull(listener, "listener"));
     }
 
     /** 首次绑定必须是已登录身份；成功 bind 不触发身份变更回调。 */
@@ -60,7 +66,7 @@ public class ApplicationIdentityRegistry {
 
         TrustedBusinessIdentity identity = trustedIdentity(connection, message);
         states.put(connection.webSocketSessionId(),
-                new ConnectionIdentityState(connection, message.identityEpoch(), identity, false));
+                new ConnectionIdentityState(connection, message.identityEpoch(), identity, false, true));
         return identity;
     }
 
@@ -75,10 +81,11 @@ public class ApplicationIdentityRegistry {
     }
 
     /**
-     * 在身份切换期间先 fail-closed，再执行失效回调和旧作用域清理，最后原子发布新身份。
+     * 在身份切换期间先 fail-closed，完成本地快照清理后提交新身份，再执行外部失效回调。
      *
-     * <p>listener 不持 registry 或 connection 锁；cleanup 在 connection 锁内执行，
-     * 与目录/上下文 handler 共用同一互斥边界。任一步失败都会恢复旧身份和 epoch。</p>
+     * <p>新身份提交后供 listener 通过 current() 读取，但 post-bind 访问仍保持关闭；
+     * listener 不持 registry 或 connection 锁，全部完成后才开放新身份请求。
+     * cleanup 在提交前失败会恢复旧身份，listener 失败只记录日志且不回滚提交。</p>
      */
     public Optional<TrustedBusinessIdentity> update(
             TrustedDesktopConnection connection,
@@ -101,14 +108,13 @@ public class ApplicationIdentityRegistry {
                 }
                 next = message.authenticated() ? trustedIdentity(connection, message) : null;
                 transition = new ConnectionIdentityState(
-                        connection, current.identityEpoch(), current.identity(), true);
+                        connection, current.identityEpoch(), current.identity(), true, false);
                 states.put(connection.webSocketSessionId(), transition);
             }
         }
 
         try {
             // 外部 listener 不持任何内部锁，transitioning 状态让所有读取方 fail-closed。
-            changeListener.onIdentityChanged(connection, current.identity(), next);
             synchronized (connection) {
                 beforeCommitCleanup.run();
                 synchronized (this) {
@@ -117,14 +123,19 @@ public class ApplicationIdentityRegistry {
                         throw new IllegalStateException("Identity changed concurrently during update");
                     }
                     states.put(connection.webSocketSessionId(),
-                            new ConnectionIdentityState(connection, message.identityEpoch(), next, false));
+                            new ConnectionIdentityState(connection, message.identityEpoch(), next, true, true));
                 }
             }
-            return Optional.ofNullable(next);
         } catch (RuntimeException | Error exception) {
             rollbackTransition(connection, transition, current);
             throw exception;
         }
+        try {
+            notifyIdentityChanged(connection, current.identity(), next);
+        } finally {
+            finishTransition(connection, message.identityEpoch(), next);
+        }
+        return Optional.ofNullable(next);
     }
 
     /** 返回指定 WebSocket 当前已认证身份；登出和未知连接均为空。 */
@@ -138,7 +149,7 @@ public class ApplicationIdentityRegistry {
     /** 仅在连接记录完全匹配时返回身份，避免复用 session id 的陈旧连接读取状态。 */
     public synchronized Optional<TrustedBusinessIdentity> current(TrustedDesktopConnection connection) {
         ConnectionIdentityState state = states.get(connection.webSocketSessionId());
-        if (state == null || state.transitioning() || !state.connection().equals(connection)) {
+        if (state == null || !state.committed() || !state.connection().equals(connection)) {
             return Optional.empty();
         }
         return Optional.ofNullable(state.identity());
@@ -178,6 +189,27 @@ public class ApplicationIdentityRegistry {
         }
     }
 
+    /** after-commit listener 全部结束后才开放 post-bind 业务请求。 */
+    private void finishTransition(
+            TrustedDesktopConnection connection,
+            long identityEpoch,
+            TrustedBusinessIdentity identity) {
+        synchronized (connection) {
+            synchronized (this) {
+                ConnectionIdentityState current = states.get(connection.webSocketSessionId());
+                if (current != null
+                        && current.connection().equals(connection)
+                        && current.transitioning()
+                        && current.committed()
+                        && current.identityEpoch() == identityEpoch
+                        && Objects.equals(current.identity(), identity)) {
+                    states.put(connection.webSocketSessionId(),
+                            new ConnectionIdentityState(connection, identityEpoch, identity, false, true));
+                }
+            }
+        }
+    }
+
     private void validateConnectionScope(
             TrustedDesktopConnection connection,
             ApplicationIdentityMessage message) {
@@ -206,20 +238,26 @@ public class ApplicationIdentityRegistry {
                 message.permissions());
     }
 
-    private static IdentityChangeListener compose(
-            IdentityChangeListener first,
-            IdentityChangeListener second) {
-        return (connection, oldIdentity, newIdentity) -> {
-            first.onIdentityChanged(connection, oldIdentity, newIdentity);
-            second.onIdentityChanged(connection, oldIdentity, newIdentity);
-        };
+    private void notifyIdentityChanged(
+            TrustedDesktopConnection connection,
+            TrustedBusinessIdentity oldIdentity,
+            TrustedBusinessIdentity newIdentity) {
+        for (IdentityChangeListener listener : List.copyOf(changeListeners)) {
+            try {
+                listener.onIdentityChanged(connection, oldIdentity, newIdentity);
+            } catch (RuntimeException failure) {
+                log.warn("Application identity listener failed: listenerType={}, reasonType={}",
+                        listener.getClass().getName(), failure.getClass().getSimpleName());
+            }
+        }
     }
 
     private record ConnectionIdentityState(
             TrustedDesktopConnection connection,
             long identityEpoch,
             TrustedBusinessIdentity identity,
-            boolean transitioning) {
+            boolean transitioning,
+            boolean committed) {
     }
 
     /** 身份成功更新后的失效通知；newIdentity 为 null 表示已登出。 */

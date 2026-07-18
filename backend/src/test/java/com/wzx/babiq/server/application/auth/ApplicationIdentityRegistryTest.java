@@ -2,7 +2,10 @@ package com.wzx.babiq.server.application.auth;
 
 import com.wzx.babiq.server.application.protocol.ApplicationIdentityMessage;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -18,6 +21,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /** 验证桌面握手连接上的可信业务身份只能按严格递增 epoch 安装。 */
+@ExtendWith(OutputCaptureExtension.class)
 class ApplicationIdentityRegistryTest {
 
     private final TrustedDesktopConnection connection = new TrustedDesktopConnection(
@@ -145,14 +149,12 @@ class ApplicationIdentityRegistryTest {
     }
 
     @Test
-    void listenerRunsBeforeCommitAndMayReenterCurrentWithoutObservingThePreparedIdentity() {
+    void listenerRunsAfterCommitAndMayReenterCurrentWithTheNewIdentity() {
         AtomicReference<ApplicationIdentityRegistry> registryRef = new AtomicReference<>();
-        AtomicBoolean callbackSawTransitionClosed = new AtomicBoolean();
+        AtomicReference<TrustedBusinessIdentity> callbackIdentity = new AtomicReference<>();
         ApplicationIdentityRegistry registry = new ApplicationIdentityRegistry(
-                (trustedConnection, oldIdentity, newIdentity) -> callbackSawTransitionClosed.set(
-                        registryRef.get().current(trustedConnection).isEmpty()
-                                && registryRef.get().find(trustedConnection.webSocketSessionId()).isEmpty()
-                                && !registryRef.get().isAuthenticated(trustedConnection.webSocketSessionId())));
+                (trustedConnection, oldIdentity, newIdentity) -> callbackIdentity.set(
+                        registryRef.get().current(trustedConnection).orElseThrow()));
         registryRef.set(registry);
         TrustedBusinessIdentity original = registry.bind(connection,
                 identity(8, true, "auth-session-1", "user-1", "tenant-1", "platform-1"));
@@ -161,12 +163,12 @@ class ApplicationIdentityRegistryTest {
                         identity(9, true, "auth-session-2", "user-2", "tenant-2", "platform-2"))
                 .orElseThrow();
 
-        assertThat(callbackSawTransitionClosed).isTrue();
+        assertThat(callbackIdentity).hasValue(updated);
         assertThat(registry.current(connection)).contains(updated);
     }
 
     @Test
-    void listenerFailureKeepsOldStateAndTheSameHigherEpochCanBeRetried() {
+    void listenerFailureDoesNotRollbackTheCommittedIdentity() {
         AtomicBoolean failNext = new AtomicBoolean(true);
         ApplicationIdentityRegistry registry = new ApplicationIdentityRegistry(
                 (trustedConnection, oldIdentity, newIdentity) -> {
@@ -174,19 +176,56 @@ class ApplicationIdentityRegistryTest {
                         throw new IllegalStateException("listener failure secret");
                     }
                 });
-        TrustedBusinessIdentity original = registry.bind(connection,
+        registry.bind(connection,
                 identity(8, true, "auth-session-1", "user-1", "tenant-1", "platform-1"));
 
-        assertThatThrownBy(() -> registry.update(connection,
-                identity(9, true, "auth-session-2", "user-2", "tenant-2", "platform-2")))
-                .isInstanceOf(IllegalStateException.class);
-        assertThat(registry.current(connection)).contains(original);
-
-        TrustedBusinessIdentity retried = registry.update(connection,
+        TrustedBusinessIdentity updated = registry.update(connection,
                         identity(9, true, "auth-session-2", "user-2", "tenant-2", "platform-2"))
                 .orElseThrow();
-        assertThat(retried.identityEpoch()).isEqualTo(9);
-        assertThat(registry.current(connection)).contains(retried);
+
+        assertThat(updated.identityEpoch()).isEqualTo(9);
+        assertThat(registry.current(connection)).contains(updated);
+        assertThat(registry.isAuthenticated("websocket-1")).isTrue();
+        assertThatThrownBy(() -> registry.update(connection,
+                identity(9, true, "auth-session-2", "user-2", "tenant-2", "platform-2")))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void oneFailingListenerDoesNotPreventLaterListeners() {
+        List<String> calls = new ArrayList<>();
+        ApplicationIdentityRegistry registry = new ApplicationIdentityRegistry(
+                (trustedConnection, oldIdentity, newIdentity) -> {
+                    calls.add("first");
+                    throw new IllegalStateException("first listener failed");
+                });
+        registry.addChangeListener((trustedConnection, oldIdentity, newIdentity) -> calls.add("second"));
+        registry.bind(connection,
+                identity(8, true, "auth-session-1", "user-1", "tenant-1", "platform-1"));
+
+        TrustedBusinessIdentity updated = registry.update(connection,
+                        identity(9, true, "auth-session-2", "user-2", "tenant-2", "platform-2"))
+                .orElseThrow();
+
+        assertThat(calls).containsExactly("first", "second");
+        assertThat(registry.current(connection)).contains(updated);
+    }
+
+    @Test
+    void listenerFailureLogDoesNotLeakExceptionMessage(CapturedOutput output) {
+        String secret = "secret-tenant-SQL-E:/private/case.db";
+        ApplicationIdentityRegistry registry = new ApplicationIdentityRegistry(
+                (trustedConnection, oldIdentity, newIdentity) -> {
+                    throw new IllegalStateException(secret);
+                });
+        registry.bind(connection,
+                identity(8, true, "auth-session-1", "user-1", "tenant-1", "platform-1"));
+
+        registry.update(connection,
+                identity(9, true, "auth-session-2", "user-2", "tenant-2", "platform-2"));
+
+        assertThat(output).contains("IllegalStateException");
+        assertThat(output).doesNotContain(secret, "secret-tenant", "private/case.db");
     }
 
     @Test
@@ -210,15 +249,13 @@ class ApplicationIdentityRegistryTest {
     }
 
     @Test
-    void transitionIsFailClosedDuringCallbackAndCleanupThenPublishesTheNewIdentity() {
+    void transitionIsFailClosedDuringCleanupThenPublishesBeforeCallback() {
         AtomicReference<ApplicationIdentityRegistry> registryRef = new AtomicReference<>();
-        AtomicBoolean callbackSawClosedIdentity = new AtomicBoolean();
+        AtomicReference<TrustedBusinessIdentity> callbackIdentity = new AtomicReference<>();
         AtomicBoolean cleanupSawClosedIdentity = new AtomicBoolean();
         ApplicationIdentityRegistry registry = new ApplicationIdentityRegistry(
-                (trustedConnection, oldIdentity, newIdentity) -> callbackSawClosedIdentity.set(
-                        registryRef.get().find(trustedConnection.webSocketSessionId()).isEmpty()
-                                && registryRef.get().current(trustedConnection).isEmpty()
-                                && !registryRef.get().isAuthenticated(trustedConnection.webSocketSessionId())));
+                (trustedConnection, oldIdentity, newIdentity) -> callbackIdentity.set(
+                        registryRef.get().current(trustedConnection).orElseThrow()));
         registryRef.set(registry);
         registry.bind(connection,
                 identity(8, true, "auth-session-1", "user-1", "tenant-1", "platform-1"));
@@ -232,8 +269,8 @@ class ApplicationIdentityRegistryTest {
                                         && !registry.isAuthenticated("websocket-1")))
                 .orElseThrow();
 
-        assertThat(callbackSawClosedIdentity).isTrue();
         assertThat(cleanupSawClosedIdentity).isTrue();
+        assertThat(callbackIdentity).hasValue(updated);
         assertThat(registry.current(connection)).contains(updated);
         assertThat(registry.isAuthenticated("websocket-1")).isTrue();
     }

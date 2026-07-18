@@ -188,6 +188,13 @@ public class ItemEmitter {
         sendNotification("turn/completed", params);
     }
 
+    /** 终态已由调用方持久化时，仅发布完成通知，避免重复写库。 */
+    public void emitPersistedTurnCompleted(String status) throws IOException {
+        Map<String, Object> params = baseParams();
+        params.put("status", status);
+        sendNotification("turn/completed", params);
+    }
+
     /**
      * 发射 turn/failed 通知。
      *

@@ -5,6 +5,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 线程级审批缓存。
@@ -43,6 +44,30 @@ public final class PendingApprovals {
      */
     public InterruptionMetadata peek(String threadId) {
         return pendingByThread.get(threadId);
+    }
+
+    /** 仅当缓存仍是调用方预检到的同一份元数据时才原子消费。 */
+    public InterruptionMetadata claim(String threadId, InterruptionMetadata expected) {
+        if (threadId == null || expected == null) {
+            return null;
+        }
+        AtomicReference<InterruptionMetadata> claimed = new AtomicReference<>();
+        pendingByThread.computeIfPresent(threadId, (ignored, current) -> {
+            if (current != expected) {
+                return current;
+            }
+            claimed.set(current);
+            return null;
+        });
+        return claimed.get();
+    }
+
+    /** 仅当缓存仍指向指定审批对象时删除，避免旧响应清理后续 replacement。 */
+    public boolean removeExact(String threadId, InterruptionMetadata expected) {
+        if (threadId == null || expected == null) {
+            return false;
+        }
+        return pendingByThread.remove(threadId, expected);
     }
 
     /**

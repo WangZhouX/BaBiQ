@@ -269,25 +269,29 @@ public final class PendingApplicationActions implements AutoCloseable {
             PendingApplicationAction.Correlation correlation,
             PendingApplicationAction.ConnectionContext connectionContext,
             String reason) {
-        Entry entry = pending.get(executionId);
-        if (entry == null) {
-            return terminalStore.findTerminal(executionId, correlation, connectionContext)
-                    .map(CompletableFuture::completedFuture)
-                    .orElseGet(() -> CompletableFuture.failedFuture(
-                            new IllegalStateException("application action is no longer pending")));
-        }
-        synchronized (entry) {
-            if (pending.get(executionId) != entry
-                    || !entry.matches(correlation)
-                    || !entry.authorized(connectionContext)) {
-                return CompletableFuture.failedFuture(
-                        new IllegalStateException("application action acknowledgement scope mismatch"));
+        Entry entry = indexedEntry(executionId);
+        if (entry != null) {
+            synchronized (entry) {
+                IndexOwnership ownership = indexOwnership(entry, executionId);
+                if (ownership != IndexOwnership.NONE
+                        && (!entry.matches(correlation) || !entry.authorized(connectionContext))) {
+                    return CompletableFuture.failedFuture(
+                            new IllegalStateException("application action acknowledgement scope mismatch"));
+                }
+                if (ownership == IndexOwnership.COMPLETED) {
+                    return entry.terminal;
+                }
+                if (ownership == IndexOwnership.PENDING) {
+                    entry.acknowledgementUncertain = true;
+                    entry.cancelTimeout();
+                    reconcileUncertain(entry, reason);
+                    return entry.terminal;
+                }
             }
-            entry.acknowledgementUncertain = true;
-            entry.cancelTimeout();
-            reconcileUncertain(entry, reason);
-            return entry.terminal;
         }
+        return completedOrStoredTerminal(executionId, correlation, connectionContext)
+                .orElseGet(() -> CompletableFuture.failedFuture(
+                        new IllegalStateException("application action is no longer pending")));
     }
 
     /** A correlated negative ACK proves the request was rejected before execution uncertainty began. */
@@ -297,33 +301,39 @@ public final class PendingApplicationActions implements AutoCloseable {
             PendingApplicationAction.ConnectionContext connectionContext,
             String errorCode,
             String reason) {
-        Entry entry = pending.get(executionId);
-        if (entry == null) {
-            return terminalStore.findTerminal(executionId, correlation, connectionContext)
-                    .map(CompletableFuture::completedFuture)
-                    .orElseGet(() -> CompletableFuture.failedFuture(
-                            new IllegalStateException("application action is no longer pending")));
-        }
-        TerminalPublication publication;
-        synchronized (entry) {
-            if (pending.get(executionId) != entry
-                    || !entry.matches(correlation)
-                    || !entry.authorized(connectionContext)) {
-                return CompletableFuture.failedFuture(
-                        new IllegalStateException("application action rejection scope mismatch"));
+        TerminalPublication publication = null;
+        Entry entry = indexedEntry(executionId);
+        if (entry != null) {
+            synchronized (entry) {
+                IndexOwnership ownership = indexOwnership(entry, executionId);
+                if (ownership != IndexOwnership.NONE
+                        && (!entry.matches(correlation) || !entry.authorized(connectionContext))) {
+                    return CompletableFuture.failedFuture(
+                            new IllegalStateException("application action rejection scope mismatch"));
+                }
+                if (ownership == IndexOwnership.COMPLETED) {
+                    return entry.terminal;
+                }
+                if (ownership == IndexOwnership.PENDING) {
+                    if (entry.action.state() != PendingApplicationAction.State.REQUESTED
+                            || entry.acknowledgementUncertain) {
+                        return entry.terminal;
+                    }
+                    ObjectNode payload = com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.objectNode()
+                            .put("errorCode", stableRequestRejectionCode(errorCode));
+                    PendingApplicationAction rejected = entry.action.toTerminal(
+                            PendingApplicationAction.State.REJECTED, payload, reason, clock.instant());
+                    publication = finishLocked(entry, rejected, false, false);
+                }
             }
-            if (entry.action.state() != PendingApplicationAction.State.REQUESTED
-                    || entry.acknowledgementUncertain) {
+            if (publication != null) {
+                publishTerminal(publication);
                 return entry.terminal;
             }
-            ObjectNode payload = com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.objectNode()
-                    .put("errorCode", stableRequestRejectionCode(errorCode));
-            PendingApplicationAction rejected = entry.action.toTerminal(
-                    PendingApplicationAction.State.REJECTED, payload, reason, clock.instant());
-            publication = finishLocked(entry, rejected, false, false);
         }
-        publishTerminal(publication);
-        return entry.terminal;
+        return completedOrStoredTerminal(executionId, correlation, connectionContext)
+                .orElseGet(() -> CompletableFuture.failedFuture(
+                        new IllegalStateException("application action is no longer pending")));
     }
 
     private static String stableRequestRejectionCode(String errorCode) {
@@ -976,6 +986,24 @@ public final class PendingApplicationActions implements AutoCloseable {
         synchronized (indexLock) {
             return completed.get(executionId);
         }
+    }
+
+    private Optional<CompletableFuture<PendingApplicationAction>> completedOrStoredTerminal(
+            String executionId,
+            PendingApplicationAction.Correlation correlation,
+            PendingApplicationAction.ConnectionContext connectionContext) {
+        Entry completedEntry = completedEntry(executionId);
+        if (completedEntry != null) {
+            synchronized (completedEntry) {
+                if (indexOwnership(completedEntry, executionId) == IndexOwnership.COMPLETED
+                        && completedEntry.matches(correlation)
+                        && completedEntry.authorized(connectionContext)) {
+                    return Optional.of(completedEntry.terminal);
+                }
+            }
+        }
+        return findTerminalForStateMachine(executionId, correlation, connectionContext)
+                .map(CompletableFuture::completedFuture);
     }
 
     private Entry indexedEntry(String executionId) {

@@ -57,7 +57,7 @@ public enum TurnStatus {
 
         // 状态机转移表集中写在 enum 中,避免 Turn 对象散落复杂 if-else。
         return switch (this) {
-            case CREATED -> target == RUNNING || target == CANCELED;
+            case CREATED -> target == RUNNING || target == CANCELED || target == EXPIRED;
             case RUNNING -> target == WAITING_APPROVAL
                     || target == COMPLETED
                     || target == FAILED

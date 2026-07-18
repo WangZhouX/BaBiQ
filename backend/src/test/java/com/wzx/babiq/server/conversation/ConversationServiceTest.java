@@ -12,6 +12,8 @@ import org.junit.jupiter.api.Test;
 import java.time.Instant;
 
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -100,6 +102,46 @@ class ConversationServiceTest {
     }
 
     @Test
+    void identityChangeExpiresOnlyExactScopePreExecutionTurnsAndLeavesRunningTurnUntouched() {
+        TurnPersistenceService persistence = mock(TurnPersistenceService.class);
+        ConversationService service = new ConversationService(null, persistence, null, null);
+        BusinessIdentityScope oldScope = BusinessIdentityScope.scoped(
+                "desktop", "desktop-session", "auth-old", 3, "user-old", "tenant-old", "platform");
+        BusinessIdentityScope newScope = BusinessIdentityScope.scoped(
+                "desktop", "desktop-session", "auth-new", 4, "user-new", "tenant-new", "platform");
+        Thread oldThread = service.createThread("C:/business", oldScope);
+        Turn created = service.startTurn(oldThread.id(), oldScope);
+        Turn waiting = service.startTurn(oldThread.id(), oldScope);
+        waiting.start();
+        waiting.waitApproval();
+        Turn running = service.startTurn(oldThread.id(), oldScope);
+        running.start();
+        Thread secondOldThread = service.createThread("C:/business-second", oldScope);
+        Turn secondCreated = service.startTurn(secondOldThread.id(), oldScope);
+        Thread newThread = service.createThread("C:/business", newScope);
+        Turn newCreated = service.startTurn(newThread.id(), newScope);
+        when(persistence.expirePreExecutionTurn(created.id(), oldScope, "business identity changed"))
+                .thenReturn(true);
+        when(persistence.expirePreExecutionTurn(waiting.id(), oldScope, "business identity changed"))
+                .thenReturn(true);
+        when(persistence.expirePreExecutionTurn(secondCreated.id(), oldScope, "business identity changed"))
+                .thenReturn(true);
+
+        assertThat(service.expirePreExecutionTurns(oldScope, "business identity changed"))
+                .containsExactlyInAnyOrder(oldThread.id(), secondOldThread.id());
+
+        assertThat(created.status()).isEqualTo(TurnStatus.EXPIRED);
+        assertThat(waiting.status()).isEqualTo(TurnStatus.EXPIRED);
+        assertThat(running.status()).isEqualTo(TurnStatus.RUNNING);
+        assertThat(secondCreated.status()).isEqualTo(TurnStatus.EXPIRED);
+        assertThat(newCreated.status()).isEqualTo(TurnStatus.CREATED);
+        verify(persistence).expirePreExecutionTurn(created.id(), oldScope, "business identity changed");
+        verify(persistence).expirePreExecutionTurn(waiting.id(), oldScope, "business identity changed");
+        verify(persistence).expirePreExecutionTurn(secondCreated.id(), oldScope, "business identity changed");
+        verify(persistence, never()).expirePreExecutionTurn(running.id(), oldScope, "business identity changed");
+    }
+
+    @Test
     void helper_methods_should_create_protocol_items_with_stable_type_tags() {
         ConversationService conversationService = new ConversationService();
 
@@ -132,6 +174,73 @@ class ConversationServiceTest {
         assertThat(item.totalTokens()).isEqualTo(150L);
         assertThat(item.toolCalls()).isEqualTo(2);
         assertThat(item.durationMs()).isEqualTo(1200L);
+    }
+
+    @Test
+    void failTurnIfRunningUpdatesPersistenceBeforeTheSameInMemoryTurn() {
+        TurnPersistenceService persistence = mock(TurnPersistenceService.class);
+        ConversationService service = new ConversationService(null, persistence, null, null);
+        BusinessIdentityScope scope = BusinessIdentityScope.scoped(
+                "desktop", "desktop-session", "auth", 3, "user", "tenant", "platform");
+        Thread thread = service.createThread("C:/business", scope);
+        Turn turn = service.startTurn(thread.id(), scope);
+        turn.start();
+        when(persistence.failRunningTurn(turn.id(), scope, "resume_submission_failed")).thenReturn(true);
+
+        assertThat(service.failTurnIfRunning(turn, "resume_submission_failed")).isTrue();
+
+        verify(persistence).failRunningTurn(turn.id(), scope, "resume_submission_failed");
+        assertThat(turn.status()).isEqualTo(TurnStatus.FAILED);
+        assertThat(turn.failureReason()).isEqualTo("resume_submission_failed");
+    }
+
+    @Test
+    void failTurnIfRunningDoesNotDivergeMemoryWhenPersistenceCasLoses() {
+        TurnPersistenceService persistence = mock(TurnPersistenceService.class);
+        ConversationService service = new ConversationService(null, persistence, null, null);
+        BusinessIdentityScope scope = BusinessIdentityScope.scoped(
+                "desktop", "desktop-session", "auth", 3, "user", "tenant", "platform");
+        Thread thread = service.createThread("C:/business", scope);
+        Turn turn = service.startTurn(thread.id(), scope);
+        turn.start();
+        when(persistence.failRunningTurn(turn.id(), scope, "resume_submission_failed")).thenReturn(false);
+
+        assertThat(service.failTurnIfRunning(turn, "resume_submission_failed")).isFalse();
+
+        assertThat(turn.status()).isEqualTo(TurnStatus.RUNNING);
+    }
+
+    @Test
+    void completeTurnIfRunningUpdatesPersistenceBeforeMemory() {
+        TurnPersistenceService persistence = mock(TurnPersistenceService.class);
+        ConversationService service = new ConversationService(null, persistence, null, null);
+        BusinessIdentityScope scope = BusinessIdentityScope.scoped(
+                "desktop", "desktop-session", "auth", 3, "user", "tenant", "platform");
+        Thread thread = service.createThread("C:/business", scope);
+        Turn turn = service.startTurn(thread.id(), scope);
+        turn.start();
+        when(persistence.completeRunningTurn(turn.id(), scope)).thenReturn(true);
+
+        assertThat(service.completeTurnIfRunning(turn)).isTrue();
+
+        verify(persistence).completeRunningTurn(turn.id(), scope);
+        assertThat(turn.status()).isEqualTo(TurnStatus.COMPLETED);
+    }
+
+    @Test
+    void completeTurnIfRunningKeepsMemoryRunningWhenPersistenceCasLoses() {
+        TurnPersistenceService persistence = mock(TurnPersistenceService.class);
+        ConversationService service = new ConversationService(null, persistence, null, null);
+        BusinessIdentityScope scope = BusinessIdentityScope.scoped(
+                "desktop", "desktop-session", "auth", 3, "user", "tenant", "platform");
+        Thread thread = service.createThread("C:/business", scope);
+        Turn turn = service.startTurn(thread.id(), scope);
+        turn.start();
+        when(persistence.completeRunningTurn(turn.id(), scope)).thenReturn(false);
+
+        assertThat(service.completeTurnIfRunning(turn)).isFalse();
+
+        assertThat(turn.status()).isEqualTo(TurnStatus.RUNNING);
     }
 
     private TurnEntity persistedTurn(String turnId, String status) {
