@@ -1,6 +1,6 @@
 {
   "jsonrpc": "2.0",
-  "id": "request-action-status",
+  "id": 18,
   "error": {
     "code": -32041,
     "message": "PROTOCOL_ERROR",

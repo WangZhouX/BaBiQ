@@ -70,8 +70,19 @@ data class BusinessDesktopError(
 
 data class BusinessActionAuditObservation(
     val executionId: String,
-    val identityEpoch: Long,
+    val identityEpoch: Long?,
     val status: String,
+)
+
+data class BusinessTurnBinding(
+    val threadId: String,
+    val identityEpoch: Long,
+)
+
+data class BusinessActionBinding(
+    val threadId: String,
+    val turnId: String,
+    val identityEpoch: Long,
 )
 
 data class BusinessDesktopState(
@@ -84,7 +95,7 @@ data class BusinessDesktopState(
     val plan: BusinessThreadItem.Plan? = null,
     val applicationActions: Map<String, BusinessThreadItem.ApplicationAction> = emptyMap(),
     /** 保留 execution 的原始身份代次，用于身份切换后的迟到结果仅走审计。 */
-    internal val actionIdentityEpochs: Map<String, Long> = emptyMap(),
+    internal val actionBindings: Map<String, BusinessActionBinding> = emptyMap(),
     val auditOnlyActions: List<BusinessActionAuditObservation> = emptyList(),
     val turnSummary: BusinessThreadItem.TurnSummary? = null,
     val providers: List<BusinessProvider> = emptyList(),
@@ -92,6 +103,9 @@ data class BusinessDesktopState(
     val currentThread: BusinessThread? = null,
     val activeTurn: BusinessTurn? = null,
     val turnStatus: String? = null,
+    internal val turnBindings: Map<String, BusinessTurnBinding> = emptyMap(),
+    internal val terminalTurnStatuses: Map<String, String> = emptyMap(),
+    internal val latestObservedTurnId: String? = null,
     val error: BusinessDesktopError? = null,
     val unknownEventCount: Int = 0,
 )

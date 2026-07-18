@@ -1,6 +1,6 @@
 {
   "jsonrpc": "2.0",
-  "id": "request-catalog-register",
+  "id": 1,
   "method": "application/catalog/register",
   "params": {
     "protocolVersion": "1.0",

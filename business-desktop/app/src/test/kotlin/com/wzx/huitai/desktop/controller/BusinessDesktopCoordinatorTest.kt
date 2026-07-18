@@ -25,12 +25,14 @@ import com.wzx.huitai.presentation.context.ValidationSummary
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -42,6 +44,7 @@ class BusinessDesktopCoordinatorTest {
     @Test
     fun `conversation controller owns provider thread turn cancel and chat event flow`() = runTest {
         val store = BusinessDesktopStore(BusinessDesktopReducer())
+        store.dispatch(com.wzx.huitai.desktop.state.BusinessDesktopEvent.IdentityAuthenticated(identity(1)))
         val gateway = FakeConversationGateway()
         val controller = BusinessConversationController(gateway, store, this)
 
@@ -189,6 +192,176 @@ class BusinessDesktopCoordinatorTest {
         assertEquals(2, coordinator.state.value.identity?.identityEpoch)
     }
 
+    @Test
+    fun `membership expiry invalidates blocked registration without waiting or restoring stale identity`() = runTest {
+        val store = BusinessDesktopStore(BusinessDesktopReducer())
+        val connection = FakeConnectionLifecycle()
+        val bindEntered = CompletableDeferred<Unit>()
+        val releaseBind = CompletableDeferred<Unit>()
+        val calls = mutableListOf<String>()
+        val registration = object : BusinessRegistrationPort {
+            override suspend fun bindIdentity(identity: BusinessIdentity) {
+                calls += "bind"
+                bindEntered.complete(Unit)
+                releaseBind.await()
+            }
+            override suspend fun registerCatalog(identity: BusinessIdentity, catalogEpoch: Long) { calls += "catalog" }
+        }
+        val workspace = BusinessWorkspaceController(
+            store,
+            BusinessContextPublicationPort { _, _, _, _ -> calls += "context" },
+            RecordingActionPort(),
+        )
+        val coordinator = BusinessDesktopCoordinator(store, connection, registration, workspace, this)
+        val authentication = async { coordinator.onAuthenticated(identity(1), 1, page(1)) }
+        bindEntered.await()
+
+        withTimeout(500) { coordinator.onMembershipExpired() }
+        assertNull(coordinator.state.value.identity)
+        assertFalse(workspace.hasActiveIdentity)
+        releaseBind.complete(Unit)
+        authentication.await()
+
+        assertEquals(listOf("bind"), calls)
+        assertNull(coordinator.state.value.identity)
+    }
+
+    @Test
+    fun `expiry clears local identity while context publication is blocked and stale publication cannot commit`() = runTest {
+        val store = BusinessDesktopStore(BusinessDesktopReducer())
+        val publishEntered = CompletableDeferred<Unit>()
+        val releasePublish = CompletableDeferred<Unit>()
+        val workspace = BusinessWorkspaceController(
+            store,
+            BusinessContextPublicationPort { _, _, _, _ -> publishEntered.complete(Unit); releasePublish.await() },
+            RecordingActionPort(),
+        )
+        val coordinator = BusinessDesktopCoordinator(
+            store,
+            FakeConnectionLifecycle(),
+            object : BusinessRegistrationPort {
+                override suspend fun bindIdentity(identity: BusinessIdentity) = Unit
+                override suspend fun registerCatalog(identity: BusinessIdentity, catalogEpoch: Long) = Unit
+            },
+            workspace,
+            this,
+        )
+        val authentication = async { coordinator.onAuthenticated(identity(1), 1, page(1)) }
+        publishEntered.await()
+        assertEquals(1, coordinator.state.value.identity?.identityEpoch)
+
+        withTimeout(500) { coordinator.onAuthenticationExpired() }
+        assertNull(coordinator.state.value.identity)
+        assertNull(coordinator.state.value.page)
+        releasePublish.complete(Unit)
+        authentication.await()
+
+        assertNull(coordinator.state.value.identity)
+        assertNull(coordinator.state.value.page)
+    }
+
+    @Test
+    fun `shutdown wins a concurrent start and later manual retry is rejected locally`() = runTest {
+        val store = BusinessDesktopStore(BusinessDesktopReducer())
+        val connection = BlockingStartConnectionLifecycle()
+        val workspace = BusinessWorkspaceController(
+            store,
+            BusinessContextPublicationPort { _, _, _, _ -> },
+            RecordingActionPort(),
+        )
+        val coordinator = BusinessDesktopCoordinator(
+            store,
+            connection,
+            object : BusinessRegistrationPort {
+                override suspend fun bindIdentity(identity: BusinessIdentity) = Unit
+                override suspend fun registerCatalog(identity: BusinessIdentity, catalogEpoch: Long) = Unit
+            },
+            workspace,
+            this,
+        )
+
+        val start = async { coordinator.start() }
+        connection.startEntered.await()
+        withTimeout(500) { coordinator.shutdown() }
+        assertEquals(BusinessConnectionStatus.SHUTDOWN, coordinator.state.value.connectionStatus)
+        assertFalse(coordinator.manualRetry())
+        assertEquals(0, connection.manualRetries)
+        connection.releaseStart.complete(Unit)
+        start.await()
+        advanceUntilIdle()
+        assertEquals(BusinessConnectionStatus.SHUTDOWN, coordinator.state.value.connectionStatus)
+        assertEquals(AgentSupervisorState.Shutdown, connection.state.value)
+        assertEquals(2, connection.shutdowns)
+    }
+
+    @Test
+    fun `shutdown racing manual retry performs post cleanup and reports retry rejected`() = runTest {
+        val store = BusinessDesktopStore(BusinessDesktopReducer())
+        val connection = BlockingManualRetryConnectionLifecycle()
+        val workspace = BusinessWorkspaceController(
+            store,
+            BusinessContextPublicationPort { _, _, _, _ -> },
+            RecordingActionPort(),
+        )
+        val coordinator = BusinessDesktopCoordinator(
+            store,
+            connection,
+            object : BusinessRegistrationPort {
+                override suspend fun bindIdentity(identity: BusinessIdentity) = Unit
+                override suspend fun registerCatalog(identity: BusinessIdentity, catalogEpoch: Long) = Unit
+            },
+            workspace,
+            this,
+        )
+
+        val retry = async { coordinator.manualRetry() }
+        connection.retryEntered.await()
+        coordinator.shutdown()
+        connection.releaseRetry.complete(Unit)
+
+        assertFalse(retry.await())
+        assertEquals(AgentSupervisorState.Shutdown, connection.state.value)
+        assertEquals(2, connection.shutdowns)
+    }
+
+    @Test
+    fun `shutdown invalidates blocked catalog registration without waiting or publishing context`() = runTest {
+        val store = BusinessDesktopStore(BusinessDesktopReducer())
+        val catalogEntered = CompletableDeferred<Unit>()
+        val releaseCatalog = CompletableDeferred<Unit>()
+        val calls = mutableListOf<String>()
+        val workspace = BusinessWorkspaceController(
+            store,
+            BusinessContextPublicationPort { _, _, _, _ -> calls += "context" },
+            RecordingActionPort(),
+        )
+        val coordinator = BusinessDesktopCoordinator(
+            store,
+            FakeConnectionLifecycle(),
+            object : BusinessRegistrationPort {
+                override suspend fun bindIdentity(identity: BusinessIdentity) { calls += "bind" }
+                override suspend fun registerCatalog(identity: BusinessIdentity, catalogEpoch: Long) {
+                    calls += "catalog"
+                    catalogEntered.complete(Unit)
+                    releaseCatalog.await()
+                }
+            },
+            workspace,
+            this,
+        )
+        val authentication = async { coordinator.onAuthenticated(identity(1), 1, page(1)) }
+        catalogEntered.await()
+
+        withTimeout(500) { coordinator.shutdown() }
+        assertEquals(BusinessConnectionStatus.SHUTDOWN, coordinator.state.value.connectionStatus)
+        assertNull(coordinator.state.value.identity)
+        releaseCatalog.complete(Unit)
+        authentication.await()
+
+        assertEquals(listOf("bind", "catalog"), calls)
+        assertNull(coordinator.state.value.page)
+    }
+
     private class FakeConnectionLifecycle : BusinessConnectionLifecycle {
         val mutableState = MutableStateFlow<AgentSupervisorState>(AgentSupervisorState.Idle)
         override val state = mutableState
@@ -200,9 +373,39 @@ class BusinessDesktopCoordinatorTest {
         override suspend fun shutdown() { shutdowns++; mutableState.value = AgentSupervisorState.Shutdown }
     }
 
+    private class BlockingStartConnectionLifecycle : BusinessConnectionLifecycle {
+        override val state = MutableStateFlow<AgentSupervisorState>(AgentSupervisorState.Idle)
+        val startEntered = CompletableDeferred<Unit>()
+        val releaseStart = CompletableDeferred<Unit>()
+        var manualRetries = 0
+        var shutdowns = 0
+        override suspend fun start() {
+            startEntered.complete(Unit)
+            releaseStart.await()
+            state.value = AgentSupervisorState.Connected("late")
+        }
+        override suspend fun manualRetry(): Boolean { manualRetries++; return true }
+        override suspend fun shutdown() { shutdowns++; state.value = AgentSupervisorState.Shutdown }
+    }
+
+    private class BlockingManualRetryConnectionLifecycle : BusinessConnectionLifecycle {
+        override val state = MutableStateFlow<AgentSupervisorState>(AgentSupervisorState.ManualRetryRequired)
+        val retryEntered = CompletableDeferred<Unit>()
+        val releaseRetry = CompletableDeferred<Unit>()
+        var shutdowns = 0
+        override suspend fun start() = Unit
+        override suspend fun manualRetry(): Boolean {
+            retryEntered.complete(Unit)
+            releaseRetry.await()
+            state.value = AgentSupervisorState.Connected("late-retry")
+            return true
+        }
+        override suspend fun shutdown() { shutdowns++; state.value = AgentSupervisorState.Shutdown }
+    }
+
     private class FakeConversationGateway : BusinessConversationGateway {
         val mutableEvents = MutableSharedFlow<BusinessAgentEvent>()
-        override val events: SharedFlow<BusinessAgentEvent> = mutableEvents
+        override val events: Flow<BusinessAgentEvent> = mutableEvents
         var startedWithProvider: String? = null
         var canceledTurnId: String? = null
         override suspend fun listProviders(): List<BusinessProvider> = listOf(

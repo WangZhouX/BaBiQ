@@ -31,7 +31,7 @@ sealed interface BusinessDesktopEvent {
 
 class BusinessDesktopReducer {
     fun reduce(state: BusinessDesktopState, event: BusinessDesktopEvent): BusinessDesktopState = when (event) {
-        is BusinessDesktopEvent.ConnectionChanged -> state.copy(connectionStatus = event.status)
+        is BusinessDesktopEvent.ConnectionChanged -> connectionChanged(state, event.status)
         is BusinessDesktopEvent.IdentityAuthenticated -> authenticated(state, event.identity)
         BusinessDesktopEvent.SignedOut -> clearIdentity(state, BusinessAuthenticationStatus.SIGNED_OUT, null)
         BusinessDesktopEvent.AuthenticationExpired -> clearIdentity(
@@ -51,8 +51,8 @@ class BusinessDesktopReducer {
         is BusinessDesktopEvent.AgentEventReceived -> reduceAgentEvent(state, event.event)
         is BusinessDesktopEvent.ProvidersChanged -> state.copy(providers = event.providers.toList())
         is BusinessDesktopEvent.ProviderSelected -> state.copy(activeProviderId = event.selection.providerId)
-        is BusinessDesktopEvent.ThreadChanged -> state.copy(currentThread = event.thread)
-        is BusinessDesktopEvent.TurnRequested -> state.copy(activeTurn = event.turn, turnStatus = "starting")
+        is BusinessDesktopEvent.ThreadChanged -> newThread(state, event.thread)
+        is BusinessDesktopEvent.TurnRequested -> turnRequested(state, event.turn)
         is BusinessDesktopEvent.Failed -> state.copy(error = BusinessDesktopError(event.code, event.message.take(240)))
         BusinessDesktopEvent.ClearError -> state.copy(error = null)
     }
@@ -65,8 +65,12 @@ class BusinessDesktopReducer {
             authenticationStatus = BusinessAuthenticationStatus.AUTHENTICATED,
             identity = identity,
             page = null,
+            currentThread = null,
             suggestions = emptyMap(),
+            messages = emptyList(),
+            plan = null,
             applicationActions = emptyMap(),
+            turnSummary = null,
             activeTurn = null,
             turnStatus = null,
             error = null,
@@ -81,26 +85,29 @@ class BusinessDesktopReducer {
         authenticationStatus = status,
         identity = null,
         page = null,
+        currentThread = null,
         suggestions = emptyMap(),
+        messages = emptyList(),
+        plan = null,
         applicationActions = emptyMap(),
+        turnSummary = null,
         activeTurn = null,
         turnStatus = null,
         error = error,
     )
 
     private fun reduceAgentEvent(state: BusinessDesktopState, event: BusinessAgentEvent): BusinessDesktopState = when (event) {
-        is BusinessAgentEvent.TurnStarted -> state.copy(
-            activeTurn = BusinessTurn(event.turnId, event.threadId),
-            turnStatus = "running",
-        )
-        is BusinessAgentEvent.ItemAdded -> reduceItem(state, event.item)
-        is BusinessAgentEvent.ItemUpdated -> reduceItem(state, event.item)
-        is BusinessAgentEvent.ItemCompleted -> reduceItem(state, event.item)
-        is BusinessAgentEvent.TurnCompleted -> state.copy(turnStatus = event.status, activeTurn = null)
-        is BusinessAgentEvent.TurnFailed -> state.copy(
-            turnStatus = "failed",
-            activeTurn = null,
-            error = BusinessDesktopError("TURN_FAILED", event.reason),
+        is BusinessAgentEvent.TurnStarted -> turnStarted(state, event)
+        is BusinessAgentEvent.ItemAdded -> correlatedItem(state, event.threadId, event.turnId, event.item)
+        is BusinessAgentEvent.ItemUpdated -> correlatedItem(state, event.threadId, event.turnId, event.item)
+        is BusinessAgentEvent.ItemCompleted -> correlatedItem(state, event.threadId, event.turnId, event.item)
+        is BusinessAgentEvent.TurnCompleted -> turnCompleted(state, event.threadId, event.turnId, event.status)
+        is BusinessAgentEvent.TurnFailed -> turnCompleted(
+            state,
+            event.threadId,
+            event.turnId,
+            "failed",
+            BusinessDesktopError("TURN_FAILED", event.reason),
         )
         is BusinessAgentEvent.Unknown -> state.copy(unknownEventCount = state.unknownEventCount + 1)
     }
@@ -111,7 +118,7 @@ class BusinessDesktopReducer {
         is BusinessThreadItem.Reasoning,
         -> state.copy(messages = upsert(state.messages, item))
         is BusinessThreadItem.Plan -> state.copy(plan = item)
-        is BusinessThreadItem.ApplicationAction -> reduceApplicationAction(state, item)
+        is BusinessThreadItem.ApplicationAction -> stale(state)
         is BusinessThreadItem.TurnSummary -> state.copy(turnSummary = item)
         is BusinessThreadItem.Unknown -> state.copy(unknownEventCount = state.unknownEventCount + 1)
     }
@@ -119,26 +126,154 @@ class BusinessDesktopReducer {
     private fun reduceApplicationAction(
         state: BusinessDesktopState,
         item: BusinessThreadItem.ApplicationAction,
+        turnBinding: BusinessTurnBinding?,
+        threadId: String,
+        turnId: String,
+        currentTurn: Boolean,
     ): BusinessDesktopState {
         val currentEpoch = state.identity?.identityEpoch
-        val boundEpoch = state.actionIdentityEpochs[item.executionId] ?: currentEpoch
-        if (boundEpoch == null) return state.copy(unknownEventCount = state.unknownEventCount + 1)
-        val epochs = state.actionIdentityEpochs + (item.executionId to boundEpoch)
-        if (boundEpoch != currentEpoch) {
+        val existing = state.actionBindings[item.executionId]
+        val candidate = turnBinding?.let { BusinessActionBinding(threadId, turnId, it.identityEpoch) }
+        val trusted = existing ?: candidate
+        val matchesEvent = trusted?.threadId == threadId && trusted.turnId == turnId
+        if (trusted == null || trusted.identityEpoch != currentEpoch || !currentTurn || !matchesEvent) {
             return state.copy(
-                actionIdentityEpochs = epochs,
                 auditOnlyActions = state.auditOnlyActions + BusinessActionAuditObservation(
                     executionId = item.executionId,
-                    identityEpoch = boundEpoch,
+                    identityEpoch = trusted?.identityEpoch,
                     status = item.status,
                 ),
             )
         }
+        val bindings = state.actionBindings + (item.executionId to trusted)
         return state.copy(
             applicationActions = state.applicationActions + (item.executionId to item),
-            actionIdentityEpochs = epochs,
+            actionBindings = bindings,
         )
     }
+
+    private fun connectionChanged(
+        state: BusinessDesktopState,
+        status: BusinessConnectionStatus,
+    ): BusinessDesktopState = if (
+        state.connectionStatus == BusinessConnectionStatus.SHUTDOWN && status != BusinessConnectionStatus.SHUTDOWN
+    ) {
+        state
+    } else if (status == BusinessConnectionStatus.SHUTDOWN) {
+        clearIdentity(state, BusinessAuthenticationStatus.SIGNED_OUT, null).copy(
+            connectionStatus = BusinessConnectionStatus.SHUTDOWN,
+        )
+    } else {
+        state.copy(connectionStatus = status)
+    }
+
+    private fun newThread(state: BusinessDesktopState, thread: BusinessThread): BusinessDesktopState = state.copy(
+        currentThread = thread,
+        messages = emptyList(),
+        plan = null,
+        applicationActions = emptyMap(),
+        turnSummary = null,
+        activeTurn = null,
+        turnStatus = null,
+        error = null,
+    )
+
+    private fun turnRequested(state: BusinessDesktopState, turn: BusinessTurn): BusinessDesktopState {
+        val thread = state.currentThread ?: return stale(state)
+        val epoch = state.identity?.identityEpoch ?: return stale(state)
+        if (thread.id != turn.threadId) return stale(state)
+        val existing = state.turnBindings[turn.id]
+        if (existing != null && (existing.threadId != turn.threadId || existing.identityEpoch != epoch)) return stale(state)
+        val bindings = state.turnBindings + (turn.id to (existing ?: BusinessTurnBinding(turn.threadId, epoch)))
+        val terminal = state.terminalTurnStatuses[turn.id]
+        if (terminal != null) {
+            if (state.activeTurn?.id != null && state.activeTurn.id != turn.id) {
+                return state.copy(turnBindings = bindings, unknownEventCount = state.unknownEventCount + 1)
+            }
+            return state.copy(turnBindings = bindings, activeTurn = null, turnStatus = terminal)
+        }
+        if (state.activeTurn?.id == turn.id) return state.copy(turnBindings = bindings)
+        if (existing != null && state.latestObservedTurnId != null && state.latestObservedTurnId != turn.id) {
+            return state.copy(turnBindings = bindings, unknownEventCount = state.unknownEventCount + 1)
+        }
+        return state.copy(
+            turnBindings = bindings,
+            activeTurn = turn,
+            turnStatus = "starting",
+            applicationActions = emptyMap(),
+        )
+    }
+
+    private fun turnStarted(
+        state: BusinessDesktopState,
+        event: BusinessAgentEvent.TurnStarted,
+    ): BusinessDesktopState {
+        val thread = state.currentThread ?: return stale(state)
+        val epoch = state.identity?.identityEpoch ?: return stale(state)
+        if (thread.id != event.threadId) return stale(state)
+        val existing = state.turnBindings[event.turnId]
+        if (existing != null && (existing.threadId != event.threadId || existing.identityEpoch != epoch)) return stale(state)
+        if (existing != null && state.activeTurn?.id != null && state.activeTurn.id != event.turnId) return stale(state)
+        val bindings = state.turnBindings + (event.turnId to (existing ?: BusinessTurnBinding(event.threadId, epoch)))
+        val terminal = state.terminalTurnStatuses[event.turnId]
+        return if (terminal != null) {
+            state.copy(turnBindings = bindings, latestObservedTurnId = event.turnId, activeTurn = null, turnStatus = terminal)
+        } else {
+            state.copy(
+                turnBindings = bindings,
+                latestObservedTurnId = event.turnId,
+                activeTurn = BusinessTurn(event.turnId, event.threadId),
+                turnStatus = "running",
+            )
+        }
+    }
+
+    private fun turnCompleted(
+        state: BusinessDesktopState,
+        threadId: String,
+        turnId: String,
+        status: String,
+        error: BusinessDesktopError? = null,
+    ): BusinessDesktopState {
+        val currentThread = state.currentThread ?: return stale(state)
+        val binding = state.turnBindings[turnId] ?: return stale(state)
+        if (currentThread.id != threadId || binding.threadId != threadId) return stale(state)
+        val terminals = state.terminalTurnStatuses + (turnId to status)
+        return if (
+            state.activeTurn?.id == turnId ||
+            (state.activeTurn == null && state.latestObservedTurnId == turnId)
+        ) {
+            state.copy(
+                terminalTurnStatuses = terminals,
+                activeTurn = null,
+                turnStatus = status,
+                error = error ?: state.error,
+            )
+        } else {
+            state.copy(terminalTurnStatuses = terminals, unknownEventCount = state.unknownEventCount + 1)
+        }
+    }
+
+    private fun correlatedItem(
+        state: BusinessDesktopState,
+        threadId: String,
+        turnId: String,
+        item: BusinessThreadItem,
+    ): BusinessDesktopState {
+        val binding = state.turnBindings[turnId]
+        val currentTurn = state.currentThread?.id == threadId &&
+            binding?.threadId == threadId &&
+            binding.identityEpoch == state.identity?.identityEpoch &&
+            state.activeTurn?.id == turnId
+        if (item is BusinessThreadItem.ApplicationAction) {
+            return reduceApplicationAction(state, item, binding, threadId, turnId, currentTurn)
+        }
+        if (!currentTurn) return stale(state)
+        return reduceItem(state, item)
+    }
+
+    private fun stale(state: BusinessDesktopState): BusinessDesktopState =
+        state.copy(unknownEventCount = state.unknownEventCount + 1)
 
     private fun upsert(items: List<BusinessThreadItem>, candidate: BusinessThreadItem): List<BusinessThreadItem> {
         val index = items.indexOfFirst { it.id == candidate.id }

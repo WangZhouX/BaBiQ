@@ -140,7 +140,7 @@ class BusinessAgentClientTest {
         override suspend fun send(text: String) {
             val request = ApplicationProtocol.JSON.parseToJsonElement(text).jsonObject
             sent += request
-            val id = request.getValue("id").jsonPrimitive.content
+            val id = request.getValue("id").jsonPrimitive.content.toLong()
             val response = errorCode?.let { code ->
                 ApplicationProtocol.JSON.encodeToString(
                     JsonRpcErrorResponse.serializer(),

@@ -165,7 +165,7 @@ class ApplicationActionRequestHandler(
     }
 
     private suspend fun handleStart(
-        requestId: String,
+        requestId: Long,
         envelope: ActionEnvelope,
         identity: TrustedApplicationIdentity,
     ) {
@@ -198,7 +198,7 @@ class ApplicationActionRequestHandler(
         }
     }
 
-    private suspend fun handleCancel(requestId: String, envelope: ActionEnvelope) {
+    private suspend fun handleCancel(requestId: Long, envelope: ActionEnvelope) {
         val requestedScope = requestedScopeOrNull(envelope) ?: run {
             rpc.respondProtocolError(requestId, PROTOCOL_ERROR_REASON)
             return
@@ -215,7 +215,7 @@ class ApplicationActionRequestHandler(
         runtime.cancel(RuntimeExecutionKey(envelope.executionId, requestedScope), envelope.correlation())
     }
 
-    private suspend fun handleStatus(requestId: String, envelope: ActionEnvelope) {
+    private suspend fun handleStatus(requestId: Long, envelope: ActionEnvelope) {
         val requestedScope = requestedScopeOrNull(envelope)
         val record = requestedScope?.let { runtime.find(envelope.executionId, it) }
         if (record == null) {
@@ -228,7 +228,7 @@ class ApplicationActionRequestHandler(
         })
     }
 
-    private suspend fun handleResult(requestId: String, envelope: ActionEnvelope) {
+    private suspend fun handleResult(requestId: Long, envelope: ActionEnvelope) {
         val requestedScope = requestedScopeOrNull(envelope)
         val record = requestedScope?.let { runtime.find(envelope.executionId, it) }
         if (record == null || !record.isTerminal) {

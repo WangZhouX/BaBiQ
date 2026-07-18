@@ -512,7 +512,7 @@ class ApplicationReconnectRecoveryTest {
             executionId: String = "execution-1",
             payload: JsonObject = requestPayload(),
         ) {
-            connection.serverSend(ApplicationProtocol.JSON.encodeToString(JsonRpcRequest.serializer(), JsonRpcRequest(id = id, method = ApplicationMethod.ACTION_REQUEST.wireName, params = requestEnvelope(identityScope).copy(executionId = executionId, payload = payload))))
+            connection.serverSend(ApplicationProtocol.JSON.encodeToString(JsonRpcRequest.serializer(), JsonRpcRequest(id = id.testJsonRpcId(), method = ApplicationMethod.ACTION_REQUEST.wireName, params = requestEnvelope(identityScope).copy(executionId = executionId, payload = payload))))
         }
 
         suspend fun closeConnection() {
@@ -604,12 +604,12 @@ class ApplicationReconnectRecoveryTest {
             sent += text
             method ?: return
             onMethod(method)
-            val id = value["id"]?.jsonPrimitive?.content ?: return
+            val id = value["id"]?.jsonPrimitive?.content?.toLongOrNull() ?: return
             inbound.send(ApplicationProtocol.JSON.encodeToString(JsonRpcSuccessResponse.serializer(), JsonRpcSuccessResponse(id = id, result = JsonObject(emptyMap()))))
         }
         fun methods() = sent.mapNotNull { it.json()["method"]?.jsonPrimitive?.content }
-        fun response(id: String) = sent.map { it.json() }.single { it["id"]?.jsonPrimitive?.content == id }
-        fun hasResponse(id: String) = sent.map { it.json() }.any { it["id"]?.jsonPrimitive?.content == id }
+        fun response(id: String) = sent.map { it.json() }.single { it["id"]?.jsonPrimitive?.content == id.testJsonRpcId().toString() }
+        fun hasResponse(id: String) = sent.map { it.json() }.any { it["id"]?.jsonPrimitive?.content == id.testJsonRpcId().toString() }
         suspend fun serverSend(text: String) { inbound.send(text) }
         override suspend fun close() { inbound.close() }
     }
@@ -644,3 +644,5 @@ class ApplicationReconnectRecoveryTest {
         fun String.json() = ApplicationProtocol.JSON.parseToJsonElement(this).jsonObject
     }
 }
+
+private fun String.testJsonRpcId(): Long = hashCode().toLong() and 0x7fff_ffffL

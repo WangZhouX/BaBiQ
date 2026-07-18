@@ -347,7 +347,7 @@ class ApplicationRegistrationTest {
             com.wzx.huitai.agent.protocol.JsonRpcNotification.serializer(),
                 com.wzx.huitai.agent.protocol.JsonRpcNotification(method = ApplicationMethod.IDENTITY_UPDATE.wireName, params = identity(1, 1)),
         ))
-        listOf("overload-1", "overload-2").forEachIndexed { index, id ->
+        listOf(1L, 2L).forEachIndexed { index, id ->
             connection.serverSend(ApplicationProtocol.JSON.encodeToString(
                 com.wzx.huitai.agent.protocol.JsonRpcRequest.serializer(),
                 com.wzx.huitai.agent.protocol.JsonRpcRequest(id = id, method = ApplicationMethod.IDENTITY_BIND.wireName, params = identity((index + 2).toLong(), (index + 2).toLong())),
@@ -361,8 +361,8 @@ class ApplicationRegistrationTest {
                 if (item is com.wzx.huitai.agent.client.AgentJsonRpcInbound.Request) add(item.value.id)
             }
         }
-        val responseIds = connection.sentMessages().mapNotNull { it["id"]?.jsonPrimitive?.content }.toSet()
-        assertTrue(setOf("overload-1", "overload-2").all { it in inboundIds || it in responseIds })
+        val responseIds = connection.sentMessages().mapNotNull { it["id"]?.jsonPrimitive?.content?.toLongOrNull() }.toSet()
+        assertTrue(setOf(1L, 2L).all { it in inboundIds || it in responseIds })
         rpc.close()
     }
 
@@ -545,7 +545,7 @@ class ApplicationRegistrationTest {
         val methods = mutableListOf<String>()
         var sendCount = 0
             private set
-        var lastRequestId: String = ""
+        var lastRequestId: Long = 0
             private set
         var respondToRequests = true
         var failRequests = false
@@ -564,7 +564,7 @@ class ApplicationRegistrationTest {
                 onSend(it)
             }
             if (failSends) error("send outcome unknown")
-            val id = message["id"]?.jsonPrimitive?.content ?: return
+            val id = message["id"]?.jsonPrimitive?.content?.toLongOrNull() ?: return
             lastRequestId = id
             if (!respondToRequests) return
             val response = if (failRequests) {

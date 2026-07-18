@@ -228,7 +228,11 @@ class ApplicationActionRequestHandlerTest {
         runCurrent()
 
         assertEquals(
-            listOf(ApplicationMethod.ACTION_ACCEPTED.wireName, "response:request-1", "response:request-2"),
+            listOf(
+                ApplicationMethod.ACTION_ACCEPTED.wireName,
+                "response:${"request-1".testJsonRpcId()}",
+                "response:${"request-2".testJsonRpcId()}",
+            ),
             fixture.connection.sent.take(3).map(::messageKind),
         )
         assertEquals(1, fixture.executor.calls)
@@ -258,7 +262,7 @@ class ApplicationActionRequestHandlerTest {
         runCurrent()
 
         val response = fixture.connection.sent.single().json()
-        assertEquals("bad-request", response.getValue("id").jsonPrimitive.content)
+        assertEquals("bad-request".testJsonRpcId().toString(), response.getValue("id").jsonPrimitive.content)
         assertEquals(-32041, response.getValue("error").jsonObject.getValue("code").jsonPrimitive.content.toInt())
         assertEquals("PROTOCOL_ERROR", response.getValue("error").jsonObject.getValue("message").jsonPrimitive.content)
         assertEquals(false, fixture.connection.sent.single().contains("secret-other-tenant"))
@@ -602,8 +606,8 @@ class ApplicationActionRequestHandlerTest {
     fun `unknown and invalid rpc requests receive protocol errors without stopping later requests`() = runTest {
         val fixture = Fixture(backgroundScope)
         fixture.executor.block = { ActionBusResult.InProgress(it.executionId, ActionExecutionState.EXECUTING) }
-        fixture.connection.serverSend("""{"jsonrpc":"2.0","id":"unknown","method":"application/unknown","params":{}}""")
-        fixture.connection.serverSend("""{"jsonrpc":"2.0","id":"invalid","method":"application/action/request","params":{"broken":true}}""")
+        fixture.connection.serverSend("""{"jsonrpc":"2.0","id":${"unknown".testJsonRpcId()},"method":"application/unknown","params":{}}""")
+        fixture.connection.serverSend("""{"jsonrpc":"2.0","id":${"invalid".testJsonRpcId()},"method":"application/action/request","params":{"broken":true}}""")
         fixture.serverRequest("valid-after-invalid", ApplicationMethod.ACTION_REQUEST, requestEnvelope(sequence = 1))
         fixture.executor.entered.await()
         runCurrent()
@@ -810,14 +814,14 @@ class ApplicationActionRequestHandlerTest {
         )
 
         suspend fun serverRequest(id: String, method: ApplicationMethod, envelope: ActionEnvelope) {
-            connection.serverSend(ApplicationProtocol.JSON.encodeToString(JsonRpcRequest.serializer(), JsonRpcRequest(id = id, method = method.wireName, params = envelope)))
+            connection.serverSend(ApplicationProtocol.JSON.encodeToString(JsonRpcRequest.serializer(), JsonRpcRequest(id = id.testJsonRpcId(), method = method.wireName, params = envelope)))
         }
 
         suspend fun serverNotification(method: ApplicationMethod, envelope: ActionEnvelope) {
             connection.serverSend(ApplicationProtocol.JSON.encodeToString(JsonRpcNotification.serializer(), JsonRpcNotification(method = method.wireName, params = envelope)))
         }
 
-        fun response(id: String): JsonObject = connection.sent.map { it.json() }.single { it["id"]?.jsonPrimitive?.content == id }
+        fun response(id: String): JsonObject = connection.sent.map { it.json() }.single { it["id"]?.jsonPrimitive?.content == id.testJsonRpcId().toString() }
         suspend fun close() { handler.close(); rpc.close() }
     }
 
@@ -932,3 +936,5 @@ class ApplicationActionRequestHandlerTest {
         fun messageKind(text: String): String { val json = text.json(); return json["method"]?.jsonPrimitive?.content ?: "response:${json.getValue("id").jsonPrimitive.content}" }
     }
 }
+
+private fun String.testJsonRpcId(): Long = hashCode().toLong() and 0x7fff_ffffL

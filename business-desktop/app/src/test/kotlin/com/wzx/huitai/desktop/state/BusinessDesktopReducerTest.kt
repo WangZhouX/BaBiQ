@@ -3,6 +3,8 @@ package com.wzx.huitai.desktop.state
 import com.wzx.huitai.agent.conversation.BusinessAgentEvent
 import com.wzx.huitai.agent.conversation.BusinessPlanStep
 import com.wzx.huitai.agent.conversation.BusinessThreadItem
+import com.wzx.huitai.agent.conversation.BusinessThread
+import com.wzx.huitai.agent.conversation.BusinessTurn
 import com.wzx.huitai.presentation.context.PageContextSnapshot
 import com.wzx.huitai.presentation.context.PageMode
 import com.wzx.huitai.presentation.context.ValidationSummary
@@ -22,6 +24,8 @@ class BusinessDesktopReducerTest {
 
         val identity = identity(epoch = 1)
         var state = reducer.reduce(initial, BusinessDesktopEvent.IdentityAuthenticated(identity))
+        state = reducer.reduce(state, BusinessDesktopEvent.ThreadChanged(BusinessThread("thread-1", "demo", "C:/demo")))
+        state = reducer.reduce(state, BusinessDesktopEvent.TurnRequested(BusinessTurn("turn-1", "thread-1")))
         state = reducer.reduce(state, BusinessDesktopEvent.PageChanged(page(revision = 3)))
         state = reducer.reduce(state, BusinessDesktopEvent.SuggestionsChanged(listOf(
             BusinessFieldSuggestion("contact", JsonPrimitive("Alex"), "agent", 0.88),
@@ -63,6 +67,8 @@ class BusinessDesktopReducerTest {
     @Test
     fun `identity switch clears suggestions and old actions and late old scope results are audit only`() {
         var state = reducer.reduce(BusinessDesktopState(), BusinessDesktopEvent.IdentityAuthenticated(identity(1)))
+        state = reducer.reduce(state, BusinessDesktopEvent.ThreadChanged(BusinessThread("thread-1", "demo", "C:/demo")))
+        state = reducer.reduce(state, BusinessDesktopEvent.TurnRequested(BusinessTurn("turn-1", "thread-1")))
         state = reducer.reduce(state, BusinessDesktopEvent.SuggestionsChanged(listOf(
             BusinessFieldSuggestion("name", JsonPrimitive("old"), "agent", 0.9),
         )))
@@ -94,6 +100,122 @@ class BusinessDesktopReducerTest {
         state = reducer.reduce(state, BusinessDesktopEvent.AuthenticationExpired)
         assertEquals(BusinessAuthenticationStatus.EXPIRED, state.authenticationStatus)
         assertEquals("AUTH_EXPIRED", state.error?.code)
+    }
+
+    @Test
+    fun `turn response arriving after running or terminal events never regresses status`() {
+        var running = conversationState()
+        running = reducer.reduce(running, BusinessDesktopEvent.AgentEventReceived(
+            BusinessAgentEvent.TurnStarted("thread-1", "turn-1"),
+        ))
+        running = reducer.reduce(running, BusinessDesktopEvent.TurnRequested(BusinessTurn("turn-1", "thread-1")))
+        assertEquals("running", running.turnStatus)
+        assertEquals("turn-1", running.activeTurn?.id)
+
+        var completed = conversationState()
+        completed = reducer.reduce(completed, BusinessDesktopEvent.AgentEventReceived(
+            BusinessAgentEvent.TurnStarted("thread-1", "turn-2"),
+        ))
+        completed = reducer.reduce(completed, BusinessDesktopEvent.AgentEventReceived(
+            BusinessAgentEvent.TurnCompleted("thread-1", "turn-2", "completed"),
+        ))
+        completed = reducer.reduce(completed, BusinessDesktopEvent.TurnRequested(BusinessTurn("turn-2", "thread-1")))
+        assertEquals("completed", completed.turnStatus)
+        assertNull(completed.activeTurn)
+
+        completed = reducer.reduce(completed, BusinessDesktopEvent.TurnRequested(BusinessTurn("turn-3", "thread-1")))
+        completed = reducer.reduce(completed, BusinessDesktopEvent.AgentEventReceived(
+            BusinessAgentEvent.TurnStarted("thread-1", "turn-3"),
+        ))
+        completed = reducer.reduce(completed, BusinessDesktopEvent.TurnRequested(BusinessTurn("turn-2", "thread-1")))
+        assertEquals("running", completed.turnStatus)
+        assertEquals("turn-3", completed.activeTurn?.id)
+    }
+
+    @Test
+    fun `thread and turn correlation rejects stale events and unbound actions`() {
+        var state = conversationState()
+        state = reducer.reduce(state, BusinessDesktopEvent.TurnRequested(BusinessTurn("turn-old", "thread-1")))
+        state = reducer.reduce(state, BusinessDesktopEvent.AgentEventReceived(
+            BusinessAgentEvent.TurnStarted("thread-1", "turn-old"),
+        ))
+        state = reducer.reduce(state, BusinessDesktopEvent.AgentEventReceived(
+            BusinessAgentEvent.ItemAdded("thread-1", "turn-old", action("reused-exec", "executing")),
+        ))
+        state = reducer.reduce(state, BusinessDesktopEvent.TurnRequested(BusinessTurn("turn-new", "thread-1")))
+        state = reducer.reduce(state, BusinessDesktopEvent.AgentEventReceived(
+            BusinessAgentEvent.TurnCompleted("thread-1", "turn-old", "completed"),
+        ))
+        assertEquals("turn-new", state.activeTurn?.id)
+        assertEquals("starting", state.turnStatus)
+        state = reducer.reduce(state, BusinessDesktopEvent.AgentEventReceived(
+            BusinessAgentEvent.TurnStarted("thread-1", "turn-new"),
+        ))
+        state = reducer.reduce(state, BusinessDesktopEvent.AgentEventReceived(
+            BusinessAgentEvent.TurnCompleted("thread-1", "turn-old", "completed"),
+        ))
+        assertEquals("turn-new", state.activeTurn?.id)
+        assertEquals("running", state.turnStatus)
+
+        state = reducer.reduce(state, BusinessDesktopEvent.AgentEventReceived(
+            BusinessAgentEvent.ItemUpdated("thread-1", "turn-new", action("reused-exec", "succeeded")),
+        ))
+        assertTrue("reused-exec" !in state.applicationActions)
+        assertEquals("reused-exec", state.auditOnlyActions.last().executionId)
+
+        state = reducer.reduce(state, BusinessDesktopEvent.AgentEventReceived(
+            BusinessAgentEvent.ItemAdded("other-thread", "turn-x", BusinessThreadItem.AgentMessage("foreign", text = "secret")),
+        ))
+        assertTrue(state.messages.none { it.id == "foreign" })
+
+        state = reducer.reduce(state, BusinessDesktopEvent.AgentEventReceived(
+            BusinessAgentEvent.ItemAdded("thread-1", "unbound-turn", action("unbound-exec", "executing")),
+        ))
+        assertTrue("unbound-exec" !in state.applicationActions)
+        assertEquals("unbound-exec", state.auditOnlyActions.last().executionId)
+        assertNull(state.auditOnlyActions.last().identityEpoch)
+    }
+
+    @Test
+    fun `identity new thread and shutdown clear all user scoped desktop state`() {
+        var state = conversationState()
+        state = reducer.reduce(state, BusinessDesktopEvent.PageChanged(page(4)))
+        state = reducer.reduce(state, BusinessDesktopEvent.SuggestionsChanged(listOf(
+            BusinessFieldSuggestion("name", JsonPrimitive("value"), "agent", 0.8),
+        )))
+        state = reducer.reduce(state, BusinessDesktopEvent.TurnRequested(BusinessTurn("turn-1", "thread-1")))
+        state = reducer.reduce(state, BusinessDesktopEvent.AgentEventReceived(
+            BusinessAgentEvent.ItemAdded("thread-1", "turn-1", BusinessThreadItem.AgentMessage("msg", text = "hello")),
+        ))
+        state = reducer.reduce(state, BusinessDesktopEvent.AgentEventReceived(
+            BusinessAgentEvent.ItemAdded("thread-1", "turn-1", BusinessThreadItem.Plan("plan")),
+        ))
+        state = reducer.reduce(state, BusinessDesktopEvent.AgentEventReceived(
+            BusinessAgentEvent.ItemAdded("thread-1", "turn-1", summary()),
+        ))
+
+        state = reducer.reduce(state, BusinessDesktopEvent.ThreadChanged(BusinessThread("thread-2", "new", "C:/demo")))
+        assertTrue(state.messages.isEmpty())
+        assertNull(state.plan)
+        assertNull(state.turnSummary)
+        assertNull(state.activeTurn)
+
+        state = reducer.reduce(state, BusinessDesktopEvent.ConnectionChanged(BusinessConnectionStatus.SHUTDOWN))
+        assertEquals(BusinessConnectionStatus.SHUTDOWN, state.connectionStatus)
+        assertNull(state.identity)
+        assertNull(state.currentThread)
+        assertNull(state.page)
+        assertTrue(state.suggestions.isEmpty())
+        assertTrue(state.applicationActions.isEmpty())
+        assertTrue(state.messages.isEmpty())
+        state = reducer.reduce(state, BusinessDesktopEvent.ConnectionChanged(BusinessConnectionStatus.CONNECTED))
+        assertEquals(BusinessConnectionStatus.SHUTDOWN, state.connectionStatus)
+    }
+
+    private fun conversationState(): BusinessDesktopState {
+        var state = reducer.reduce(BusinessDesktopState(), BusinessDesktopEvent.IdentityAuthenticated(identity(1)))
+        state = reducer.reduce(state, BusinessDesktopEvent.ThreadChanged(BusinessThread("thread-1", "demo", "C:/demo")))
+        return state
     }
 
     private fun identity(epoch: Long) = BusinessIdentity(

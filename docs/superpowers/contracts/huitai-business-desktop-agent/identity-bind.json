@@ -1,6 +1,6 @@
 {
   "jsonrpc": "2.0",
-  "id": "request-identity-bind",
+  "id": 4,
   "method": "application/identity/bind",
   "params": {
     "protocolVersion": "1.0",

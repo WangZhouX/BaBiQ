@@ -5,9 +5,9 @@ import java.io.Closeable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.buildJsonObject
@@ -19,7 +19,7 @@ import kotlinx.serialization.json.put
  * 它只负责 typed request 与 notification 映射，不执行 application action。
  */
 interface BusinessConversationGateway : Closeable {
-    val events: SharedFlow<BusinessAgentEvent>
+    val events: Flow<BusinessAgentEvent>
     suspend fun listProviders(): List<BusinessProvider>
     suspend fun setActiveProvider(providerId: String, modelId: String? = null): BusinessProviderSelection
     suspend fun createThread(cwd: String): BusinessThread
@@ -31,16 +31,20 @@ class BusinessAgentClient(
     private val rpc: AgentJsonRpcClient,
     scope: CoroutineScope,
 ) : BusinessConversationGateway {
-    private val mutableEvents = MutableSharedFlow<BusinessAgentEvent>(extraBufferCapacity = 64)
+    private val mutableEvents = Channel<BusinessAgentEvent>(capacity = 64)
     private val collector: Job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
-        rpc.rawNotifications.collect { notification ->
-            runCatching { BusinessAgentEventCodec.decode(notification) }
-                .getOrElse { BusinessAgentEvent.Unknown(notification.method) }
-                .let { mutableEvents.emit(it) }
+        try {
+            for (notification in rpc.rawNotifications) {
+                runCatching { BusinessAgentEventCodec.decode(notification) }
+                    .getOrElse { BusinessAgentEvent.Unknown(notification.method) }
+                    .let { mutableEvents.send(it) }
+            }
+        } finally {
+            mutableEvents.close()
         }
     }
 
-    override val events: SharedFlow<BusinessAgentEvent> = mutableEvents.asSharedFlow()
+    override val events: Flow<BusinessAgentEvent> = mutableEvents.receiveAsFlow()
 
     override suspend fun listProviders(): List<BusinessProvider> =
         BusinessProviderCodec.decodeList(rpc.request("provider/list", buildJsonObject { }))

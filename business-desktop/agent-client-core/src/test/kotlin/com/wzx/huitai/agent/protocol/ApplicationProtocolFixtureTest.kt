@@ -36,12 +36,12 @@ class ApplicationProtocolFixtureTest {
     }
 
     private fun fixtureCases(): List<FixtureCase> = listOf(
-        requestFixture("catalog-register.json", "request-catalog-register", ApplicationMethod.CATALOG_REGISTER, catalogEnvelope(1, 3)),
+        requestFixture("catalog-register.json", 1, ApplicationMethod.CATALOG_REGISTER, catalogEnvelope(1, 3)),
         notificationFixture("catalog-update.json", ApplicationMethod.CATALOG_UPDATE, catalogEnvelope(2, 4)),
         notificationFixture("context-publish.json", ApplicationMethod.CONTEXT_PUBLISH, contextEnvelope(3, 9)),
-        requestFixture("identity-bind.json", "request-identity-bind", ApplicationMethod.IDENTITY_BIND, identityEnvelope(4)),
+        requestFixture("identity-bind.json", 4, ApplicationMethod.IDENTITY_BIND, identityEnvelope(4)),
         notificationFixture("identity-update.json", ApplicationMethod.IDENTITY_UPDATE, identityEnvelope(5)),
-        requestFixture("action-request.json", "request-action", ApplicationMethod.ACTION_REQUEST, actionEnvelope(6, "requested")),
+        requestFixture("action-request.json", 6, ApplicationMethod.ACTION_REQUEST, actionEnvelope(6, "requested")),
         notificationFixture("action-cancel.json", ApplicationMethod.ACTION_CANCEL, actionEnvelope(7, "canceled")),
         notificationFixture("action-accepted.json", ApplicationMethod.ACTION_ACCEPTED, actionEnvelope(8, "accepted")),
         notificationFixture("action-previewed.json", ApplicationMethod.ACTION_PREVIEWED, actionEnvelope(9, "previewed")),
@@ -53,12 +53,12 @@ class ApplicationProtocolFixtureTest {
         notificationFixture("action-canceled.json", ApplicationMethod.ACTION_CANCELED, actionEnvelope(15, "canceled")),
         notificationFixture("action-expired.json", ApplicationMethod.ACTION_EXPIRED, actionEnvelope(16, "expired")),
         notificationFixture("action-outcome-unknown.json", ApplicationMethod.ACTION_OUTCOME_UNKNOWN, actionEnvelope(17, "outcome_unknown")),
-        requestFixture("action-status.json", "request-action-status", ApplicationMethod.ACTION_STATUS, actionEnvelope(18, "status_query")),
-        requestFixture("action-result-get.json", "request-action-result", ApplicationMethod.ACTION_RESULT_GET, actionEnvelope(19, "result_query")),
+        requestFixture("action-status.json", 18, ApplicationMethod.ACTION_STATUS, actionEnvelope(18, "status_query")),
+        requestFixture("action-result-get.json", 19, ApplicationMethod.ACTION_RESULT_GET, actionEnvelope(19, "result_query")),
         successFixture(
             "action-status-result.json",
             JsonRpcSuccessResponse(
-                id = "request-action-status",
+                id = 18,
                 result = buildJsonObject {
                     put("executionId", "execution-1")
                     put("state", "executing")
@@ -68,7 +68,7 @@ class ApplicationProtocolFixtureTest {
         successFixture(
             "action-result-get-result.json",
             JsonRpcSuccessResponse(
-                id = "request-action-result",
+                id = 19,
                 result = buildJsonObject {
                     put("executionId", "execution-1")
                     put("state", "succeeded")
@@ -79,7 +79,7 @@ class ApplicationProtocolFixtureTest {
         errorFixture(
             "protocol-error.json",
             JsonRpcErrorResponse(
-                id = "request-action-status",
+                id = 18,
                 error = JsonRpcError(
                     code = -32041,
                     message = "PROTOCOL_ERROR",
@@ -91,7 +91,7 @@ class ApplicationProtocolFixtureTest {
 
     private fun requestFixture(
         fileName: String,
-        id: String,
+        id: Long,
         method: ApplicationMethod,
         params: ApplicationEnvelope,
     ) = fixture(

@@ -15,7 +15,7 @@ import kotlinx.serialization.json.jsonObject
 @Serializable(with = JsonRpcRequestSerializer::class)
 data class JsonRpcRequest(
     val jsonrpc: String = "2.0",
-    val id: String,
+    val id: Long,
     val method: String,
     val params: ApplicationEnvelope,
 )
@@ -30,14 +30,14 @@ data class JsonRpcNotification(
 @Serializable
 data class JsonRpcSuccessResponse(
     val jsonrpc: String = "2.0",
-    val id: String,
+    val id: Long,
     val result: JsonObject,
 )
 
 @Serializable
 data class JsonRpcErrorResponse(
     val jsonrpc: String = "2.0",
-    val id: String?,
+    val id: Long?,
     val error: JsonRpcError,
 )
 
@@ -71,7 +71,7 @@ internal object JsonRpcRequestSerializer : KSerializer<JsonRpcRequest> {
         val method = value.string("method")
         return JsonRpcRequest(
             jsonrpc = value.string("jsonrpc"),
-            id = value.string("id"),
+            id = value.long("id"),
             method = method,
             params = decodeApplicationParams(method, value.getValue("params").jsonObject),
         )

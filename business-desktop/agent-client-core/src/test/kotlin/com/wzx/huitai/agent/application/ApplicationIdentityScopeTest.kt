@@ -161,7 +161,7 @@ class ApplicationIdentityScopeTest {
         runCurrent()
 
         assertEquals(1, fixture.executor.calls)
-        assertEquals(listOf("start"), fixture.connection.sent.map { it.json() }.mapNotNull { it["id"]?.jsonPrimitive?.content })
+        assertEquals(listOf("start".testJsonRpcId().toString()), fixture.connection.sent.map { it.json() }.mapNotNull { it["id"]?.jsonPrimitive?.content })
         fixture.close()
     }
 
@@ -189,14 +189,14 @@ class ApplicationIdentityScopeTest {
         )
 
         suspend fun request(id: String, method: ApplicationMethod, value: ActionEnvelope) {
-            connection.serverSend(ApplicationProtocol.JSON.encodeToString(JsonRpcRequest.serializer(), JsonRpcRequest(id = id, method = method.wireName, params = value)))
+            connection.serverSend(ApplicationProtocol.JSON.encodeToString(JsonRpcRequest.serializer(), JsonRpcRequest(id = id.testJsonRpcId(), method = method.wireName, params = value)))
         }
 
         suspend fun notification(method: ApplicationMethod, value: ActionEnvelope) {
             connection.serverSend(ApplicationProtocol.JSON.encodeToString(JsonRpcNotification.serializer(), JsonRpcNotification(method = method.wireName, params = value)))
         }
 
-        fun response(id: String): JsonObject = connection.sent.map { it.json() }.single { it["id"]?.jsonPrimitive?.content == id }
+        fun response(id: String): JsonObject = connection.sent.map { it.json() }.single { it["id"]?.jsonPrimitive?.content == id.testJsonRpcId().toString() }
         suspend fun close() { handler.close(); rpc.close() }
     }
 
@@ -318,3 +318,5 @@ class ApplicationIdentityScopeTest {
         fun String.json() = ApplicationProtocol.JSON.parseToJsonElement(this).jsonObject
     }
 }
+
+private fun String.testJsonRpcId(): Long = hashCode().toLong() and 0x7fff_ffffL

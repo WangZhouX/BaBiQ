@@ -9,6 +9,7 @@ import com.wzx.huitai.desktop.state.BusinessDesktopStore
 import com.wzx.huitai.desktop.state.BusinessIdentity
 import com.wzx.huitai.presentation.context.PageContextSnapshot
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -45,64 +46,102 @@ class BusinessDesktopCoordinator(
     private val scope: CoroutineScope,
 ) {
     private val lifecycleMutex = Mutex()
-    private val identityMutex = Mutex()
+    private val registrationMutex = Mutex()
     private var observer: Job? = null
     private var shutdown = false
+    private var identityGeneration: Long = 0
 
     val state: StateFlow<BusinessDesktopState> = store.state
 
     suspend fun start() {
         lifecycleMutex.withLock {
             if (shutdown || observer?.isActive == true) return
-            observer = scope.launch {
+            observer = scope.launch(start = CoroutineStart.UNDISPATCHED) {
                 connection.state.collect { supervisorState ->
-                    store.dispatch(BusinessDesktopEvent.ConnectionChanged(supervisorState.toBusinessStatus()))
+                    lifecycleMutex.withLock {
+                        if (!shutdown) {
+                            store.dispatch(BusinessDesktopEvent.ConnectionChanged(supervisorState.toBusinessStatus()))
+                        }
+                    }
                 }
             }
         }
-        connection.start()
+        try {
+            connection.start()
+        } finally {
+            if (lifecycleMutex.withLock { shutdown }) connection.shutdown()
+        }
     }
 
     suspend fun onAuthenticated(
         identity: BusinessIdentity,
         catalogEpoch: Long,
         initialPage: PageContextSnapshot,
-    ) = identityMutex.withLock {
-        check(!shutdown) { "Business desktop is shut down" }
+    ) = registrationMutex.withLock {
+        val generation = lifecycleMutex.withLock {
+            check(!shutdown) { "Business desktop is shut down" }
+            ++identityGeneration
+        }
         registration.bindIdentity(identity)
+        if (!isCurrentIdentityGeneration(generation)) return@withLock
         registration.registerCatalog(identity, catalogEpoch)
-        store.dispatch(BusinessDesktopEvent.IdentityAuthenticated(identity))
-        workspace.activateIdentity(identity, catalogEpoch, initialPage)
+        val committed = lifecycleMutex.withLock {
+            if (shutdown || generation != identityGeneration) return@withLock false
+            store.dispatch(BusinessDesktopEvent.IdentityAuthenticated(identity))
+            true
+        }
+        if (!committed) return@withLock
+        workspace.activateIdentity(identity, catalogEpoch, initialPage, generation)
     }
 
-    suspend fun onMembershipExpired() = identityMutex.withLock {
-        workspace.clearIdentity()
-        store.dispatch(BusinessDesktopEvent.MembershipExpired)
-    }
+    suspend fun onMembershipExpired() = invalidateIdentity(BusinessDesktopEvent.MembershipExpired)
 
-    suspend fun onAuthenticationExpired() = identityMutex.withLock {
-        workspace.clearIdentity()
-        store.dispatch(BusinessDesktopEvent.AuthenticationExpired)
-    }
+    suspend fun onAuthenticationExpired() = invalidateIdentity(BusinessDesktopEvent.AuthenticationExpired)
 
-    suspend fun signOut() = identityMutex.withLock {
-        workspace.clearIdentity()
-        store.dispatch(BusinessDesktopEvent.SignedOut)
-    }
+    suspend fun signOut() = invalidateIdentity(BusinessDesktopEvent.SignedOut)
 
-    suspend fun manualRetry(): Boolean = connection.manualRetry()
+    suspend fun manualRetry(): Boolean {
+        if (lifecycleMutex.withLock { shutdown }) return false
+        var accepted = false
+        try {
+            accepted = connection.manualRetry()
+        } finally {
+            if (lifecycleMutex.withLock { shutdown }) connection.shutdown()
+        }
+        return accepted && !lifecycleMutex.withLock { shutdown }
+    }
 
     suspend fun shutdown() {
-        val activeObserver = lifecycleMutex.withLock {
+        val resources = lifecycleMutex.withLock {
             if (shutdown) return
             shutdown = true
-            observer.also { observer = null }
+            identityGeneration += 1
+            store.dispatch(BusinessDesktopEvent.ConnectionChanged(BusinessConnectionStatus.SHUTDOWN))
+            ShutdownResources(observer, identityGeneration).also { observer = null }
         }
-        activeObserver?.cancel()
-        identityMutex.withLock { workspace.clearIdentity() }
+        resources.observer?.cancel()
+        workspace.clearIdentity(resources.identityGeneration)
         connection.shutdown()
-        store.dispatch(BusinessDesktopEvent.ConnectionChanged(BusinessConnectionStatus.SHUTDOWN))
     }
+
+    private suspend fun invalidateIdentity(event: BusinessDesktopEvent) {
+        val generation = lifecycleMutex.withLock {
+            if (shutdown) return
+            identityGeneration += 1
+            store.dispatch(event)
+            identityGeneration
+        }
+        workspace.clearIdentity(generation)
+    }
+
+    private suspend fun isCurrentIdentityGeneration(generation: Long): Boolean = lifecycleMutex.withLock {
+        !shutdown && generation == identityGeneration
+    }
+
+    private data class ShutdownResources(
+        val observer: Job?,
+        val identityGeneration: Long,
+    )
 }
 
 private fun AgentSupervisorState.toBusinessStatus(): BusinessConnectionStatus = when (this) {

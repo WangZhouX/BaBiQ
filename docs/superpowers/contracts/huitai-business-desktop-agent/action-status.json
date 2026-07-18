@@ -1,6 +1,6 @@
 {
   "jsonrpc": "2.0",
-  "id": "request-action-status",
+  "id": 18,
   "method": "application/action/status",
   "params": {
     "protocolVersion": "1.0",

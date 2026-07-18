@@ -29,7 +29,7 @@ class ApplicationProtocolSerializationTest {
             val decodedParams: ApplicationEnvelope
             if (method in requestMethods) {
                 val original = JsonRpcRequest(
-                    id = "request-$index",
+                    id = index.toLong() + 1,
                     method = method.wireName,
                     params = params,
                 )
@@ -73,7 +73,7 @@ class ApplicationProtocolSerializationTest {
             payload = buildJsonObject { put("kind", "context") },
         )
         val catalogRequest = JsonRpcRequest(
-            id = "catalog-request",
+            id = 20,
             method = ApplicationMethod.CATALOG_REGISTER.wireName,
             params = catalog,
         )
@@ -139,7 +139,7 @@ class ApplicationProtocolSerializationTest {
     @Test
     fun `request notification and responses round trip`() {
         val request = JsonRpcRequest(
-            id = "request-1",
+            id = 1,
             method = ApplicationMethod.ACTION_STATUS.wireName,
             params = commonActionEnvelope(sequence = 1),
         )
@@ -148,14 +148,14 @@ class ApplicationProtocolSerializationTest {
             params = commonActionEnvelope(sequence = 2),
         )
         val success = JsonRpcSuccessResponse(
-            id = "request-1",
+            id = 1,
             result = buildJsonObject {
                 put("executionId", "execution-1")
                 put("state", "running")
             },
         )
         val error = JsonRpcErrorResponse(
-            id = "request-2",
+            id = 2,
             error = JsonRpcError(
                 code = -32041,
                 message = "PROTOCOL_ERROR",
@@ -305,14 +305,14 @@ class ApplicationProtocolSerializationTest {
         val jsonWithFutureField = """
             {
               "jsonrpc":"2.0",
-              "id":"request-3",
+              "id":3,
               "result":{"executionId":"execution-1"},
               "futureServerField":{"enabled":true}
             }
         """.trimIndent()
         val decoded = ApplicationProtocol.JSON.decodeFromString(JsonRpcSuccessResponse.serializer(), jsonWithFutureField)
 
-        assertEquals("request-3", decoded.id)
+        assertEquals(3L, decoded.id)
         assertEquals("execution-1", decoded.result.string("executionId"))
     }
 

@@ -25,10 +25,6 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
-import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -58,7 +54,7 @@ sealed interface AgentJsonRpcInbound {
     data class Request(val value: JsonRpcRequest) : AgentJsonRpcInbound
     data class Notification(val value: JsonRpcNotification) : AgentJsonRpcInbound
     /** 仅保留可安全关联的 request ID，不保存原始 method、params 或解析错误。 */
-    data class InvalidRequest(val id: String) : AgentJsonRpcInbound
+    data class InvalidRequest(val id: Long) : AgentJsonRpcInbound
 }
 
 /**
@@ -73,18 +69,15 @@ class AgentJsonRpcClient(
     inboundCapacity: Int = 64,
 ) {
     private val requestIds = AtomicLong(0)
-    private val pendingResponses = ConcurrentHashMap<String, CompletableDeferred<JsonObject>>()
+    private val pendingResponses = ConcurrentHashMap<Long, CompletableDeferred<JsonObject>>()
     private val sendJob = SupervisorJob(scope.coroutineContext[Job])
     private val sendScope = CoroutineScope(scope.coroutineContext + sendJob)
     private val closed = AtomicBoolean(false)
     private val cleanupOwner = AtomicReference<CleanupOwner?>(null)
     private val cleanupComplete = CompletableDeferred<Unit>()
     private val mutableInbound = Channel<AgentJsonRpcInbound>(capacity = inboundCapacity)
-    private val mutableRawNotifications = MutableSharedFlow<AgentRawNotification>(
-        extraBufferCapacity = inboundCapacity,
-        onBufferOverflow = BufferOverflow.DROP_OLDEST,
-    )
-    private val overloadResponses = Channel<String>(capacity = OVERLOAD_RESPONSE_CAPACITY)
+    private val mutableRawNotifications = Channel<AgentRawNotification>(capacity = inboundCapacity)
+    private val overloadResponses = Channel<Long>(capacity = OVERLOAD_RESPONSE_CAPACITY)
     private val overloadWriter = scope.launch(start = CoroutineStart.UNDISPATCHED) {
         for (id in overloadResponses) {
             try {
@@ -109,8 +102,8 @@ class AgentJsonRpcClient(
 
     val incoming: ReceiveChannel<AgentJsonRpcInbound> = mutableInbound
 
-    /** application bridge 以外的 JSON-RPC notification 广播，不与双向 action request reader 竞争。 */
-    val rawNotifications: SharedFlow<AgentRawNotification> = mutableRawNotifications.asSharedFlow()
+    /** application bridge 以外的 JSON-RPC notification 单消费通道，不与双向 action request reader 竞争。 */
+    val rawNotifications: ReceiveChannel<AgentRawNotification> = mutableRawNotifications
 
     internal val pendingRequestCount: Int
         get() = pendingResponses.size
@@ -123,7 +116,7 @@ class AgentJsonRpcClient(
     /** 通用业务方法继续复用本对象唯一的 request ID 生成器和 pending map。 */
     suspend fun request(method: String, params: JsonObject): JsonObject {
         require(method.isNotBlank()) { "JSON-RPC method must not be blank" }
-        val id = requestIds.incrementAndGet().toString()
+        val id = requestIds.incrementAndGet()
         val response = CompletableDeferred<JsonObject>()
         try {
             val text = buildJsonObject {
@@ -170,8 +163,8 @@ class AgentJsonRpcClient(
     }
 
     /** 回复服务端发起的双向 JSON-RPC request；发送生命周期与普通 request/notification 共用。 */
-    suspend fun respondSuccess(id: String, result: JsonObject) {
-        require(id.isNotBlank()) { "JSON-RPC response ID must not be blank" }
+    suspend fun respondSuccess(id: Long, result: JsonObject) {
+        require(id >= 0) { "JSON-RPC response ID must not be negative" }
         val text = ApplicationProtocol.JSON.encodeToString(
             JsonRpcSuccessResponse.serializer(),
             JsonRpcSuccessResponse(id = id, result = result),
@@ -182,8 +175,8 @@ class AgentJsonRpcClient(
     }
 
     /** 只暴露稳定协议错误，不转发底层异常或远端载荷。 */
-    suspend fun respondProtocolError(id: String, reason: String = "invalid_request") {
-        require(id.isNotBlank()) { "JSON-RPC response ID must not be blank" }
+    suspend fun respondProtocolError(id: Long, reason: String = "invalid_request") {
+        require(id >= 0) { "JSON-RPC response ID must not be negative" }
         val text = ApplicationProtocol.JSON.encodeToString(
             JsonRpcErrorResponse.serializer(),
             JsonRpcErrorResponse(
@@ -248,7 +241,7 @@ class AgentJsonRpcClient(
                 },
                 onFailure = {
                     value["id"]?.let { id ->
-                        runCatching { id.jsonPrimitive.content }.getOrNull()?.takeIf(String::isNotBlank)
+                        runCatching { id.jsonPrimitive.content.toLong() }.getOrNull()
                             ?.let { id ->
                                 if (mutableInbound.trySend(AgentJsonRpcInbound.InvalidRequest(id)).isFailure) enqueueOverload(id)
                             }
@@ -261,7 +254,7 @@ class AgentJsonRpcClient(
                 val applicationMethod = ApplicationMethod.entries.firstOrNull { it.wireName == method }
                 if (applicationMethod == null) {
                     val params = runCatching { value.getValue("params").jsonObject }.getOrNull() ?: JsonObject(emptyMap())
-                    mutableRawNotifications.tryEmit(AgentRawNotification(method, params))
+                    mutableRawNotifications.send(AgentRawNotification(method, params))
                 } else {
                     runCatching {
                         ApplicationProtocol.JSON.decodeFromJsonElement(JsonRpcNotification.serializer(), value)
@@ -280,7 +273,7 @@ class AgentJsonRpcClient(
         pendingResponses.clear()
     }
 
-    private fun enqueueOverload(id: String) {
+    private fun enqueueOverload(id: Long) {
         if (overloadResponses.trySend(id).isFailure) requestCleanupFromOverload()
     }
 
@@ -315,6 +308,7 @@ class AgentJsonRpcClient(
             overloadResponses.close()
             if (coroutineContext[Job] !== overloadWriter) overloadWriter.cancelAndJoin()
             mutableInbound.close()
+            mutableRawNotifications.close()
         } finally {
             cleanupComplete.complete(Unit)
         }
