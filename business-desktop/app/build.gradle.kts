@@ -18,7 +18,9 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
     testImplementation(kotlin("test"))
+    testImplementation(compose.desktop.uiTestJUnit4)
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
+    testRuntimeOnly("org.junit.vintage:junit-vintage-engine:5.10.1")
 }
 kotlin { jvmToolchain(21) }
 
