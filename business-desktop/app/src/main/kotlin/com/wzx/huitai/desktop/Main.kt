@@ -21,9 +21,9 @@ import com.wzx.huitai.desktop.ui.action.HighRiskApprovalDialog
 import com.wzx.huitai.desktop.ui.layout.CompactContentTab
 import com.wzx.huitai.desktop.ui.shell.BusinessDesktopShell
 import com.wzx.huitai.desktop.ui.theme.HuitaiBusinessTheme
+import com.wzx.huitai.desktop.smoke.PackagedSmokeProbe
 import com.wzx.huitai.agent.protocol.ApplicationProtocol
 import com.wzx.huitai.presentation.form.FormPatch
-import java.nio.file.Path
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -42,22 +42,43 @@ import org.slf4j.LoggerFactory
  */
 fun main() {
     val runtimeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    val root = try {
-        runBlocking {
-            BusinessDesktopCompositionRoot.start(
-                ProductionBusinessDesktopCompositionFactory(
-                    configuration = BusinessDesktopProductionConfiguration(
-                        home = Path.of(System.getProperty("user.home")),
-                        backendJar = BusinessDesktopProductionConfiguration.resolveBundledBackendJar(),
-                    ),
-                    parentScope = runtimeScope,
-                ),
-            )
-        }
+    val startup = try {
+        val smokeProbe = PackagedSmokeProbe.fromEnvironment()
+        val factory = ProductionBusinessDesktopCompositionFactory(
+            configuration = BusinessDesktopProductionConfiguration(
+                home = BusinessDesktopProductionConfiguration.resolveHome(),
+                backendJar = BusinessDesktopProductionConfiguration.resolveBundledBackendJar(),
+                frameworkDemoIdentity = System.getenv("HUITAI_DESKTOP_FRAMEWORK_DEMO_IDENTITY") == "1",
+            ),
+            parentScope = runtimeScope,
+        )
+        DesktopStartup(
+            root = runBlocking { BusinessDesktopCompositionRoot.start(factory) },
+            factory = factory,
+            smokeProbe = smokeProbe,
+        )
     } catch (_: Exception) {
         LoggerFactory.getLogger("BusinessDesktopStartup")
             .error("业务桌面初始化失败，请检查本机安装与安全配置")
         runtimeScope.cancel()
+        return
+    }
+    val root = startup.root
+    val factory = startup.factory
+    val smokeProbe = startup.smokeProbe
+    if (smokeProbe != null) {
+        try {
+            runBlocking { smokeProbe.write(factory.packagedSmokeEvidence()) }
+        } catch (_: Exception) {
+            LoggerFactory.getLogger("BusinessDesktopSmoke")
+                .error("业务桌面安装包烟测失败")
+        } finally {
+            try {
+                runBlocking { root.shutdown() }
+            } finally {
+                runtimeScope.cancel()
+            }
+        }
         return
     }
     val view = requireNotNull(root.runtimeView)
@@ -199,6 +220,12 @@ fun main() {
         }
     }
 }
+
+private data class DesktopStartup(
+    val root: BusinessDesktopCompositionRoot,
+    val factory: ProductionBusinessDesktopCompositionFactory,
+    val smokeProbe: PackagedSmokeProbe?,
+)
 
 private fun actionInput(executionId: String, patch: FormPatch) = buildJsonObject {
     put("executionId", executionId)

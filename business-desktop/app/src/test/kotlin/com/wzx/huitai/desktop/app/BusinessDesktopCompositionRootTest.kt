@@ -14,6 +14,7 @@ import com.wzx.huitai.agent.protocol.ApplicationProtocol
 import com.wzx.huitai.agent.protocol.CommonApplicationFields
 import com.wzx.huitai.agent.protocol.JsonRpcRequest
 import com.wzx.huitai.desktop.runtime.ManagedBusinessAgentConnection
+import com.wzx.huitai.desktop.logging.DesktopLoggingBootstrap
 import com.wzx.huitai.desktop.decision.ActionDecisionPhase
 import com.wzx.huitai.demo.action.DemoActionCatalog
 import com.wzx.huitai.demo.gateway.FakeHuitaiGateway
@@ -26,6 +27,7 @@ import com.wzx.huitai.presentation.form.FieldChange
 import com.wzx.huitai.presentation.form.FormPatch
 import com.wzx.huitai.presentation.form.SourceReference
 import com.wzx.huitai.desktop.state.BusinessConnectionStatus
+import com.wzx.huitai.desktop.state.BusinessAuthenticationStatus
 import com.wzx.huitai.security.approval.InMemoryApprovalPort
 import com.wzx.huitai.security.approval.InMemoryConfirmationPort
 import com.wzx.huitai.security.execution.InMemoryActionExecutionStore
@@ -36,6 +38,7 @@ import com.wzx.huitai.security.secret.SecretRef
 import java.nio.file.Files
 import java.time.Instant
 import kotlin.test.Test
+import kotlin.test.AfterTest
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -69,6 +72,11 @@ import kotlinx.serialization.encodeToString
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class BusinessDesktopCompositionRootTest {
+    @AfterTest
+    fun resetDesktopLogging() {
+        DesktopLoggingBootstrap.resetForTests()
+    }
+
     @Test
     fun `startup is strictly ordered and user plus agent share one action bus`() = runTest {
         val events = mutableListOf<String>()
@@ -143,6 +151,7 @@ class BusinessDesktopCompositionRootTest {
                 home = home,
                 backendJar = home.resolve("backend/babiq-server.jar"),
                 desktopSecretBootstrap = DesktopSecretBootstrap { desktopPassword.copyOf() },
+                frameworkDemoIdentity = true,
             ),
             parentScope = this,
             childLauncher = BusinessAgentChildLauncher { context ->
@@ -553,10 +562,57 @@ class BusinessDesktopCompositionRootTest {
         assertEquals(
             root.resolve("backend/babiq-server.jar"),
             BusinessDesktopProductionConfiguration.resolveBundledBackendJar(
-                systemProperties = mapOf("huitai.business.resources.root" to root.toString()),
+                systemProperties = mapOf("compose.application.resources.dir" to root.toString()),
                 environment = emptyMap(),
             ),
         )
+        assertEquals(
+            root,
+            BusinessDesktopProductionConfiguration.resolveHome(
+                environment = mapOf("HUITAI_DESKTOP_HOME" to root.toString()),
+            ),
+        )
+    }
+
+    @Test
+    fun `packaged production defaults to signed out identity without catalog or context registration`() = runTest {
+        val home = Files.createTempDirectory("huitai-signed-out-composition")
+        val connection = AutoRespondingConnection()
+        val factory = ProductionBusinessDesktopCompositionFactory(
+            configuration = BusinessDesktopProductionConfiguration(
+                home = home,
+                backendJar = home.resolve("backend/babiq-server.jar"),
+                desktopSecretBootstrap = DesktopSecretBootstrap { "signed-out-password".toCharArray() },
+            ),
+            parentScope = this,
+            childLauncher = BusinessAgentChildLauncher { context ->
+                val session = DesktopSessionIdentity.forChildLaunch(context.desktopInstanceId, "http://127.0.0.1")
+                BusinessAgentChildHandle(
+                    identity = session,
+                    sequenceTracker = ApplicationSequenceTracker(session.desktopSessionId),
+                    resource = CompositionResource { },
+                )
+            },
+            connector = BusinessAgentConnector {
+                BusinessAgentConnectionHandle(connection, CompositionResource { connection.close() })
+            },
+        )
+
+        val root = BusinessDesktopCompositionRoot.start(factory)
+        advanceUntilIdle()
+
+        val methods = connection.sent.mapNotNull { text ->
+            Json.parseToJsonElement(text).jsonObject["method"]?.jsonPrimitive?.content
+        }
+        assertTrue("application/identity/update" in methods)
+        assertFalse("application/identity/bind" in methods)
+        assertFalse("application/catalog/register" in methods)
+        assertFalse("application/context/publish" in methods)
+        val state = requireNotNull(root.runtimeView).desktopState.value
+        assertEquals(BusinessAuthenticationStatus.SIGNED_OUT, state.authenticationStatus)
+        assertEquals(null, state.identity)
+
+        root.shutdown()
     }
 
     private fun actionBus(): ApplicationActionBus {

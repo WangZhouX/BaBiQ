@@ -1,4 +1,7 @@
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
+import org.gradle.api.tasks.Copy
+import org.gradle.api.tasks.Exec
+import java.nio.file.Path
 
 plugins {
     kotlin("jvm")
@@ -28,6 +31,39 @@ dependencies {
 }
 kotlin { jvmToolchain(21) }
 
+val backendProjectDir = rootProject.projectDir.parentFile.resolve("backend")
+val backendJar = backendProjectDir.resolve("target/babiq-server-0.0.1-SNAPSHOT.jar")
+val preparedAppResourcesRoot = layout.buildDirectory.dir("preparedAppResources")
+val bundledBackendRelativePath = "common/backend/babiq-server.jar"
+
+val packageBusinessBackendJar by tasks.registering(Exec::class) {
+    group = "distribution"
+    description = "Builds the business-profile backend jar bundled with the desktop application."
+    workingDir(backendProjectDir)
+    commandLine(
+        backendProjectDir.resolve("mvnw.cmd").absolutePath,
+        "-DskipTests",
+        "package",
+    )
+    inputs.files(
+        fileTree(backendProjectDir.resolve("src")),
+        backendProjectDir.resolve("pom.xml"),
+        backendProjectDir.resolve("mvnw.cmd"),
+        backendProjectDir.resolve(".mvn/wrapper/maven-wrapper.properties"),
+    )
+    outputs.file(backendJar)
+}
+
+val prepareBundledBusinessBackend by tasks.registering(Copy::class) {
+    group = "distribution"
+    description = "Copies the built backend as common/backend/babiq-server.jar."
+    dependsOn(packageBusinessBackendJar)
+    from(backendJar)
+    into(preparedAppResourcesRoot.map { it.dir("common/backend") })
+    rename { "babiq-server.jar" }
+    inputs.property("bundledBackendRelativePath", bundledBackendRelativePath)
+}
+
 compose.desktop {
     application {
         mainClass = "com.wzx.huitai.desktop.MainKt"
@@ -36,6 +72,63 @@ compose.desktop {
             packageName = "HuitaiBusinessDesktop"
             packageVersion = "0.1.0"
             includeAllModules = true
+            appResourcesRootDir.set(preparedAppResourcesRoot)
         }
     }
+}
+
+val retainRuntimeJavaExecutable by tasks.registering(Copy::class) {
+    group = "distribution"
+    description = "Restores the Java launcher required by the bundled backend child process."
+    dependsOn("createRuntimeImage")
+    val executableName = if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) {
+        "java.exe"
+    } else {
+        "java"
+    }
+    from(Path.of(System.getProperty("java.home"), "bin", executableName))
+    into(layout.buildDirectory.dir("compose/tmp/main/runtime/bin"))
+}
+
+val nativePackageTasks = setOf(
+    "prepareAppResources",
+    "createRuntimeImage",
+    "createDistributable",
+    "createReleaseDistributable",
+    "packageDistributionForCurrentOS",
+    "packageMsi",
+    "packageExe",
+    "packageReleaseDistributionForCurrentOS",
+    "packageReleaseMsi",
+    "packageReleaseExe",
+)
+
+tasks.matching { it.name in nativePackageTasks }.configureEach {
+    dependsOn(prepareBundledBusinessBackend)
+}
+
+tasks.matching {
+    it.name in nativePackageTasks && it.name !in setOf("prepareAppResources", "createRuntimeImage")
+}.configureEach {
+    dependsOn(retainRuntimeJavaExecutable)
+}
+
+val smokePackagedDistribution by tasks.registering(Exec::class) {
+    group = "verification"
+    description = "Extracts and smoke-tests the packaged Windows desktop distribution."
+    dependsOn("packageMsi")
+    onlyIf { System.getProperty("os.name").startsWith("Windows", ignoreCase = true) }
+    workingDir(rootProject.projectDir)
+    commandLine(
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        rootProject.projectDir.resolve("scripts/smoke-packaged-distribution.ps1").absolutePath,
+        "-AppBuildDir",
+        layout.buildDirectory.get().asFile.absolutePath,
+        "-RepositoryRoot",
+        rootProject.projectDir.parentFile.absolutePath,
+    )
 }

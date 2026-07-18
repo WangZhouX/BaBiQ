@@ -72,4 +72,15 @@ object DesktopLoggingBootstrap {
         configuredPath = normalized
         runCatching { RuntimeFilePermissions.applyOwnerOnly(normalized, directory = false) }
     }
+
+    @Synchronized
+    internal fun resetForTests() {
+        val context = LoggerFactory.getILoggerFactory() as? LoggerContext
+        val root = context?.getLogger(Logger.ROOT_LOGGER_NAME)
+        root?.getAppender(APPENDER_NAME)?.let { appender ->
+            root.detachAppender(appender)
+            appender.stop()
+        }
+        configuredPath = null
+    }
 }

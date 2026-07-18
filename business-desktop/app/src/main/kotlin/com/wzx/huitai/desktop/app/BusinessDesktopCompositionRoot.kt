@@ -12,6 +12,7 @@ import com.wzx.huitai.agent.application.ApplicationContextClient
 import com.wzx.huitai.agent.application.ApplicationIdentityClient
 import com.wzx.huitai.agent.application.TrustedApplicationIdentity
 import com.wzx.huitai.agent.client.AgentConnection
+import com.wzx.huitai.agent.client.AgentConnectRequest
 import com.wzx.huitai.agent.client.AgentConnectionState
 import com.wzx.huitai.agent.client.AgentJsonRpcClient
 import com.wzx.huitai.agent.client.AgentSupervisorState
@@ -43,6 +44,7 @@ import com.wzx.huitai.desktop.runtime.BusinessDesktopRuntimePaths
 import com.wzx.huitai.desktop.runtime.DesktopInstallationIdentityStore
 import com.wzx.huitai.desktop.runtime.BusinessAgentLaunchRequest
 import com.wzx.huitai.desktop.runtime.ManagedBusinessAgentConnection
+import com.wzx.huitai.desktop.smoke.PackagedSmokeEvidence
 import com.wzx.huitai.desktop.security.JceksAuthCredentialPersistence
 import com.wzx.huitai.desktop.state.BusinessDesktopReducer
 import com.wzx.huitai.desktop.state.BusinessDesktopState
@@ -72,6 +74,7 @@ import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.websocket.WebSockets
 import java.nio.file.Path
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.security.SecureRandom
 import java.time.Instant
 import java.util.Arrays
@@ -272,6 +275,7 @@ class BusinessDesktopProductionConfiguration(
     val home: Path,
     val backendJar: Path,
     val desktopSecretBootstrap: DesktopSecretBootstrap = EnvironmentDesktopSecretBootstrap(),
+    val frameworkDemoIdentity: Boolean = false,
 ) {
     override fun toString(): String =
         "BusinessDesktopProductionConfiguration(home=[REDACTED], backendJar=[REDACTED], secret=[REDACTED])"
@@ -286,10 +290,23 @@ class BusinessDesktopProductionConfiguration(
             workingDirectory: Path = Path.of("").toAbsolutePath(),
         ): Path {
             val resourceRoot = systemProperties["huitai.business.resources.root"]
+                ?: systemProperties["compose.application.resources.dir"]
                 ?: environment["HUITAI_DESKTOP_RESOURCES_ROOT"]
             val root = resourceRoot?.let(Path::of) ?: workingDirectory
             return root.toAbsolutePath().normalize().resolve("backend/babiq-server.jar")
         }
+
+        fun resolveHome(
+            environment: Map<String, String> = System.getenv(),
+            systemProperties: Map<String, String> = System.getProperties().entries.associate {
+                it.key.toString() to it.value.toString()
+            },
+        ): Path = (environment["HUITAI_DESKTOP_HOME"]
+            ?.takeIf(String::isNotBlank)
+            ?.let(Path::of)
+            ?: Path.of(systemProperties.getValue("user.home")))
+            .toAbsolutePath()
+            .normalize()
     }
 }
 
@@ -379,7 +396,7 @@ class ProductionBusinessDesktopCompositionFactory(
     private lateinit var catalogClient: ApplicationCatalogClient
     private lateinit var contextClient: ApplicationContextClient
     private lateinit var identityClient: ApplicationIdentityClient
-    private lateinit var identity: BusinessIdentity
+    private var identity: BusinessIdentity? = null
     private var startupRegistrationConnectionId: String? = null
     private var lastRegisteredConnectionId: String? = null
     private val contextPublisherLock = Any()
@@ -519,17 +536,21 @@ class ProductionBusinessDesktopCompositionFactory(
             catalogClient = ApplicationCatalogClient(rpc, this.child.sequenceTracker)
             contextClient = ApplicationContextClient(rpc, this.child.sequenceTracker)
             identityClient = ApplicationIdentityClient(rpc, this.child.sequenceTracker, catalogClient, contextClient)
-            identity = BusinessIdentity(
-                desktopInstanceId = this.child.identity.desktopInstanceId,
-                desktopSessionId = this.child.identity.desktopSessionId,
-                authSessionId = UUID.randomUUID().toString(),
-                identityEpoch = 1,
-                userId = "framework-demo-user",
-                tenantId = "framework-demo-tenant",
-                platformId = "framework-demo",
-                roles = setOf("framework-demo"),
-                permissions = setOf("demo.write", "demo.submit"),
-            )
+            identity = if (configuration.frameworkDemoIdentity) {
+                BusinessIdentity(
+                    desktopInstanceId = this.child.identity.desktopInstanceId,
+                    desktopSessionId = this.child.identity.desktopSessionId,
+                    authSessionId = UUID.randomUUID().toString(),
+                    identityEpoch = 1,
+                    userId = "framework-demo-user",
+                    tenantId = "framework-demo-tenant",
+                    platformId = "framework-demo",
+                    roles = setOf("framework-demo"),
+                    permissions = setOf("demo.write", "demo.submit"),
+                )
+            } else {
+                null
+            }
             return CompositionResource {
                 closeCompositionSteps(
                     { rpc.close() },
@@ -550,7 +571,8 @@ class ProductionBusinessDesktopCompositionFactory(
 
     override suspend fun initializeIdentity(connection: CompositionResource) {
         val connectionId = rpc.connectionId
-        identityClient.bind(identityEnvelope())
+        identity?.let { identityClient.bind(identityEnvelope(it)) }
+            ?: identityClient.update(signedOutIdentityEnvelope())
         check(rpc.connectionId == connectionId) { "Agent connection changed during identity registration" }
         startupRegistrationConnectionId = connectionId
     }
@@ -559,14 +581,19 @@ class ProductionBusinessDesktopCompositionFactory(
         val connectionId = requireNotNull(startupRegistrationConnectionId) {
             "identity registration must complete first"
         }
+        if (identity == null) return
         check(rpc.connectionId == connectionId) { "Agent connection changed before catalog registration" }
-        catalogClient.register(catalogEnvelope())
+        catalogClient.register(catalogEnvelope(requireNotNull(identity)))
         check(rpc.connectionId == connectionId) { "Agent connection changed during catalog registration" }
     }
 
     override suspend fun initializeContext(connection: CompositionResource) {
         val connectionId = requireNotNull(startupRegistrationConnectionId) {
             "identity registration must complete first"
+        }
+        if (identity == null) {
+            lastRegisteredConnectionId = connectionId
+            return
         }
         check(rpc.connectionId == connectionId) { "Agent connection changed before context registration" }
         contextClient.publish(contextEnvelope(contextSequence = 1, storage.screen.pageContext()))
@@ -637,13 +664,15 @@ class ProductionBusinessDesktopCompositionFactory(
             now = Instant::now,
             scope = scope,
         )
-        workspace.attachPublishedIdentity(
-            identity = identity,
-            catalogEpoch = catalogEpoch,
-            snapshot = this.storage.screen.pageContext(),
-            lifecycleGeneration = 1,
-            publishedContextSequence = 1,
-        )
+        identity?.let { activeIdentity ->
+            workspace.attachPublishedIdentity(
+                identity = activeIdentity,
+                catalogEpoch = catalogEpoch,
+                snapshot = this.storage.screen.pageContext(),
+                lifecycleGeneration = 1,
+                publishedContextSequence = 1,
+            )
+        }
         desktopCoordinator.start()
         suggestionObserver = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             this@ProductionBusinessDesktopCompositionFactory.storage.screen.state
@@ -746,7 +775,7 @@ class ProductionBusinessDesktopCompositionFactory(
             )
         }
 
-    private fun identityEnvelope(value: BusinessIdentity = identity): IdentityEnvelope = IdentityEnvelope(
+    private fun identityEnvelope(value: BusinessIdentity): IdentityEnvelope = IdentityEnvelope(
         common = common(value),
         authenticated = true,
         roles = value.roles,
@@ -754,7 +783,7 @@ class ProductionBusinessDesktopCompositionFactory(
     )
 
     private fun catalogEnvelope(
-        value: BusinessIdentity = identity,
+        value: BusinessIdentity,
         epoch: Long = catalogEpoch,
     ): CatalogEnvelope {
         val payload = buildJsonObject {
@@ -781,6 +810,7 @@ class ProductionBusinessDesktopCompositionFactory(
         contextSequence: Long,
         snapshot: com.wzx.huitai.presentation.context.PageContextSnapshot,
     ): ContextEnvelope {
+        val activeIdentity = requireNotNull(identity) { "Page context requires authenticated business identity" }
         val connectionId = rpc.connectionId
         val published = synchronized(contextPublisherLock) {
             val publisher = if (contextPublisherConnectionId == connectionId) {
@@ -788,9 +818,9 @@ class ProductionBusinessDesktopCompositionFactory(
             } else {
                 PageContextPublisher(
                     identity = TrustedPageContextIdentity(
-                        desktopInstanceId = identity.desktopInstanceId,
-                        authSessionId = identity.authSessionId,
-                        identityEpoch = identity.identityEpoch,
+                        desktopInstanceId = activeIdentity.desktopInstanceId,
+                        authSessionId = activeIdentity.authSessionId,
+                        identityEpoch = activeIdentity.identityEpoch,
                     ),
                     sanitizer = PageContextSanitizer(),
                 ).also {
@@ -808,7 +838,7 @@ class ProductionBusinessDesktopCompositionFactory(
             ),
         )
         return ContextEnvelope(
-            common = common(identity),
+            common = common(activeIdentity),
             catalogEpoch = catalogEpoch,
             contextSequence = contextSequence,
             payloadSize = payload.encodedSize(),
@@ -831,11 +861,36 @@ class ProductionBusinessDesktopCompositionFactory(
 
     private fun nextSequence(): Long = envelopeSequence.incrementAndGet()
 
+    private fun signedOutIdentityEnvelope(): IdentityEnvelope = IdentityEnvelope(
+        common = CommonApplicationFields(
+            protocolVersion = ApplicationProtocol.PROTOCOL_VERSION,
+            desktopInstanceId = child.identity.desktopInstanceId,
+            desktopSessionId = child.identity.desktopSessionId,
+            authSessionId = null,
+            identityEpoch = 1,
+            sequence = nextSequence(),
+            generatedAt = Instant.now().toString(),
+            userId = null,
+            tenantId = null,
+            platformId = null,
+        ),
+        authenticated = false,
+        roles = emptySet(),
+        permissions = emptySet(),
+    )
+
     private suspend fun registerActiveConnection(connectionId: String) = registrationPublicationMutex.withLock {
         check(rpc.connectionId == connectionId) { "Agent connection changed before identity registration" }
-        identityClient.bind(identityEnvelope())
+        val activeIdentity = identity
+        if (activeIdentity == null) {
+            identityClient.update(signedOutIdentityEnvelope())
+            check(rpc.connectionId == connectionId) { "Agent connection changed during signed-out registration" }
+            lastRegisteredConnectionId = connectionId
+            return@withLock
+        }
+        identityClient.bind(identityEnvelope(activeIdentity))
         check(rpc.connectionId == connectionId) { "Agent connection changed during identity registration" }
-        catalogClient.register(catalogEnvelope())
+        catalogClient.register(catalogEnvelope(activeIdentity))
         check(rpc.connectionId == connectionId) { "Agent connection changed during catalog registration" }
         contextClient.publish(
             contextEnvelope(
@@ -845,6 +900,74 @@ class ProductionBusinessDesktopCompositionFactory(
         )
         check(rpc.connectionId == connectionId) { "Agent connection changed during context registration" }
         lastRegisteredConnectionId = connectionId
+    }
+
+    suspend fun packagedSmokeEvidence(): PackagedSmokeEvidence {
+        require(!configuration.frameworkDemoIdentity) { "packaged smoke must use signed-out identity" }
+        val session = requireNotNull(child.runtimeSession) { "packaged smoke requires the real child process" }
+        val activeConnection = agentConnection.connection
+        val unauthorizedRejected = unauthorizedHandshakeRejected(session)
+        return PackagedSmokeEvidence(
+            profile = PackagedSmokeEvidence.PROFILE,
+            address = session.address,
+            port = session.port,
+            runtimeRoot = paths.root,
+            desktopRoot = paths.desktopRoot,
+            agentRoot = paths.agentRoot,
+            desktopDatabase = paths.desktopDatabase,
+            agentDatabase = paths.agentDatabase,
+            desktopKeyStore = paths.desktopKeyStore,
+            agentKeyStore = paths.agentKeyStore,
+            tokenFile = paths.agentSessionToken,
+            tokenFileDeleted = Files.notExists(paths.agentSessionToken, LinkOption.NOFOLLOW_LINKS),
+            unauthorizedHandshakeRejected = unauthorizedRejected,
+            authenticatedConnection = activeConnection.state.value == AgentConnectionState.Connected,
+            signedOutIdentityBound = identity == null &&
+                lastRegisteredConnectionId == rpc.connectionId &&
+                storage.desktopStore.state.value.authenticationStatus ==
+                com.wzx.huitai.desktop.state.BusinessAuthenticationStatus.SIGNED_OUT,
+            childPid = session.childPid,
+        )
+    }
+
+    private suspend fun unauthorizedHandshakeRejected(session: BusinessAgentRuntimeSession): Boolean {
+        val probeJob = SupervisorJob(scope.coroutineContext[Job])
+        val probeScope = CoroutineScope(scope.coroutineContext.minusKey(Job) + probeJob)
+        val client = HttpClient(CIO) { install(WebSockets) }
+        val transport = KtorAgentTransport(client, probeScope)
+        var connection: AgentConnection? = null
+        return try {
+            val valid = session.connectRequest.identity
+            val invalid = DesktopSessionIdentity(
+                desktopInstanceId = valid.desktopInstanceId,
+                desktopSessionId = valid.desktopSessionId,
+                desktopSessionToken = "invalid-smoke-token-${UUID.randomUUID()}",
+                localOrigin = valid.localOrigin,
+            )
+            val unauthorizedConnection = transport.connect(AgentConnectRequest(session.connectRequest.url, invalid))
+            connection = unauthorizedConnection
+            withTimeout(5_000) {
+                unauthorizedConnection.state.first { state ->
+                    state is AgentConnectionState.AuthenticationFailed ||
+                        state is AgentConnectionState.TransportFailure ||
+                        state is AgentConnectionState.Closed ||
+                        state == AgentConnectionState.Connected
+                }
+            } is AgentConnectionState.AuthenticationFailed
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            false
+        } finally {
+            withContext(NonCancellable) {
+                closeCompositionSteps(
+                    { connection?.close() },
+                    { transport.close() },
+                    { probeJob.cancel() },
+                    { client.close() },
+                )
+            }
+        }
     }
 
     private fun defaultChildLauncher(): BusinessAgentChildLauncher = BusinessAgentChildLauncher { context ->

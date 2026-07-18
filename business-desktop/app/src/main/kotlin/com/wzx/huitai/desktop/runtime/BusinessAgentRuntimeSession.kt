@@ -58,6 +58,15 @@ class BusinessAgentRuntimeSession internal constructor(
     val isAlive: Boolean
         get() = process.isAlive
 
+    val childPid: Long
+        get() = process.pid()
+
+    val address: String
+        get() = LOOPBACK_ADDRESS
+
+    val port: Int
+        get() = request.port
+
     /**
      * 为该 child 创建唯一重连 supervisor，并返回供 JSON-RPC 长期持有的稳定 connection facade。
      * facade 的 incoming 和 send 都经过 supervisor generation 过滤，因此 Task31 的旧连接事件不会
@@ -117,6 +126,7 @@ class BusinessAgentRuntimeSession internal constructor(
 
         private const val GRACEFUL_SHUTDOWN_SECONDS = 5L
         private const val FORCED_SHUTDOWN_SECONDS = 5L
+        private const val LOOPBACK_ADDRESS = "127.0.0.1"
     }
 }
 
