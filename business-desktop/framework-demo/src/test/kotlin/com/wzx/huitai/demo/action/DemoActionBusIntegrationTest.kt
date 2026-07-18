@@ -3,6 +3,7 @@ package com.wzx.huitai.demo.action
 import com.wzx.huitai.action.ActionContext
 import com.wzx.huitai.action.ActionBusResult
 import com.wzx.huitai.action.ActionExecutionContextValidator
+import com.wzx.huitai.action.ActionInvocationResult
 import com.wzx.huitai.action.ApplicationActionBus
 import com.wzx.huitai.action.model.ActionCommand
 import com.wzx.huitai.action.model.ActionError
@@ -38,6 +39,8 @@ import com.wzx.huitai.action.port.ReconciliationUpdateResult
 import com.wzx.huitai.action.port.RiskEvaluation
 import com.wzx.huitai.demo.gateway.FakeGatewayMode
 import com.wzx.huitai.demo.gateway.FakeHuitaiGateway
+import com.wzx.huitai.demo.model.DemoDispatchResult
+import com.wzx.huitai.demo.model.DemoFormEvent
 import com.wzx.huitai.demo.model.DemoFormState
 import com.wzx.huitai.demo.model.DemoScreenModel
 import com.wzx.huitai.presentation.form.FieldChange
@@ -52,11 +55,96 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import java.time.Instant
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 
 class DemoActionBusIntegrationTest {
+    @Test
+    fun `原子事件结果明确标记stale补丁未应用`() {
+        val initial = DemoFormState()
+        val screen = DemoScreenModel(initial)
+        val stalePatch = patchFor(initial, DemoFormState.FIELD_NAME, "过期值")
+        screen.dispatch(DemoFormEvent.EditField(DemoFormState.FIELD_STATUS, "用户更新"))
+
+        val result = screen.dispatchWithResult(DemoFormEvent.ApplyPatch(stalePatch))
+
+        assertFalse(result.stateChanged)
+        assertEquals(result.before, result.after)
+        assertEquals(1, result.after.revision)
+        assertEquals(initial.values.name, result.after.values.name)
+    }
+
+    @Test
+    fun `表单动作把stale补丁返回为失败而不是成功`() = runTest {
+        val initial = DemoFormState()
+        val screen = DemoScreenModel(initial)
+        val stalePatch = patchFor(initial, DemoFormState.FIELD_NAME, "过期值")
+        screen.dispatch(DemoFormEvent.EditField(DemoFormState.FIELD_STATUS, "用户更新"))
+        val registered = DemoActionCatalog(screen, FakeHuitaiGateway()).actions
+            .single { it.descriptor.id == "form.apply_patch" }
+
+        val invocation = registered.invokeExecute(
+            buildJsonObject {
+                put("executionId", "stale-apply")
+                put("patch", Json.parseToJsonElement(Json.encodeToString(stalePatch)).jsonObject)
+            },
+            demoContext(screen.state.value.revision),
+        )
+
+        val result = assertIs<ActionInvocationResult.Executed>(invocation).result
+        assertIs<ActionResult.Failure>(result)
+        assertEquals(initial.values.name, screen.state.value.values.name)
+    }
+
+    @Test
+    fun `补丁与用户编辑并发时每个typed事件结果保持线性化`() {
+        repeat(20) {
+            val initial = DemoFormState()
+            val screen = DemoScreenModel(initial)
+            val patch = patchFor(initial, DemoFormState.FIELD_NAME, "补丁值")
+            val start = CountDownLatch(1)
+            val executor = Executors.newFixedThreadPool(2)
+            try {
+                val patchFuture = executor.submit<DemoDispatchResult> {
+                    start.await()
+                    screen.dispatchWithResult(DemoFormEvent.ApplyPatch(patch))
+                }
+                val editFuture = executor.submit<DemoDispatchResult> {
+                    start.await()
+                    screen.dispatchWithResult(
+                        DemoFormEvent.EditField(DemoFormState.FIELD_STATUS, "用户更新"),
+                    )
+                }
+                start.countDown()
+
+                val patchResult = patchFuture.get()
+                val editResult = editFuture.get()
+                val finalState = screen.state.value
+
+                assertTrue(editResult.stateChanged)
+                if (patchResult.stateChanged) {
+                    assertEquals(0, patchResult.before.revision)
+                    assertEquals(1, patchResult.after.revision)
+                    assertEquals(2, finalState.revision)
+                    assertEquals("补丁值", finalState.values.name)
+                } else {
+                    assertEquals(1, patchResult.before.revision)
+                    assertEquals(patchResult.before, patchResult.after)
+                    assertEquals(1, finalState.revision)
+                    assertEquals(initial.values.name, finalState.values.name)
+                }
+                assertEquals("用户更新", finalState.values.status)
+            } finally {
+                executor.shutdownNow()
+            }
+        }
+    }
+
     @Test
     fun `用户和Agent应用补丁都经过同一个动作总线完整链路`() = runTest {
         val fixture = DemoActionBusFixture()
@@ -108,6 +196,41 @@ class DemoActionBusIntegrationTest {
         assertEquals(ActionExecutionState.SUCCEEDED, fixture.stateOf("submit-lost"))
     }
 }
+
+/** 创建绑定给定状态 revision 的单字段补丁。 */
+private fun patchFor(
+    state: DemoFormState,
+    fieldId: String,
+    value: String,
+): FormPatch = FormPatch(
+    pageId = DemoFormState.PAGE_ID,
+    baseRevision = state.revision,
+    changes = listOf(
+        FieldChange(
+            fieldId = fieldId,
+            previousValue = JsonPrimitive(state.values.valueOf(fieldId)),
+            newValue = JsonPrimitive(value),
+            reason = "并发边界验证",
+            confidence = 1.0,
+        ),
+    ),
+)
+
+/** 创建演示动作直接调用所需的冻结上下文。 */
+private fun demoContext(revision: Long): ActionContext = ActionContext(
+    identityScope = ActionIdentityScope(
+        desktopInstanceId = "desktop-direct",
+        desktopSessionId = "session-direct",
+        authSessionId = "auth-direct",
+        identityEpoch = 1,
+        userId = "user-direct",
+        tenantId = "tenant-direct",
+        platformId = "platform-direct",
+    ),
+    pageId = DemoFormState.PAGE_ID,
+    contextRevision = revision,
+    permissions = setOf("demo.write"),
+)
 
 /** 为 framework-demo 提供真实 ApplicationActionBus 的最小内存端口。 */
 private class DemoActionBusFixture(

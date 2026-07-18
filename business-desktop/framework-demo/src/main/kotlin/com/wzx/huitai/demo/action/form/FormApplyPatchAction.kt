@@ -17,10 +17,13 @@ import com.wzx.huitai.demo.action.demoDescriptor
 import com.wzx.huitai.demo.action.requiredPatch
 import com.wzx.huitai.demo.action.requiredString
 import com.wzx.huitai.demo.action.strictSchema
+import com.wzx.huitai.demo.model.DemoDispatchResult
 import com.wzx.huitai.demo.model.DemoFormEvent
+import com.wzx.huitai.demo.model.DemoFormState
 import com.wzx.huitai.demo.model.DemoScreenModel
 import com.wzx.huitai.presentation.form.FormPatch
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -50,12 +53,10 @@ class FormApplyPatchAction private constructor(
         },
     )
 
-    /** 只派发强类型补丁事件，并验证 reducer 确实完成一次版本更新。 */
+    /** 只派发强类型补丁事件，并依据该事件的原子迁移结果确认是否应用。 */
     override suspend fun execute(input: FormApplyPatchInput, context: ActionContext): ActionResult<JsonObject> {
-        val before = screen.state.value
-        screen.dispatch(DemoFormEvent.ApplyPatch(input.patch))
-        val after = screen.state.value
-        if (after.revision != before.revision + 1) {
+        val transition = screen.dispatchWithResult(DemoFormEvent.ApplyPatch(input.patch))
+        if (!transition.applied(input.patch)) {
             return ActionResult.Failure(
                 input.executionId,
                 ActionError(ActionErrorCode.CONTEXT_STALE, "表单补丁未能应用"),
@@ -64,7 +65,7 @@ class FormApplyPatchAction private constructor(
         return ActionResult.Success(
             input.executionId,
             buildJsonObject {
-                put("revision", after.revision)
+                put("revision", transition.after.revision)
                 put("changeCount", input.patch.changes.size)
             },
         )
@@ -85,3 +86,13 @@ class FormApplyPatchAction private constructor(
         )
     }
 }
+
+/** 只接受本事件从 patch 基础版本出发、一次递增且实际落下全部字段值的迁移。 */
+private fun DemoDispatchResult.applied(patch: FormPatch): Boolean =
+    stateChanged &&
+        before.revision == patch.baseRevision &&
+        after.revision == patch.baseRevision + 1 &&
+        patch.changes.all { change ->
+            change.fieldId in DemoFormState.FIELD_IDS &&
+                change.newValue == JsonPrimitive(after.values.valueOf(change.fieldId))
+        }

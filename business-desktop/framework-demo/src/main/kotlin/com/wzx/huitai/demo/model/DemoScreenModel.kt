@@ -11,8 +11,19 @@ import com.wzx.huitai.presentation.screen.BusinessScreenContract
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.serialization.json.JsonPrimitive
+
+/** 单个 typed event 在页面临界区内计算出的不可变迁移结果。 */
+internal data class DemoDispatchResult(
+    /** 本事件进入 reducer 时的状态。 */
+    val before: DemoFormState,
+    /** 本事件完成 reducer 迁移后的状态。 */
+    val after: DemoFormState,
+) {
+    /** 本事件是否实际改变页面状态。 */
+    val stateChanged: Boolean
+        get() = before != after
+}
 
 /**
  * 通用七字段演示页面模型。
@@ -24,13 +35,22 @@ class DemoScreenModel(
     private val reducer: DemoFormReducer = DemoFormReducer(),
 ) : BusinessScreenContract<DemoFormState, DemoFormEvent>, AgentAwareScreen {
     private val mutableState = MutableStateFlow(initialState)
+    private val dispatchMonitor = Any()
 
     /** 当前不可变页面状态。 */
     override val state: StateFlow<DemoFormState> = mutableState.asStateFlow()
 
     /** 将强类型事件交给纯 reducer。 */
     override fun dispatch(event: DemoFormEvent) {
-        mutableState.update { current -> reducer.reduce(current, event) }
+        dispatchWithResult(event)
+    }
+
+    /** 在所有页面写入共用的临界区内计算并发布一个 typed event 的精确迁移。 */
+    internal fun dispatchWithResult(event: DemoFormEvent): DemoDispatchResult = synchronized(dispatchMonitor) {
+        val before = mutableState.value
+        val after = reducer.reduce(before, event)
+        mutableState.value = after
+        DemoDispatchResult(before, after)
     }
 
     /** 从同一次状态读取生成字段值与 revision 完全一致的页面快照。 */
