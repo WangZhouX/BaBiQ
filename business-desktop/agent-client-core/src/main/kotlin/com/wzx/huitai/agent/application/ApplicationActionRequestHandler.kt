@@ -4,6 +4,7 @@ import com.wzx.huitai.action.ActionBusResult
 import com.wzx.huitai.action.ActionContext
 import com.wzx.huitai.action.ApplicationActionBus
 import com.wzx.huitai.action.model.ActionCommand
+import com.wzx.huitai.action.model.ActionCorrelation
 import com.wzx.huitai.action.model.ActionErrorCode
 import com.wzx.huitai.action.model.ActionIdentityScope
 import com.wzx.huitai.action.model.ActionOrigin
@@ -262,6 +263,7 @@ class ApplicationActionRequestHandler(
             identityScope = identity.scope,
             pageId = payload.getValue("pageId").jsonPrimitive.content,
             contextRevision = payload.getValue("contextRevision").jsonPrimitive.long,
+            correlation = ActionCorrelation(envelope.threadId, envelope.turnId, envelope.toolCallId),
         )
         return command to ActionContext(identity.scope, command.pageId, command.contextRevision, identity.permissions.toSet())
     }

@@ -72,10 +72,20 @@ class ApplicationActionExecutionRuntime(
         val key = candidate.runtimeKey()
         while (true) {
             active[key]?.let { existing ->
-                return if (existing.sameRequest(candidate)) {
-                    bindSink(candidate.command.identityScope, acceptedSink)
-                    RuntimeStartResult.Acknowledged
-                } else RuntimeStartResult.Conflict
+                if (!existing.sameRequest(candidate)) return RuntimeStartResult.Conflict
+                val durableUnknown = (scopedRead(
+                    candidate.command.executionId,
+                    candidate.command.identityScope,
+                ) as? ScopedRead.Found)?.record?.state == ActionExecutionState.OUTCOME_UNKNOWN
+                if (durableUnknown) {
+                    val finished = withTimeoutOrNull(cleanupTimeoutMillis) {
+                        existing.job?.join()
+                        true
+                    } == true
+                    if (finished) continue
+                }
+                bindSink(candidate.command.identityScope, acceptedSink)
+                return RuntimeStartResult.Acknowledged
             }
             val reservation = StartingExecution(candidate)
             val existingStart = starting.putIfAbsent(key, reservation)
@@ -86,23 +96,30 @@ class ApplicationActionExecutionRuntime(
             }
 
             try {
+                var needsReconciliation = false
                 when (val persisted = scopedRead(candidate.command.executionId, candidate.command.identityScope)) {
                     is ScopedRead.Found -> {
-                        val outcome = if (!persisted.record.matchesBinding(candidate)) {
-                            RuntimeStartResult.Conflict
+                        if (!persisted.record.matchesBinding(candidate)) {
+                            reservation.outcome.complete(StartOutcome.Finished)
+                            return RuntimeStartResult.Conflict
+                        }
+                        if (persisted.record.state == ActionExecutionState.OUTCOME_UNKNOWN) {
+                            needsReconciliation = true
+                            synchronized(completedLock) {
+                                completed.remove(key)?.close()
+                            }
                         } else {
                             if (persisted.record.isTerminal) installCompleted(candidate)
                             bindSink(candidate.command.identityScope, acceptedSink)
-                            RuntimeStartResult.Acknowledged
+                            reservation.outcome.complete(StartOutcome.Finished)
+                            return RuntimeStartResult.Acknowledged
                         }
-                        reservation.outcome.complete(StartOutcome.Finished)
-                        return outcome
                     }
                     ScopedRead.Unavailable -> error("Scoped execution query is unavailable")
                     ScopedRead.Absent -> Unit
                 }
 
-                synchronized(completedLock) { completed[key] }?.let { previous ->
+                if (!needsReconciliation) synchronized(completedLock) { completed[key] }?.let { previous ->
                     val outcome = if (!previous.sameRequest(candidate)) {
                         RuntimeStartResult.Conflict
                     } else {

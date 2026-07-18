@@ -39,6 +39,20 @@ data class ActionIdentityScope(
     override fun toString(): String = "ActionIdentityScope(identityEpoch=$identityEpoch, values=[REDACTED])"
 }
 
+/** Agent 发起动作时冻结的对话关联；用户直接操作没有该关联。 */
+@Serializable
+data class ActionCorrelation(
+    val threadId: String,
+    val turnId: String,
+    val toolCallId: String,
+) {
+    init {
+        require(threadId.isNotBlank()) { "threadId must not be blank" }
+        require(turnId.isNotBlank()) { "turnId must not be blank" }
+        require(toolCallId.isNotBlank()) { "toolCallId must not be blank" }
+    }
+}
+
 /**
  * 用户点击和 Agent 调用共用的动作命令。
  *
@@ -61,6 +75,7 @@ data class ActionCommand(
     val identityScope: ActionIdentityScope,
     val pageId: String,
     val contextRevision: Long,
+    val correlation: ActionCorrelation? = null,
 ) {
     init {
         require(actionVersion > 0) { "动作版本必须为正整数" }
@@ -69,5 +84,6 @@ data class ActionCommand(
     /** 日志中保留动作定位信息，隐藏身份和值载荷。 */
     override fun toString(): String =
         "ActionCommand(executionId=$executionId, actionId=$actionId, actionVersion=$actionVersion, origin=$origin, " +
-            "pageId=$pageId, contextRevision=$contextRevision, input=[REDACTED], identityScope=[REDACTED])"
+            "pageId=$pageId, contextRevision=$contextRevision, correlation=[REDACTED], " +
+            "input=[REDACTED], identityScope=[REDACTED])"
 }

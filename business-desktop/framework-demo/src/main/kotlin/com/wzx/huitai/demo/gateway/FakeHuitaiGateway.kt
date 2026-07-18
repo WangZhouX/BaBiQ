@@ -37,6 +37,7 @@ data class FakeRemoteRecord(
 class FakeHuitaiGateway(
     private val draftMode: FakeGatewayMode = FakeGatewayMode.CONFIRMED,
     private val submitMode: FakeGatewayMode = FakeGatewayMode.CONFIRMED,
+    private val beforeSubmit: () -> Unit = {},
 ) {
     private val drafts = linkedMapOf<String, FakeRemoteRecord>()
     private val submissions = linkedMapOf<String, FakeRemoteRecord>()
@@ -76,6 +77,7 @@ class FakeHuitaiGateway(
     @Synchronized
     fun submit(executionId: String, state: DemoFormState): FakeGatewayResult {
         submissionRequestCount += 1
+        beforeSubmit()
         return write(executionId, state, "submission", submissions, submitMode) { submissionWriteCount += 1 }
     }
 

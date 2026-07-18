@@ -346,6 +346,7 @@ class ActionIdempotencyTest {
             identityScope = command.identityScope,
             pageId = command.pageId,
             contextRevision = command.contextRevision,
+            correlation = command.correlation,
         ),
         riskLevel = ActionRiskLevel.READ_ONLY,
         state = state,

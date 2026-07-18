@@ -1,6 +1,7 @@
 package com.wzx.huitai.action.port
 
 import com.wzx.huitai.action.model.ActionCommand
+import com.wzx.huitai.action.model.ActionCorrelation
 import com.wzx.huitai.action.model.ActionError
 import com.wzx.huitai.action.model.ActionExecutionState
 import com.wzx.huitai.action.model.ActionIdentityScope
@@ -30,6 +31,7 @@ data class ExecutionBinding(
     val identityScope: ActionIdentityScope,
     val pageId: String,
     val contextRevision: Long,
+    val correlation: ActionCorrelation? = null,
 ) {
     /** 日志只保留非敏感定位元数据，隐藏输入摘要和完整身份。 */
     override fun toString(): String =
@@ -78,6 +80,7 @@ data class ActionExecutionRecord(
             completedAt = completedAt,
             successFact = successFact,
         )
+        require(command.correlation == binding.correlation) { "command correlation must match execution binding" }
         require(!updatedAt.isBefore(createdAt)) { "updatedAt 不能早于 createdAt" }
         startedAt?.let {
             require(!it.isBefore(createdAt)) { "startedAt 不能早于 createdAt" }

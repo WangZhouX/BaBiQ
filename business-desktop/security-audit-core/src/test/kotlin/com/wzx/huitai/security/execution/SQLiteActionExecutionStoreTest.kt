@@ -3,6 +3,7 @@ package com.wzx.huitai.security.execution
 import com.wzx.huitai.action.ActionExecutionCoordinator
 import com.wzx.huitai.action.ActionExecutionStart
 import com.wzx.huitai.action.model.ActionCommand
+import com.wzx.huitai.action.model.ActionCorrelation
 import com.wzx.huitai.action.model.ActionError
 import com.wzx.huitai.action.model.ActionErrorCode
 import com.wzx.huitai.action.model.ActionExecutionState
@@ -49,6 +50,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -134,6 +136,20 @@ class SQLiteActionExecutionStoreTest {
                 restartedCoordinator.inspectExisting(command),
             )
             assertEquals(RAW_INPUT, matching.record.command.input["value"]?.jsonPrimitive?.content)
+            val claimed = assertIs<ReconciliationClaimResult.Claimed>(
+                restartedStore.claimReconciliation(
+                    claimRequest(matching.record, RAW_TOKEN, RAW_OWNER, matching.record.updatedAt.plusSeconds(1)),
+                ),
+            ).record
+            assertEquals(RAW_INPUT, claimed.command.input["value"]?.jsonPrimitive?.content)
+            val renewed = assertIs<ReconciliationRenewResult.Renewed>(
+                restartedStore.renewReconciliation(renewRequest(claimed, RAW_TOKEN)),
+            ).record
+            assertEquals(RAW_INPUT, renewed.command.input["value"]?.jsonPrimitive?.content)
+            val released = assertIs<ReconciliationReleaseResult.Released>(
+                restartedStore.releaseReconciliation(releaseRequest(renewed, RAW_TOKEN)),
+            ).record
+            assertEquals(RAW_INPUT, released.command.input["value"]?.jsonPrimitive?.content)
 
             val mismatch = command.copy(input = buildJsonObject { put("value", "different-input") })
             assertIs<ActionExecutionStart.Conflict>(restartedCoordinator.inspectExisting(mismatch))
@@ -220,16 +236,27 @@ class SQLiteActionExecutionStoreTest {
     @Test
     fun `scoped reads match every identity field and exclude prior desktop session`() = runTest {
         fixture().database.use { database ->
-            val store = store(database)
-            val query: ScopedActionExecutionQuery = store
+            val ownerStore = store(database)
+            val query: ScopedActionExecutionQuery = ownerStore
             val scope = scope()
-            val earlier = runningRecord("a-execution")
-            val later = runningRecord("z-execution", createdAt = NOW.plusSeconds(2))
-            val oldCommand = command("old-agent-link", scope.copy(desktopSessionId = "prior-session"))
+            val earlier = runningRecord(
+                command = command("a-execution").copy(
+                    correlation = ActionCorrelation("thread-earlier", "turn-earlier", "tool-earlier"),
+                ),
+            )
+            val later = runningRecord(
+                createdAt = NOW.plusSeconds(2),
+                command = command("z-execution").copy(
+                    correlation = ActionCorrelation("thread-later", "turn-later", "tool-later"),
+                ),
+            )
+            val oldCommand = command("old-agent-link", scope.copy(desktopSessionId = "prior-session")).copy(
+                correlation = ActionCorrelation("orphan-thread", "orphan-turn", "orphan-tool"),
+            )
             val old = runningRecord(command = oldCommand)
-            store.compareAndCreate(later, audit(later, payloadWithLinks("thread-later", "turn-later", "tool-later")))
-            store.compareAndCreate(earlier, audit(earlier, payloadWithLinks("thread-earlier", "turn-earlier", "tool-earlier")))
-            store.compareAndCreate(old, audit(old, payloadWithLinks("orphan-thread", "orphan-turn", "orphan-tool")))
+            ownerStore.compareAndCreate(later, audit(later, payloadWithLinks("thread-later", "turn-later", "tool-later")))
+            ownerStore.compareAndCreate(earlier, audit(earlier, payloadWithLinks("thread-earlier", "turn-earlier", "tool-earlier")))
+            ownerStore.compareAndCreate(old, audit(old, payloadWithLinks("forged-thread", "forged-turn", "forged-tool")))
 
             assertEquals(listOf("a-execution", "z-execution"), query.listNonTerminal(scope).map { it.command.executionId })
             listOf(
@@ -246,6 +273,19 @@ class SQLiteActionExecutionStoreTest {
             }
             assertNull(query.find("old-agent-link", scope))
             assertEquals("orphan-thread", scalar(database, "SELECT thread_id FROM bd_action_executions WHERE execution_id='old-agent-link'"))
+            val hydrated = assertNotNull(store(database).find("old-agent-link", oldCommand.identityScope))
+            assertEquals(oldCommand.correlation, hydrated.command.correlation)
+            assertEquals(oldCommand.correlation, hydrated.binding.correlation)
+            assertIs<ExecutionCreateResult.Conflict>(
+                ownerStore.compareAndCreate(
+                    runningRecord(
+                        command = oldCommand.copy(
+                            correlation = ActionCorrelation("other-thread", "other-turn", "other-tool"),
+                        ),
+                    ),
+                    audit(old, payloadWithLinks("orphan-thread", "orphan-turn", "orphan-tool")),
+                ),
+            )
         }
     }
 
@@ -368,6 +408,7 @@ class SQLiteActionExecutionStoreTest {
         command.identityScope,
         command.pageId,
         command.contextRevision,
+        command.correlation,
     )
 
     private fun scope() = ActionIdentityScope("desktop", "session", "auth", 1, "user", "tenant", "platform")

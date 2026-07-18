@@ -1,6 +1,7 @@
 package com.wzx.huitai.security.execution
 
 import com.wzx.huitai.action.model.ActionCommand
+import com.wzx.huitai.action.model.ActionCorrelation
 import com.wzx.huitai.action.model.ActionError
 import com.wzx.huitai.action.model.ActionErrorCode
 import com.wzx.huitai.action.model.ActionExecutionState
@@ -177,7 +178,7 @@ class SQLiteActionExecutionStore(
             val policies = policyResolver.resolve(record)
             val safeEnvelope = encodeEnvelope(record, policies.reconciliationPolicy, claim = null)
             val safeAudit = prepareAudit(connection, audit)
-            insertRecord(connection, record, policies, safeEnvelope, audit)
+            insertRecord(connection, record, policies, safeEnvelope)
             insertEvent(connection, safeAudit)
             ExecutionCreateResult.Created(record)
         }
@@ -326,8 +327,9 @@ class SQLiteActionExecutionStore(
                     digest(request.executionId, request.claimToken),
                     digest(request.executionId, request.ownerId),
                 )
-                cacheExact(result.record)
-                ReconciliationClaimResult.Claimed(result.record.snapshot())
+                val exact = mergeExactMetadataMutation(result.record)
+                cacheExact(exact)
+                ReconciliationClaimResult.Claimed(exact.snapshot())
             }
             is ReconciliationClaimResult.ExistingClaim ->
                 ReconciliationClaimResult.ExistingClaim(result.record.withLocalExactValues())
@@ -372,8 +374,9 @@ class SQLiteActionExecutionStore(
         }
         return when (result) {
             is ReconciliationRenewResult.Renewed -> {
-                cacheExact(result.record)
-                ReconciliationRenewResult.Renewed(result.record.snapshot())
+                val exact = mergeExactMetadataMutation(result.record)
+                cacheExact(exact)
+                ReconciliationRenewResult.Renewed(exact.snapshot())
             }
             is ReconciliationRenewResult.ExistingClaim ->
                 ReconciliationRenewResult.ExistingClaim(result.record.withLocalExactValues())
@@ -411,8 +414,9 @@ class SQLiteActionExecutionStore(
         return when (result) {
             is ReconciliationReleaseResult.Released -> {
                 localClaims.remove(request.executionId)
-                cacheExact(result.record)
-                ReconciliationReleaseResult.Released(result.record.snapshot())
+                val exact = mergeExactMetadataMutation(result.record)
+                cacheExact(exact)
+                ReconciliationReleaseResult.Released(exact.snapshot())
             }
             is ReconciliationReleaseResult.ExistingFinal ->
                 ReconciliationReleaseResult.ExistingFinal(result.record.withLocalExactValues())
@@ -426,10 +430,10 @@ class SQLiteActionExecutionStore(
         record: ActionExecutionRecord,
         policies: ActionExecutionPolicies,
         envelope: String?,
-        audit: ActionAuditDraft,
     ) {
-        val safePayload = redactor.redact(audit.redactedPayload)
-        val links = correlationLinks(safePayload)
+        val links = record.command.correlation?.let {
+            CorrelationLinks(it.threadId, it.turnId, it.toolCallId)
+        } ?: CorrelationLinks(null, null, null)
         connection.prepareStatement(INSERT_RECORD).use { statement ->
             val values = listOf(
                 record.command.executionId,
@@ -600,6 +604,7 @@ class SQLiteActionExecutionStore(
             identityScope = scope,
             pageId = getString("page_id"),
             contextRevision = getLong("context_revision"),
+            correlation = toActionCorrelation(),
         )
         val state = ActionExecutionState.valueOf(getString("status"))
         val policy = ReconciliationPolicy.valueOf(getString("reconciliation_policy"))
@@ -620,6 +625,7 @@ class SQLiteActionExecutionStore(
                 scope,
                 getString("page_id"),
                 getLong("context_revision"),
+                command.correlation,
             ),
             riskLevel = ActionRiskLevel.valueOf(getString("risk_level")),
             state = state,
@@ -814,15 +820,17 @@ class SQLiteActionExecutionStore(
         platformId,
     )
 
-    /** 仅从已经脱敏的 payload 中提取非空对话关联，不读取命令 input。 */
-    private fun correlationLinks(payload: JsonObject) = CorrelationLinks(
-        threadId = payload.safeString("threadId"),
-        turnId = payload.safeString("turnId"),
-        toolCallId = payload.safeString("toolCallId"),
-    )
-
-    private fun JsonObject.safeString(key: String): String? =
-        (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull?.takeIf(String::isNotBlank)
+    private fun ResultSet.toActionCorrelation(): ActionCorrelation? {
+        val threadId = getString("thread_id")
+        val turnId = getString("turn_id")
+        val toolCallId = getString("tool_call_id")
+        if (threadId == null && turnId == null && toolCallId == null) return null
+        return ActionCorrelation(
+            threadId = requireNotNull(threadId) { "persisted thread_id is missing" },
+            turnId = requireNotNull(turnId) { "persisted turn_id is missing" },
+            toolCallId = requireNotNull(toolCallId) { "persisted tool_call_id is missing" },
+        )
+    }
 
     private fun JsonObject.string(key: String): String? = (this[key] as? JsonPrimitive)?.contentOrNull
 
@@ -876,6 +884,15 @@ class SQLiteActionExecutionStore(
         return durable.copy(
             command = durable.command.copy(input = previous?.command?.input ?: durable.command.input),
             result = exactResult?.snapshot() ?: durable.result,
+        )
+    }
+
+    /** claim/renew/release 只改变对账元数据，必须保留候选命令输入和既有精确终态。 */
+    private fun mergeExactMetadataMutation(durable: ActionExecutionRecord): ActionExecutionRecord {
+        val previous = exactRecords[durable.command.executionId]
+        return durable.copy(
+            command = durable.command.copy(input = previous?.command?.input ?: durable.command.input),
+            result = previous?.result ?: durable.result,
         )
     }
 

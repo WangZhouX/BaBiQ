@@ -57,7 +57,7 @@ public final class ApplicationProtocol {
             String method = requiredText(value, "method");
             ApplicationEnvelope params = decodeParams(method, value.path("params"));
             if (value.has("id")) {
-                return new Request(requiredText(value, "jsonrpc"), requiredText(value, "id"), method, params);
+                return new Request(requiredText(value, "jsonrpc"), requiredLong(value, "id"), method, params);
             }
             return new Notification(requiredText(value, "jsonrpc"), method, params);
         }
@@ -91,6 +91,14 @@ public final class ApplicationProtocol {
             throw new IllegalArgumentException("Missing textual field: " + field);
         }
         return fieldValue.textValue();
+    }
+
+    private static long requiredLong(JsonNode value, String field) {
+        JsonNode fieldValue = value.get(field);
+        if (fieldValue == null || !fieldValue.isIntegralNumber() || !fieldValue.canConvertToLong()) {
+            throw new IllegalArgumentException("Missing integral field: " + field);
+        }
+        return fieldValue.longValue();
     }
 
     /** 业务桌面应用协议的 19 个固定 method。 */
@@ -145,7 +153,7 @@ public final class ApplicationProtocol {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record Request(String jsonrpc, String id, String method, ApplicationEnvelope params)
+    public record Request(String jsonrpc, long id, String method, ApplicationEnvelope params)
             implements ProtocolMessage {
     }
 
@@ -155,7 +163,7 @@ public final class ApplicationProtocol {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record SuccessResponse(String jsonrpc, String id, JsonNode result) implements ProtocolMessage {
+    public record SuccessResponse(String jsonrpc, long id, JsonNode result) implements ProtocolMessage {
         public SuccessResponse {
             result = result == null ? null : result.deepCopy();
         }
@@ -167,7 +175,7 @@ public final class ApplicationProtocol {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record ErrorResponse(String jsonrpc, String id, Error error) implements ProtocolMessage {
+    public record ErrorResponse(String jsonrpc, Long id, Error error) implements ProtocolMessage {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

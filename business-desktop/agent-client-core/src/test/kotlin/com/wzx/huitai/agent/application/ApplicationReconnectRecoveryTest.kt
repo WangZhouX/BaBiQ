@@ -629,6 +629,7 @@ class ApplicationReconnectRecoveryTest {
         fun command() = ActionCommand(
             "execution-1", "framework.demo", 1, buildJsonObject { }, ActionOrigin.AGENT,
             SCOPE, "page-1", 1,
+            com.wzx.huitai.action.model.ActionCorrelation("thread-1", "turn-1", "tool-1"),
         )
         fun identity() = IdentityEnvelope(common(1), true, setOf("lawyer"), setOf("case:read"))
         fun catalog(): CatalogEnvelope { val payload = buildJsonObject { put("actions", true) }; return CatalogEnvelope(common(2), 1, 1, payload.toString().toByteArray().size, payload) }
@@ -639,7 +640,7 @@ class ApplicationReconnectRecoveryTest {
                 ActionExecutionState.CANCELED -> ActionResult.Canceled(command.executionId, "connection_lost")
                 else -> null
             }
-            return ActionExecutionRecord(command, ExecutionBinding(command.actionId, command.actionVersion, "fingerprint", ActionOrigin.AGENT, command.identityScope, command.pageId, command.contextRevision), ActionRiskLevel.READ_ONLY, state, result, NOW, startedAt = if (state == ActionExecutionState.EXECUTING || result != null) NOW else null, completedAt = if (result != null) NOW else null, updatedAt = NOW, recordVersion = 1)
+            return ActionExecutionRecord(command, ExecutionBinding(command.actionId, command.actionVersion, "fingerprint", ActionOrigin.AGENT, command.identityScope, command.pageId, command.contextRevision, command.correlation), ActionRiskLevel.READ_ONLY, state, result, NOW, startedAt = if (state == ActionExecutionState.EXECUTING || result != null) NOW else null, completedAt = if (result != null) NOW else null, updatedAt = NOW, recordVersion = 1)
         }
         fun String.json() = ApplicationProtocol.JSON.parseToJsonElement(this).jsonObject
     }

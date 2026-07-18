@@ -679,6 +679,7 @@ class InMemoryActionExecutionStoreTest {
         identityScope = command.identityScope,
         pageId = command.pageId,
         contextRevision = command.contextRevision,
+        correlation = command.correlation,
     )
 
     private fun audit(

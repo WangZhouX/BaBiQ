@@ -1405,6 +1405,7 @@ private fun ActionCommand.bindingForStore(): ExecutionBinding {
         identityScope = identityScope,
         pageId = pageId,
         contextRevision = contextRevision,
+        correlation = correlation,
     )
 }
 

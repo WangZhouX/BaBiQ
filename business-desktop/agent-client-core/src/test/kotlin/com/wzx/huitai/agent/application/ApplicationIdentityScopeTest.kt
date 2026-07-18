@@ -286,6 +286,7 @@ class ApplicationIdentityScopeTest {
         fun command(scope: ActionIdentityScope) = ActionCommand(
             "execution-1", "framework.demo", 1, buildJsonObject { put("value", "secret") },
             ActionOrigin.AGENT, scope, "page-1", 1,
+            com.wzx.huitai.action.model.ActionCorrelation("thread-1", "turn-1", "tool-1"),
         )
 
         fun record(command: ActionCommand, state: ActionExecutionState): ActionExecutionRecord {
@@ -298,7 +299,7 @@ class ApplicationIdentityScopeTest {
             } else null
             return ActionExecutionRecord(
                 command,
-                ExecutionBinding(command.actionId, command.actionVersion, "fingerprint", command.origin, command.identityScope, command.pageId, command.contextRevision),
+                ExecutionBinding(command.actionId, command.actionVersion, "fingerprint", command.origin, command.identityScope, command.pageId, command.contextRevision, command.correlation),
                 ActionRiskLevel.READ_ONLY,
                 state,
                 result,

@@ -1,6 +1,7 @@
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.gradle.api.tasks.Copy
 import org.gradle.api.tasks.Exec
+import org.gradle.api.tasks.testing.Test
 import java.nio.file.Path
 
 plugins {
@@ -27,6 +28,9 @@ dependencies {
     testImplementation(kotlin("test"))
     testImplementation(compose.desktop.uiTestJUnit4)
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
+    testImplementation("io.ktor:ktor-server-core:3.5.0")
+    testImplementation("io.ktor:ktor-server-cio:3.5.0")
+    testImplementation("io.ktor:ktor-server-websockets:3.5.0")
     testRuntimeOnly("org.junit.vintage:junit-vintage-engine:5.10.1")
 }
 kotlin { jvmToolchain(21) }
@@ -62,6 +66,14 @@ val prepareBundledBusinessBackend by tasks.registering(Copy::class) {
     into(preparedAppResourcesRoot.map { it.dir("common/backend") })
     rename { "babiq-server.jar" }
     inputs.property("bundledBackendRelativePath", bundledBackendRelativePath)
+}
+
+tasks.named<Test>("test") {
+    dependsOn(packageBusinessBackendJar)
+    inputs.file(backendJar)
+        .withPropertyName("businessBackendJar")
+        .withPathSensitivity(PathSensitivity.NONE)
+    systemProperty("huitai.backend.jar", backendJar.absolutePath)
 }
 
 compose.desktop {

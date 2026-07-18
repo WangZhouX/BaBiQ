@@ -193,6 +193,7 @@ class ActionExecutionCoordinator internal constructor(
             identityScope = command.identityScope,
             pageId = command.pageId,
             contextRevision = command.contextRevision,
+            correlation = command.correlation,
         )
     }
 

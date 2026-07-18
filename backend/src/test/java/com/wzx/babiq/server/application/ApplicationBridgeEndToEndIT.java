@@ -53,6 +53,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 
 @ActiveProfiles("business-desktop")
@@ -254,7 +256,8 @@ class ApplicationBridgeEndToEndIT {
             toolCalls.recordStarted(toolCallId, threadId, turnId, "application_action", "{}",
                     "babiq_agent", null, null, scope, java.time.Instant.now());
 
-            ItemEmitter emitter = new ItemEmitter(session, json, threadId, turnId, recorder);
+            CapturedItemEmitter capturedItems = capturedItemEmitter(threadId, turnId);
+            ItemEmitter emitter = capturedItems.emitter();
             ToolCallback callback = java.util.Arrays.stream(tools.localCallbacks())
                     .filter(candidate -> candidate.getToolDefinition().name().equals("application_action"))
                     .findFirst().orElseThrow();
@@ -307,6 +310,8 @@ class ApplicationBridgeEndToEndIT {
                         assertThat(item.status()).isEqualTo("completed");
                         assertThat(read(item.payloadJson()).path("executionId").asText()).isEqualTo(executionId);
                     });
+            assertApplicationActionItemSequence(capturedItems.messages(), executionId,
+                    "requested", "accepted", "running", "completed");
         }
     }
 
@@ -331,6 +336,10 @@ class ApplicationBridgeEndToEndIT {
             JsonNode toolResult = json.readTree(invocation.result().get(5, java.util.concurrent.TimeUnit.SECONDS));
             assertThat(toolResult.path("status").asText()).isEqualTo("canceled");
             assertThat(toolResult.path("errorCode").asText()).isEqualTo("approval_denied");
+            assertToolCallExecutionBinding(invocation, executionId);
+            assertApplicationActionItemSequence(invocation.itemMessages(), executionId,
+                    "requested", "accepted", "previewed", "approval_required", "canceled");
+            assertStoredApplicationAction(invocation, executionId, "canceled");
             await().atMost(Duration.ofSeconds(3)).untilAsserted(() ->
                     assertThat(applicationActionStates(executionId))
                             .containsExactly("REQUESTED", "ACCEPTED", "PREVIEWED", "APPROVAL_REQUIRED", "CANCELED")
@@ -361,6 +370,10 @@ class ApplicationBridgeEndToEndIT {
 
             JsonNode toolResult = json.readTree(invocation.result().get(5, java.util.concurrent.TimeUnit.SECONDS));
             assertThat(toolResult.path("status").asText()).isEqualTo("outcome_unknown");
+            assertToolCallExecutionBinding(invocation, executionId);
+            assertApplicationActionItemSequence(invocation.itemMessages(), executionId,
+                    "requested", "accepted", "running", "outcome_unknown");
+            assertStoredApplicationAction(invocation, executionId, "outcome_unknown");
             await().atMost(Duration.ofSeconds(3)).untilAsserted(() -> assertThat(applicationActionEvents(executionId))
                     .anySatisfy(event -> assertThat(event.path("late_result").asInt()).isEqualTo(1)));
         }
@@ -393,17 +406,22 @@ class ApplicationBridgeEndToEndIT {
                     json.createObjectNode().put("accepted", false).put("executionId", executionId)));
             assertThat(json.readTree(invocation.result().get(5, java.util.concurrent.TimeUnit.SECONDS))
                     .path("status").asText()).isEqualTo("rejected");
+            assertToolCallExecutionBinding(invocation, executionId);
+            assertApplicationActionItemSequence(invocation.itemMessages(), executionId, "requested", "rejected");
+            assertStoredApplicationAction(invocation, executionId, "rejected");
         }
     }
 
     @Test
     void lostAcknowledgementReconcilesPersistedDesktopTerminalWithoutDispatchRetry() throws Exception {
         List<String> received = new CopyOnWriteArrayList<>();
+        BridgeInvocation invocation;
+        String executionId;
         try (WebSocketSession session = connect(received)) {
-            BridgeInvocation invocation = beginInvocation(session, received, 60, "case.read", "read_only");
+            invocation = beginInvocation(session, received, 60, "case.read", "read_only");
             JsonNode outbound = awaitOutbound(received, "application/action/request");
             JsonNode action = outbound.path("params");
-            String executionId = action.path("executionId").asText();
+            executionId = action.path("executionId").asText();
             request(session, received, 64, "application/action/accepted", actionProgress(action, "received", null));
             request(session, received, 65, "application/action/running", actionProgress(action, "executing", null));
 
@@ -411,11 +429,45 @@ class ApplicationBridgeEndToEndIT {
 
             JsonNode toolResult = json.readTree(invocation.result().get(5, java.util.concurrent.TimeUnit.SECONDS));
             assertThat(toolResult.path("status").asText()).isEqualTo("outcome_unknown");
+            assertToolCallExecutionBinding(invocation, executionId);
+            assertApplicationActionItemSequence(invocation.itemMessages(), executionId,
+                    "requested", "accepted", "running", "outcome_unknown");
+            assertStoredApplicationAction(invocation, executionId, "outcome_unknown");
             assertThat(received.stream().map(this::read)
                     .filter(node -> "application/action/request".equals(node.path("method").asText())))
                     .hasSize(1);
             await().atMost(Duration.ofSeconds(3)).untilAsserted(() ->
                     assertThat(applicationActionStatus(executionId)).isEqualTo("OUTCOME_UNKNOWN"));
+        }
+
+        await().atMost(Duration.ofSeconds(3)).untilAsserted(() ->
+                assertThat(connections.findByDesktopSessionId(DESKTOP_SESSION_ID)).isEmpty());
+        List<String> reconnected = new CopyOnWriteArrayList<>();
+        try (WebSocketSession session = connect(reconnected)) {
+            request(session, reconnected, 66, "application/identity/bind", identity());
+            JsonNode statusQuery = awaitOutbound(reconnected, "application/action/status");
+            assertThat(statusQuery.path("params").path("executionId").asText()).isEqualTo(executionId);
+            send(session, response(statusQuery.path("id").asLong(),
+                    json.createObjectNode().put("executionId", executionId).put("state", "succeeded")));
+            JsonNode resultQuery = awaitOutbound(reconnected, "application/action/result/get");
+            assertThat(resultQuery.path("params").path("executionId").asText()).isEqualTo(executionId);
+            send(session, response(resultQuery.path("id").asLong(),
+                    json.createObjectNode().put("executionId", executionId).put("state", "succeeded")
+                            .put("output", "persisted desktop result")));
+
+            await().atMost(Duration.ofSeconds(3)).untilAsserted(() ->
+                    assertThat(applicationActionEvents(executionId)).anySatisfy(event -> {
+                        assertThat(event.path("event_type").asText()).isEqualTo("late_result");
+                        assertThat(event.path("to_status").asText()).isEqualTo("COMPLETED");
+                        assertThat(event.path("late_result").asInt()).isEqualTo(1);
+                    }));
+            assertToolCallExecutionBinding(invocation, executionId);
+            assertApplicationActionItemSequence(invocation.itemMessages(), executionId,
+                    "requested", "accepted", "running", "outcome_unknown");
+            assertStoredApplicationAction(invocation, executionId, "outcome_unknown");
+            assertThat(reconnected.stream().map(this::read)
+                    .filter(node -> "application/action/request".equals(node.path("method").asText())))
+                    .isEmpty();
         }
     }
 
@@ -436,7 +488,8 @@ class ApplicationBridgeEndToEndIT {
         String toolCallId = "tool-bridge-" + UUID.randomUUID();
         toolCalls.recordStarted(toolCallId, threadId, turn.id(), "application_action", "{}",
                 "babiq_agent", null, null, scope, java.time.Instant.now());
-        ItemEmitter emitter = new ItemEmitter(session, json, threadId, turn.id(), recorder);
+        CapturedItemEmitter capturedItems = capturedItemEmitter(threadId, turn.id());
+        ItemEmitter emitter = capturedItems.emitter();
         ToolCallback callback = java.util.Arrays.stream(tools.localCallbacks())
                 .filter(candidate -> candidate.getToolDefinition().name().equals("application_action"))
                 .findFirst().orElseThrow();
@@ -453,7 +506,7 @@ class ApplicationBridgeEndToEndIT {
                         new ToolContext(Map.of(BaBiQSandboxInterceptor.CONTEXT_ITEM_EMITTER, emitter)));
             }
         });
-        return new BridgeInvocation(threadId, turn.id(), toolCallId, scope, result);
+        return new BridgeInvocation(threadId, turn.id(), toolCallId, scope, result, capturedItems.messages());
     }
 
     @Autowired
@@ -467,8 +520,12 @@ class ApplicationBridgeEndToEndIT {
     }
 
     private List<JsonNode> applicationActionEvents(String executionId) {
-        return jdbc.query("SELECT late_result FROM bq_application_action_events WHERE execution_id = ?",
-                (resultSet, rowNum) -> json.createObjectNode().put("late_result", resultSet.getInt(1)), executionId);
+        return jdbc.query("SELECT event_type, to_status, late_result "
+                        + "FROM bq_application_action_events WHERE execution_id = ? ORDER BY event_sequence",
+                (resultSet, rowNum) -> json.createObjectNode()
+                        .put("event_type", resultSet.getString(1))
+                        .put("to_status", resultSet.getString(2))
+                        .put("late_result", resultSet.getInt(3)), executionId);
     }
 
     private List<String> applicationActionStates(String executionId) {
@@ -482,6 +539,59 @@ class ApplicationBridgeEndToEndIT {
                 String.class, executionId);
     }
 
+    private void assertToolCallExecutionBinding(BridgeInvocation invocation, String executionId) {
+        assertThat(jdbc.queryForList(
+                "SELECT tool_call_id, execution_id FROM bq_tool_calls WHERE turn_id = ? "
+                        + "AND desktop_instance_id = ? AND desktop_session_id = ? "
+                        + "AND auth_session_id = ? AND identity_epoch = ? AND user_id = ? "
+                        + "AND tenant_id = ? AND platform_id = ?",
+                invocation.turnId(), invocation.scope().desktopInstanceId(),
+                invocation.scope().desktopSessionId(), invocation.scope().authSessionId(),
+                invocation.scope().identityEpoch(), invocation.scope().userId(),
+                invocation.scope().tenantId(), invocation.scope().platformId()))
+                .singleElement().satisfies(row -> {
+                    assertThat(row.get("tool_call_id")).isEqualTo(invocation.toolCallId());
+                    assertThat(row.get("execution_id")).isEqualTo(executionId);
+                });
+    }
+
+    private void assertApplicationActionItemSequence(
+            List<String> received, String executionId, String... expectedStatuses) {
+        await().atMost(Duration.ofSeconds(3)).untilAsserted(() -> assertThat(received.stream()
+                .map(this::read)
+                .filter(message -> "item/added".equals(message.path("method").asText())
+                        || "item/updated".equals(message.path("method").asText()))
+                .map(message -> message.path("params").path("item"))
+                .filter(item -> "applicationAction".equals(item.path("type").asText()))
+                .filter(item -> executionId.equals(item.path("executionId").asText()))
+                .map(item -> item.path("status").asText())
+                .toList()).containsExactly(expectedStatuses));
+    }
+
+    private void assertStoredApplicationAction(
+            BridgeInvocation invocation, String executionId, String expectedStatus) {
+        assertThat(conversationRepository.listItems(
+                invocation.threadId(), 20, null, invocation.scope()).stream()
+                .filter(item -> "applicationAction".equals(item.type()))
+                .filter(item -> executionId.equals(read(item.payloadJson()).path("executionId").asText()))
+                .toList()).singleElement().satisfies(item -> {
+                    assertThat(item.status()).isEqualTo(expectedStatus);
+                    JsonNode payload = read(item.payloadJson());
+                    assertThat(payload.path("executionId").asText()).isEqualTo(executionId);
+                    assertThat(payload.path("type").asText()).isEqualTo("applicationAction");
+                });
+    }
+
+    private CapturedItemEmitter capturedItemEmitter(String threadId, String turnId) throws Exception {
+        List<String> messages = new CopyOnWriteArrayList<>();
+        WebSocketSession session = mock(WebSocketSession.class);
+        doAnswer(invocation -> {
+            messages.add(invocation.getArgument(0, TextMessage.class).getPayload());
+            return null;
+        }).when(session).sendMessage(any(TextMessage.class));
+        return new CapturedItemEmitter(new ItemEmitter(session, json, threadId, turnId, recorder), messages);
+    }
+
     private BusinessIdentityScope scope() {
         return BusinessIdentityScope.scoped(
                 INSTANCE_ID, DESKTOP_SESSION_ID, "auth-1", 1,
@@ -490,7 +600,11 @@ class ApplicationBridgeEndToEndIT {
 
     private record BridgeInvocation(
             String threadId, String turnId, String toolCallId, BusinessIdentityScope scope,
-            java.util.concurrent.CompletableFuture<String> result) {
+            java.util.concurrent.CompletableFuture<String> result,
+            List<String> itemMessages) {
+    }
+
+    private record CapturedItemEmitter(ItemEmitter emitter, List<String> messages) {
     }
 
     private WebSocketSession connect(List<String> received) throws Exception {
@@ -533,9 +647,10 @@ class ApplicationBridgeEndToEndIT {
                 .put("method", method)
                 .set("params", params))));
         await().atMost(Duration.ofSeconds(3)).untilAsserted(() ->
-                assertThat(received.stream().map(this::read).anyMatch(node -> node.path("id").asLong() == id)).isTrue());
+                assertThat(received.stream().map(this::read)
+                        .anyMatch(node -> !node.has("method") && node.path("id").asLong() == id)).isTrue());
         JsonNode response = received.stream().map(this::read)
-                .filter(node -> node.path("id").asLong() == id)
+                .filter(node -> !node.has("method") && node.path("id").asLong() == id)
                 .findFirst().orElseThrow();
         return response;
     }

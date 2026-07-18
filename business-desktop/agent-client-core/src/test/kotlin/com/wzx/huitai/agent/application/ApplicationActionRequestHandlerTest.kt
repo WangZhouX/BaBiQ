@@ -913,7 +913,12 @@ class ApplicationActionRequestHandlerTest {
         fun requestEnvelope(sequence: Long) = ActionEnvelope(common(sequence), "thread-1", "turn-1", "tool-1", "execution-1", buildJsonObject {
             put("actionId", "framework.demo"); put("actionVersion", 2); put("input", buildJsonObject { put("value", "secret-value") }); put("pageId", "page-1"); put("contextRevision", 7)
         })
-        fun command() = ActionCommand("execution-1", "framework.demo", 2, buildJsonObject { put("value", "secret-value") }, ActionOrigin.AGENT, TRUSTED_SCOPE, "page-1", 7)
+        fun command() = ActionCommand(
+            "execution-1", "framework.demo", 2,
+            buildJsonObject { put("value", "secret-value") },
+            ActionOrigin.AGENT, TRUSTED_SCOPE, "page-1", 7,
+            com.wzx.huitai.action.model.ActionCorrelation("thread-1", "turn-1", "tool-1"),
+        )
         fun correlation() = ApplicationActionCorrelation("thread-1", "turn-1", "tool-1", "execution-1")
         fun publication() = ApplicationActionPublicationContext(
             correlation(),
@@ -928,7 +933,7 @@ class ApplicationActionRequestHandlerTest {
                 ActionExecutionState.OUTCOME_UNKNOWN -> ActionResult.OutcomeUnknown(command.executionId, ActionError(ActionErrorCode.OUTCOME_UNKNOWN, "secret"), reconciliationPolicy = com.wzx.huitai.action.model.ReconciliationPolicy.MANUAL)
                 else -> null
             }
-            return ActionExecutionRecord(command, ExecutionBinding(command.actionId, command.actionVersion, "fingerprint", command.origin, command.identityScope, command.pageId, command.contextRevision), ActionRiskLevel.READ_ONLY, state, result, NOW, startedAt = if (state == ActionExecutionState.EXECUTING || result != null) NOW else null, completedAt = if (result != null) NOW else null, updatedAt = NOW, recordVersion = 1)
+            return ActionExecutionRecord(command, ExecutionBinding(command.actionId, command.actionVersion, "fingerprint", command.origin, command.identityScope, command.pageId, command.contextRevision, command.correlation), ActionRiskLevel.READ_ONLY, state, result, NOW, startedAt = if (state == ActionExecutionState.EXECUTING || result != null) NOW else null, completedAt = if (result != null) NOW else null, updatedAt = NOW, recordVersion = 1)
         }
         fun String.json() = ApplicationProtocol.JSON.parseToJsonElement(this).jsonObject
         fun JsonObject.mutate(key: String, value: JsonElement) = JsonObject(toMutableMap().apply { put(key, value) })
