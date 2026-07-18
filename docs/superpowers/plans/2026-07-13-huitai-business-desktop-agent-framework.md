@@ -2811,7 +2811,7 @@ git commit -m "test: 验证业务桌面完整框架桥接"
 - Create: `docs/superpowers/plans/huitai-business-desktop-agent-framework/framework-acceptance.md`
 - Create: `docs/superpowers/plans/huitai-business-desktop-agent-framework/codex-handoff.md`
 
-- [ ] **Step 1: Run source and scope guards**
+- [x] **Step 1: Run source and scope guards**
 
 Run:
 
@@ -2823,7 +2823,7 @@ git diff --check
 
 Expected: no unfinished implementation marker; any forbidden-domain hit is limited to negative architecture tests or documentation assertions, not production models/actions/UI; diff check is clean.
 
-- [ ] **Step 2: Run the three full product regressions**
+- [x] **Step 2: Run the three full product regressions**
 
 Run:
 
@@ -2839,15 +2839,15 @@ cd ..\business-desktop
 
 Expected: backend unit/IT, existing desktop, new business desktop, package creation, and packaged smoke all succeed from fresh outputs.
 
-- [ ] **Step 3: Write and execute the manual smoke checklist**
+- [x] **Step 3: Write and execute the manual smoke checklist**
 
 Document exact build/package path and record timestamped PASS/FAIL evidence for: first launch and single-instance rejection; three responsive window widths; seven-field generic form; user edit; Agent page context; unstructured-input chat using an available configured Provider; field sources/confidence; one-field and accept-all; stale revision; ordinary save preview; high-risk submit approval and denial; forced response-loss reconciliation; Agent disconnect/reconnect; auth/membership error presentation; audit rows; desktop close and child exit. Do not mark Provider-dependent rows passed without an actual model response.
 
-- [ ] **Step 4: Create the acceptance report from fresh evidence**
+- [x] **Step 4: Create the acceptance report from fresh evidence**
 
 Map all seventeen design acceptance conditions to exact automated commands, test names, package-smoke evidence, and manual-smoke rows. Record package paths and remaining external prerequisites. The conclusion is `通过` only when every mandatory automated and manual row passed; otherwise it is `未通过` with the exact blocker and no claim that OA migration may start.
 
-- [ ] **Step 5: Create the handoff and commit verification evidence**
+- [x] **Step 5: Create the handoff and commit verification evidence**
 
 The handoff records architecture boundaries, runtime paths, commands, package locations, known constraints, and the hard rule that real OA migration begins only after `framework-acceptance.md` says `通过`.
 
