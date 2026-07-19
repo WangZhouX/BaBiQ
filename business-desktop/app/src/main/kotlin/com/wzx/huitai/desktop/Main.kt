@@ -106,6 +106,7 @@ fun main() {
                 val providerSettingsState by view.production.providerSettingsController.state.collectAsState()
                 var selectedDestination by remember { mutableStateOf(BusinessDesktopDestination.DATA_ENTRY) }
                 var composerText by remember { mutableStateOf("") }
+                var agentPanelExpanded by remember { mutableStateOf(true) }
                 val uiScope = rememberCoroutineScope()
 
                 LaunchedEffect(Unit) {
@@ -119,7 +120,9 @@ fun main() {
                         providerSettingsState = providerSettingsState,
                         selectedDestination = selectedDestination,
                         composerText = composerText,
+                        agentPanelExpanded = agentPanelExpanded,
                         onDestinationSelected = { selectedDestination = it },
+                        onAgentPanelExpandedChange = { agentPanelExpanded = it },
                         onFieldEdited = { fieldId, value ->
                             storage.screen.dispatch(DemoFormEvent.EditField(fieldId, value))
                             uiScope.launch {

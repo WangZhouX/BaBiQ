@@ -38,6 +38,29 @@ class BusinessDesktopLayoutPolicyTest {
     }
 
     @Test
+    fun `collapsed wide and medium agent rails release width to the center`() {
+        val wideExpanded = BusinessDesktopLayoutPolicy.resolve(1280.dp, agentPanelExpanded = true)
+        val wideCollapsed = BusinessDesktopLayoutPolicy.resolve(1280.dp, agentPanelExpanded = false)
+        val mediumExpanded = BusinessDesktopLayoutPolicy.resolve(1024.dp, agentPanelExpanded = true)
+        val mediumCollapsed = BusinessDesktopLayoutPolicy.resolve(1024.dp, agentPanelExpanded = false)
+
+        assertEquals(420.dp, wideExpanded.agentWidth)
+        assertEquals(52.dp, wideCollapsed.agentWidth)
+        assertEquals(wideExpanded.formWidth + 368.dp, wideCollapsed.formWidth)
+        assertEquals(360.dp, mediumExpanded.agentWidth)
+        assertEquals(52.dp, mediumCollapsed.agentWidth)
+        assertEquals(mediumExpanded.formWidth + 308.dp, mediumCollapsed.formWidth)
+    }
+
+    @Test
+    fun `compact layout ignores fixed rail expansion state`() {
+        assertEquals(
+            BusinessDesktopLayoutPolicy.resolve(900.dp, agentPanelExpanded = true),
+            BusinessDesktopLayoutPolicy.resolve(900.dp, agentPanelExpanded = false),
+        )
+    }
+
+    @Test
     fun `invalid or tiny widths never produce negative or overlapping slots`() {
         listOf((-10).dp, 0.dp, 1.dp, 1023.dp, 1279.dp, 1600.dp).forEach { width ->
             val layout = BusinessDesktopLayoutPolicy.resolve(width)

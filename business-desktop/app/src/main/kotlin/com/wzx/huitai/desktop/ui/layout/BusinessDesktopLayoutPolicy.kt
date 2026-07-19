@@ -30,6 +30,7 @@ object BusinessDesktopLayoutPolicy {
     val mediumNavigationWidth: Dp = 72.dp
     val wideAgentWidth: Dp = 420.dp
     val mediumAgentWidth: Dp = 360.dp
+    val collapsedAgentWidth: Dp = 52.dp
     val minimumFormWidth: Dp = 560.dp
 
     /**
@@ -39,20 +40,23 @@ object BusinessDesktopLayoutPolicy {
      */
     fun resolve(
         availableWidth: Dp,
+        agentPanelExpanded: Boolean = true,
     ): BusinessDesktopLayout {
         val width = availableWidth.coerceAtLeast(0.dp)
         return when {
-            width >= wideThreshold -> BusinessDesktopLayout(
+            width >= wideThreshold -> fixedRailLayout(
+                width = width,
                 mode = BusinessDesktopLayoutMode.WIDE,
                 navigationWidth = wideNavigationWidth,
-                formWidth = width - wideNavigationWidth - wideAgentWidth,
-                agentWidth = wideAgentWidth,
+                expandedAgentWidth = wideAgentWidth,
+                agentPanelExpanded = agentPanelExpanded,
             )
-            width >= mediumThreshold -> BusinessDesktopLayout(
+            width >= mediumThreshold -> fixedRailLayout(
+                width = width,
                 mode = BusinessDesktopLayoutMode.MEDIUM,
                 navigationWidth = mediumNavigationWidth,
-                formWidth = width - mediumNavigationWidth - mediumAgentWidth,
-                agentWidth = mediumAgentWidth,
+                expandedAgentWidth = mediumAgentWidth,
+                agentPanelExpanded = agentPanelExpanded,
             )
             else -> BusinessDesktopLayout(
                 mode = BusinessDesktopLayoutMode.COMPACT,
@@ -61,5 +65,21 @@ object BusinessDesktopLayoutPolicy {
                 agentWidth = 0.dp,
             )
         }
+    }
+
+    private fun fixedRailLayout(
+        width: Dp,
+        mode: BusinessDesktopLayoutMode,
+        navigationWidth: Dp,
+        expandedAgentWidth: Dp,
+        agentPanelExpanded: Boolean,
+    ): BusinessDesktopLayout {
+        val agentWidth = if (agentPanelExpanded) expandedAgentWidth else collapsedAgentWidth
+        return BusinessDesktopLayout(
+            mode = mode,
+            navigationWidth = navigationWidth,
+            formWidth = width - navigationWidth - agentWidth,
+            agentWidth = agentWidth,
+        )
     }
 }

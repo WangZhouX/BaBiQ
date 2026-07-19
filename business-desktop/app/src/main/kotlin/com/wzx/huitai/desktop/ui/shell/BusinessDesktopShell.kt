@@ -22,6 +22,7 @@ import com.wzx.huitai.desktop.controller.BusinessProviderSettingsState
 import com.wzx.huitai.desktop.state.BusinessDesktopState
 import com.wzx.huitai.desktop.state.BusinessFieldSuggestion
 import com.wzx.huitai.desktop.ui.agent.BusinessAgentPanel
+import com.wzx.huitai.desktop.ui.agent.BusinessAgentCollapsedRail
 import com.wzx.huitai.desktop.ui.form.DemoFormPanel
 import com.wzx.huitai.desktop.ui.layout.BusinessDesktopLayoutMode
 import com.wzx.huitai.desktop.ui.layout.BusinessDesktopLayoutPolicy
@@ -32,6 +33,7 @@ object BusinessUiTags {
     const val SIDEBAR = "business-sidebar"
     const val FORM_PANEL = "business-form-panel"
     const val AGENT_PANEL = "business-agent-panel"
+    const val AGENT_COLLAPSED_RAIL = "business-agent-collapsed-rail"
     const val PLACEHOLDER_PANEL = "business-placeholder-panel"
 }
 
@@ -48,6 +50,7 @@ fun BusinessDesktopShell(
     selectedDestination: BusinessDesktopDestination = BusinessDesktopDestination.DATA_ENTRY,
     selectedModelId: String? = null,
     composerText: String = "",
+    agentPanelExpanded: Boolean = true,
     onDestinationSelected: (BusinessDesktopDestination) -> Unit = {},
     onFieldEdited: (fieldId: String, value: String) -> Unit = { _, _ -> },
     onSuggestionsChanged: (Map<String, BusinessFieldSuggestion>) -> Unit = {},
@@ -67,10 +70,11 @@ fun BusinessDesktopShell(
     onProviderActivated: (providerId: String, modelId: String?) -> Unit = { _, _ -> },
     onProviderOAuthStatus: (String) -> Unit = {},
     onProviderOAuthLogin: (String) -> Unit = {},
+    onAgentPanelExpandedChange: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     BoxWithConstraints(modifier.fillMaxSize()) {
-        val layout = BusinessDesktopLayoutPolicy.resolve(maxWidth)
+        val layout = BusinessDesktopLayoutPolicy.resolve(maxWidth, agentPanelExpanded)
         if (layout.mode == BusinessDesktopLayoutMode.COMPACT) {
             val visualDestination = selectedDestination.compactVisualDestination()
             Column(Modifier.fillMaxSize()) {
@@ -165,17 +169,25 @@ fun BusinessDesktopShell(
                     onProviderOAuthLogin = onProviderOAuthLogin,
                     modifier = Modifier.width(layout.formWidth),
                 )
-                AgentPanelForShell(
-                    state = state,
-                    formState = formState,
-                    selectedModelId = selectedModelId,
-                    composerText = composerText,
-                    onComposerTextChanged = onComposerTextChanged,
-                    onSend = onSend,
-                    onReconnect = onReconnect,
-                    onProviderSelected = onProviderSelected,
-                    modifier = Modifier.width(layout.agentWidth),
-                )
+                if (agentPanelExpanded) {
+                    AgentPanelForShell(
+                        state = state,
+                        formState = formState,
+                        selectedModelId = selectedModelId,
+                        composerText = composerText,
+                        onComposerTextChanged = onComposerTextChanged,
+                        onSend = onSend,
+                        onReconnect = onReconnect,
+                        onProviderSelected = onProviderSelected,
+                        onCollapse = { onAgentPanelExpandedChange(false) },
+                        modifier = Modifier.width(layout.agentWidth),
+                    )
+                } else {
+                    BusinessAgentCollapsedRail(
+                        onExpand = { onAgentPanelExpandedChange(true) },
+                        modifier = Modifier.width(layout.agentWidth),
+                    )
+                }
             }
         }
     }
@@ -315,6 +327,7 @@ private fun AgentPanelForShell(
     onSend: () -> Unit,
     onReconnect: () -> Unit,
     onProviderSelected: (String, String) -> Unit,
+    onCollapse: (() -> Unit)? = null,
     modifier: Modifier,
 ) {
     BusinessAgentPanel(
@@ -326,6 +339,7 @@ private fun AgentPanelForShell(
         onSend = onSend,
         onReconnect = onReconnect,
         onProviderSelected = onProviderSelected,
+        onCollapse = onCollapse,
         modifier = modifier,
     )
 }

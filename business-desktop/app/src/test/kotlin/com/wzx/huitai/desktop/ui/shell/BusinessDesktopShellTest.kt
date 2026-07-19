@@ -5,9 +5,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertContentDescriptionEquals
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assertWidthIsEqualTo
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -15,6 +17,9 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.wzx.huitai.demo.model.DemoFormState
+import com.wzx.huitai.agent.conversation.BusinessProvider
+import com.wzx.huitai.agent.conversation.BusinessProviderModel
+import com.wzx.huitai.agent.conversation.BusinessThreadItem
 import com.wzx.huitai.desktop.controller.BusinessProviderSettingsState
 import com.wzx.huitai.desktop.state.BusinessDesktopState
 import com.wzx.huitai.desktop.ui.theme.HuitaiBusinessTheme
@@ -48,6 +53,71 @@ class BusinessDesktopShellTest {
         rule.onNodeWithTag(BusinessUiTags.SIDEBAR).assertExists()
         rule.onNodeWithTag(BusinessUiTags.FORM_PANEL).assertExists()
         rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertExists()
+    }
+
+    @Test
+    fun `fixed agent rail collapses to 52 dp and restores conversation state`() {
+        val expanded = mutableStateOf(true)
+        val state = BusinessDesktopState(
+            messages = listOf(BusinessThreadItem.AgentMessage("agent-1", text = "折叠前的回答")),
+            providers = listOf(
+                BusinessProvider(
+                    id = "relay",
+                    displayName = "我的中转站",
+                    models = listOf(BusinessProviderModel("kimi-k3", "kimi-k3", active = true)),
+                    authMode = "api_key",
+                    hasApiKey = true,
+                    active = true,
+                ),
+            ),
+            activeProviderId = "relay",
+        )
+        rule.setContent {
+            HuitaiBusinessTheme {
+                BusinessDesktopShell(
+                    state = state,
+                    formState = DemoFormState(),
+                    providerSettingsState = BusinessProviderSettingsState(),
+                    composerText = "尚未发送的输入",
+                    agentPanelExpanded = expanded.value,
+                    onAgentPanelExpandedChange = { expanded.value = it },
+                    modifier = Modifier.widthForTest(1024.dp),
+                )
+            }
+        }
+
+        rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertWidthIsEqualTo(360.dp)
+        rule.onNodeWithContentDescription("收起业务 Agent").performClick()
+        rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertDoesNotExist()
+        rule.onNodeWithTag(BusinessUiTags.AGENT_COLLAPSED_RAIL).assertWidthIsEqualTo(52.dp)
+        rule.onNodeWithTag(BusinessUiTags.FORM_PANEL).assertWidthIsEqualTo(900.dp)
+
+        rule.onNodeWithContentDescription("展开业务 Agent").performClick()
+        rule.onNodeWithTag(BusinessUiTags.AGENT_COLLAPSED_RAIL).assertDoesNotExist()
+        rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertWidthIsEqualTo(360.dp)
+        rule.onNodeWithText("折叠前的回答").assertExists()
+        rule.onNodeWithText("我的中转站").assertExists()
+        rule.onNodeWithTag("agent-composer-input").assertTextContains("尚未发送的输入")
+    }
+
+    @Test
+    fun `compact agent stays full page when wide rail preference is collapsed`() {
+        rule.setContent {
+            HuitaiBusinessTheme {
+                BusinessDesktopShell(
+                    state = BusinessDesktopState(),
+                    formState = DemoFormState(),
+                    providerSettingsState = BusinessProviderSettingsState(),
+                    selectedDestination = BusinessDesktopDestination.AGENT,
+                    agentPanelExpanded = false,
+                    modifier = Modifier.widthForTest(900.dp),
+                )
+            }
+        }
+
+        rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertExists()
+        rule.onNodeWithTag(BusinessUiTags.AGENT_COLLAPSED_RAIL).assertDoesNotExist()
+        rule.onNodeWithContentDescription("收起业务 Agent").assertDoesNotExist()
     }
 
     @Test
