@@ -225,6 +225,40 @@ class ApplicationActionToolTest {
     }
 
     @Test
+    void leavesInputUnchangedWhenValidSchemaDoesNotMentionReservedExecutionId() {
+        ObjectNode propertiesOnly = json.createObjectNode();
+        propertiesOnly.putObject("properties").putObject("query").put("type", "string");
+        ObjectNode requiredOnly = json.createObjectNode();
+        requiredOnly.putArray("required").add("query");
+        ObjectNode propertiesAndRequired = propertiesOnly.deepCopy();
+        propertiesAndRequired.putArray("required").add("query");
+        java.util.List<JsonNode> schemas = java.util.List.of(
+                json.createObjectNode(), propertiesOnly, requiredOnly, propertiesAndRequired);
+        when(pending.register(any(), any(), any(), any(), any(), any())).thenReturn(
+                CompletableFuture.completedFuture(action(PendingApplicationAction.State.COMPLETED, null)));
+        when(protocol.sendActionRequest(any(), any())).thenReturn(CompletableFuture.completedFuture(null));
+
+        for (int index = 0; index < schemas.size(); index++) {
+            arrangeSnapshots(catalogPayloadWithInputSchema(schemas.get(index)), contextPayload(7));
+            ObjectNode callerInput = json.createObjectNode().put("query", "safe-" + index);
+            ApplicationActionToolResult result;
+            try (ApplicationToolInvocationContext.Scope ignored = invocationScope()) {
+                result = invoke("framework.demo", 2, callerInput, 7);
+            }
+            assertThat(result.status()).as("schema=%s", schemas.get(index)).isEqualTo("completed");
+        }
+
+        ArgumentCaptor<JsonNode> requests = ArgumentCaptor.forClass(JsonNode.class);
+        verify(protocol, times(4)).sendActionRequest(any(), requests.capture());
+        assertThat(requests.getAllValues()).extracting(request -> request.path("input"))
+                .containsExactly(
+                        json.createObjectNode().put("query", "safe-0"),
+                        json.createObjectNode().put("query", "safe-1"),
+                        json.createObjectNode().put("query", "safe-2"),
+                        json.createObjectNode().put("query", "safe-3"));
+    }
+
+    @Test
     void rejectsPartialOrMalformedReservedExecutionIdSchemaBeforeRegistration() {
         ObjectNode optional = executionIdInputSchema();
         optional.putArray("required");
@@ -243,7 +277,7 @@ class ApplicationActionToolTest {
         ((ObjectNode) malformedProperty.path("properties")).put("executionId", "string");
 
         java.util.List<JsonNode> invalidSchemas = java.util.List.of(
-                json.createObjectNode(), optional, nonString, requiredOnly, propertyOnly,
+                optional, nonString, requiredOnly, propertyOnly,
                 json.createArrayNode(), malformedProperties, malformedRequired, malformedProperty);
 
         for (JsonNode invalidSchema : invalidSchemas) {

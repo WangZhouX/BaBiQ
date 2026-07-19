@@ -322,26 +322,36 @@ public final class ApplicationActionTool implements Tool {
             return input.deepCopy();
         }
         JsonNode inputSchema = descriptor.get("inputSchema");
-        JsonNode properties = inputSchema == null ? null : inputSchema.get("properties");
-        JsonNode required = inputSchema == null ? null : inputSchema.get("required");
-        JsonNode executionIdProperty = properties == null ? null : properties.get("executionId");
-        JsonNode executionIdType = executionIdProperty == null ? null : executionIdProperty.get("type");
-        if (inputSchema == null || !inputSchema.isObject()
-                || properties == null || !properties.isObject()
-                || required == null || !required.isArray()
-                || executionIdProperty == null || !executionIdProperty.isObject()
-                || executionIdType == null || !executionIdType.isTextual()
-                || !"string".equals(executionIdType.textValue())) {
+        if (inputSchema == null || !inputSchema.isObject()) {
             throw invalidExecutionIdSchema();
         }
-        boolean executionIdRequired = false;
-        for (JsonNode requiredProperty : required) {
-            if (!requiredProperty.isTextual()) {
-                throw invalidExecutionIdSchema();
-            }
-            executionIdRequired |= "executionId".equals(requiredProperty.textValue());
+        JsonNode properties = inputSchema.get("properties");
+        JsonNode required = inputSchema.get("required");
+        if ((properties != null && !properties.isObject())
+                || (required != null && !required.isArray())) {
+            throw invalidExecutionIdSchema();
         }
-        if (!executionIdRequired) {
+        boolean executionIdPropertyDeclared = properties != null && properties.has("executionId");
+        boolean executionIdRequired = false;
+        if (required != null) {
+            for (JsonNode requiredProperty : required) {
+                if (!requiredProperty.isTextual()) {
+                    throw invalidExecutionIdSchema();
+                }
+                executionIdRequired |= "executionId".equals(requiredProperty.textValue());
+            }
+        }
+        if (!executionIdPropertyDeclared && !executionIdRequired) {
+            return input.deepCopy();
+        }
+        if (!executionIdPropertyDeclared || !executionIdRequired) {
+            throw invalidExecutionIdSchema();
+        }
+        JsonNode executionIdProperty = properties.get("executionId");
+        JsonNode executionIdType = executionIdProperty == null ? null : executionIdProperty.get("type");
+        if (executionIdProperty == null || !executionIdProperty.isObject()
+                || executionIdType == null || !executionIdType.isTextual()
+                || !"string".equals(executionIdType.textValue())) {
             throw invalidExecutionIdSchema();
         }
         ObjectNode normalized = input.deepCopy();
