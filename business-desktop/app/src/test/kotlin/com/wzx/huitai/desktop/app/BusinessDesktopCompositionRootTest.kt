@@ -184,9 +184,17 @@ class BusinessDesktopCompositionRootTest {
         assertTrue(view.production.actionRequestHandler::class.simpleName == "ApplicationActionRequestHandler")
         assertTrue(view.production.businessAgentClient::class.simpleName == "BusinessAgentClient")
         assertTrue(view.production.workspaceController::class.simpleName == "BusinessWorkspaceController")
+        assertTrue(
+            view.production.providerSettingsController::class.simpleName == "BusinessProviderSettingsController",
+        )
         assertTrue(view.desktopState.value.identity != null)
         assertTrue(Files.exists(databasePath))
         assertTrue(Files.exists(keyStorePath))
+
+        val providerSettings = view.production.providerSettingsController
+        withTimeout(5_000) {
+            providerSettings.state.first { it.operationsEnabled && it.providers.isNotEmpty() }
+        }
 
         val initialMessages = connection.sent.map { Json.parseToJsonElement(it).jsonObject }
         assertEquals(1, initialMessages.count { it["method"]?.jsonPrimitive?.content == "application/identity/bind" })
@@ -463,6 +471,7 @@ class BusinessDesktopCompositionRootTest {
 
         root.shutdown()
 
+        assertFalse(providerSettings.state.value.operationsEnabled)
         assertEquals(listOf(true), childClosed)
         assertEquals(1, connection.closeCount)
         val reopenedDatabase = BusinessDesktopDatabase(databasePath)
@@ -611,6 +620,8 @@ class BusinessDesktopCompositionRootTest {
         val state = requireNotNull(root.runtimeView).desktopState.value
         assertEquals(BusinessAuthenticationStatus.SIGNED_OUT, state.authenticationStatus)
         assertEquals(null, state.identity)
+        assertFalse(requireNotNull(root.runtimeView).production.providerSettingsController.state.value.operationsEnabled)
+        assertFalse(methods.contains("provider/list"))
 
         root.shutdown()
     }
@@ -711,7 +722,12 @@ class BusinessDesktopCompositionRootTest {
                 release.await()
             }
             val id = request["id"]?.jsonPrimitive?.content ?: return
-            incomingChannel.send("{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}")
+            val result = if (method == "provider/list") {
+                """{"providers":[{"id":"relay","displayName":"Relay","type":"OPENAI_COMPATIBLE","authMode":"api_key","baseUrl":"https://relay.example.com/v1","model":"kimi-k3","contextWindow":131072,"enabled":true,"hasApiKey":true,"active":true}]}"""
+            } else {
+                "{}"
+            }
+            incomingChannel.send("{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":$result}")
         }
 
         override suspend fun close() {

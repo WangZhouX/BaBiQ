@@ -29,6 +29,7 @@ import com.wzx.huitai.desktop.controller.BusinessConnectionLifecycle
 import com.wzx.huitai.desktop.controller.BusinessContextPublicationPort
 import com.wzx.huitai.desktop.controller.BusinessConversationController
 import com.wzx.huitai.desktop.controller.BusinessDesktopCoordinator
+import com.wzx.huitai.desktop.controller.BusinessProviderSettingsController
 import com.wzx.huitai.desktop.controller.BusinessRegistrationPort
 import com.wzx.huitai.desktop.controller.BusinessWorkspaceController
 import com.wzx.huitai.desktop.controller.DirectUserApplicationActionPort
@@ -365,6 +366,7 @@ class ProductionStorageComponents internal constructor(
 /** 生产 UI/controller 阶段的真实组件，关闭责任由 UI CompositionResource 统一持有。 */
 class ProductionUiComponents internal constructor(
     val conversationController: BusinessConversationController,
+    val providerSettingsController: BusinessProviderSettingsController,
     val workspaceController: BusinessWorkspaceController,
     val desktopCoordinator: BusinessDesktopCoordinator,
     val actionRequestHandler: ApplicationActionRequestHandler,
@@ -606,6 +608,7 @@ class ProductionBusinessDesktopCompositionFactory(
         connection: CompositionResource,
     ): BusinessDesktopUiAssembly {
         var conversation: BusinessConversationController? = null
+        var providerSettings: BusinessProviderSettingsController? = null
         var desktopCoordinator: BusinessDesktopCoordinator? = null
         var actionHandler: ApplicationActionRequestHandler? = null
         var decisionConnectionObserver: Job? = null
@@ -620,6 +623,13 @@ class ProductionBusinessDesktopCompositionFactory(
             },
             scope = scope,
             register = { connectionId -> registerActiveConnection(connectionId) },
+        )
+        providerSettings = BusinessProviderSettingsController(
+            gateway = businessAgentClient,
+            supervisorState = lifecycle.state,
+            desktopState = this.storage.desktopStore.state,
+            scope = scope,
+            onProvidersChanged = { conversation.refreshProviders() },
         )
         val workspace = BusinessWorkspaceController(
             store = this.storage.desktopStore,
@@ -695,6 +705,7 @@ class ProductionBusinessDesktopCompositionFactory(
         }
         val uiComponents = ProductionUiComponents(
             conversationController = conversation,
+            providerSettingsController = providerSettings,
             workspaceController = workspace,
             desktopCoordinator = desktopCoordinator,
             actionRequestHandler = actionHandler,
@@ -715,6 +726,7 @@ class ProductionBusinessDesktopCompositionFactory(
                     desktopCoordinator,
                     suggestionObserver,
                     decisionConnectionObserver,
+                    providerSettings,
                     conversation,
                     actionHandler,
                 )
@@ -727,6 +739,7 @@ class ProductionBusinessDesktopCompositionFactory(
                         desktopCoordinator,
                         suggestionObserver,
                         decisionConnectionObserver,
+                        providerSettings,
                         conversation,
                         actionHandler,
                     )
@@ -741,6 +754,7 @@ class ProductionBusinessDesktopCompositionFactory(
         desktopCoordinator: BusinessDesktopCoordinator?,
         suggestionObserver: Job?,
         decisionConnectionObserver: Job?,
+        providerSettings: BusinessProviderSettingsController?,
         conversation: BusinessConversationController?,
         actionHandler: ApplicationActionRequestHandler?,
     ) {
@@ -755,6 +769,7 @@ class ProductionBusinessDesktopCompositionFactory(
         close { desktopCoordinator?.shutdown() }
         close { suggestionObserver?.cancelAndJoin() }
         close { decisionConnectionObserver?.cancelAndJoin() }
+        close { providerSettings?.close() }
         close { conversation?.close() }
         close { actionHandler?.close() }
         close { storage.decisions.shutdown() }
