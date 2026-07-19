@@ -467,7 +467,7 @@ class ApplicationActionRequestHandlerTest {
     }
 
     @Test
-    fun `every persisted terminal maps exactly and rejected is not reported as failed`() = runTest {
+    fun `every persisted terminal maps exactly and rejection cannot override persisted state`() = runTest {
         val cases = listOf(
             ActionExecutionState.SUCCEEDED to ApplicationMethod.ACTION_COMPLETED,
             ActionExecutionState.FAILED to ApplicationMethod.ACTION_FAILED,
@@ -484,20 +484,16 @@ class ApplicationActionRequestHandlerTest {
             fixture.close()
         }
 
-        val rejected = Fixture(backgroundScope)
+        val persistedFailure = Fixture(backgroundScope)
         val command = command()
         val persisted = record(command, ActionExecutionState.FAILED)
-        rejected.status.publish(
-            publication(),
-            persisted,
-            rejection = ActionError(ActionErrorCode.PERMISSION_DENIED, "secret-denial"),
-        )
-        assertEquals(listOf(ApplicationMethod.ACTION_REJECTED.wireName), rejected.connection.sent.mapNotNull(::methodOrNull))
-        val rejectionPayload = rejected.connection.sent.single().json()
+        persistedFailure.status.publish(publication(), persisted)
+        assertEquals(listOf(ApplicationMethod.ACTION_FAILED.wireName), persistedFailure.connection.sent.mapNotNull(::methodOrNull))
+        val failurePayload = persistedFailure.connection.sent.single().json()
             .getValue("params").jsonObject.getValue("payload").jsonObject
-        assertEquals("[REDACTED]", rejectionPayload.getValue("errorSummary").jsonPrimitive.content)
-        assertEquals(false, rejected.connection.sent.single().contains("secret-denial"))
-        rejected.close()
+        assertEquals("failed", failurePayload.getValue("state").jsonPrimitive.content)
+        assertEquals("remote_request_failed", failurePayload.getValue("errorCode").jsonPrimitive.content)
+        persistedFailure.close()
     }
 
     @Test
@@ -533,6 +529,69 @@ class ApplicationActionRequestHandlerTest {
         assertEquals("failed", failurePayload.getValue("state").jsonPrimitive.content)
         assertEquals("validation_failed", failurePayload.getValue("errorCode").jsonPrimitive.content)
         assertEquals(false, fixture.connection.sent.mapNotNull(::methodOrNull).contains(ApplicationMethod.ACTION_REJECTED.wireName))
+        fixture.close()
+    }
+
+    @Test
+    fun `bus rejection waits for persisted terminal after execution has started`() = runTest {
+        val fixture = Fixture(backgroundScope)
+        fixture.executor.block = { command ->
+            fixture.store.current = record(command, ActionExecutionState.EXECUTING)
+            ActionBusResult.Rejected(ActionError(ActionErrorCode.PERMISSION_DENIED, "secret-denial"))
+        }
+
+        fixture.serverRequest("executing-rejected", ApplicationMethod.ACTION_REQUEST, requestEnvelope(sequence = 1))
+        fixture.executor.entered.await()
+        runCurrent()
+
+        assertEquals(listOf(ApplicationMethod.ACTION_ACCEPTED.wireName), fixture.connection.sent.mapNotNull(::methodOrNull))
+
+        val command = assertNotNull(fixture.executor.command)
+        fixture.store.current = record(command, ActionExecutionState.FAILED).copy(
+            result = ActionResult.Failure(
+                command.executionId,
+                ActionError(ActionErrorCode.VALIDATION_FAILED, "secret-validation-detail"),
+            ),
+        )
+        advanceTimeBy(11)
+        runCurrent()
+
+        assertEquals(
+            listOf(ApplicationMethod.ACTION_ACCEPTED.wireName, ApplicationMethod.ACTION_FAILED.wireName),
+            fixture.connection.sent.mapNotNull(::methodOrNull),
+        )
+        fixture.close()
+    }
+
+    @Test
+    fun `unavailable terminal read does not turn bus rejection into protocol rejection`() = runTest {
+        val fixture = Fixture(backgroundScope)
+        fixture.executor.block = {
+            fixture.store.failScopedFind = true
+            ActionBusResult.Rejected(ActionError(ActionErrorCode.PERMISSION_DENIED, "secret-denial"))
+        }
+
+        fixture.serverRequest("unavailable-rejected", ApplicationMethod.ACTION_REQUEST, requestEnvelope(sequence = 1))
+        fixture.executor.entered.await()
+        runCurrent()
+
+        assertEquals(listOf(ApplicationMethod.ACTION_ACCEPTED.wireName), fixture.connection.sent.mapNotNull(::methodOrNull))
+
+        fixture.store.failScopedFind = false
+        val command = assertNotNull(fixture.executor.command)
+        fixture.store.current = record(command, ActionExecutionState.FAILED).copy(
+            result = ActionResult.Failure(
+                command.executionId,
+                ActionError(ActionErrorCode.VALIDATION_FAILED, "secret-validation-detail"),
+            ),
+        )
+        advanceTimeBy(11)
+        runCurrent()
+
+        assertEquals(
+            listOf(ApplicationMethod.ACTION_ACCEPTED.wireName, ApplicationMethod.ACTION_FAILED.wireName),
+            fixture.connection.sent.mapNotNull(::methodOrNull),
+        )
         fixture.close()
     }
 
@@ -891,6 +950,7 @@ class ApplicationActionRequestHandlerTest {
         @Volatile var current: ActionExecutionRecord? = null
         @Volatile var failNextFind = false
         @Volatile var blockFind = false
+        @Volatile var failScopedFind = false
         @Volatile var failUnscopedFind = false
         var unscopedFindCalls = 0
         override suspend fun find(executionId: String): ActionExecutionRecord? {
@@ -900,12 +960,14 @@ class ApplicationActionRequestHandlerTest {
             if (failNextFind) { failNextFind = false; error("store unavailable") }
             return current?.takeIf { it.command.executionId == executionId }
         }
-        override suspend fun find(executionId: String, identityScope: ActionIdentityScope): ActionExecutionRecord? =
-            current?.takeIf {
+        override suspend fun find(executionId: String, identityScope: ActionIdentityScope): ActionExecutionRecord? {
+            if (failScopedFind) error("scoped store unavailable")
+            return current?.takeIf {
                 it.command.executionId == executionId &&
                     it.command.identityScope == identityScope &&
                     it.binding.identityScope == identityScope
             }
+        }
         override suspend fun listNonTerminal(identityScope: ActionIdentityScope): List<ActionExecutionRecord> =
             listOfNotNull(current?.takeIf { !it.isTerminal && it.command.identityScope == identityScope })
         override suspend fun compareAndCreate(record: ActionExecutionRecord, audit: ActionAuditDraft): ExecutionCreateResult = error("unused")

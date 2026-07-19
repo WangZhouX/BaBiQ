@@ -284,7 +284,7 @@ class ApplicationActionExecutionRuntime(
                     finalRead is ScopedRead.Found && finalRead.record.isTerminal -> owned.publicationSlot?.offerTerminal(
                         PublicationIntent.Record(owned.publication, finalRead.record, projectedResult = completedResult),
                     )
-                    rejection != null -> owned.publicationSlot?.offerTerminal(
+                    finalRead is ScopedRead.Absent && rejection != null -> owned.publicationSlot?.offerTerminal(
                         PublicationIntent.Rejected(owned.publication, owned.command.actionId, rejection),
                     )
                     else -> startTerminalResolver(owned)
@@ -410,11 +410,10 @@ internal sealed interface PublicationIntent {
     data class Record(
         val publication: ApplicationActionPublicationContext,
         val record: ActionExecutionRecord,
-        val rejection: ActionError? = null,
         val projectedResult: ActionResult<*>? = null,
     ) : PublicationIntent {
         override suspend fun publish(client: ApplicationActionStatusClient) =
-            client.publish(publication, record, rejection, projectedResult)
+            client.publish(publication, record, projectedResult)
     }
     data class Rejected(
         val publication: ApplicationActionPublicationContext,
