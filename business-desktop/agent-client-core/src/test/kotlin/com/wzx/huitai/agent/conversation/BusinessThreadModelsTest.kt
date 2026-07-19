@@ -8,6 +8,8 @@ import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -92,7 +94,7 @@ class BusinessThreadModelsTest {
     fun `provider decoding keeps safe defaults but requires id and model`() {
         val defaulted = BusinessProviderCodec.decodeList(buildJsonObject {
             put("providers", json.parseToJsonElement(
-                """[{"id":"minimal","model":"custom-model"}]""",
+                """[{"id":"minimal","model":"custom-model","active":false,"hasApiKey":false,"enabled":true}]""",
             ))
         }).single()
 
@@ -116,6 +118,52 @@ class BusinessThreadModelsTest {
                 put("providers", json.parseToJsonElement("""[{"id":"missing-model"}]"""))
             })
         }
+    }
+
+    @Test
+    fun `provider status fields require genuine JSON booleans`() {
+        val provider = buildJsonObject {
+            put("id", "relay")
+            put("model", "kimi-k3")
+            put("active", false)
+            put("hasApiKey", true)
+            put("enabled", true)
+        }
+        listOf("active", "hasApiKey", "enabled").forEach { field ->
+            assertRejectsMissingAndMalformedBoolean(provider, field, BusinessProviderCodec::decodeProvider)
+        }
+
+        val deleted = buildJsonObject {
+            put("ok", true)
+            put("providerId", "relay")
+            put("activeProviderId", "fallback")
+        }
+        assertRejectsMissingAndMalformedBoolean(deleted, "ok", BusinessProviderCodec::decodeDeleteResult)
+
+        val tested = buildJsonObject {
+            put("ok", true)
+            put("providerId", "relay")
+            put("message", "Provider 配置可用")
+        }
+        assertRejectsMissingAndMalformedBoolean(tested, "ok", BusinessProviderCodec::decodeTestResult)
+
+        val oauthStatus = buildJsonObject {
+            put("providerType", "ANTHROPIC")
+            put("authMode", "oauth_cli")
+            put("cliInstalled", true)
+            put("loggedIn", false)
+            put("message", "未登录")
+        }
+        listOf("cliInstalled", "loggedIn").forEach { field ->
+            assertRejectsMissingAndMalformedBoolean(oauthStatus, field, BusinessProviderCodec::decodeOAuthStatus)
+        }
+
+        val oauthLogin = buildJsonObject {
+            put("ok", true)
+            put("pid", 12345L)
+            put("message", "登录已启动")
+        }
+        assertRejectsMissingAndMalformedBoolean(oauthLogin, "ok", BusinessProviderCodec::decodeOAuthLoginResult)
     }
 
     @Test
@@ -162,4 +210,21 @@ class BusinessThreadModelsTest {
 
     private fun decode(value: String): BusinessThreadItem =
         BusinessThreadItemCodec.decode(json.parseToJsonElement(value))
+
+    private fun assertRejectsMissingAndMalformedBoolean(
+        payload: JsonObject,
+        field: String,
+        decode: (JsonObject) -> Any,
+    ) {
+        val invalidPayloads = listOf(
+            JsonObject(payload - field),
+            JsonObject(payload + (field to JsonPrimitive("true"))),
+            JsonObject(payload + (field to JsonPrimitive(1))),
+        )
+        invalidPayloads.forEach { invalid ->
+            assertFailsWith<SerializationException>("field=$field payload=$invalid") {
+                decode(invalid)
+            }
+        }
+    }
 }

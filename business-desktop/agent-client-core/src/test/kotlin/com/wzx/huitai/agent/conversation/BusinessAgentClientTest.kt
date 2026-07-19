@@ -133,8 +133,12 @@ class BusinessAgentClientTest {
         )
         assertEquals(marker, connection.params(0).getValue("apiKey").jsonPrimitive.content)
         assertEquals(marker, connection.params(1).getValue("apiKey").jsonPrimitive.content)
+        assertEquals("Relay", connection.params(0).getValue("displayName").jsonPrimitive.content)
+        assertEquals("OPENAI_COMPATIBLE", connection.params(0).getValue("type").jsonPrimitive.content)
         assertEquals("kimi-k3", connection.params(0).getValue("model").jsonPrimitive.content)
         assertEquals("kimi-k3", connection.params(1).getValue("model").jsonPrimitive.content)
+        assertEquals("131072", connection.params(0).getValue("contextWindow").jsonPrimitive.content)
+        assertEquals("true", connection.params(0).getValue("enabled").jsonPrimitive.content)
         connection.params().take(2).forEach { params ->
             assertEquals(
                 setOf(
@@ -177,6 +181,45 @@ class BusinessAgentClientTest {
             draft.toString(),
         )
         assertFalse(draft.toString().contains(marker))
+        val copiedDraft = draft.copy(apiKey = "$marker-rotated")
+        assertEquals(draft.toString(), copiedDraft.toString())
+        assertFalse(copiedDraft.toString().contains(marker))
+
+        client.close()
+        rpc.close()
+    }
+
+    @Test
+    fun `provider drafts reject invalid request invariants without leaking the key`() = runTest {
+        val marker = "sk-fake-sensitive-marker"
+        val connection = FakeConnection().apply { responder = { providerPayload() } }
+        val rpc = AgentJsonRpcClient(connection, this)
+        val client = BusinessAgentClient(rpc, this)
+        val valid = BusinessProviderDraft(
+            providerId = "relay",
+            displayName = "Relay",
+            type = "OPENAI_COMPATIBLE",
+            model = "kimi-k3",
+            apiKey = marker,
+        )
+        val invalidDrafts = listOf(
+            valid.copy(displayName = " "),
+            valid.copy(type = ""),
+            valid.copy(contextWindow = -1),
+            valid.copy(enabled = false),
+        )
+
+        invalidDrafts.forEach { invalid ->
+            val createFailure = assertFailsWith<IllegalArgumentException> {
+                client.createProvider(invalid)
+            }
+            val updateFailure = assertFailsWith<IllegalArgumentException> {
+                client.updateProvider(invalid)
+            }
+            assertFalse(createFailure.toString().contains(marker))
+            assertFalse(updateFailure.toString().contains(marker))
+        }
+        assertTrue(connection.methods().isEmpty())
 
         client.close()
         rpc.close()

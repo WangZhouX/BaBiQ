@@ -161,6 +161,18 @@ internal fun JsonObject.optionalText(name: String): String? =
 internal fun JsonObject.requiredInt(name: String): Int = optionalInt(name)
     ?: throw SerializationException("Missing required field: $name")
 
+internal fun JsonObject.requiredBoolean(name: String): Boolean {
+    val value = get(name) as? JsonPrimitive
+    if (value == null || value.isString) {
+        throw SerializationException("Missing or invalid boolean field: $name")
+    }
+    return when (value.content) {
+        "true" -> true
+        "false" -> false
+        else -> throw SerializationException("Missing or invalid boolean field: $name")
+    }
+}
+
 internal fun JsonObject.optionalInt(name: String): Int? =
     (get(name) as? JsonPrimitive)?.intOrNull
 

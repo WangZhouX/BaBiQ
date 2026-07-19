@@ -77,7 +77,7 @@ object BusinessProviderCodec {
     fun decodeProvider(result: JsonObject): BusinessProvider {
         val id = result.requiredText("id")
         val configuredModel = result.requiredText("model")
-        val active = result.optionalBoolean("active") ?: false
+        val active = result.requiredBoolean("active")
         val decodedModels = (result["models"] as? JsonArray).orEmpty().map { modelElement ->
             val rawModel = modelElement.asObject("provider model")
             val modelId = rawModel.requiredText("id")
@@ -97,26 +97,26 @@ object BusinessProviderCodec {
             displayName = result.optionalText("displayName") ?: result.optionalText("label") ?: id,
             models = models,
             authMode = result.optionalText("authMode") ?: "api_key",
-            hasApiKey = result.optionalBoolean("hasApiKey") ?: false,
+            hasApiKey = result.requiredBoolean("hasApiKey"),
             active = active,
             type = result.optionalText("type") ?: "UNKNOWN",
             baseUrl = result.optionalText("baseUrl") ?: "",
             model = configuredModel,
             contextWindow = result.optionalInt("contextWindow") ?: 0,
-            enabled = result.optionalBoolean("enabled") ?: true,
+            enabled = result.requiredBoolean("enabled"),
         )
     }
 
     fun decodeDeleteResult(result: JsonObject): BusinessProviderDeleteResult =
         BusinessProviderDeleteResult(
-            ok = result.optionalBoolean("ok") ?: false,
+            ok = result.requiredBoolean("ok"),
             providerId = result.requiredText("providerId"),
             activeProviderId = result.requiredText("activeProviderId"),
         )
 
     fun decodeTestResult(result: JsonObject): BusinessProviderTestResult {
         return BusinessProviderTestResult(
-            ok = result.optionalBoolean("ok") ?: false,
+            ok = result.requiredBoolean("ok"),
             providerId = result.requiredText("providerId"),
             message = result.requiredText("message"),
         )
@@ -126,20 +126,17 @@ object BusinessProviderCodec {
         return BusinessProviderOAuthStatus(
             providerType = result.optionalText("providerType") ?: "ANTHROPIC",
             authMode = result.optionalText("authMode") ?: "oauth_cli",
-            cliInstalled = result.optionalBoolean("cliInstalled") ?: false,
-            loggedIn = result.optionalBoolean("loggedIn") ?: false,
+            cliInstalled = result.requiredBoolean("cliInstalled"),
+            loggedIn = result.requiredBoolean("loggedIn"),
             message = result.requiredText("message"),
         )
     }
 
     fun decodeOAuthLoginResult(result: JsonObject): BusinessProviderOAuthLoginResult {
         return BusinessProviderOAuthLoginResult(
-            ok = result.optionalBoolean("ok") ?: false,
+            ok = result.requiredBoolean("ok"),
             pid = result.optionalLong("pid"),
             message = result.requiredText("message"),
         )
     }
 }
-
-internal fun JsonObject.optionalBoolean(name: String): Boolean? =
-    optionalText(name)?.toBooleanStrictOrNull()

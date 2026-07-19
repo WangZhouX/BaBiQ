@@ -131,7 +131,11 @@ class BusinessAgentClient(
 
     private fun BusinessProviderDraft.toRequestParams(): JsonObject {
         require(providerId.isNotBlank()) { "providerId must not be blank" }
+        require(displayName.isNotBlank()) { "displayName must not be blank" }
+        require(type.isNotBlank()) { "type must not be blank" }
         require(model.isNotBlank()) { "model must not be blank" }
+        require(contextWindow >= 0) { "contextWindow must not be negative" }
+        require(enabled) { "enabled must be true" }
         return buildJsonObject {
             put("providerId", providerId)
             put("displayName", displayName)
