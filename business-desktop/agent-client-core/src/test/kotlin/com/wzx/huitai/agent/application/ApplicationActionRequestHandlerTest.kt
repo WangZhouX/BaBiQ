@@ -501,11 +501,16 @@ class ApplicationActionRequestHandlerTest {
     }
 
     @Test
-    fun `persisted failed record waits for bus rejection classification`() = runTest {
+    fun `persisted failed terminal overrides bus rejection classification`() = runTest {
         val fixture = Fixture(backgroundScope)
         val release = CompletableDeferred<Unit>()
         fixture.executor.block = { command ->
-            fixture.store.current = record(command, ActionExecutionState.FAILED)
+            fixture.store.current = record(command, ActionExecutionState.FAILED).copy(
+                result = ActionResult.Failure(
+                    command.executionId,
+                    ActionError(ActionErrorCode.VALIDATION_FAILED, "secret-validation-detail"),
+                ),
+            )
             release.await()
             ActionBusResult.Rejected(ActionError(ActionErrorCode.PERMISSION_DENIED, "secret-denial"))
         }
@@ -519,9 +524,15 @@ class ApplicationActionRequestHandlerTest {
         release.complete(Unit)
         runCurrent()
         assertEquals(
-            listOf(ApplicationMethod.ACTION_ACCEPTED.wireName, ApplicationMethod.ACTION_REJECTED.wireName),
+            listOf(ApplicationMethod.ACTION_ACCEPTED.wireName, ApplicationMethod.ACTION_FAILED.wireName),
             fixture.connection.sent.mapNotNull(::methodOrNull),
         )
+        val failurePayload = fixture.connection.sent.map { it.json() }.single {
+            it["method"]?.jsonPrimitive?.content == ApplicationMethod.ACTION_FAILED.wireName
+        }.getValue("params").jsonObject.getValue("payload").jsonObject
+        assertEquals("failed", failurePayload.getValue("state").jsonPrimitive.content)
+        assertEquals("validation_failed", failurePayload.getValue("errorCode").jsonPrimitive.content)
+        assertEquals(false, fixture.connection.sent.mapNotNull(::methodOrNull).contains(ApplicationMethod.ACTION_REJECTED.wireName))
         fixture.close()
     }
 

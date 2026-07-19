@@ -282,7 +282,7 @@ class ApplicationActionExecutionRuntime(
                 installCompleted(owned)
                 when {
                     finalRead is ScopedRead.Found && finalRead.record.isTerminal -> owned.publicationSlot?.offerTerminal(
-                        PublicationIntent.Record(owned.publication, finalRead.record, rejection, completedResult),
+                        PublicationIntent.Record(owned.publication, finalRead.record, projectedResult = completedResult),
                     )
                     rejection != null -> owned.publicationSlot?.offerTerminal(
                         PublicationIntent.Rejected(owned.publication, owned.command.actionId, rejection),
