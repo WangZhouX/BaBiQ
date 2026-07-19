@@ -2,6 +2,7 @@ package com.wzx.huitai.desktop.integration
 
 import com.wzx.huitai.agent.client.AgentConnection
 import com.wzx.huitai.agent.client.AgentConnectionState
+import com.wzx.huitai.agent.client.AgentJsonRpcException
 import com.wzx.huitai.agent.client.AgentSupervisorState
 import com.wzx.huitai.agent.client.KtorAgentTransport
 import com.wzx.huitai.agent.conversation.BusinessAgentClient
@@ -36,8 +37,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -45,6 +48,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
@@ -78,6 +82,7 @@ class BusinessProviderSettingsRestartIT {
         val diagnostics = SecretDiagnosticAudit(createSecret, updateSecret)
         var first: RunningDesktop? = null
         var second: RunningDesktop? = null
+        var primaryFailure: Throwable? = null
 
         try {
             withTimeout(OVERALL_TIMEOUT_MILLIS) {
@@ -152,6 +157,7 @@ class BusinessProviderSettingsRestartIT {
 
                 second = startDesktop(home, backendJar, traffic)
                 val secondRunning = requireNotNull(second)
+                assertNotEquals(firstRunning.pid, secondRunning.pid)
                 assertEquals(firstRunning.paths.root, secondRunning.paths.root)
                 assertEquals(firstRunning.paths.agentDatabase, secondRunning.paths.agentDatabase)
                 assertEquals(firstRunning.paths.agentKeyStore, secondRunning.paths.agentKeyStore)
@@ -163,17 +169,22 @@ class BusinessProviderSettingsRestartIT {
                 assertEquals(expectedFallback, restartedProviders.single(BusinessProvider::active).id)
 
                 val testResult = secondRunning.client.testProvider(relayId)
+                assertTrue(testResult.ok)
                 assertEquals(relayId, testResult.providerId)
-                assertEquals(
-                    if (testResult.ok) "Provider 配置可用" else "Provider 配置检查失败",
-                    testResult.message,
-                )
-                diagnostics.inspect(listOf(restartedProviders, restartedRelay, testResult))
+                assertEquals("Provider 配置可用", testResult.message)
+
+                val duplicateDraft = updateDraft.copy(apiKey = createSecret)
+                diagnostics.inspect(duplicateDraft)
+                val duplicateFailure = assertFailsWith<AgentJsonRpcException> {
+                    secondRunning.client.createProvider(duplicateDraft)
+                }
+                assertThrowableSecretFree(duplicateFailure, createSecret, updateSecret)
+                diagnostics.inspect(listOf(restartedProviders, restartedRelay, testResult, duplicateFailure))
 
                 secondRunning.shutdown()
                 secondRunning.assertFullyStopped()
 
-                assertSoftDeletedIfSqliteAvailable(firstRunning.paths.agentDatabase, secondaryId)
+                assertSoftDeleted(firstRunning.paths.agentDatabase, secondaryId)
                 assertSecretAbsent(firstRunning.paths.agentDatabase, createSecret, updateSecret)
                 assertSecretAbsent(firstRunning.paths.agentKeyStore, createSecret, updateSecret)
                 assertSecretAbsent(firstRunning.paths.agentLog, createSecret, updateSecret)
@@ -181,15 +192,19 @@ class BusinessProviderSettingsRestartIT {
             }
         } catch (failure: Throwable) {
             diagnostics.inspect(failure.stackTraceToString())
-            if (!diagnostics.isSecure()) {
-                throw AssertionError("sensitive marker leaked into failure diagnostics")
+            val reportedFailure = if (diagnostics.isSecure()) {
+                failure
+            } else {
+                AssertionError("sensitive marker leaked into failure diagnostics")
             }
-            throw failure
+            primaryFailure = reportedFailure
+            throw reportedFailure
         } finally {
-            withContext(NonCancellable) {
-                runCatching { second?.shutdown() }
-                runCatching { first?.shutdown() }
-                DesktopLoggingBootstrap.resetForTests()
+            val cleanupFailure = withContext(NonCancellable) {
+                cleanupAndAssert(first, second)
+            }
+            if (cleanupFailure != null) {
+                primaryFailure?.addSuppressed(cleanupFailure) ?: throw cleanupFailure
             }
         }
 
@@ -235,16 +250,14 @@ class BusinessProviderSettingsRestartIT {
                 BusinessAgentConnectionHandle(
                     connection = recording,
                     resource = CompositionResource {
-                        withContext(NonCancellable) {
-                            runCatching { recording.close() }
-                            runCatching { transport.close() }
-                            client.close()
-                        }
+                        closeConnectionResources(recording, transport, client)?.let { throw it }
                     },
                 )
             } catch (failure: Throwable) {
-                runCatching { transport.close() }
-                client.close()
+                val cleanupFailure = withContext(NonCancellable) {
+                    closeConnectionResources(null, transport, client)
+                }
+                cleanupFailure?.let(failure::addSuppressed)
                 throw failure
             }
         }
@@ -271,11 +284,59 @@ class BusinessProviderSettingsRestartIT {
                 scope = scope,
             )
         } catch (failure: Throwable) {
-            withContext(NonCancellable) {
-                runCatching { capturedSession.get()?.close() }
-                scope.cancel()
+            val cleanupFailure = withContext(NonCancellable) {
+                var cleanup: Throwable? = null
+                try {
+                    capturedSession.get()?.let { closeSessionBounded(it) }
+                } catch (closeFailure: Throwable) {
+                    cleanup = closeFailure
+                } finally {
+                    scope.cancel()
+                }
+                cleanup
             }
+            cleanupFailure?.let(failure::addSuppressed)
             throw failure
+        }
+    }
+
+    private suspend fun closeConnectionResources(
+        connection: RecordingManagedConnection?,
+        transport: KtorAgentTransport,
+        client: HttpClient,
+    ): Throwable? = withContext(NonCancellable) {
+        var cleanupFailure: Throwable? = null
+        suspend fun capture(block: suspend () -> Unit) {
+            try {
+                block()
+            } catch (failure: Throwable) {
+                cleanupFailure?.addSuppressed(failure) ?: run { cleanupFailure = failure }
+            }
+        }
+        capture { connection?.close() }
+        capture { transport.close() }
+        capture { client.close() }
+        cleanupFailure
+    }
+
+    private suspend fun closeSessionBounded(session: BusinessAgentRuntimeSession) {
+        runIndependentBounded(SESSION_CLOSE_TIMEOUT_MILLIS) { session.close() }
+    }
+
+    private suspend fun shutdownRootBounded(root: BusinessDesktopCompositionRoot) {
+        runIndependentBounded(ROOT_SHUTDOWN_TIMEOUT_MILLIS) { root.shutdown() }
+    }
+
+    private suspend fun <T> runIndependentBounded(
+        timeoutMillis: Long,
+        block: suspend () -> T,
+    ): T {
+        val owner = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val work = owner.async { block() }
+        return try {
+            withTimeout(timeoutMillis) { work.await() }
+        } finally {
+            owner.cancel()
         }
     }
 
@@ -324,8 +385,8 @@ class BusinessProviderSettingsRestartIT {
         assertEquals(hasApiKey, actual.hasApiKey)
     }
 
-    private fun assertSoftDeletedIfSqliteAvailable(database: Path, providerId: String) {
-        if (runCatching { Class.forName("org.sqlite.JDBC") }.isFailure) return
+    private fun assertSoftDeleted(database: Path, providerId: String) {
+        Class.forName("org.sqlite.JDBC")
         val normalized = database.toAbsolutePath().normalize().toString().replace('\\', '/')
         DriverManager.getConnection("jdbc:sqlite:file:$normalized?mode=ro").use { connection ->
             connection.prepareStatement(
@@ -341,9 +402,36 @@ class BusinessProviderSettingsRestartIT {
     }
 
     private fun assertSecretAbsent(path: Path, vararg secrets: String) {
-        if (!Files.isRegularFile(path)) return
+        assertTrue(Files.isRegularFile(path))
         val content = Files.readAllBytes(path)
         secrets.forEach { secret -> assertFalse(content.containsSubsequence(secret.toByteArray())) }
+    }
+
+    private fun assertThrowableSecretFree(failure: Throwable, vararg secrets: String) {
+        generateSequence(failure) { it.cause }.forEach { current ->
+            val diagnostic = current.toString()
+            secrets.forEach { secret -> assertFalse(diagnostic.contains(secret)) }
+        }
+    }
+
+    private suspend fun cleanupAndAssert(
+        first: RunningDesktop?,
+        second: RunningDesktop?,
+    ): Throwable? {
+        var cleanupFailure: Throwable? = null
+        suspend fun capture(block: suspend () -> Unit) {
+            try {
+                block()
+            } catch (failure: Throwable) {
+                cleanupFailure?.addSuppressed(failure) ?: run { cleanupFailure = failure }
+            }
+        }
+        capture { second?.shutdown() }
+        capture { first?.shutdown() }
+        capture { second?.assertFullyStopped() }
+        capture { first?.assertFullyStopped() }
+        capture { DesktopLoggingBootstrap.resetForTests() }
+        return cleanupFailure
     }
 
     private fun ByteArray.containsSubsequence(candidate: ByteArray): Boolean {
@@ -353,25 +441,35 @@ class BusinessProviderSettingsRestartIT {
         }
     }
 
-    private class RunningDesktop(
+    private inner class RunningDesktop(
         private val root: BusinessDesktopCompositionRoot,
         val client: BusinessAgentClient,
         val session: BusinessAgentRuntimeSession,
         val paths: BusinessDesktopRuntimePaths,
         private val scope: CoroutineScope,
     ) {
-        private val closed = AtomicBoolean(false)
-        private val pid = session.childPid
+        private val shutdownComplete = AtomicBoolean(false)
+        val pid: Long = session.childPid
 
         suspend fun shutdown() {
-            if (!closed.compareAndSet(false, true)) return
+            if (shutdownComplete.get()) return
+            var shutdownFailure: Throwable? = null
             withContext(NonCancellable) {
                 try {
-                    root.shutdown()
+                    shutdownRootBounded(root)
+                } catch (failure: Throwable) {
+                    shutdownFailure = failure
+                    try {
+                        closeSessionBounded(session)
+                    } catch (fallbackFailure: Throwable) {
+                        failure.addSuppressed(fallbackFailure)
+                    }
                 } finally {
                     scope.cancel()
                 }
             }
+            shutdownFailure?.let { throw it }
+            shutdownComplete.set(true)
         }
 
         fun assertFullyStopped() {
@@ -462,9 +560,9 @@ class BusinessProviderSettingsRestartIT {
         fun assertSecure() = synchronized(monitor) {
             assertFalse(outboundSecretViolation)
             assertFalse(inboundSecretLeak)
-            assertEquals(2, createSecretRequestCount)
+            assertEquals(3, createSecretRequestCount)
             assertEquals(1, updateSecretRequestCount)
-            assertEquals(2, outboundMethods.count("provider/create"::equals))
+            assertEquals(3, outboundMethods.count("provider/create"::equals))
             assertEquals(1, outboundMethods.count("provider/update"::equals))
             assertTrue(inboundPayloads.isNotEmpty())
         }
@@ -494,6 +592,8 @@ class BusinessProviderSettingsRestartIT {
     private companion object {
         const val STARTUP_TIMEOUT_MILLIS = 30_000L
         const val OVERALL_TIMEOUT_MILLIS = 120_000L
+        const val ROOT_SHUTDOWN_TIMEOUT_MILLIS = 20_000L
+        const val SESSION_CLOSE_TIMEOUT_MILLIS = 15_000L
         const val DESKTOP_KEYSTORE_PASSWORD = "provider-restart-desktop-secret"
         val SAFE_ENVIRONMENT_KEYS = listOf(
             "SystemRoot",
