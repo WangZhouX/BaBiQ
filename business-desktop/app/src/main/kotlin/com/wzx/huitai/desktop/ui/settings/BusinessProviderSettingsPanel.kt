@@ -38,8 +38,8 @@ import com.wzx.huitai.desktop.controller.BusinessProviderSettingsState
 fun BusinessProviderSettingsPanel(
     state: BusinessProviderSettingsState,
     onRefresh: () -> Unit = {},
-    onCreate: (BusinessProviderDraft) -> Unit = {},
-    onUpdate: (BusinessProviderDraft) -> Unit = {},
+    onCreate: suspend (BusinessProviderDraft) -> Boolean = { false },
+    onUpdate: suspend (BusinessProviderDraft) -> Boolean = { false },
     onDelete: (String) -> Unit = {},
     onTest: (String) -> Unit = {},
     onSetActive: (providerId: String, modelId: String?) -> Unit = { _, _ -> },
@@ -78,6 +78,8 @@ fun BusinessProviderSettingsPanel(
                             identity = "create:$editorOrdinal",
                             mode = BusinessProviderEditorMode.CREATE,
                             draft = BusinessProviderEditorDraft(),
+                            hasPersistedOAuth = false,
+                            hasStoredApiKey = false,
                         )
                     },
                     modifier = Modifier.testTag("provider-add-action"),
@@ -109,6 +111,9 @@ fun BusinessProviderSettingsPanel(
                             identity = "edit:${provider.id}",
                             mode = BusinessProviderEditorMode.EDIT,
                             draft = provider.toEditorDraft(),
+                            hasPersistedOAuth = provider.type.equals("ANTHROPIC", ignoreCase = true) &&
+                                provider.authMode.equals("oauth_cli", ignoreCase = true),
+                            hasStoredApiKey = provider.hasApiKey,
                         )
                     },
                     onCopy = {
@@ -117,6 +122,8 @@ fun BusinessProviderSettingsPanel(
                             identity = "copy:${provider.id}:$editorOrdinal",
                             mode = BusinessProviderEditorMode.CREATE,
                             draft = provider.toEditorDraft(copy = true),
+                            hasPersistedOAuth = false,
+                            hasStoredApiKey = false,
                         )
                     },
                     onDelete = { deletingProviderId = provider.id },
@@ -132,13 +139,12 @@ fun BusinessProviderSettingsPanel(
             session = session,
             operationsEnabled = state.operationsEnabled,
             connectionGeneration = state.connectionGeneration,
-            oauthStatus = state.oauthStatus[session.draft.providerId],
+            oauthStatuses = state.oauthStatus,
             onSave = { draft ->
                 if (session.mode == BusinessProviderEditorMode.EDIT) onUpdate(draft) else onCreate(draft)
-                editor = null
             },
-            onOAuthStatus = { onOAuthStatus(session.draft.providerId) },
-            onOAuthLogin = { onOAuthLogin(session.draft.providerId) },
+            onOAuthStatus = onOAuthStatus,
+            onOAuthLogin = onOAuthLogin,
             onDismiss = { editor = null },
         )
     }

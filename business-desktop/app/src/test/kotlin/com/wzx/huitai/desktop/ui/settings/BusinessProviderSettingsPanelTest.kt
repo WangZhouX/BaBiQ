@@ -22,6 +22,7 @@ import com.wzx.huitai.desktop.ui.theme.HuitaiBusinessTheme
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.CompletableDeferred
 import org.junit.Rule
 import org.junit.Test
 
@@ -74,7 +75,10 @@ class BusinessProviderSettingsPanelTest {
             HuitaiBusinessTheme {
                 BusinessProviderSettingsPanel(
                     state = state(),
-                    onCreate = { created = it },
+                    onCreate = {
+                        created = it
+                        true
+                    },
                 )
             }
         }
@@ -87,8 +91,10 @@ class BusinessProviderSettingsPanelTest {
         rule.onNodeWithTag("provider-context-window-input").performTextReplacement("-1")
         rule.onNodeWithTag("provider-save-action").assertIsNotEnabled()
         rule.onNodeWithTag("provider-context-window-input").performTextReplacement("131072")
+        rule.onNodeWithTag("provider-base-url-input").performTextReplacement("https://relay.example.com/v1")
         rule.onNodeWithTag("provider-api-key-input").performTextReplacement("sk-once")
         rule.onNodeWithTag("provider-save-action").assertIsEnabled().performClick()
+        rule.waitUntil { created != null }
 
         assertEquals("relay", created?.providerId)
         assertEquals("Relay", created?.displayName)
@@ -112,7 +118,10 @@ class BusinessProviderSettingsPanelTest {
             HuitaiBusinessTheme {
                 BusinessProviderSettingsPanel(
                     state = state(providers = listOf(relay)),
-                    onUpdate = { updated = it },
+                    onUpdate = {
+                        updated = it
+                        true
+                    },
                 )
             }
         }
@@ -126,6 +135,7 @@ class BusinessProviderSettingsPanelTest {
         assertInputText("provider-context-window-input", "131072")
         assertInputText("provider-api-key-input", "")
         rule.onNodeWithTag("provider-save-action").performClick()
+        rule.waitUntil { updated != null }
         assertEquals("relay", updated?.providerId)
         assertEquals("kimi-k3", updated?.model)
         assertNull(updated?.apiKey)
@@ -135,6 +145,133 @@ class BusinessProviderSettingsPanelTest {
         rule.onNodeWithTag("provider-id-input").assertIsEnabled()
         assertInputText("provider-display-name-input", "Relay 副本")
         assertInputText("provider-api-key-input", "")
+    }
+
+    @Test
+    fun `editor validation mirrors backend provider type auth base url and key rules`() {
+        rule.setContent {
+            HuitaiBusinessTheme {
+                BusinessProviderSettingsPanel(state = state(), onCreate = { true })
+            }
+        }
+
+        rule.onNodeWithTag("provider-add-action").performClick()
+        rule.onNodeWithTag("provider-id-input").performTextReplacement("custom")
+        rule.onNodeWithTag("provider-display-name-input").performTextReplacement("Custom")
+        rule.onNodeWithTag("provider-model-input").performTextReplacement("kimi-k3")
+        rule.onNodeWithTag("provider-save-action").assertIsNotEnabled()
+        rule.onNodeWithTag("provider-api-key-input").performTextReplacement("sk-new")
+        rule.onNodeWithTag("provider-save-action").assertIsNotEnabled()
+        rule.onNodeWithTag("provider-base-url-input").performTextReplacement("https://relay.example.com/v1")
+        rule.onNodeWithTag("provider-save-action").assertIsEnabled()
+
+        rule.onNodeWithTag("provider-type-input").performTextReplacement("UNKNOWN")
+        rule.onNodeWithTag("provider-save-action").assertIsNotEnabled()
+        rule.onNodeWithTag("provider-type-input").performTextReplacement("DASHSCOPE")
+        rule.onNodeWithTag("provider-base-url-input").performTextReplacement("")
+        rule.onNodeWithTag("provider-save-action").assertIsEnabled()
+
+        rule.onNodeWithTag("provider-auth-mode-input").performTextReplacement("token")
+        rule.onNodeWithTag("provider-save-action").assertIsNotEnabled()
+        rule.onNodeWithTag("provider-auth-mode-input").performTextReplacement("oauth_cli")
+        rule.onNodeWithTag("provider-save-action").assertIsNotEnabled()
+        rule.onNodeWithTag("provider-type-input").performTextReplacement("ANTHROPIC")
+        rule.onNodeWithTag("provider-save-action").assertIsEnabled()
+        rule.onNodeWithTag("provider-api-key-input").assertDoesNotExist()
+        rule.onNodeWithText("保存后可检查或启动 OAuth 登录").assertExists()
+        rule.onNodeWithTag("provider-oauth-status-action").assertDoesNotExist()
+        rule.onNodeWithTag("provider-oauth-login-action").assertDoesNotExist()
+    }
+
+    @Test
+    fun `edit api key may stay blank only when provider already has a stored key`() {
+        val providers = listOf(
+            provider("stored", hasApiKey = true, baseUrl = "https://stored.example.com/v1"),
+            provider("missing", hasApiKey = false, baseUrl = "https://missing.example.com/v1"),
+        )
+        rule.setContent {
+            HuitaiBusinessTheme {
+                BusinessProviderSettingsPanel(state = state(providers = providers), onUpdate = { true })
+            }
+        }
+
+        rule.onNodeWithTag("provider-edit-stored").performClick()
+        rule.onNodeWithTag("provider-save-action").assertIsEnabled()
+        rule.onNodeWithTag("provider-editor-cancel").performClick()
+        rule.onNodeWithTag("provider-edit-missing").performClick()
+        rule.onNodeWithTag("provider-save-action").assertIsNotEnabled()
+        rule.onNodeWithTag("provider-api-key-input").performTextReplacement("sk-replacement")
+        rule.onNodeWithTag("provider-save-action").assertIsEnabled()
+        rule.onNodeWithTag("provider-editor-cancel").performClick()
+
+        rule.onNodeWithTag("provider-edit-stored").performClick()
+        rule.onNodeWithTag("provider-type-input").performTextReplacement("ANTHROPIC")
+        rule.onNodeWithTag("provider-auth-mode-input").performTextReplacement("oauth_cli")
+        rule.onNodeWithText("保存后可检查或启动 OAuth 登录").assertExists()
+        rule.onNodeWithTag("provider-oauth-status-action").assertDoesNotExist()
+        rule.onNodeWithTag("provider-oauth-login-action").assertDoesNotExist()
+    }
+
+    @Test
+    fun `save awaits result keeps key while running preserves safe draft on failure and dismisses only on success`() {
+        val stateHolder = mutableStateOf(state())
+        var result = CompletableDeferred<Boolean>()
+        var captured: BusinessProviderDraft? = null
+        rule.setContent {
+            HuitaiBusinessTheme {
+                BusinessProviderSettingsPanel(
+                    state = stateHolder.value,
+                    onCreate = { draft ->
+                        captured = draft
+                        val saved = result.await()
+                        if (!saved) {
+                            stateHolder.value = stateHolder.value.copy(
+                                notice = BusinessProviderSettingsNotice(
+                                    "PROVIDER_SETTINGS_FAILED",
+                                    "Provider ID 已存在",
+                                    BusinessProviderSettingsNoticeLevel.ERROR,
+                                ),
+                            )
+                        }
+                        saved
+                    },
+                )
+            }
+        }
+
+        rule.onNodeWithTag("provider-add-action").performClick()
+        rule.onNodeWithTag("provider-id-input").performTextReplacement("relay")
+        rule.onNodeWithTag("provider-display-name-input").performTextReplacement("Relay Draft")
+        rule.onNodeWithTag("provider-base-url-input").performTextReplacement("https://relay.example.com/v1")
+        rule.onNodeWithTag("provider-model-input").performTextReplacement("kimi-k3")
+        rule.onNodeWithTag("provider-api-key-input").performTextReplacement("sk-in-flight")
+        rule.onNodeWithTag("provider-save-action").performClick()
+        rule.waitUntil { captured != null }
+        rule.onNodeWithTag("provider-save-action").assertExists().assertIsNotEnabled()
+        assertInputText("provider-api-key-input", "sk-in-flight")
+
+        result.complete(false)
+        rule.waitForIdle()
+        rule.onNodeWithTag("provider-save-action").assertExists()
+        assertInputText("provider-api-key-input", "")
+        assertInputText("provider-display-name-input", "Relay Draft")
+        assertInputText("provider-base-url-input", "https://relay.example.com/v1")
+        assertInputText("provider-model-input", "kimi-k3")
+        rule.onNodeWithText("Provider ID 已存在").assertExists()
+
+        rule.runOnIdle { stateHolder.value = stateHolder.value.copy(operationsEnabled = false) }
+        rule.onNodeWithTag("provider-save-action").assertExists().assertIsNotEnabled()
+        assertInputText("provider-model-input", "kimi-k3")
+        rule.runOnIdle { stateHolder.value = stateHolder.value.copy(operationsEnabled = true) }
+
+        result = CompletableDeferred()
+        captured = null
+        rule.onNodeWithTag("provider-api-key-input").performTextReplacement("sk-retry")
+        rule.onNodeWithTag("provider-save-action").performClick()
+        rule.waitUntil { captured?.apiKey == "sk-retry" }
+        result.complete(true)
+        rule.waitForIdle()
+        rule.onNodeWithTag("provider-save-action").assertDoesNotExist()
     }
 
     @Test
@@ -193,6 +330,11 @@ class BusinessProviderSettingsPanelTest {
         rule.onNodeWithTag("provider-oauth-login-action").assertIsNotEnabled()
         rule.runOnIdle { stateHolder.value = stateHolder.value.copy(operationsEnabled = true) }
         rule.onNodeWithTag("provider-editor-cancel").performClick()
+        rule.onNodeWithTag("provider-copy-claude").performClick()
+        rule.onNodeWithText("保存后可检查或启动 OAuth 登录").assertExists()
+        rule.onNodeWithTag("provider-oauth-status-action").assertDoesNotExist()
+        rule.onNodeWithTag("provider-oauth-login-action").assertDoesNotExist()
+        rule.onNodeWithTag("provider-editor-cancel").performClick()
         rule.onNodeWithTag("provider-delete-claude").performClick()
         rule.onNodeWithTag("provider-delete-confirm").performClick()
 
@@ -218,7 +360,10 @@ class BusinessProviderSettingsPanelTest {
             HuitaiBusinessTheme {
                 BusinessProviderSettingsPanel(
                     state = stateHolder.value,
-                    onUpdate = { updated = it },
+                    onUpdate = {
+                        updated = it
+                        true
+                    },
                 )
             }
         }

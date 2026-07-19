@@ -209,10 +209,10 @@ fun main() {
                             uiScope.launch { view.production.providerSettingsController.refresh() }
                         },
                         onProviderCreate = { draft ->
-                            uiScope.launch { view.production.providerSettingsController.create(draft) }
+                            view.production.providerSettingsController.create(draft) != null
                         },
                         onProviderUpdate = { draft ->
-                            uiScope.launch { view.production.providerSettingsController.update(draft) }
+                            view.production.providerSettingsController.update(draft) != null
                         },
                         onProviderDelete = { providerId ->
                             uiScope.launch { view.production.providerSettingsController.delete(providerId) }
