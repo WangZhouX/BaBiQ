@@ -32,11 +32,13 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class BusinessProviderSettingsControllerTest {
@@ -341,6 +343,84 @@ class BusinessProviderSettingsControllerTest {
         assertEquals(0, gateway.closeCount)
     }
 
+    @Test
+    fun `new generation auto refresh does not wait for old cancellation ignoring list`() = runTest {
+        val supervisor = MutableStateFlow<AgentSupervisorState>(AgentSupervisorState.Connected("connection-1"))
+        val desktop = MutableStateFlow(authenticatedState())
+        val gateway = FakeGateway()
+        val controller = controller(gateway, supervisor, desktop)
+        advanceUntilIdle()
+
+        val oldProviders = listOf(provider("old-generation"))
+        val newProviders = listOf(provider("new-generation"))
+        gateway.providers = oldProviders
+        gateway.listStarted = CompletableDeferred()
+        gateway.listRelease = CompletableDeferred()
+        gateway.remainingGatedListCalls = 1
+        gateway.ignoreListCancellation = true
+        val oldRefresh = async { controller.refresh() }
+        gateway.listStarted!!.await()
+
+        try {
+            gateway.ungatedListStarted = CompletableDeferred()
+            gateway.providers = newProviders
+            supervisor.value = AgentSupervisorState.Reconnecting(1, 1_000)
+            runCurrent()
+            supervisor.value = AgentSupervisorState.Connected("connection-2")
+
+            withTimeout(1_000) { gateway.ungatedListStarted!!.await() }
+            withTimeout(1_000) { controller.state.first { it.providers == newProviders } }
+            assertFalse(oldRefresh.isCompleted)
+        } finally {
+            gateway.listRelease!!.complete(Unit)
+        }
+
+        assertNull(oldRefresh.await())
+        advanceUntilIdle()
+        assertEquals(newProviders, controller.state.value.providers)
+        controller.close()
+    }
+
+    @Test
+    fun `new generation command does not wait for old cancellation ignoring create`() = runTest {
+        val supervisor = MutableStateFlow<AgentSupervisorState>(AgentSupervisorState.Connected("connection-1"))
+        val desktop = MutableStateFlow(authenticatedState())
+        val gateway = FakeGateway()
+        val callbacks = AtomicInteger()
+        val controller = controller(gateway, supervisor, desktop) { callbacks.incrementAndGet() }
+        advanceUntilIdle()
+
+        gateway.createStarted = CompletableDeferred()
+        gateway.createRelease = CompletableDeferred()
+        gateway.ignoreCreateCancellation = true
+        val oldCreate = async { controller.create(draft()) }
+        gateway.createStarted!!.await()
+
+        try {
+            gateway.providers = listOf(provider("connection-2"))
+            supervisor.value = AgentSupervisorState.Reconnecting(1, 1_000)
+            runCurrent()
+            supervisor.value = AgentSupervisorState.Connected("connection-2")
+            withTimeout(1_000) {
+                controller.state.first { it.providers.singleOrNull()?.id == "connection-2" }
+            }
+
+            val selection = withTimeout(1_000) { controller.setActive("connection-2", "kimi-k3") }
+            assertEquals("connection-2", selection?.providerId)
+            assertTrue(controller.state.value.providers.single().active)
+            assertEquals(1, callbacks.get())
+            assertFalse(oldCreate.isCompleted)
+        } finally {
+            gateway.createRelease!!.complete(Unit)
+        }
+
+        assertNull(oldCreate.await())
+        advanceUntilIdle()
+        assertEquals("PROVIDER_ACTIVATED", controller.state.value.notice?.code)
+        assertEquals(1, callbacks.get())
+        controller.close()
+    }
+
     private fun CoroutineScope.controller(
         gateway: FakeGateway,
         supervisor: MutableStateFlow<AgentSupervisorState>,
@@ -396,6 +476,9 @@ class BusinessProviderSettingsControllerTest {
         var failure: Throwable? = null
         var listStarted: CompletableDeferred<Unit>? = null
         var listRelease: CompletableDeferred<Unit>? = null
+        var remainingGatedListCalls: Int? = null
+        var ignoreListCancellation = false
+        var ungatedListStarted: CompletableDeferred<Unit>? = null
         var createStarted: CompletableDeferred<Unit>? = null
         var createRelease: CompletableDeferred<Unit>? = null
         var deleteStarted: CompletableDeferred<Unit>? = null
@@ -408,10 +491,23 @@ class BusinessProviderSettingsControllerTest {
 
         override suspend fun listProviders(): List<BusinessProvider> {
             calls += "list"
-            listStarted?.complete(Unit)
-            listRelease?.await()
+            val result = providers
+            val remaining = remainingGatedListCalls
+            val gated = listRelease != null && (remaining == null || remaining > 0)
+            if (remaining != null && remaining > 0) remainingGatedListCalls = remaining - 1
+            if (gated) {
+                listStarted?.complete(Unit)
+                try {
+                    listRelease?.await()
+                } catch (cancelled: CancellationException) {
+                    if (!ignoreListCancellation) throw cancelled
+                    withContext(NonCancellable) { listRelease?.await() }
+                }
+            } else {
+                ungatedListStarted?.complete(Unit)
+            }
             failIfConfigured()
-            return providers
+            return result
         }
 
         override suspend fun createProvider(draft: BusinessProviderDraft): BusinessProvider {

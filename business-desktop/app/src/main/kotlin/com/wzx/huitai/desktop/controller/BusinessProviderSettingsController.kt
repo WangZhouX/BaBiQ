@@ -69,16 +69,20 @@ class BusinessProviderSettingsController(
     scope: CoroutineScope,
     private val onProvidersChanged: (List<BusinessProvider>) -> Unit,
 ) : Closeable {
-    private data class OperationToken(val connectionId: String, val generation: Long)
+    private data class OperationToken(
+        val connectionId: String,
+        val generation: Long,
+        val operationMutex: Mutex,
+    )
 
     private val closed = AtomicBoolean(false)
     private val stateMonitor = Any()
-    private val operationMutex = Mutex()
     private val controllerJob = SupervisorJob(scope.coroutineContext[Job])
     private val controllerScope = CoroutineScope(scope.coroutineContext.minusKey(Job) + controllerJob)
     private val mutableState = MutableStateFlow(BusinessProviderSettingsState())
     private var lastFinalizedConnectionId: String? = null
     private var operationGeneration = 0L
+    private var epochOperationMutex = Mutex()
     private var currentToken: OperationToken? = null
     private var refreshJob: Job? = null
     private val availabilityObserver = controllerScope.launch(start = CoroutineStart.UNDISPATCHED) {
@@ -252,7 +256,7 @@ class BusinessProviderSettingsController(
         providerId: String?,
         loading: Boolean,
         block: suspend (OperationToken) -> T?,
-    ): T? = operationMutex.withLock {
+    ): T? = token.operationMutex.withLock {
         if (!commitIfCurrent(token) { current ->
                 current.copy(loading = loading, busyProviderId = if (loading) null else providerId)
             }
@@ -284,6 +288,7 @@ class BusinessProviderSettingsController(
         synchronized(stateMonitor) {
             if (closed.get()) return
             operationGeneration += 1
+            epochOperationMutex = Mutex()
             if (connectionId == null) {
                 currentToken = null
                 mutableState.value = mutableState.value.copy(
@@ -294,7 +299,7 @@ class BusinessProviderSettingsController(
             } else {
                 val isNewConnection = lastFinalizedConnectionId != connectionId
                 if (isNewConnection) lastFinalizedConnectionId = connectionId
-                val token = OperationToken(connectionId, operationGeneration)
+                val token = OperationToken(connectionId, operationGeneration, epochOperationMutex)
                 currentToken = token
                 mutableState.value = mutableState.value.copy(
                     operationsEnabled = true,
