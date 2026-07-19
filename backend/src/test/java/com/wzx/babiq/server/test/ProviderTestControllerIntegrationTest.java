@@ -11,6 +11,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.hasItems;
 import static org.hamcrest.Matchers.hasSize;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -35,7 +36,7 @@ class ProviderTestControllerIntegrationTest {
     private ObjectMapper objectMapper;
 
     @Test
-    @DisplayName("GET /api/test/providers 返回四个 provider 且 active 唯一")
+    @DisplayName("GET /api/test/providers 返回五个 provider 且 active 唯一")
     void list_providers_should_return_all_configured_providers() throws Exception {
         mockMvc.perform(get("/api/test/providers"))
                 .andExpect(status().isOk())
@@ -47,10 +48,9 @@ class ProviderTestControllerIntegrationTest {
                         "claude-oauth",
                         "ollama-local"
                 )))
-                .andExpect(jsonPath("$[0].id").value("dashscope-default"))
-                .andExpect(jsonPath("$[0].active").value(true))
-                .andExpect(jsonPath("$[0].contextWindow").value(1_000_000))
-                .andExpect(jsonPath("$[1].active").value(false));
+                .andExpect(jsonPath("$[?(@.active == true)]", hasSize(1)))
+                .andExpect(jsonPath("$[?(@.active == true)].id", contains("dashscope-default")))
+                .andExpect(jsonPath("$[?(@.id == 'dashscope-default')].contextWindow", contains(1_000_000)));
     }
 
     @Test
