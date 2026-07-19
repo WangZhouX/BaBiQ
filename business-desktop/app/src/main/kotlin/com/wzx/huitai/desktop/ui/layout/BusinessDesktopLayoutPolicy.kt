@@ -10,12 +10,6 @@ enum class BusinessDesktopLayoutMode {
     COMPACT,
 }
 
-/** 紧凑布局一次只允许展示的一个主内容页签。 */
-enum class CompactContentTab {
-    FORM,
-    AGENT,
-}
-
 /**
  * 三栏布局计算结果。
  *
@@ -26,7 +20,6 @@ data class BusinessDesktopLayout(
     val navigationWidth: Dp,
     val formWidth: Dp,
     val agentWidth: Dp,
-    val compactContentTab: CompactContentTab? = null,
 )
 
 /** 把窗口宽度确定性映射为宽屏、中屏或单页签紧凑布局。 */
@@ -46,7 +39,6 @@ object BusinessDesktopLayoutPolicy {
      */
     fun resolve(
         availableWidth: Dp,
-        compactContentTab: CompactContentTab = CompactContentTab.FORM,
     ): BusinessDesktopLayout {
         val width = availableWidth.coerceAtLeast(0.dp)
         return when {
@@ -62,19 +54,11 @@ object BusinessDesktopLayoutPolicy {
                 formWidth = width - mediumNavigationWidth - mediumAgentWidth,
                 agentWidth = mediumAgentWidth,
             )
-            compactContentTab == CompactContentTab.FORM -> BusinessDesktopLayout(
+            else -> BusinessDesktopLayout(
                 mode = BusinessDesktopLayoutMode.COMPACT,
                 navigationWidth = 0.dp,
                 formWidth = width,
                 agentWidth = 0.dp,
-                compactContentTab = compactContentTab,
-            )
-            else -> BusinessDesktopLayout(
-                mode = BusinessDesktopLayoutMode.COMPACT,
-                navigationWidth = 0.dp,
-                formWidth = 0.dp,
-                agentWidth = width,
-                compactContentTab = compactContentTab,
             )
         }
     }

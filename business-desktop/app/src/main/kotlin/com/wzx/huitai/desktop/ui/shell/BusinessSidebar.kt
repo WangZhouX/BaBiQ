@@ -19,20 +19,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
-/** 框架构建允许出现的四个通用导航目的地。 */
-enum class BusinessNavigationItem(val label: String, val compactLabel: String) {
-    WORKBENCH("工作台", "台"),
-    DATA_ENTRY("资料录入", "录入"),
-    RUN_HISTORY("运行记录", "记录"),
-    SETTINGS("设置", "设置"),
-}
-
 /** 渲染不包含任何具体 OA 业务名词的通用左侧导航。 */
 @Composable
 fun BusinessSidebar(
-    selected: BusinessNavigationItem = BusinessNavigationItem.DATA_ENTRY,
+    selected: BusinessDesktopDestination = BusinessDesktopDestination.DATA_ENTRY,
     compact: Boolean = false,
-    onSelected: (BusinessNavigationItem) -> Unit = {},
+    onSelected: (BusinessDesktopDestination) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -49,7 +41,7 @@ fun BusinessSidebar(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
         )
-        BusinessNavigationItem.entries.forEach { item ->
+        businessSidebarDestinations.forEach { item ->
             val active = item == selected
             Text(
                 text = if (compact) item.compactLabel else item.label,

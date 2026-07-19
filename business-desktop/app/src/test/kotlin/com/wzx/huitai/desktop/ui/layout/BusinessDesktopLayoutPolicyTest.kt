@@ -29,17 +29,12 @@ class BusinessDesktopLayoutPolicyTest {
     }
 
     @Test
-    fun `compact mode exposes exactly one selected content tab`() {
-        val form = BusinessDesktopLayoutPolicy.resolve(900.dp, CompactContentTab.FORM)
-        val agent = BusinessDesktopLayoutPolicy.resolve(900.dp, CompactContentTab.AGENT)
+    fun `compact mode gives the shell one full width content slot`() {
+        val layout = BusinessDesktopLayoutPolicy.resolve(900.dp)
 
-        assertEquals(BusinessDesktopLayoutMode.COMPACT, form.mode)
-        assertEquals(CompactContentTab.FORM, form.compactContentTab)
-        assertEquals(900.dp, form.formWidth)
-        assertEquals(0.dp, form.agentWidth)
-        assertEquals(CompactContentTab.AGENT, agent.compactContentTab)
-        assertEquals(0.dp, agent.formWidth)
-        assertEquals(900.dp, agent.agentWidth)
+        assertEquals(BusinessDesktopLayoutMode.COMPACT, layout.mode)
+        assertEquals(900.dp, layout.formWidth)
+        assertEquals(0.dp, layout.agentWidth)
     }
 
     @Test

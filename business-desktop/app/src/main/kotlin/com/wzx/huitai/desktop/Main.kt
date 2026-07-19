@@ -18,7 +18,7 @@ import com.wzx.huitai.desktop.decision.ConfirmationDecisionDialogState
 import com.wzx.huitai.desktop.decision.HighRiskApprovalDialogState
 import com.wzx.huitai.desktop.ui.action.ActionPreviewDialog
 import com.wzx.huitai.desktop.ui.action.HighRiskApprovalDialog
-import com.wzx.huitai.desktop.ui.layout.CompactContentTab
+import com.wzx.huitai.desktop.ui.shell.BusinessDesktopDestination
 import com.wzx.huitai.desktop.ui.shell.BusinessDesktopShell
 import com.wzx.huitai.desktop.ui.theme.HuitaiBusinessTheme
 import com.wzx.huitai.desktop.smoke.PackagedSmokeProbe
@@ -103,7 +103,8 @@ fun main() {
                 val desktopState by view.desktopState.collectAsState()
                 val formState by view.formState.collectAsState()
                 val decisionState by view.decisions.state.collectAsState()
-                var compactTab by remember { mutableStateOf(CompactContentTab.FORM) }
+                val providerSettingsState by view.production.providerSettingsController.state.collectAsState()
+                var selectedDestination by remember { mutableStateOf(BusinessDesktopDestination.DATA_ENTRY) }
                 var composerText by remember { mutableStateOf("") }
                 val uiScope = rememberCoroutineScope()
 
@@ -115,9 +116,10 @@ fun main() {
                     BusinessDesktopShell(
                         state = desktopState,
                         formState = formState,
-                        compactContentTab = compactTab,
+                        providerSettingsState = providerSettingsState,
+                        selectedDestination = selectedDestination,
                         composerText = composerText,
-                        onCompactContentTabSelected = { compactTab = it },
+                        onDestinationSelected = { selectedDestination = it },
                         onFieldEdited = { fieldId, value ->
                             storage.screen.dispatch(DemoFormEvent.EditField(fieldId, value))
                             uiScope.launch {
@@ -202,6 +204,30 @@ fun main() {
                         },
                         onReconnect = {
                             uiScope.launch { view.production.desktopCoordinator.manualRetry() }
+                        },
+                        onProviderRefresh = {
+                            uiScope.launch { view.production.providerSettingsController.refresh() }
+                        },
+                        onProviderCreate = { draft ->
+                            uiScope.launch { view.production.providerSettingsController.create(draft) }
+                        },
+                        onProviderUpdate = { draft ->
+                            uiScope.launch { view.production.providerSettingsController.update(draft) }
+                        },
+                        onProviderDelete = { providerId ->
+                            uiScope.launch { view.production.providerSettingsController.delete(providerId) }
+                        },
+                        onProviderTest = { providerId ->
+                            uiScope.launch { view.production.providerSettingsController.test(providerId) }
+                        },
+                        onProviderActivated = { providerId, modelId ->
+                            uiScope.launch { view.production.providerSettingsController.setActive(providerId, modelId) }
+                        },
+                        onProviderOAuthStatus = { providerId ->
+                            uiScope.launch { view.production.providerSettingsController.oauthStatus(providerId) }
+                        },
+                        onProviderOAuthLogin = { providerId ->
+                            uiScope.launch { view.production.providerSettingsController.oauthLogin(providerId) }
                         },
                     )
 
