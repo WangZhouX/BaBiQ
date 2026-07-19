@@ -81,3 +81,15 @@ $env:GRADLE_USER_HOME='E:\gradle-home-ascii'
 - `.tmp-gradle-review/` 是用户原有未跟踪目录，未读取、未修改、未提交。
 - `business-desktop/app/build/manual-smoke-*` 和临时模型网关均属于忽略的验收产物，不进入 Git。
 - 进入下一阶段前先阅读 `framework-acceptance.md` 和 `manual-smoke.md`。
+
+## 2026-07-19 Provider 设置页与 Agent 面板折叠补充
+
+- 左侧“设置”现为真实 Provider 管理页，支持新增、编辑、复制、删除、测试、设为当前，以及已保存 Anthropic OAuth Provider 的状态检查和登录。
+- OpenAI-compatible 中转站可自由填写 Base URL 和模型 ID，例如 `kimi-k3`；保存后进入 SQLite/JCEKS 真相源，下一轮对话使用新配置。
+- API Key 不回显、不进入桌面全局 State、日志或协议响应；编辑时留空代表保留现有密钥，保存请求结束后输入框会清空。
+- Provider 创建/更新/删除、active fallback、启动恢复、密钥轮换和失败补偿已收紧；最后一个启用 Provider 不允许删除，business Provider 方法要求完成 identity bind。
+- 宽屏/中屏右侧业务 Agent 可从 420dp/360dp 收起为 52dp 窄栏，中心工作区随之扩宽；展开状态仅在当前进程内保留。compact 模式继续通过 Agent 页签显示完整对话页。
+- IDEA 开发态只启动 `business-desktop` 的 Gradle task `:app:run`，该 task 会先构建并准备内置 backend jar，无需另启 backend 服务。环境变量至少设置：
+  - `HUITAI_DESKTOP_FRAMEWORK_DEMO_IDENTITY=1`（当前演示身份）；
+  - `HUITAI_DESKTOP_KEYSTORE_PASSWORD=<与现有业务桌面 home 中 JCEKS 一致的固定密码>`。
+- 详细实现、测试证据和安全语义见 `docs/superpowers/plans/business-desktop-provider-settings-agent-panel/codex-handoff.md`。
