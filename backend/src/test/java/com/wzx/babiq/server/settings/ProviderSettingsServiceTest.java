@@ -1,18 +1,24 @@
 package com.wzx.babiq.server.settings;
 
 import com.wzx.babiq.server.conversation.repository.ProviderConfigRecord;
+import com.wzx.babiq.server.conversation.repository.AppSettingRecord;
+import com.wzx.babiq.server.model.BaBiQProperties;
 import com.wzx.babiq.server.model.ChatClientFactory;
 import com.wzx.babiq.server.model.ModelProviderConfig;
 import com.wzx.babiq.server.model.ModelProviderRegistry;
+import com.wzx.babiq.server.model.ProviderType;
+import com.wzx.babiq.server.persistence.service.AppSettingPersistenceService;
 import com.wzx.babiq.server.persistence.service.ProviderPersistenceService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -22,6 +28,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
@@ -33,6 +40,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
@@ -77,6 +85,14 @@ class ProviderSettingsServiceTest {
     private ProviderSettingsService providerSettingsService;
     @Autowired
     private ProviderPersistenceService providerPersistenceService;
+    @Autowired
+    private AppSettingPersistenceService appSettingPersistenceService;
+    @Autowired
+    private AppSettingsService appSettingsService;
+    @Autowired
+    private PlatformTransactionManager transactionManager;
+    @Autowired
+    private BaBiQProperties baBiQProperties;
     @MockitoSpyBean
     private ModelProviderRegistry providerRegistry;
     @Autowired
@@ -616,8 +632,439 @@ class ProviderSettingsServiceTest {
         ProviderSettingsService.ProviderTestResult result = providerSettingsService.testConnection("claude-oauth-test");
 
         assertThat(result.ok()).isFalse();
-        assertThat(result.message()).contains("ant auth login").contains("cli-path");
+        assertThat(result.message()).isEqualTo("Provider 配置检查失败");
         verify(anthropicOAuthCredentialSource).accessToken();
+    }
+
+    @Test
+    @DisplayName("Provider 配置检查内部异常不得回显原始错误或密钥")
+    void test_connection_failure_returns_fixed_safe_message(CapturedOutput output) {
+        String providerId = "safe-provider-test-failure";
+        providerSettingsService.create(apiKeyDraft(providerId, "sk-safe-provider-test", "gpt-4o-mini"));
+        when(chatClientFactory.resolveChatModel(providerId))
+                .thenThrow(new IllegalStateException(SENSITIVE_MARKER));
+
+        ProviderSettingsService.ProviderTestResult result = providerSettingsService.testConnection(providerId);
+
+        assertThat(result).isEqualTo(new ProviderSettingsService.ProviderTestResult(
+                false, providerId, "Provider 配置检查失败"));
+        assertThat(result.toString()).doesNotContain(SENSITIVE_MARKER);
+        assertThat(output.getAll()).doesNotContain(SENSITIVE_MARKER);
+    }
+
+    @Test
+    @DisplayName("最后一个启用 Provider 不允许删除且所有状态保持不变")
+    void deleting_last_enabled_provider_is_rejected_without_side_effects() {
+        String providerId = "only-enabled-provider";
+        ProviderConfigRecord record = ProviderConfigRecord.of(
+                providerId, providerId, "OPENAI_COMPATIBLE", "api_key",
+                "https://relay.example.com/v1", "gpt-4o-mini", "keystore://only", 64000, true,
+                java.time.Instant.now());
+        ProviderPersistenceService persistence = org.mockito.Mockito.mock(ProviderPersistenceService.class);
+        AppSettingPersistenceService settings = org.mockito.Mockito.mock(AppSettingPersistenceService.class);
+        SecretStore isolatedSecretStore = org.mockito.Mockito.mock(SecretStore.class);
+        ModelProviderRegistry isolatedRegistry = registryWith(new ModelProviderConfig(
+                providerId, providerId, ProviderType.OPENAI_COMPATIBLE, "gpt-4o-mini", "sk-only",
+                "https://relay.example.com/v1", 64000));
+        when(persistence.findProvider(providerId)).thenReturn(Optional.of(record));
+        when(persistence.listProviders(true)).thenReturn(List.of(record));
+        ProviderSettingsService isolatedService = newProviderSettingsService(
+                persistence, settings, isolatedSecretStore, isolatedRegistry);
+
+        Throwable failure = catchThrowable(() -> isolatedService.delete(providerId));
+
+        assertThat(failure)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("最后一个启用 Provider");
+        assertThat(isolatedRegistry.active().id()).isEqualTo(providerId);
+        verify(persistence, never()).disableProvider(eq(providerId), org.mockito.ArgumentMatchers.any());
+        verify(isolatedSecretStore, never()).delete(anyString());
+        verify(chatClientFactory, never()).invalidate(providerId);
+    }
+
+    @Test
+    @DisplayName("删除当前 Provider 时按 providerId 升序持久化 fallback 并清理旧密钥")
+    void deleting_active_provider_persists_deterministic_fallback_and_returns_it() {
+        String providerId = "zz-delete-current-provider";
+        providerSettingsService.create(apiKeyDraft(providerId, "sk-delete-current", "gpt-4o-mini"));
+        appSettingsService.update(new AppSettingsService.AppSettingsUpdate(providerId, null, null, null));
+        ProviderConfigRecord before = providerPersistenceService.findProvider(providerId).orElseThrow();
+        String expectedFallback = providerPersistenceService.listProviders(true).stream()
+                .map(ProviderConfigRecord::providerId)
+                .filter(id -> !id.equals(providerId))
+                .sorted()
+                .findFirst()
+                .orElseThrow();
+        clearInvocations(secretStore, chatClientFactory);
+
+        ProviderSettingsService.ProviderDeleteResult result = providerSettingsService.delete(providerId);
+
+        assertThat(result).isEqualTo(new ProviderSettingsService.ProviderDeleteResult(providerId, expectedFallback));
+        assertThat(providerPersistenceService.findProvider(providerId)).get()
+                .extracting(ProviderConfigRecord::enabled).isEqualTo(false);
+        assertThat(appSettingPersistenceService.findByKey(AppSettingsService.KEY_ACTIVE_PROVIDER)).get()
+                .extracting(AppSettingRecord::settingValue).isEqualTo(expectedFallback);
+        assertThat(providerRegistry.active().id()).isEqualTo(expectedFallback);
+        assertThat(secretStore.load(before.secretRef())).isEmpty();
+        verify(chatClientFactory).invalidate(providerId);
+    }
+
+    @Test
+    @DisplayName("删除非当前 Provider 时保持 active 设置不变")
+    void deleting_non_active_provider_keeps_active_provider() {
+        String providerId = "zz-delete-non-active-provider";
+        providerSettingsService.create(apiKeyDraft(providerId, "sk-delete-non-active", "gpt-4o-mini"));
+        String activeProviderId = providerRegistry.list().stream()
+                .map(ModelProviderConfig::id)
+                .filter(id -> !id.equals(providerId))
+                .sorted()
+                .findFirst()
+                .orElseThrow();
+        appSettingsService.update(new AppSettingsService.AppSettingsUpdate(activeProviderId, null, null, null));
+
+        ProviderSettingsService.ProviderDeleteResult result = providerSettingsService.delete(providerId);
+
+        assertThat(result.activeProviderId()).isEqualTo(activeProviderId);
+        assertThat(providerRegistry.active().id()).isEqualTo(activeProviderId);
+        assertThat(appSettingPersistenceService.findByKey(AppSettingsService.KEY_ACTIVE_PROVIDER)).get()
+                .extracting(AppSettingRecord::settingValue).isEqualTo(activeProviderId);
+    }
+
+    @Test
+    @DisplayName("删除与 set-active 并发时必须串行且 active 永远指向启用 Provider")
+    void delete_and_set_active_are_serialized_on_shared_registry_lock() throws Exception {
+        String providerId = "delete-set-active-race";
+        providerSettingsService.create(apiKeyDraft(providerId, "sk-delete-set-active-race", "gpt-4o-mini"));
+        String initialActive = providerRegistry.list().stream()
+                .map(ModelProviderConfig::id)
+                .filter(id -> !id.equals(providerId))
+                .sorted()
+                .findFirst()
+                .orElseThrow();
+        appSettingsService.update(new AppSettingsService.AppSettingsUpdate(initialActive, null, null, null));
+        String secretRef = providerPersistenceService.findProvider(providerId).orElseThrow().secretRef();
+        CountDownLatch deleteReachedPreCommit = new CountDownLatch(1);
+        CountDownLatch releaseDelete = new CountDownLatch(1);
+        CountDownLatch setActiveStarted = new CountDownLatch(1);
+        CountDownLatch setActiveCompleted = new CountDownLatch(1);
+        doAnswer(invocation -> {
+            deleteReachedPreCommit.countDown();
+            if (!releaseDelete.await(5, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("等待删除竞态测试释放超时");
+            }
+            return invocation.callRealMethod();
+        }).when(secretStore).require(secretRef);
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> deleteFuture = executor.submit(() -> providerSettingsService.delete(providerId));
+            assertThat(deleteReachedPreCommit.await(5, TimeUnit.SECONDS)).isTrue();
+            Future<?> setActiveFuture = executor.submit(() -> {
+                setActiveStarted.countDown();
+                try {
+                    return appSettingsService.update(new AppSettingsService.AppSettingsUpdate(
+                            providerId, null, null, null));
+                } finally {
+                    setActiveCompleted.countDown();
+                }
+            });
+            assertThat(setActiveStarted.await(5, TimeUnit.SECONDS)).isTrue();
+            boolean setActiveFinishedBeforeDelete = setActiveCompleted.await(500, TimeUnit.MILLISECONDS);
+            releaseDelete.countDown();
+
+            Throwable deleteFailure = futureFailure(deleteFuture);
+            Throwable setActiveFailure = futureFailure(setActiveFuture);
+            assertThat(setActiveFinishedBeforeDelete).isFalse();
+            assertThat(deleteFailure).isNull();
+            assertThat(setActiveFailure).isInstanceOf(IllegalArgumentException.class);
+        } finally {
+            releaseDelete.countDown();
+            executor.shutdownNow();
+        }
+
+        String persistedActive = appSettingPersistenceService.findByKey(AppSettingsService.KEY_ACTIVE_PROVIDER)
+                .map(AppSettingRecord::settingValue)
+                .orElseThrow();
+        assertThat(providerPersistenceService.findProvider(persistedActive)).get()
+                .extracting(ProviderConfigRecord::enabled).isEqualTo(true);
+        assertThat(providerRegistry.active().id()).isEqualTo(persistedActive);
+    }
+
+    @Test
+    @DisplayName("删除 Provider 的 SQLite 失败必须保持数据库、active、运行时、缓存和密钥不变")
+    void delete_database_failure_keeps_all_states_unchanged(CapturedOutput output) {
+        String providerId = "delete-database-failure";
+        providerSettingsService.create(apiKeyDraft(providerId, "sk-delete-db-before", "gpt-4o-mini"));
+        appSettingsService.update(new AppSettingsService.AppSettingsUpdate(providerId, null, null, null));
+        ProviderConfigRecord before = providerPersistenceService.findProvider(providerId).orElseThrow();
+        ModelProviderConfig runtimeBefore = providerRegistry.get(providerId);
+        AppSettingRecord activeBefore = appSettingPersistenceService.findByKey(
+                AppSettingsService.KEY_ACTIVE_PROVIDER).orElseThrow();
+        clearInvocations(secretStore, chatClientFactory);
+        installFailureTrigger("fail_provider_delete", "UPDATE", providerId);
+        try {
+            Throwable failure = catchThrowable(() -> providerSettingsService.delete(providerId));
+
+            assertThat(failure).isInstanceOf(RuntimeException.class);
+            assertThat(providerPersistenceService.findProvider(providerId)).contains(before);
+            assertThat(appSettingPersistenceService.findByKey(AppSettingsService.KEY_ACTIVE_PROVIDER))
+                    .contains(activeBefore);
+            assertThat(providerRegistry.get(providerId)).isEqualTo(runtimeBefore);
+            assertThat(providerRegistry.active().id()).isEqualTo(providerId);
+            assertThat(secretStore.load(before.secretRef())).contains("sk-delete-db-before");
+            verify(chatClientFactory, never()).invalidate(providerId);
+            assertThat(output.getAll()).doesNotContain(SENSITIVE_MARKER);
+        } finally {
+            dropTrigger("fail_provider_delete");
+        }
+    }
+
+    @Test
+    @DisplayName("删除提交后 registry 失败必须恢复数据库、active、运行时、缓存和密钥")
+    void delete_registry_failure_after_commit_restores_all_states(CapturedOutput output) {
+        String providerId = "delete-registry-failure";
+        providerSettingsService.create(apiKeyDraft(providerId, "sk-delete-registry-before", "gpt-4o-mini"));
+        appSettingsService.update(new AppSettingsService.AppSettingsUpdate(providerId, null, null, null));
+        ProviderConfigRecord before = providerPersistenceService.findProvider(providerId).orElseThrow();
+        ModelProviderConfig runtimeBefore = providerRegistry.get(providerId);
+        clearInvocations(secretStore, providerRegistry, chatClientFactory);
+        doAnswer(invocation -> {
+            invocation.callRealMethod();
+            throw new IllegalStateException(SENSITIVE_MARKER);
+        }).when(providerRegistry).disable(providerId);
+
+        Throwable failure = catchThrowable(() -> providerSettingsService.delete(providerId));
+
+        assertSafeFailure(failure, "已恢复原配置");
+        assertThat(providerPersistenceService.findProvider(providerId)).contains(before);
+        assertThat(providerRegistry.get(providerId)).isEqualTo(runtimeBefore);
+        assertThat(providerRegistry.active().id()).isEqualTo(providerId);
+        assertThat(secretStore.load(before.secretRef())).contains("sk-delete-registry-before");
+        verify(chatClientFactory).invalidate(providerId);
+        assertThat(output.getAll()).doesNotContain(SENSITIVE_MARKER);
+    }
+
+    @Test
+    @DisplayName("删除后的运行时恢复持续失败时不得把数据库恢复成启用而运行时仍禁用")
+    void delete_runtime_restore_failure_never_leaves_enabled_database_with_disabled_runtime(CapturedOutput output) {
+        String providerId = "delete-runtime-restore-failure";
+        providerSettingsService.create(apiKeyDraft(providerId, "sk-delete-runtime-restore", "gpt-4o-mini"));
+        appSettingsService.update(new AppSettingsService.AppSettingsUpdate(providerId, null, null, null));
+        String secretRef = providerPersistenceService.findProvider(providerId).orElseThrow().secretRef();
+        clearInvocations(secretStore, providerRegistry, chatClientFactory);
+        doAnswer(invocation -> {
+            invocation.callRealMethod();
+            throw new IllegalStateException(SENSITIVE_MARKER);
+        }).when(providerRegistry).disable(providerId);
+        doAnswer(invocation -> {
+            throw new IllegalStateException(SENSITIVE_MARKER);
+        }).when(providerRegistry).registerOrUpdate(argThat(config -> providerId.equals(config.id())));
+
+        Throwable failure = catchThrowable(() -> providerSettingsService.delete(providerId));
+
+        assertSafeFailure(failure, "恢复不完整");
+        boolean databaseEnabled = providerPersistenceService.findProvider(providerId)
+                .map(ProviderConfigRecord::enabled)
+                .orElse(false);
+        boolean runtimeEnabled;
+        try {
+            providerRegistry.get(providerId);
+            runtimeEnabled = true;
+        } catch (IllegalArgumentException ignored) {
+            runtimeEnabled = false;
+        }
+        assertThat(databaseEnabled && !runtimeEnabled).isFalse();
+        if (!databaseEnabled && !runtimeEnabled) {
+            assertThat(secretStore.load(secretRef)).isEmpty();
+        }
+        String persistedActive = appSettingPersistenceService.findByKey(AppSettingsService.KEY_ACTIVE_PROVIDER)
+                .map(AppSettingRecord::settingValue)
+                .orElseThrow();
+        assertThat(providerRegistry.active().id()).isEqualTo(persistedActive);
+        assertThat(output.getAll()).doesNotContain(SENSITIVE_MARKER);
+    }
+
+    @Test
+    @DisplayName("删除提交后 cache 失败必须恢复数据库、active、运行时和密钥")
+    void delete_cache_failure_after_commit_restores_all_states(CapturedOutput output) {
+        String providerId = "delete-cache-failure";
+        providerSettingsService.create(apiKeyDraft(providerId, "sk-delete-cache-before", "gpt-4o-mini"));
+        appSettingsService.update(new AppSettingsService.AppSettingsUpdate(providerId, null, null, null));
+        ProviderConfigRecord before = providerPersistenceService.findProvider(providerId).orElseThrow();
+        AtomicInteger invalidations = new AtomicInteger();
+        clearInvocations(secretStore, chatClientFactory);
+        doAnswer(invocation -> {
+            if (invalidations.incrementAndGet() == 1) {
+                throw new IllegalStateException(SENSITIVE_MARKER);
+            }
+            return null;
+        }).when(chatClientFactory).invalidate(providerId);
+
+        Throwable failure = catchThrowable(() -> providerSettingsService.delete(providerId));
+
+        assertSafeFailure(failure, "已恢复原配置");
+        assertThat(providerPersistenceService.findProvider(providerId)).contains(before);
+        assertThat(providerRegistry.active().id()).isEqualTo(providerId);
+        assertThat(secretStore.load(before.secretRef())).contains("sk-delete-cache-before");
+        verify(chatClientFactory, times(2)).invalidate(providerId);
+        assertThat(output.getAll()).doesNotContain(SENSITIVE_MARKER);
+    }
+
+    @Test
+    @DisplayName("删除旧 alias 失败必须恢复数据库、active、运行时和密钥引用")
+    void delete_secret_cleanup_failure_restores_all_states(CapturedOutput output) {
+        String providerId = "delete-secret-failure";
+        providerSettingsService.create(apiKeyDraft(providerId, "sk-delete-secret-before", "gpt-4o-mini"));
+        appSettingsService.update(new AppSettingsService.AppSettingsUpdate(providerId, null, null, null));
+        ProviderConfigRecord before = providerPersistenceService.findProvider(providerId).orElseThrow();
+        clearInvocations(secretStore, chatClientFactory);
+        doAnswer(invocation -> {
+            throw new IllegalStateException(SENSITIVE_MARKER);
+        }).when(secretStore).delete(before.secretRef());
+
+        Throwable failure = catchThrowable(() -> providerSettingsService.delete(providerId));
+
+        assertSafeFailure(failure, "已恢复原配置");
+        assertThat(providerPersistenceService.findProvider(providerId)).contains(before);
+        assertThat(providerRegistry.active().id()).isEqualTo(providerId);
+        assertThat(secretStore.load(before.secretRef())).contains("sk-delete-secret-before");
+        verify(chatClientFactory, times(2)).invalidate(providerId);
+        assertThat(output.getAll()).doesNotContain(SENSITIVE_MARKER);
+    }
+
+    @Test
+    @DisplayName("bootstrap 不得复活 SQLite 中已禁用的 YAML Provider")
+    void bootstrap_does_not_resurrect_disabled_yaml_provider() {
+        String providerId = baBiQProperties.providers().stream()
+                .map(ModelProviderConfig::id)
+                .filter(id -> !id.equals(baBiQProperties.activeProvider()))
+                .findFirst()
+                .orElseThrow();
+        ProviderConfigRecord before = providerPersistenceService.findProvider(providerId).orElseThrow();
+        Optional<AppSettingRecord> activeBefore = appSettingPersistenceService.findByKey(
+                AppSettingsService.KEY_ACTIVE_PROVIDER);
+        ProviderConfigRecord disabled = withEnabled(before, false);
+        providerPersistenceService.updateProvider(disabled);
+        appSettingPersistenceService.save(new AppSettingRecord(
+                AppSettingsService.KEY_ACTIVE_PROVIDER, baBiQProperties.activeProvider(), "string",
+                java.time.Instant.now()));
+        ModelProviderRegistry freshRegistry = new ModelProviderRegistry(baBiQProperties);
+        try {
+            newProviderSettingsService(providerPersistenceService, appSettingPersistenceService,
+                    secretStore, freshRegistry).bootstrap();
+
+            assertThat(providerPersistenceService.findProvider(providerId)).contains(disabled);
+            assertThatThrownBy(() -> freshRegistry.get(providerId))
+                    .isInstanceOf(IllegalArgumentException.class);
+        } finally {
+            providerPersistenceService.updateProvider(before);
+            restoreActiveSetting(activeBefore);
+        }
+    }
+
+    @Test
+    @DisplayName("bootstrap 以 SQLite 配置覆盖 YAML 并恢复持久化 active Provider")
+    void bootstrap_uses_sqlite_snapshot_and_restores_persisted_active_provider() {
+        String providerId = "bootstrap-persisted-active";
+        providerSettingsService.create(apiKeyDraft(providerId, "sk-bootstrap-active", "sqlite-model"));
+        String yamlProviderId = baBiQProperties.activeProvider();
+        ProviderConfigRecord yamlBefore = providerPersistenceService.findProvider(yamlProviderId).orElseThrow();
+        ProviderConfigRecord sqliteOverride = new ProviderConfigRecord(
+                yamlBefore.providerId(), yamlBefore.displayName(), yamlBefore.type(), yamlBefore.authMode(),
+                yamlBefore.baseUrl(), "sqlite-overrides-yaml", yamlBefore.secretRef(), yamlBefore.contextWindow(),
+                true, yamlBefore.createdAt(), java.time.Instant.now());
+        providerPersistenceService.updateProvider(sqliteOverride);
+        Optional<AppSettingRecord> activeBefore = appSettingPersistenceService.findByKey(
+                AppSettingsService.KEY_ACTIVE_PROVIDER);
+        appSettingPersistenceService.save(new AppSettingRecord(
+                AppSettingsService.KEY_ACTIVE_PROVIDER, providerId, "string", java.time.Instant.now()));
+        ModelProviderRegistry freshRegistry = new ModelProviderRegistry(baBiQProperties);
+        try {
+            newProviderSettingsService(providerPersistenceService, appSettingPersistenceService,
+                    secretStore, freshRegistry).bootstrap();
+
+            assertThat(freshRegistry.active().id()).isEqualTo(providerId);
+            assertThat(freshRegistry.get(providerId).model()).isEqualTo("sqlite-model");
+            assertThat(freshRegistry.get(yamlProviderId).model()).isEqualTo("sqlite-overrides-yaml");
+        } finally {
+            providerPersistenceService.updateProvider(yamlBefore);
+            restoreActiveSetting(activeBefore);
+        }
+    }
+
+    @Test
+    @DisplayName("bootstrap 自动把无效 active 修复为 providerId 升序首个启用 Provider 并持久化")
+    void bootstrap_repairs_invalid_active_provider_deterministically() {
+        Optional<AppSettingRecord> activeBefore = appSettingPersistenceService.findByKey(
+                AppSettingsService.KEY_ACTIVE_PROVIDER);
+        appSettingPersistenceService.save(new AppSettingRecord(
+                AppSettingsService.KEY_ACTIVE_PROVIDER, "missing-bootstrap-active", "string",
+                java.time.Instant.now()));
+        String expected = providerPersistenceService.listProviders(true).stream()
+                .map(ProviderConfigRecord::providerId)
+                .sorted()
+                .findFirst()
+                .orElseThrow();
+        ModelProviderRegistry freshRegistry = new ModelProviderRegistry(baBiQProperties);
+        try {
+            newProviderSettingsService(providerPersistenceService, appSettingPersistenceService,
+                    secretStore, freshRegistry).bootstrap();
+
+            assertThat(freshRegistry.active().id()).isEqualTo(expected);
+            assertThat(appSettingPersistenceService.findByKey(AppSettingsService.KEY_ACTIVE_PROVIDER)).get()
+                    .extracting(AppSettingRecord::settingValue).isEqualTo(expected);
+        } finally {
+            restoreActiveSetting(activeBefore);
+        }
+    }
+
+    @Test
+    @DisplayName("bootstrap 把空白 active setting 修复为 providerId 升序首个启用 Provider 并持久化")
+    void bootstrap_repairs_blank_active_provider_setting() {
+        Optional<AppSettingRecord> activeBefore = appSettingPersistenceService.findByKey(
+                AppSettingsService.KEY_ACTIVE_PROVIDER);
+        appSettingPersistenceService.save(new AppSettingRecord(
+                AppSettingsService.KEY_ACTIVE_PROVIDER, "   ", "string", java.time.Instant.now()));
+        String expected = providerPersistenceService.listProviders(true).stream()
+                .map(ProviderConfigRecord::providerId)
+                .sorted()
+                .findFirst()
+                .orElseThrow();
+        ModelProviderRegistry freshRegistry = new ModelProviderRegistry(baBiQProperties);
+        try {
+            newProviderSettingsService(providerPersistenceService, appSettingPersistenceService,
+                    secretStore, freshRegistry).bootstrap();
+
+            assertThat(freshRegistry.active().id()).isEqualTo(expected);
+            assertThat(appSettingPersistenceService.findByKey(AppSettingsService.KEY_ACTIVE_PROVIDER)).get()
+                    .extracting(AppSettingRecord::settingValue).isEqualTo(expected);
+        } finally {
+            restoreActiveSetting(activeBefore);
+        }
+    }
+
+    @Test
+    @DisplayName("bootstrap 新 YAML Provider 的 SQLite 失败必须补偿删除新 secret alias")
+    void bootstrap_database_failure_compensates_new_yaml_secret_alias(CapturedOutput output) {
+        String providerId = "bootstrap-new-yaml-failure";
+        ModelProviderConfig yamlProvider = new ModelProviderConfig(
+                providerId, providerId, ProviderType.OPENAI_COMPATIBLE, "gpt-4o-mini", SENSITIVE_MARKER,
+                "https://relay.example.com/v1", 64000);
+        ModelProviderRegistry freshRegistry = registryWith(yamlProvider);
+        AtomicReference<String> stagedSecretRef = captureSavedSecret("provider." + providerId, SENSITIVE_MARKER);
+        installFailureTrigger("fail_bootstrap_provider_insert", "INSERT", providerId);
+        try {
+            Throwable failure = catchThrowable(() -> newProviderSettingsService(
+                    providerPersistenceService, appSettingPersistenceService, secretStore, freshRegistry).bootstrap());
+
+            assertThat(failure).isInstanceOf(RuntimeException.class);
+            assertThat(providerPersistenceService.findProvider(providerId)).isEmpty();
+            assertThat(stagedSecretRef.get()).isNotBlank();
+            assertThat(secretStore.load(stagedSecretRef.get())).isEmpty();
+            assertThat(output.getAll()).doesNotContain(SENSITIVE_MARKER);
+        } finally {
+            dropTrigger("fail_bootstrap_provider_insert");
+        }
     }
 
     @Test
@@ -675,6 +1122,40 @@ class ProviderSettingsServiceTest {
                 null,
                 0,
                 true);
+    }
+
+    private ProviderSettingsService newProviderSettingsService(ProviderPersistenceService persistence,
+                                                                AppSettingPersistenceService settings,
+                                                                SecretStore secrets,
+                                                                ModelProviderRegistry targetRegistry) {
+        @SuppressWarnings("unchecked")
+        ObjectProvider<ChatClientFactory> chatClientProvider = org.mockito.Mockito.mock(ObjectProvider.class);
+        when(chatClientProvider.getIfAvailable()).thenReturn(chatClientFactory);
+        when(chatClientProvider.getObject()).thenReturn(chatClientFactory);
+        @SuppressWarnings("unchecked")
+        ObjectProvider<AnthropicOAuthCredentialSource> oauthProvider = org.mockito.Mockito.mock(ObjectProvider.class);
+        when(oauthProvider.getObject()).thenReturn(anthropicOAuthCredentialSource);
+        return new ProviderSettingsService(
+                persistence, settings, secrets, targetRegistry, chatClientProvider, oauthProvider, transactionManager);
+    }
+
+    private static ModelProviderRegistry registryWith(ModelProviderConfig... providers) {
+        return new ModelProviderRegistry(new BaBiQProperties(providers[0].id(), List.of(providers), null));
+    }
+
+    private static ProviderConfigRecord withEnabled(ProviderConfigRecord record, boolean enabled) {
+        return new ProviderConfigRecord(
+                record.providerId(), record.displayName(), record.type(), record.authMode(), record.baseUrl(),
+                record.model(), record.secretRef(), record.contextWindow(), enabled,
+                record.createdAt(), java.time.Instant.now());
+    }
+
+    private void restoreActiveSetting(Optional<AppSettingRecord> previous) {
+        if (previous.isPresent()) {
+            appSettingPersistenceService.save(previous.orElseThrow());
+            return;
+        }
+        jdbcTemplate.update("DELETE FROM bq_app_settings WHERE setting_key = ?", AppSettingsService.KEY_ACTIVE_PROVIDER);
     }
 
     /**

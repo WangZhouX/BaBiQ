@@ -22,14 +22,6 @@ class BusinessJsonRpcAccessPolicyTest {
     private static final Set<String> PRE_BIND = Set.of(
             "application/identity/bind",
             "application/identity/update",
-            "provider/list",
-            "provider/create",
-            "provider/update",
-            "provider/delete",
-            "provider/test",
-            "provider/set-active",
-            "provider/oauth/status",
-            "provider/oauth/login",
             "model/providers/list",
             "model/providers/set-active",
             "settings/get",
@@ -40,6 +32,14 @@ class BusinessJsonRpcAccessPolicyTest {
             "approval/policy/set");
 
     private static final Set<String> POST_BIND_ONLY = Set.of(
+            "provider/list",
+            "provider/create",
+            "provider/update",
+            "provider/delete",
+            "provider/test",
+            "provider/set-active",
+            "provider/oauth/status",
+            "provider/oauth/login",
             "thread/create",
             "thread/list",
             "thread/load",
@@ -120,13 +120,13 @@ class BusinessJsonRpcAccessPolicyTest {
         }).when(connections).release("reservation-1", "ws-1");
         BusinessJsonRpcAccessPolicy policy = new BusinessJsonRpcAccessPolicy(identities, connections);
 
-        assertThat(policy.isAllowed("thread/list", "ws-1")).isTrue();
+        POST_BIND_ONLY.forEach(method -> assertThat(policy.isAllowed(method, "ws-1")).as(method).isTrue());
         connections.release("reservation-1", "ws-1");
-        assertThat(policy.isAllowed("thread/list", "ws-1")).isFalse();
+        POST_BIND_ONLY.forEach(method -> assertThat(policy.isAllowed(method, "ws-1")).as(method).isFalse());
 
         active.set(new TrustedDesktopConnection(
                 "reservation-other", "desktop-1", "desktop-session-1", "ws-1"));
-        assertThat(policy.isAllowed("thread/list", "ws-1")).isFalse();
+        POST_BIND_ONLY.forEach(method -> assertThat(policy.isAllowed(method, "ws-1")).as(method).isFalse());
     }
 
     @Test

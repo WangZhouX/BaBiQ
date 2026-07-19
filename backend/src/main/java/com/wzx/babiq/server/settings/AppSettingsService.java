@@ -86,6 +86,13 @@ public class AppSettingsService {
      * @return 更新后的设置快照
      */
     public synchronized AppSettings update(AppSettingsUpdate update) {
+        synchronized (providerRegistry) {
+            return updateWithProviderRegistryLock(update);
+        }
+    }
+
+    /** 在共享 Provider registry 锁内完成 active 校验、提交和运行时切换。 */
+    private AppSettings updateWithProviderRegistryLock(AppSettingsUpdate update) {
         AppSettings current = transactionTemplate.execute(status -> get());
         if (current == null) {
             throw new IllegalStateException("读取当前应用设置失败");

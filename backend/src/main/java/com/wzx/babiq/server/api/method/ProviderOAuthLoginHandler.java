@@ -29,11 +29,16 @@ public class ProviderOAuthLoginHandler implements JsonRpcMethodHandler {
 
     @Override
     public Object handle(JsonNode params, WebSocketSession session) {
-        AntCliLoginStartResult result = loginLauncher.startLogin();
+        AntCliLoginStartResult result;
+        try {
+            result = loginLauncher.startLogin();
+        } catch (RuntimeException exception) {
+            result = new AntCliLoginStartResult(false, null, "登录失败");
+        }
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("ok", result.ok());
         payload.put("pid", result.pid());
-        payload.put("message", result.message());
+        payload.put("message", result.ok() ? "登录已启动" : "登录失败");
         return payload;
     }
 }

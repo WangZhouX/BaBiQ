@@ -33,8 +33,15 @@ public class ProviderDeleteHandler implements JsonRpcMethodHandler {
     @Override
     public Object handle(JsonNode params, WebSocketSession session) {
         String providerId = requiredText(params, "providerId");
-        providerSettingsService.delete(providerId);
-        return Map.of("ok", true, "providerId", providerId);
+        try {
+            ProviderSettingsService.ProviderDeleteResult result = providerSettingsService.delete(providerId);
+            return Map.of(
+                    "ok", true,
+                    "providerId", result.providerId(),
+                    "activeProviderId", result.activeProviderId());
+        } catch (IllegalArgumentException exception) {
+            throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "Provider 删除请求无效");
+        }
     }
 
     private String requiredText(JsonNode params, String fieldName) {

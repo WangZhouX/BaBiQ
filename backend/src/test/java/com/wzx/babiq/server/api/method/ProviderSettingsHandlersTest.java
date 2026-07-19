@@ -17,8 +17,10 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentCaptor.forClass;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -114,6 +116,8 @@ class ProviderSettingsHandlersTest {
     @DisplayName("provider/delete 委托服务禁用 Provider")
     void provider_delete_should_delegate_to_service() {
         ProviderSettingsService service = mock(ProviderSettingsService.class);
+        when(service.delete("p1"))
+                .thenReturn(new ProviderSettingsService.ProviderDeleteResult("p1", "p2"));
         ProviderDeleteHandler handler = new ProviderDeleteHandler(service);
 
         Map<String, Object> response = responseFrom(handler.handle(objectMapper.valueToTree(Map.of(
@@ -123,7 +127,48 @@ class ProviderSettingsHandlersTest {
         verify(service).delete("p1");
         assertThat(response)
                 .containsEntry("ok", true)
-                .containsEntry("providerId", "p1");
+                .containsEntry("providerId", "p1")
+                .containsEntry("activeProviderId", "p2");
+    }
+
+    @Test
+    @DisplayName("provider/delete 把服务参数错误映射为不含原异常链的 INVALID_PARAMS")
+    void provider_delete_should_map_service_validation_failure_safely() {
+        String sensitiveMarker = "sk-fake-sensitive-marker";
+        ProviderSettingsService service = mock(ProviderSettingsService.class);
+        doThrow(new IllegalArgumentException(sensitiveMarker)).when(service).delete("missing");
+        ProviderDeleteHandler handler = new ProviderDeleteHandler(service);
+
+        Throwable failure = catchThrowable(() -> handler.handle(objectMapper.valueToTree(Map.of(
+                "providerId", "missing"
+        )), null));
+
+        assertThat(failure).isInstanceOfSatisfying(JsonRpcException.class, exception -> {
+            assertThat(exception.errorCode()).isEqualTo(JsonRpcErrorCode.INVALID_PARAMS);
+            assertThat(exception.getMessage()).isEqualTo("Provider 删除请求无效");
+            assertThat(exception.getCause()).isNull();
+            assertThat(exception.toString()).doesNotContain(sensitiveMarker);
+        });
+    }
+
+    @Test
+    @DisplayName("provider/test 失败响应只返回固定安全文案")
+    void provider_test_should_not_echo_internal_failure_message() {
+        String sensitiveMarker = "sk-fake-sensitive-marker";
+        ProviderSettingsService service = mock(ProviderSettingsService.class);
+        when(service.testConnection("p1")).thenReturn(new ProviderSettingsService.ProviderTestResult(
+                false, "p1", sensitiveMarker));
+        ProviderTestHandler handler = new ProviderTestHandler(service);
+
+        Map<String, Object> response = responseFrom(handler.handle(objectMapper.valueToTree(Map.of(
+                "providerId", "p1"
+        )), null));
+
+        assertThat(response)
+                .containsEntry("ok", false)
+                .containsEntry("providerId", "p1")
+                .containsEntry("message", "Provider 配置检查失败");
+        assertThat(response.toString()).doesNotContain(sensitiveMarker);
     }
 
     @Test

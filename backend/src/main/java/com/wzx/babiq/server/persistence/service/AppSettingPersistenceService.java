@@ -59,6 +59,17 @@ public class AppSettingPersistenceService {
                 .map(this::toRecord);
     }
 
+    /**
+     * 删除设置项；仅用于需要恢复“原先不存在”状态的事务补偿。
+     *
+     * @param settingKey 设置 key
+     */
+    @Transactional
+    public void deleteByKey(String settingKey) {
+        appSettingMapper.delete(Wrappers.<AppSettingEntity>lambdaQuery()
+                .eq(AppSettingEntity::getSettingKey, settingKey));
+    }
+
     private AppSettingEntity toEntity(AppSettingRecord record) {
         AppSettingEntity entity = new AppSettingEntity();
         entity.setSettingKey(record.settingKey());

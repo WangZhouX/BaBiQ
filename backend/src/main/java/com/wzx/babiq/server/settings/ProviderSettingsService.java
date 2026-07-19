@@ -1,6 +1,7 @@
 package com.wzx.babiq.server.settings;
 
 import com.wzx.babiq.server.conversation.repository.ProviderConfigRecord;
+import com.wzx.babiq.server.conversation.repository.AppSettingRecord;
 import com.wzx.babiq.server.model.ChatClientFactory;
 import com.wzx.babiq.server.model.ModelMetadata;
 import com.wzx.babiq.server.model.ModelProviderConfig;
@@ -8,16 +9,21 @@ import com.wzx.babiq.server.model.ModelProviderRegistry;
 import com.wzx.babiq.server.model.ProviderAuthMode;
 import com.wzx.babiq.server.model.ProviderType;
 import com.wzx.babiq.server.persistence.service.ProviderPersistenceService;
+import com.wzx.babiq.server.persistence.service.AppSettingPersistenceService;
 import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 
 /**
  * Provider 设置应用服务。
@@ -30,6 +36,8 @@ public class ProviderSettingsService {
 
     /** Provider 配置持久化服务，只保存 secretRef。 */
     private final ProviderPersistenceService providerPersistenceService;
+    /** active Provider 设置持久化服务，删除 fallback 与 Provider 记录共用事务。 */
+    private final AppSettingPersistenceService appSettingPersistenceService;
     /** 本地密钥存储，保存 API Key 明文。 */
     private final SecretStore secretStore;
     /** 运行期模型 Provider 注册表，下一轮 turn 会从这里读取最新配置。 */
@@ -52,12 +60,14 @@ public class ProviderSettingsService {
      * @param transactionManager SQLite 事务管理器
      */
     public ProviderSettingsService(ProviderPersistenceService providerPersistenceService,
+                                   AppSettingPersistenceService appSettingPersistenceService,
                                    SecretStore secretStore,
                                    ModelProviderRegistry registry,
                                    ObjectProvider<ChatClientFactory> chatClientFactoryProvider,
                                    ObjectProvider<AnthropicOAuthCredentialSource> anthropicOAuthCredentialSourceProvider,
                                    PlatformTransactionManager transactionManager) {
         this.providerPersistenceService = providerPersistenceService;
+        this.appSettingPersistenceService = appSettingPersistenceService;
         this.secretStore = secretStore;
         this.registry = registry;
         this.chatClientFactoryProvider = chatClientFactoryProvider;
@@ -73,32 +83,78 @@ public class ProviderSettingsService {
      * 服务重启后也会重新注册到运行期 registry。</p>
      */
     @PostConstruct
-    @Transactional
-    public void bootstrap() {
-        Instant now = Instant.now();
-        for (ModelProviderConfig config : registry.list()) {
-            if (providerPersistenceService.findProvider(config.id()).isEmpty()) {
-                ProviderAuthMode authMode = config.effectiveAuthMode();
-                String secretRef = authMode == ProviderAuthMode.API_KEY
-                        && config.apiKey() != null
-                        && !config.apiKey().isBlank()
-                        ? secretStore.save("provider." + config.id(), config.apiKey())
-                        : null;
-                providerPersistenceService.saveProvider(ProviderConfigRecord.of(
-                        config.id(),
-                        config.displayName(),
-                        config.type().name(),
-                        authMode.wireValue(),
-                        persistenceBaseUrl(config.baseUrl()),
-                        config.model(),
-                        secretRef,
-                        effectiveContextWindow(config.model(), config.contextWindow() == null ? 0 : config.contextWindow()),
-                        true,
-                        now));
+    public synchronized void bootstrap() {
+        List<ModelProviderConfig> yamlSnapshot = List.copyOf(registry.list());
+        String yamlActiveProviderId = registry.active().id();
+        List<StagedBootstrapProvider> stagedProviders = new ArrayList<>();
+        boolean databaseCommitted = false;
+        try {
+            Map<String, ProviderConfigRecord> persistedById = new LinkedHashMap<>();
+            for (ProviderConfigRecord record : providerPersistenceService.listProviders(false)) {
+                persistedById.put(record.providerId(), record);
             }
-        }
-        for (ProviderConfigRecord record : providerPersistenceService.listProviders(true)) {
-            registry.registerOrUpdate(toRuntimeConfig(record));
+
+            Instant now = Instant.now();
+            for (ModelProviderConfig yamlConfig : yamlSnapshot) {
+                if (persistedById.containsKey(yamlConfig.id())) {
+                    continue;
+                }
+                String secretRef = stageBootstrapSecret(yamlConfig);
+                ProviderConfigRecord newRecord = ProviderConfigRecord.of(
+                        yamlConfig.id(), yamlConfig.displayName(), yamlConfig.type().name(),
+                        yamlConfig.effectiveAuthMode().wireValue(), persistenceBaseUrl(yamlConfig.baseUrl()),
+                        yamlConfig.model(), secretRef,
+                        effectiveContextWindow(yamlConfig.model(),
+                                yamlConfig.contextWindow() == null ? 0 : yamlConfig.contextWindow()),
+                        true, now);
+                stagedProviders.add(new StagedBootstrapProvider(newRecord, secretRef));
+                persistedById.put(newRecord.providerId(), newRecord);
+            }
+
+            List<ProviderConfigRecord> enabledRecords = persistedById.values().stream()
+                    .filter(ProviderConfigRecord::enabled)
+                    .sorted(Comparator.comparing(ProviderConfigRecord::providerId))
+                    .toList();
+            if (enabledRecords.isEmpty()) {
+                throw new IllegalStateException("SQLite 中至少需要一个启用 Provider");
+            }
+            List<ModelProviderConfig> runtimeSnapshot = enabledRecords.stream()
+                    .map(this::toRuntimeConfig)
+                    .toList();
+            Optional<AppSettingRecord> persistedActive = appSettingPersistenceService.findByKey(
+                    AppSettingsService.KEY_ACTIVE_PROVIDER);
+            boolean persistedActiveBlank = persistedActive
+                    .map(AppSettingRecord::settingValue)
+                    .map(String::isBlank)
+                    .orElse(false);
+            String requestedActive = persistedActive
+                    .map(AppSettingRecord::settingValue)
+                    .orElse(yamlActiveProviderId);
+            boolean requestedActiveValid = !persistedActiveBlank && enabledRecords.stream()
+                    .map(ProviderConfigRecord::providerId)
+                    .anyMatch(requestedActive::equals);
+            String recoveredActive = requestedActiveValid
+                    ? requestedActive
+                    : enabledRecords.getFirst().providerId();
+            boolean persistActive = persistedActive.isEmpty() || persistedActiveBlank || !requestedActiveValid;
+
+            transactionTemplate.executeWithoutResult(status -> {
+                for (StagedBootstrapProvider staged : stagedProviders) {
+                    providerPersistenceService.insertProvider(staged.record());
+                }
+                if (persistActive) {
+                    appSettingPersistenceService.save(new AppSettingRecord(
+                            AppSettingsService.KEY_ACTIVE_PROVIDER, recoveredActive, "string", Instant.now()));
+                }
+            });
+            databaseCommitted = true;
+            registry.replaceAll(runtimeSnapshot, recoveredActive);
+        } catch (RuntimeException failure) {
+            IllegalStateException safeFailure = safeFailure("Provider 启动恢复失败", failure);
+            if (!databaseCommitted) {
+                compensateBootstrapSecrets(stagedProviders, safeFailure);
+            }
+            throw safeFailure;
         }
     }
 
@@ -190,12 +246,61 @@ public class ProviderSettingsService {
      *
      * @param providerId Provider 标识
      */
-    @Transactional
-    public void delete(String providerId) {
+    public synchronized ProviderDeleteResult delete(String providerId) {
+        synchronized (registry) {
+            return deleteWithProviderRegistryLock(providerId);
+        }
+    }
+
+    /** 在与 AppSettingsService 共享的 registry 锁内完成删除和 active fallback。 */
+    private ProviderDeleteResult deleteWithProviderRegistryLock(String providerId) {
         requireText(providerId, "providerId");
-        providerPersistenceService.disableProvider(providerId, Instant.now());
-        registry.disable(providerId);
-        invalidateClient(providerId);
+        ProviderConfigRecord existing = providerPersistenceService.findProvider(providerId)
+                .filter(ProviderConfigRecord::enabled)
+                .orElseThrow(() -> new IllegalArgumentException("Provider 不存在或已禁用: " + providerId));
+        List<ProviderConfigRecord> enabledProviders = providerPersistenceService.listProviders(true).stream()
+                .sorted(Comparator.comparing(ProviderConfigRecord::providerId))
+                .toList();
+        if (enabledProviders.size() <= 1) {
+            throw new IllegalArgumentException("最后一个启用 Provider 不允许删除");
+        }
+
+        String previousActiveProviderId = registry.active().id();
+        boolean deletingActiveProvider = providerId.equals(previousActiveProviderId);
+        String nextActiveProviderId = deletingActiveProvider
+                ? enabledProviders.stream()
+                        .map(ProviderConfigRecord::providerId)
+                        .filter(id -> !id.equals(providerId))
+                        .findFirst()
+                        .orElseThrow()
+                : previousActiveProviderId;
+        Optional<AppSettingRecord> previousActiveSetting = appSettingPersistenceService.findByKey(
+                AppSettingsService.KEY_ACTIVE_PROVIDER);
+        ModelProviderConfig previousRuntimeConfig = resolveRuntimeConfigBeforeWrite(existing, null);
+        try {
+            transactionTemplate.executeWithoutResult(status -> {
+                providerPersistenceService.disableProvider(providerId, Instant.now());
+                if (deletingActiveProvider) {
+                    appSettingPersistenceService.save(new AppSettingRecord(
+                            AppSettingsService.KEY_ACTIVE_PROVIDER, nextActiveProviderId, "string", Instant.now()));
+                }
+            });
+        } catch (RuntimeException databaseFailure) {
+            throw safeFailure("Provider 删除持久化失败: " + providerId, databaseFailure);
+        }
+
+        try {
+            registry.disable(providerId);
+            if (deletingActiveProvider) {
+                registry.setActive(nextActiveProviderId);
+            }
+            invalidateClient(providerId);
+            deleteProviderSecret(existing);
+        } catch (RuntimeException sideEffectFailure) {
+            throw compensateCommittedDelete(existing, previousRuntimeConfig, previousActiveSetting,
+                    previousActiveProviderId, nextActiveProviderId, sideEffectFailure);
+        }
+        return new ProviderDeleteResult(providerId, nextActiveProviderId);
     }
 
     /**
@@ -227,8 +332,141 @@ public class ProviderSettingsService {
             chatClientFactoryProvider.getObject().resolveChatModel(providerId);
             return new ProviderTestResult(true, providerId, "Provider 配置可用");
         } catch (Exception exception) {
-            return new ProviderTestResult(false, providerId, exception.getMessage());
+            return new ProviderTestResult(false, providerId, "Provider 配置检查失败");
         }
+    }
+
+    /** 为首次 YAML Provider 保存可补偿的新密钥引用。 */
+    private String stageBootstrapSecret(ModelProviderConfig config) {
+        if (config.effectiveAuthMode() != ProviderAuthMode.API_KEY
+                || config.apiKey() == null || config.apiKey().isBlank()) {
+            return null;
+        }
+        return secretStore.save("provider." + config.id(), config.apiKey());
+    }
+
+    /** SQLite 启动恢复失败时删除尚未被提交引用的新 YAML 密钥。 */
+    private void compensateBootstrapSecrets(List<StagedBootstrapProvider> stagedProviders,
+                                            IllegalStateException safeFailure) {
+        for (StagedBootstrapProvider staged : stagedProviders) {
+            if (staged.secretRef() == null || staged.secretRef().isBlank()) {
+                continue;
+            }
+            try {
+                secretStore.delete(staged.secretRef());
+            } catch (RuntimeException cleanupFailure) {
+                addSanitizedSuppressed(safeFailure, "启动密钥补偿删除失败", cleanupFailure);
+            }
+        }
+    }
+
+    /** 删除 Provider 成功提交后清理不再被引用的密钥。 */
+    private void deleteProviderSecret(ProviderConfigRecord existing) {
+        if (existing.secretRef() != null && !existing.secretRef().isBlank()) {
+            secretStore.delete(existing.secretRef());
+        }
+    }
+
+    /** 删除提交后副作用失败时恢复 Provider、active 设置、运行时快照和客户端缓存。 */
+    private IllegalStateException compensateCommittedDelete(ProviderConfigRecord previous,
+                                                              ModelProviderConfig previousRuntimeConfig,
+                                                              Optional<AppSettingRecord> previousActiveSetting,
+                                                              String previousActiveProviderId,
+                                                              String deletedStateActiveProviderId,
+                                                              RuntimeException sideEffectFailure) {
+        RuntimeException runtimeRestoreFailure = null;
+        RuntimeException invalidateFailure = null;
+        try {
+            applyCommittedRuntimeConfig(previous, previousRuntimeConfig);
+            registry.setActive(previousActiveProviderId);
+        } catch (RuntimeException restoreFailure) {
+            runtimeRestoreFailure = restoreFailure;
+        }
+        if (runtimeRestoreFailure == null) {
+            try {
+                invalidateClient(previous.providerId());
+            } catch (RuntimeException restoreFailure) {
+                invalidateFailure = restoreFailure;
+            }
+        }
+
+        boolean databaseRestored = false;
+        RuntimeException databaseRestoreFailure = null;
+        if (runtimeRestoreFailure == null) {
+            try {
+                transactionTemplate.executeWithoutResult(status -> {
+                    providerPersistenceService.updateProvider(previous);
+                    restoreActiveSetting(previousActiveSetting);
+                });
+                databaseRestored = true;
+            } catch (RuntimeException restoreFailure) {
+                databaseRestoreFailure = restoreFailure;
+            }
+        }
+
+        RuntimeException deletedProviderRestoreFailure = null;
+        RuntimeException deletedActiveRestoreFailure = null;
+        RuntimeException deletedCacheRestoreFailure = null;
+        RuntimeException deletedSecretCleanupFailure = null;
+        if (!databaseRestored) {
+            try {
+                registry.disable(previous.providerId());
+            } catch (RuntimeException restoreFailure) {
+                deletedProviderRestoreFailure = restoreFailure;
+            }
+            try {
+                registry.setActive(deletedStateActiveProviderId);
+            } catch (RuntimeException restoreFailure) {
+                deletedActiveRestoreFailure = restoreFailure;
+            }
+            try {
+                invalidateClient(previous.providerId());
+            } catch (RuntimeException restoreFailure) {
+                deletedCacheRestoreFailure = restoreFailure;
+            }
+            if (runtimeProviderAbsent(previous.providerId())) {
+                try {
+                    deleteProviderSecret(previous);
+                } catch (RuntimeException cleanupFailure) {
+                    deletedSecretCleanupFailure = cleanupFailure;
+                }
+            }
+        }
+
+        boolean fullyRestored = databaseRestored
+                && runtimeRestoreFailure == null
+                && invalidateFailure == null;
+        IllegalStateException safeFailure = new IllegalStateException(fullyRestored
+                ? "Provider 删除提交后应用失败，已恢复原配置: " + previous.providerId()
+                : "Provider 删除提交后应用失败，原配置恢复不完整: " + previous.providerId());
+        addSanitizedSuppressed(safeFailure, "删除提交后副作用失败", sideEffectFailure);
+        addSanitizedSuppressed(safeFailure, "删除数据库恢复失败", databaseRestoreFailure);
+        addSanitizedSuppressed(safeFailure, "删除运行时恢复失败", runtimeRestoreFailure);
+        addSanitizedSuppressed(safeFailure, "删除缓存恢复失败", invalidateFailure);
+        addSanitizedSuppressed(safeFailure, "删除态 Provider 恢复失败", deletedProviderRestoreFailure);
+        addSanitizedSuppressed(safeFailure, "删除态 active 恢复失败", deletedActiveRestoreFailure);
+        addSanitizedSuppressed(safeFailure, "删除态缓存恢复失败", deletedCacheRestoreFailure);
+        addSanitizedSuppressed(safeFailure, "删除态密钥清理失败", deletedSecretCleanupFailure);
+        return safeFailure;
+    }
+
+    /** 判断补偿最终是否已经把目标 Provider 从运行时目录移除。 */
+    private boolean runtimeProviderAbsent(String providerId) {
+        try {
+            registry.get(providerId);
+            return false;
+        } catch (IllegalArgumentException ignored) {
+            return true;
+        }
+    }
+
+    /** 恢复删除前 active setting；原先不存在时删除补偿事务中新建的记录。 */
+    private void restoreActiveSetting(Optional<AppSettingRecord> previousActiveSetting) {
+        if (previousActiveSetting.isPresent()) {
+            appSettingPersistenceService.save(previousActiveSetting.orElseThrow());
+            return;
+        }
+        appSettingPersistenceService.deleteByKey(AppSettingsService.KEY_ACTIVE_PROVIDER);
     }
 
     private ModelProviderConfig toRuntimeConfig(ProviderConfigRecord record) {
@@ -618,5 +856,13 @@ public class ProviderSettingsService {
      * @param message 可展示给用户的结果说明
      */
     public record ProviderTestResult(boolean ok, String providerId, String message) {
+    }
+
+    /** Provider 删除结果，包含删除后仍有效的 active Provider。 */
+    public record ProviderDeleteResult(String providerId, String activeProviderId) {
+    }
+
+    /** 启动恢复期间首次从 YAML 准备写入的 Provider 与新密钥引用。 */
+    private record StagedBootstrapProvider(ProviderConfigRecord record, String secretRef) {
     }
 }

@@ -116,6 +116,25 @@ public class ModelProviderRegistry {
         }
     }
 
+    /**
+     * 用已经完整校验和解析的不可变快照替换运行时 Provider 目录。
+     *
+     * <p>启动恢复先在 registry 外构造完整快照，再通过此方法一次切换，避免逐条注册时
+     * 暴露 YAML 与 SQLite 混合的中间状态。</p>
+     *
+     * @param providers SQLite 中所有启用 Provider 的运行时配置
+     * @param activeProviderId 恢复后的 active Provider
+     */
+    public synchronized void replaceAll(List<ModelProviderConfig> providers, String activeProviderId) {
+        Map<String, ModelProviderConfig> checkedProviders = indexProviders(providers);
+        if (!checkedProviders.containsKey(activeProviderId)) {
+            throw new IllegalArgumentException("active provider 不在恢复快照中: " + activeProviderId);
+        }
+        providersById.clear();
+        providersById.putAll(checkedProviders);
+        this.activeProviderId.set(activeProviderId);
+    }
+
     private static Map<String, ModelProviderConfig> indexProviders(List<ModelProviderConfig> providers) {
         if (providers == null || providers.isEmpty()) {
             throw new IllegalStateException("babiq.providers 不能为空,至少需要配置一个 provider");

@@ -29,13 +29,18 @@ public class ProviderOAuthStatusHandler implements JsonRpcMethodHandler {
 
     @Override
     public Object handle(JsonNode params, WebSocketSession session) {
-        AnthropicOAuthStatus status = credentialSource.status();
+        AnthropicOAuthStatus status;
+        try {
+            status = credentialSource.status();
+        } catch (RuntimeException exception) {
+            status = new AnthropicOAuthStatus(false, false, "未登录");
+        }
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("providerType", "ANTHROPIC");
         payload.put("authMode", "oauth_cli");
         payload.put("cliInstalled", status.cliInstalled());
         payload.put("loggedIn", status.loggedIn());
-        payload.put("message", status.message());
+        payload.put("message", status.loggedIn() ? "已登录" : "未登录");
         return payload;
     }
 }

@@ -34,7 +34,8 @@ public class ProviderTestHandler implements JsonRpcMethodHandler {
     public Object handle(JsonNode params, WebSocketSession session) {
         String providerId = requiredText(params, "providerId");
         ProviderSettingsService.ProviderTestResult result = providerSettingsService.testConnection(providerId);
-        return Map.of("ok", result.ok(), "providerId", result.providerId(), "message", result.message());
+        String message = result.ok() ? "Provider 配置可用" : "Provider 配置检查失败";
+        return Map.of("ok", result.ok(), "providerId", result.providerId(), "message", message);
     }
 
     private String requiredText(JsonNode params, String fieldName) {

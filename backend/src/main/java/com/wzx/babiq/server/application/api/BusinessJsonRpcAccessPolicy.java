@@ -18,14 +18,6 @@ public final class BusinessJsonRpcAccessPolicy {
     private static final Set<String> PRE_BIND_METHODS = Set.of(
             "application/identity/bind",
             "application/identity/update",
-            "provider/list",
-            "provider/create",
-            "provider/update",
-            "provider/delete",
-            "provider/test",
-            "provider/set-active",
-            "provider/oauth/status",
-            "provider/oauth/login",
             "model/providers/list",
             "model/providers/set-active",
             "settings/get",
@@ -36,6 +28,14 @@ public final class BusinessJsonRpcAccessPolicy {
             "approval/policy/set");
 
     private static final Set<String> POST_BIND_METHODS = Set.of(
+            "provider/list",
+            "provider/create",
+            "provider/update",
+            "provider/delete",
+            "provider/test",
+            "provider/set-active",
+            "provider/oauth/status",
+            "provider/oauth/login",
             "thread/create",
             "thread/list",
             "thread/load",
