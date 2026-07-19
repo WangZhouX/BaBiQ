@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
@@ -168,6 +169,50 @@ class ProviderSettingsServiceTest {
         ProviderConfigRecord saved = providerPersistenceService.findProvider(providerId).orElseThrow();
         assertThat(saved.authMode()).isEqualTo("oauth_cli");
         assertThat(saved.secretRef()).isNull();
+    }
+
+    @Test
+    @DisplayName("更新已有 API Key Provider 时空白密钥沿用旧引用且不创建或删除 alias")
+    void updating_api_key_provider_with_blank_key_reuses_existing_secret_without_alias_changes() {
+        String providerId = "blank-key-reuses-existing-secret";
+        providerSettingsService.create(apiKeyDraft(providerId, "sk-existing-secret", "gpt-4o-mini"));
+        ProviderConfigRecord before = providerPersistenceService.findProvider(providerId).orElseThrow();
+        clearInvocations(secretStore, chatClientFactory);
+
+        ProviderSettingsService.ProviderView view = providerSettingsService.update(
+                apiKeyDraft(providerId, "   ", "gpt-4.1-mini"));
+
+        ProviderConfigRecord after = providerPersistenceService.findProvider(providerId).orElseThrow();
+        assertThat(view.hasApiKey()).isTrue();
+        assertThat(after.secretRef()).isEqualTo(before.secretRef());
+        assertThat(after.model()).isEqualTo("gpt-4.1-mini");
+        assertThat(secretStore.load(after.secretRef())).contains("sk-existing-secret");
+        assertThat(providerRegistry.get(providerId).apiKey()).isEqualTo("sk-existing-secret");
+        verify(secretStore, never()).save(anyString(), anyString());
+        verify(secretStore, never()).delete(anyString());
+        verify(chatClientFactory).invalidate(providerId);
+    }
+
+    @Test
+    @DisplayName("更新未知 Provider 时在任何密钥或运行时副作用前拒绝")
+    void updating_unknown_provider_rejects_without_creating_record_or_runtime_side_effects() {
+        String providerId = "unknown-provider-update";
+        List<String> providerIdsBefore = providerIds();
+        String activeBefore = providerRegistry.active().id();
+        clearInvocations(secretStore, chatClientFactory);
+
+        Throwable failure = catchThrowable(() -> providerSettingsService.update(
+                apiKeyDraft(providerId, "sk-must-not-be-stored", "gpt-4o-mini")));
+
+        assertThat(failure)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("不存在");
+        assertThat(providerPersistenceService.findProvider(providerId)).isEmpty();
+        assertThat(providerIds()).containsExactlyElementsOf(providerIdsBefore);
+        assertThat(providerRegistry.active().id()).isEqualTo(activeBefore);
+        verify(secretStore, never()).save(anyString(), anyString());
+        verify(secretStore, never()).delete(anyString());
+        verify(chatClientFactory, never()).invalidate(providerId);
     }
 
     @Test
