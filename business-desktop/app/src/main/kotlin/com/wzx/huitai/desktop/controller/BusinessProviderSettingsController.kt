@@ -18,13 +18,15 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -36,30 +38,14 @@ enum class BusinessProviderSettingsNoticeLevel {
     ERROR,
 }
 
-/**
- * Provider 设置页可展示的脱敏提示。
- *
- * @property code 稳定提示代码，供 UI 测试和后续本地化使用。
- * @property message 已由客户端或已认证后端控制的安全文案，不包含异常正文。
- * @property level UI 应采用的信息、成功或错误样式。
- */
+/** Provider 设置页可展示的脱敏提示。 */
 data class BusinessProviderSettingsNotice(
     val code: String,
     val message: String,
     val level: BusinessProviderSettingsNoticeLevel,
 )
 
-/**
- * Provider 设置页唯一状态；刻意不包含 API Key 或保存草稿。
- *
- * @property providers 后端返回的非敏感 Provider 快照。
- * @property loading 是否正在刷新 Provider 列表。
- * @property busyProviderId 当前执行单 Provider 命令的 Provider ID。
- * @property notice 最近一次安全操作提示。
- * @property oauthStatus 按 UI Provider ID 保存的全局 Anthropic CLI OAuth 状态投影。
- * @property operationsEnabled 当前连接已完成注册且业务身份有效时才为 true。
- * @property connectionGeneration 每个新 finalized connection ID 递增一次，供 UI 清理局部密钥输入。
- */
+/** Provider 设置页唯一状态；刻意不包含 API Key 或保存草稿。 */
 data class BusinessProviderSettingsState(
     val providers: List<BusinessProvider> = emptyList(),
     val loading: Boolean = false,
@@ -73,28 +59,27 @@ data class BusinessProviderSettingsState(
 /**
  * 在业务桌面中编排 Provider 设置命令，但不接管共享 Agent 事件流或 gateway 生命周期。
  *
- * API Key 只作为 [BusinessProviderDraft] 的挂起调用参数经过本类，永远不写入 [state]、提示或日志。
- * 连接可用性必须同时满足 Registered lifecycle 已发布 Connected、桌面认证完成且 identity 非空。
- *
- * @param gateway 与会话控制器共享的认证 JSON-RPC gateway；[close] 不关闭它。
- * @param supervisorState RegisteredAgentConnectionLifecycle 的 finalized 状态投影。
- * @param desktopState 业务桌面认证和 identity 真相源。
- * @param scope 父作用域；本类创建自己的 child job，关闭时不取消父作用域。
- * @param onProvidersChanged 写操作完成后刷新会话侧 Provider 下拉的回调。
+ * 每次操作都绑定启动时的 finalized connection 代次。网络返回后只有该代次仍然有效时，
+ * 才能原子提交设置页状态和会话 Provider 投影。所有网络操作都是 controller job 的子任务。
  */
 class BusinessProviderSettingsController(
     private val gateway: BusinessConversationGateway,
     private val supervisorState: StateFlow<AgentSupervisorState>,
     private val desktopState: StateFlow<BusinessDesktopState>,
     scope: CoroutineScope,
-    private val onProvidersChanged: suspend () -> Unit,
+    private val onProvidersChanged: (List<BusinessProvider>) -> Unit,
 ) : Closeable {
+    private data class OperationToken(val connectionId: String, val generation: Long)
+
     private val closed = AtomicBoolean(false)
+    private val stateMonitor = Any()
     private val operationMutex = Mutex()
     private val controllerJob = SupervisorJob(scope.coroutineContext[Job])
     private val controllerScope = CoroutineScope(scope.coroutineContext.minusKey(Job) + controllerJob)
     private val mutableState = MutableStateFlow(BusinessProviderSettingsState())
     private var lastFinalizedConnectionId: String? = null
+    private var operationGeneration = 0L
+    private var currentToken: OperationToken? = null
     private var refreshJob: Job? = null
     private val availabilityObserver = controllerScope.launch(start = CoroutineStart.UNDISPATCHED) {
         combine(supervisorState, desktopState) { supervisor, desktop ->
@@ -105,178 +90,316 @@ class BusinessProviderSettingsController(
     /** 设置页只读状态流，不含 Provider 草稿或 API Key。 */
     val state: StateFlow<BusinessProviderSettingsState> = mutableState.asStateFlow()
 
-    /** 手动刷新非敏感 Provider 列表；连接不可用时只发布固定提示。 */
-    suspend fun refresh(): List<BusinessProvider>? = perform(loading = true) {
-        reloadProviders().also {
-            publishNotice("PROVIDER_LIST_REFRESHED", "Provider 列表已刷新", BusinessProviderSettingsNoticeLevel.SUCCESS)
-        }
+    /** 手动刷新非敏感 Provider 列表。 */
+    suspend fun refresh(): List<BusinessProvider>? = submitOperation(loading = true) { token ->
+        refreshProviders(token, publishSuccess = true)
     }
 
-    /** 创建 Provider；草稿仅存在于当前挂起调用栈，成功后同步两个 Provider 视图。 */
-    suspend fun create(draft: BusinessProviderDraft): BusinessProvider? = perform(draft.providerId) {
-        gateway.createProvider(draft).also {
-            reloadProviders(notifyConversation = true)
-            publishNotice("PROVIDER_CREATED", "Provider 已创建", BusinessProviderSettingsNoticeLevel.SUCCESS)
-        }
+    /** 创建 Provider，成功后用同一次列表读取同步设置页和会话投影。 */
+    suspend fun create(draft: BusinessProviderDraft): BusinessProvider? = submitOperation(draft.providerId) { token ->
+        val result = gateway.createProvider(draft)
+        if (!isOperationCurrent(token)) return@submitOperation null
+        val providers = gateway.listProviders()
+        if (!isOperationCurrent(token)) return@submitOperation null
+        if (!commitProviders(token, providers, "PROVIDER_CREATED", "Provider 已创建")) return@submitOperation null
+        result
     }
 
-    /** 更新 Provider；留空密钥是否沿用由后端 SecretStore 语义决定。 */
-    suspend fun update(draft: BusinessProviderDraft): BusinessProvider? = perform(draft.providerId) {
-        gateway.updateProvider(draft).also {
-            reloadProviders(notifyConversation = true)
-            publishNotice("PROVIDER_UPDATED", "Provider 已更新", BusinessProviderSettingsNoticeLevel.SUCCESS)
-        }
+    /** 更新 Provider，留空密钥是否沿用由后端 SecretStore 语义决定。 */
+    suspend fun update(draft: BusinessProviderDraft): BusinessProvider? = submitOperation(draft.providerId) { token ->
+        val result = gateway.updateProvider(draft)
+        if (!isOperationCurrent(token)) return@submitOperation null
+        val providers = gateway.listProviders()
+        if (!isOperationCurrent(token)) return@submitOperation null
+        if (!commitProviders(token, providers, "PROVIDER_UPDATED", "Provider 已更新")) return@submitOperation null
+        result
     }
 
-    /** 删除/禁用 Provider，并使用后端返回的 activeProviderId 确定本地 active 投影。 */
-    suspend fun delete(providerId: String): BusinessProviderDeleteResult? = perform(providerId) {
-        gateway.deleteProvider(providerId).also { result ->
-            reloadProviders(activeProviderId = result.activeProviderId, notifyConversation = true)
-            publishNotice("PROVIDER_DELETED", "Provider 已删除", BusinessProviderSettingsNoticeLevel.SUCCESS)
-        }
+    /** 删除/禁用 Provider，并以后端 activeProviderId 校正本地 active 投影。 */
+    suspend fun delete(providerId: String): BusinessProviderDeleteResult? = submitOperation(providerId) { token ->
+        val result = gateway.deleteProvider(providerId)
+        if (!isOperationCurrent(token)) return@submitOperation null
+        val providers = gateway.listProviders().withActiveProvider(result.activeProviderId)
+        if (!isOperationCurrent(token)) return@submitOperation null
+        if (!commitProviders(token, providers, "PROVIDER_DELETED", "Provider 已删除")) return@submitOperation null
+        result
     }
 
-    /** 执行后端轻量配置检查，并原样展示后端已经脱敏的固定文案。 */
-    suspend fun test(providerId: String): BusinessProviderTestResult? = perform(providerId) {
-        gateway.testProvider(providerId).also { result ->
-            publishNotice(
-                code = if (result.ok) "PROVIDER_TEST_SUCCEEDED" else "PROVIDER_TEST_FAILED",
-                message = result.message,
-                level = if (result.ok) BusinessProviderSettingsNoticeLevel.SUCCESS else BusinessProviderSettingsNoticeLevel.ERROR,
+    /** 执行后端轻量配置检查，并展示后端已经脱敏的固定文案。 */
+    suspend fun test(providerId: String): BusinessProviderTestResult? = submitOperation(providerId) { token ->
+        val result = gateway.testProvider(providerId)
+        if (!isOperationCurrent(token)) return@submitOperation null
+        val committed = commitIfCurrent(token) { current ->
+            current.copy(
+                notice = BusinessProviderSettingsNotice(
+                    code = if (result.ok) "PROVIDER_TEST_SUCCEEDED" else "PROVIDER_TEST_FAILED",
+                    message = result.message,
+                    level = if (result.ok) {
+                        BusinessProviderSettingsNoticeLevel.SUCCESS
+                    } else {
+                        BusinessProviderSettingsNoticeLevel.ERROR
+                    },
+                ),
             )
         }
+        result.takeIf { committed }
     }
 
-    /** 切换当前 Provider，随后刷新列表和会话输入区的选择数据。 */
-    suspend fun setActive(providerId: String, modelId: String? = null): BusinessProviderSelection? = perform(providerId) {
-        gateway.setActiveProvider(providerId, modelId).also { selection ->
-            reloadProviders(activeProviderId = selection.providerId, notifyConversation = true)
-            publishNotice("PROVIDER_ACTIVATED", "已设为当前 Provider", BusinessProviderSettingsNoticeLevel.SUCCESS)
+    /** 切换当前 Provider，随后刷新设置页和会话输入区的选择数据。 */
+    suspend fun setActive(providerId: String, modelId: String? = null): BusinessProviderSelection? =
+        submitOperation(providerId) { token ->
+            val result = gateway.setActiveProvider(providerId, modelId)
+            if (!isOperationCurrent(token)) return@submitOperation null
+            val providers = gateway.listProviders().withActiveProvider(result.providerId)
+            if (!isOperationCurrent(token)) return@submitOperation null
+            if (!commitProviders(token, providers, "PROVIDER_ACTIVATED", "已设为当前 Provider")) {
+                return@submitOperation null
+            }
+            result
         }
-    }
 
     /** 查询全局 Anthropic CLI OAuth 状态，并按发起操作的 Provider ID 投影给 UI。 */
-    suspend fun oauthStatus(providerId: String): BusinessProviderOAuthStatus? = perform(providerId) {
-        if (!supportsOAuth(providerId)) {
-            publishNotice("PROVIDER_OAUTH_UNAVAILABLE", "当前 Provider 不支持 OAuth CLI", BusinessProviderSettingsNoticeLevel.ERROR)
-            return@perform null
+    suspend fun oauthStatus(providerId: String): BusinessProviderOAuthStatus? = submitOperation(providerId) { token ->
+        if (!supportsOAuth(providerId, token)) {
+            publishIfCurrent(
+                token,
+                "PROVIDER_OAUTH_UNAVAILABLE",
+                "当前 Provider 不支持 OAuth CLI",
+                BusinessProviderSettingsNoticeLevel.ERROR,
+            )
+            return@submitOperation null
         }
-        gateway.providerOAuthStatus().also { result ->
-            mutableState.update { current ->
-                current.copy(oauthStatus = current.oauthStatus + (providerId to result))
-            }
-            publishNotice("PROVIDER_OAUTH_STATUS", result.message, BusinessProviderSettingsNoticeLevel.INFO)
+        val result = gateway.providerOAuthStatus()
+        if (!isOperationCurrent(token)) return@submitOperation null
+        val committed = commitIfCurrent(token) { current ->
+            current.copy(
+                oauthStatus = current.oauthStatus + (providerId to result),
+                notice = BusinessProviderSettingsNotice(
+                    "PROVIDER_OAUTH_STATUS",
+                    result.message,
+                    BusinessProviderSettingsNoticeLevel.INFO,
+                ),
+            )
         }
+        result.takeIf { committed }
     }
 
     /** 启动全局 Anthropic CLI OAuth 登录；桌面端本身不执行 shell。 */
-    suspend fun oauthLogin(providerId: String): BusinessProviderOAuthLoginResult? = perform(providerId) {
-        if (!supportsOAuth(providerId)) {
-            publishNotice("PROVIDER_OAUTH_UNAVAILABLE", "当前 Provider 不支持 OAuth CLI", BusinessProviderSettingsNoticeLevel.ERROR)
-            return@perform null
-        }
-        gateway.loginProviderOAuth().also { result ->
-            publishNotice(
-                code = if (result.ok) "PROVIDER_OAUTH_LOGIN_STARTED" else "PROVIDER_OAUTH_LOGIN_FAILED",
-                message = result.message,
-                level = if (result.ok) BusinessProviderSettingsNoticeLevel.SUCCESS else BusinessProviderSettingsNoticeLevel.ERROR,
+    suspend fun oauthLogin(providerId: String): BusinessProviderOAuthLoginResult? = submitOperation(providerId) { token ->
+        if (!supportsOAuth(providerId, token)) {
+            publishIfCurrent(
+                token,
+                "PROVIDER_OAUTH_UNAVAILABLE",
+                "当前 Provider 不支持 OAuth CLI",
+                BusinessProviderSettingsNoticeLevel.ERROR,
             )
+            return@submitOperation null
         }
+        val result = gateway.loginProviderOAuth()
+        if (!isOperationCurrent(token)) return@submitOperation null
+        val committed = publishIfCurrent(
+            token = token,
+            code = if (result.ok) "PROVIDER_OAUTH_LOGIN_STARTED" else "PROVIDER_OAUTH_LOGIN_FAILED",
+            message = result.message,
+            level = if (result.ok) {
+                BusinessProviderSettingsNoticeLevel.SUCCESS
+            } else {
+                BusinessProviderSettingsNoticeLevel.ERROR
+            },
+        )
+        result.takeIf { committed }
     }
 
-    /** 幂等取消本类观察和自动刷新任务，不关闭共享 gateway 或父作用域。 */
+    /** 幂等取消本类观察、自动刷新和所有手工操作，不关闭共享 gateway 或父作用域。 */
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
-        mutableState.update {
-            it.copy(operationsEnabled = false, loading = false, busyProviderId = null)
+        synchronized(stateMonitor) {
+            operationGeneration += 1
+            currentToken = null
+            mutableState.value = mutableState.value.copy(
+                operationsEnabled = false,
+                loading = false,
+                busyProviderId = null,
+            )
         }
-        refreshJob?.cancel()
-        availabilityObserver.cancel()
         controllerScope.cancel()
     }
 
-    /** availability 变化时先收紧操作门禁，新 finalized connection 才递增 generation 并自动刷新。 */
-    private fun onAvailabilityChanged(connectionId: String?) {
-        if (closed.get()) return
-        if (connectionId == null) {
-            refreshJob?.cancel()
-            mutableState.update {
-                it.copy(operationsEnabled = false, loading = false, busyProviderId = null)
-            }
-            return
+    /**
+     * 创建 controller-owned 子任务，并把调用方取消显式传递给该子任务。
+     * token 在排队前捕获，因此旧连接上排队的命令不会落到新连接执行。
+     */
+    private suspend fun <T> submitOperation(
+        providerId: String? = null,
+        loading: Boolean = false,
+        block: suspend (OperationToken) -> T?,
+    ): T? {
+        val token = captureTokenOrPublishUnavailable() ?: return null
+        val child = controllerScope.async(start = CoroutineStart.UNDISPATCHED) {
+            perform(token, providerId, loading, block)
         }
-        val isNewConnection = lastFinalizedConnectionId != connectionId
-        if (isNewConnection) lastFinalizedConnectionId = connectionId
-        mutableState.update { current ->
-            current.copy(
-                operationsEnabled = true,
-                connectionGeneration = current.connectionGeneration + if (isNewConnection) 1 else 0,
-            )
-        }
-        if (isNewConnection) {
-            refreshJob?.cancel()
-            refreshJob = controllerScope.launch { refresh() }
+        return try {
+            child.await()
+        } catch (cancelled: CancellationException) {
+            child.cancel(cancelled)
+            throw cancelled
         }
     }
 
-    /** 串行化设置命令，确保 busy/loading 和安全失败提示不会被并发操作互相覆盖。 */
+    /** 串行化网络命令，但不在网络挂起期间持有状态提交监视器。 */
     private suspend fun <T> perform(
-        providerId: String? = null,
-        loading: Boolean = false,
-        block: suspend () -> T?,
+        token: OperationToken,
+        providerId: String?,
+        loading: Boolean,
+        block: suspend (OperationToken) -> T?,
     ): T? = operationMutex.withLock {
-        if (!isCurrentlyAvailable()) {
-            mutableState.update { current ->
-                current.copy(
-                    operationsEnabled = false,
-                    notice = unavailableNotice(),
-                )
+        if (!commitIfCurrent(token) { current ->
+                current.copy(loading = loading, busyProviderId = if (loading) null else providerId)
             }
+        ) {
             return@withLock null
         }
-        mutableState.update { current ->
-            current.copy(
-                loading = loading,
-                busyProviderId = if (loading) null else providerId,
-            )
-        }
         try {
-            block()
+            block(token)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
-            publishNotice("PROVIDER_SETTINGS_FAILED", "Provider 设置操作失败", BusinessProviderSettingsNoticeLevel.ERROR)
+            currentCoroutineContext().ensureActive()
+            publishIfCurrent(
+                token,
+                "PROVIDER_SETTINGS_FAILED",
+                "Provider 设置操作失败",
+                BusinessProviderSettingsNoticeLevel.ERROR,
+            )
             null
         } finally {
-            mutableState.update { current -> current.copy(loading = false, busyProviderId = null) }
+            commitIfCurrent(token) { current -> current.copy(loading = false, busyProviderId = null) }
         }
     }
 
-    /** 读取设置页快照；activeProviderId 非空时以后端 mutation 结果校正 active/model 标记。 */
-    private suspend fun reloadProviders(
-        activeProviderId: String? = null,
-        notifyConversation: Boolean = false,
-    ): List<BusinessProvider> {
-        val providers = gateway.listProviders().withActiveProvider(activeProviderId)
-        mutableState.update { current -> current.copy(providers = providers) }
-        if (notifyConversation) onProvidersChanged()
-        return providers
+    /** 新 finalized connection 自动刷新；任务同样属于 controller job。 */
+    private fun onAvailabilityChanged(connectionId: String?) {
+        if (closed.get()) return
+        var refreshToken: OperationToken? = null
+        synchronized(stateMonitor) {
+            if (closed.get()) return
+            operationGeneration += 1
+            if (connectionId == null) {
+                currentToken = null
+                mutableState.value = mutableState.value.copy(
+                    operationsEnabled = false,
+                    loading = false,
+                    busyProviderId = null,
+                )
+            } else {
+                val isNewConnection = lastFinalizedConnectionId != connectionId
+                if (isNewConnection) lastFinalizedConnectionId = connectionId
+                val token = OperationToken(connectionId, operationGeneration)
+                currentToken = token
+                mutableState.value = mutableState.value.copy(
+                    operationsEnabled = true,
+                    connectionGeneration = mutableState.value.connectionGeneration + if (isNewConnection) 1 else 0,
+                )
+                if (isNewConnection) refreshToken = token
+            }
+        }
+        refreshToken?.let { token ->
+            refreshJob?.cancel()
+            refreshJob = controllerScope.launch {
+                perform(token, providerId = null, loading = true) {
+                    refreshProviders(token, publishSuccess = true)
+                }
+            }
+        }
+    }
+
+    private suspend fun refreshProviders(token: OperationToken, publishSuccess: Boolean): List<BusinessProvider>? {
+        val providers = gateway.listProviders()
+        if (!isOperationCurrent(token)) return null
+        val committed = commitIfCurrent(token) { current ->
+            current.copy(
+                providers = providers,
+                notice = if (publishSuccess) {
+                    BusinessProviderSettingsNotice(
+                        "PROVIDER_LIST_REFRESHED",
+                        "Provider 列表已刷新",
+                        BusinessProviderSettingsNoticeLevel.SUCCESS,
+                    )
+                } else {
+                    current.notice
+                },
+            )
+        }
+        return providers.takeIf { committed }
+    }
+
+    /** Provider 列表和会话投影在同一次代次校验后提交，不再触发第二次网络读取。 */
+    private fun commitProviders(
+        token: OperationToken,
+        providers: List<BusinessProvider>,
+        noticeCode: String,
+        noticeMessage: String,
+    ): Boolean = synchronized(stateMonitor) {
+        if (!isTokenCurrentLocked(token)) return@synchronized false
+        mutableState.value = mutableState.value.copy(
+            providers = providers,
+            notice = BusinessProviderSettingsNotice(
+                noticeCode,
+                noticeMessage,
+                BusinessProviderSettingsNoticeLevel.SUCCESS,
+            ),
+        )
+        onProvidersChanged(providers)
+        true
+    }
+
+    private fun captureTokenOrPublishUnavailable(): OperationToken? = synchronized(stateMonitor) {
+        val token = currentToken
+        if (token != null && isTokenCurrentLocked(token)) return@synchronized token
+        if (!closed.get()) {
+            mutableState.value = mutableState.value.copy(
+                operationsEnabled = false,
+                notice = unavailableNotice(),
+            )
+        }
+        null
+    }
+
+    private suspend fun isOperationCurrent(token: OperationToken): Boolean {
+        currentCoroutineContext().ensureActive()
+        return synchronized(stateMonitor) { isTokenCurrentLocked(token) }
+    }
+
+    private fun isTokenCurrentLocked(token: OperationToken): Boolean =
+        !closed.get() &&
+            currentToken == token &&
+            availableConnectionId(supervisorState.value, desktopState.value) == token.connectionId &&
+            mutableState.value.operationsEnabled
+
+    private inline fun commitIfCurrent(
+        token: OperationToken,
+        update: (BusinessProviderSettingsState) -> BusinessProviderSettingsState,
+    ): Boolean = synchronized(stateMonitor) {
+        if (!isTokenCurrentLocked(token)) return@synchronized false
+        mutableState.value = update(mutableState.value)
+        true
+    }
+
+    private fun publishIfCurrent(
+        token: OperationToken,
+        code: String,
+        message: String,
+        level: BusinessProviderSettingsNoticeLevel,
+    ): Boolean = commitIfCurrent(token) { current ->
+        current.copy(notice = BusinessProviderSettingsNotice(code, message, level))
     }
 
     /** OAuth 是后端全局能力，但 UI 只允许从 Anthropic oauth_cli Provider 发起。 */
-    private fun supportsOAuth(providerId: String): Boolean = state.value.providers.any { provider ->
-        provider.id == providerId &&
-            provider.type.equals("ANTHROPIC", ignoreCase = true) &&
-            provider.authMode.equals("oauth_cli", ignoreCase = true)
-    }
-
-    private fun isCurrentlyAvailable(): Boolean = !closed.get() &&
-        availableConnectionId(supervisorState.value, desktopState.value) != null &&
-        state.value.operationsEnabled
-
-    private fun publishNotice(code: String, message: String, level: BusinessProviderSettingsNoticeLevel) {
-        mutableState.update { current ->
-            current.copy(notice = BusinessProviderSettingsNotice(code, message, level))
+    private fun supportsOAuth(providerId: String, token: OperationToken): Boolean = synchronized(stateMonitor) {
+        isTokenCurrentLocked(token) && mutableState.value.providers.any { provider ->
+            provider.id == providerId &&
+                provider.type.equals("ANTHROPIC", ignoreCase = true) &&
+                provider.authMode.equals("oauth_cli", ignoreCase = true)
         }
     }
 

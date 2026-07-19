@@ -629,7 +629,7 @@ class ProductionBusinessDesktopCompositionFactory(
             supervisorState = lifecycle.state,
             desktopState = this.storage.desktopStore.state,
             scope = scope,
-            onProvidersChanged = { conversation.refreshProviders() },
+            onProvidersChanged = conversation::acceptProviders,
         )
         val workspace = BusinessWorkspaceController(
             store = this.storage.desktopStore,

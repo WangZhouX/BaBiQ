@@ -32,6 +32,11 @@ class BusinessConversationController(
         gateway.listProviders().also { store.dispatch(BusinessDesktopEvent.ProvidersChanged(it)) }
     }
 
+    /** 接受设置控制器已加载且通过连接代次校验的 Provider 快照，不发起第二次网络请求。 */
+    fun acceptProviders(providers: List<BusinessProvider>) {
+        store.dispatch(BusinessDesktopEvent.ProvidersChanged(providers))
+    }
+
     suspend fun selectProvider(providerId: String, modelId: String? = null): BusinessProviderSelection =
         guarded("PROVIDER_SELECTION_FAILED") {
             gateway.setActiveProvider(providerId, modelId).also {

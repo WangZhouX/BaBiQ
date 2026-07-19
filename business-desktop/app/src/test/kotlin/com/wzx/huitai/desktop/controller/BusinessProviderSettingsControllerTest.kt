@@ -27,13 +27,16 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class BusinessProviderSettingsControllerTest {
@@ -111,8 +114,8 @@ class BusinessProviderSettingsControllerTest {
         val supervisor = MutableStateFlow<AgentSupervisorState>(AgentSupervisorState.Connected("connection-1"))
         val desktop = MutableStateFlow(authenticatedState())
         val gateway = FakeGateway()
-        val callbacks = AtomicInteger()
-        val controller = controller(gateway, supervisor, desktop) { callbacks.incrementAndGet() }
+        val callbackProviders = mutableListOf<List<BusinessProvider>>()
+        val controller = controller(gateway, supervisor, desktop) { callbackProviders += it }
         advanceUntilIdle()
         gateway.calls.clear()
 
@@ -120,14 +123,16 @@ class BusinessProviderSettingsControllerTest {
         gateway.providers = listOf(relay)
         assertEquals(relay, controller.create(draft()))
         assertEquals(listOf("create:relay", "list"), gateway.calls)
-        assertEquals(1, callbacks.get())
+        assertEquals(1, callbackProviders.size)
         assertEquals(listOf(relay), controller.state.value.providers)
+        assertEquals(controller.state.value.providers, callbackProviders.last())
 
         gateway.calls.clear()
         gateway.providers = listOf(relay.copy(model = "kimi-k3-updated"))
         assertEquals("kimi-k3", requireNotNull(controller.update(draft())).model)
         assertEquals(listOf("update:relay", "list"), gateway.calls)
-        assertEquals(2, callbacks.get())
+        assertEquals(2, callbackProviders.size)
+        assertEquals(controller.state.value.providers, callbackProviders.last())
 
         val fallback = provider("fallback", active = false)
         gateway.calls.clear()
@@ -136,7 +141,8 @@ class BusinessProviderSettingsControllerTest {
         assertEquals("fallback", controller.delete("relay")?.activeProviderId)
         assertEquals(listOf("delete:relay", "list"), gateway.calls)
         assertTrue(controller.state.value.providers.single().active)
-        assertEquals(3, callbacks.get())
+        assertEquals(3, callbackProviders.size)
+        assertEquals(controller.state.value.providers, callbackProviders.last())
 
         val claude = provider("claude", active = false, type = "ANTHROPIC", authMode = "oauth_cli")
         gateway.calls.clear()
@@ -144,7 +150,8 @@ class BusinessProviderSettingsControllerTest {
         assertEquals("claude", controller.setActive("claude", "claude-sonnet")?.providerId)
         assertEquals(listOf("active:claude:claude-sonnet", "list"), gateway.calls)
         assertTrue(controller.state.value.providers.single { it.id == "claude" }.active)
-        assertEquals(4, callbacks.get())
+        assertEquals(4, callbackProviders.size)
+        assertEquals(controller.state.value.providers, callbackProviders.last())
 
         gateway.calls.clear()
         assertTrue(controller.test("claude")!!.ok)
@@ -214,11 +221,131 @@ class BusinessProviderSettingsControllerTest {
         assertFalse(controller.state.value.operationsEnabled)
     }
 
+    @Test
+    fun `old generation list create delete and test results cannot commit or notify conversation`() = runTest {
+        val supervisor = MutableStateFlow<AgentSupervisorState>(AgentSupervisorState.Connected("connection-1"))
+        val desktop = MutableStateFlow(authenticatedState())
+        val gateway = FakeGateway()
+        val callbacks = AtomicInteger()
+        val controller = controller(gateway, supervisor, desktop) { callbacks.incrementAndGet() }
+        advanceUntilIdle()
+        val initialProviders = controller.state.value.providers
+        gateway.calls.clear()
+
+        gateway.providers = listOf(provider("stale-list"))
+        gateway.listStarted = CompletableDeferred()
+        gateway.listRelease = CompletableDeferred()
+        val refreshing = async { controller.refresh() }
+        gateway.listStarted!!.await()
+        supervisor.value = AgentSupervisorState.Reconnecting(1, 1_000)
+        runCurrent()
+        gateway.listRelease!!.complete(Unit)
+        assertNull(refreshing.await())
+        assertEquals(initialProviders, controller.state.value.providers)
+        assertEquals(0, callbacks.get())
+
+        gateway.listStarted = null
+        gateway.listRelease = null
+        gateway.providers = listOf(provider("connection-2"))
+        supervisor.value = AgentSupervisorState.Connected("connection-2")
+        advanceUntilIdle()
+        gateway.calls.clear()
+
+        gateway.createStarted = CompletableDeferred()
+        gateway.createRelease = CompletableDeferred()
+        val creating = async { controller.create(draft()) }
+        gateway.createStarted!!.await()
+        supervisor.value = AgentSupervisorState.Reconnecting(1, 1_000)
+        supervisor.value = AgentSupervisorState.Connected("connection-3")
+        gateway.providers = listOf(provider("connection-3"))
+        runCurrent()
+        gateway.createRelease!!.complete(Unit)
+        assertNull(creating.await())
+        advanceUntilIdle()
+        assertEquals(listOf(provider("connection-3")), controller.state.value.providers)
+        assertEquals(0, callbacks.get())
+        assertEquals(1, gateway.calls.count { it == "list" })
+        assertTrue(controller.state.value.notice?.code != "PROVIDER_CREATED")
+
+        gateway.createStarted = null
+        gateway.createRelease = null
+        gateway.calls.clear()
+        gateway.deleteStarted = CompletableDeferred()
+        gateway.deleteRelease = CompletableDeferred()
+        val deleting = async { controller.delete("connection-3") }
+        gateway.deleteStarted!!.await()
+        supervisor.value = AgentSupervisorState.Reconnecting(1, 1_000)
+        runCurrent()
+        gateway.deleteRelease!!.complete(Unit)
+        assertNull(deleting.await())
+        assertEquals(0, callbacks.get())
+        assertTrue(controller.state.value.notice?.code != "PROVIDER_DELETED")
+
+        gateway.deleteStarted = null
+        gateway.deleteRelease = null
+        supervisor.value = AgentSupervisorState.Connected("connection-4")
+        advanceUntilIdle()
+        gateway.calls.clear()
+        gateway.testStarted = CompletableDeferred()
+        gateway.testRelease = CompletableDeferred()
+        val testing = async { controller.test("connection-3") }
+        gateway.testStarted!!.await()
+        supervisor.value = AgentSupervisorState.Reconnecting(1, 1_000)
+        runCurrent()
+        gateway.testRelease!!.complete(Unit)
+        assertNull(testing.await())
+        assertTrue(controller.state.value.notice?.code != "PROVIDER_TEST_SUCCEEDED")
+        controller.close()
+    }
+
+    @Test
+    fun `caller cancellation cancels owned operation and close rejects late cancellation ignoring result`() = runTest {
+        val supervisor = MutableStateFlow<AgentSupervisorState>(AgentSupervisorState.Connected("connection-1"))
+        val desktop = MutableStateFlow(authenticatedState())
+        val gateway = FakeGateway()
+        val callbacks = AtomicInteger()
+        val controller = controller(gateway, supervisor, desktop) { callbacks.incrementAndGet() }
+        advanceUntilIdle()
+        val initialProviders = controller.state.value.providers
+        gateway.calls.clear()
+
+        gateway.createStarted = CompletableDeferred()
+        gateway.createRelease = CompletableDeferred()
+        gateway.ignoreCreateCancellation = true
+        gateway.providers = listOf(provider("caller-late"))
+        val caller = launch { controller.create(draft()) }
+        gateway.createStarted!!.await()
+        caller.cancel()
+        caller.join()
+        assertEquals(1, gateway.createCancellationCount)
+        gateway.createRelease!!.complete(Unit)
+        advanceUntilIdle()
+        assertEquals(initialProviders, controller.state.value.providers)
+        assertEquals(0, callbacks.get())
+        assertTrue(controller.state.value.notice?.code != "PROVIDER_CREATED")
+
+        gateway.createStarted = CompletableDeferred()
+        gateway.createRelease = CompletableDeferred()
+        gateway.providers = listOf(provider("late"))
+        val lateCreating = async { controller.create(draft()) }
+        gateway.createStarted!!.await()
+        controller.close()
+        controller.close()
+        runCurrent()
+        gateway.createRelease!!.complete(Unit)
+        assertFailsWith<CancellationException> { lateCreating.await() }
+        advanceUntilIdle()
+        assertEquals(initialProviders, controller.state.value.providers)
+        assertEquals(0, callbacks.get())
+        assertTrue(controller.state.value.notice?.code != "PROVIDER_CREATED")
+        assertEquals(0, gateway.closeCount)
+    }
+
     private fun CoroutineScope.controller(
         gateway: FakeGateway,
         supervisor: MutableStateFlow<AgentSupervisorState>,
         desktop: MutableStateFlow<BusinessDesktopState>,
-        onChanged: suspend () -> Unit = {},
+        onChanged: (List<BusinessProvider>) -> Unit = {},
     ) = BusinessProviderSettingsController(gateway, supervisor, desktop, this, onChanged)
 
     private fun provider(
@@ -271,6 +398,12 @@ class BusinessProviderSettingsControllerTest {
         var listRelease: CompletableDeferred<Unit>? = null
         var createStarted: CompletableDeferred<Unit>? = null
         var createRelease: CompletableDeferred<Unit>? = null
+        var deleteStarted: CompletableDeferred<Unit>? = null
+        var deleteRelease: CompletableDeferred<Unit>? = null
+        var testStarted: CompletableDeferred<Unit>? = null
+        var testRelease: CompletableDeferred<Unit>? = null
+        var ignoreCreateCancellation = false
+        var createCancellationCount = 0
         var closeCount = 0
 
         override suspend fun listProviders(): List<BusinessProvider> {
@@ -284,7 +417,13 @@ class BusinessProviderSettingsControllerTest {
         override suspend fun createProvider(draft: BusinessProviderDraft): BusinessProvider {
             calls += "create:${draft.providerId}"
             createStarted?.complete(Unit)
-            createRelease?.await()
+            try {
+                createRelease?.await()
+            } catch (cancelled: CancellationException) {
+                createCancellationCount += 1
+                if (!ignoreCreateCancellation) throw cancelled
+                withContext(NonCancellable) { createRelease?.await() }
+            }
             failIfConfigured()
             return provider(draft.providerId)
         }
@@ -297,12 +436,16 @@ class BusinessProviderSettingsControllerTest {
 
         override suspend fun deleteProvider(providerId: String): BusinessProviderDeleteResult {
             calls += "delete:$providerId"
+            deleteStarted?.complete(Unit)
+            deleteRelease?.await()
             failIfConfigured()
             return deleteResult
         }
 
         override suspend fun testProvider(providerId: String): BusinessProviderTestResult {
             calls += "test:$providerId"
+            testStarted?.complete(Unit)
+            testRelease?.await()
             failIfConfigured()
             return BusinessProviderTestResult(true, providerId, "Provider 配置可用")
         }
