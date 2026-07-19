@@ -9,6 +9,7 @@ import com.wzx.babiq.server.persistence.service.AppSettingPersistenceService;
 import com.wzx.babiq.server.sandbox.SandboxMode;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.nio.file.Path;
@@ -62,6 +63,7 @@ public class AppSettingsService {
         this.agentLoopProperties = agentLoopProperties;
         this.providerRegistry = providerRegistry;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
+        this.transactionTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
     /**
@@ -83,8 +85,11 @@ public class AppSettingsService {
      * @param update 更新请求；字段为 null 时保留原值
      * @return 更新后的设置快照
      */
-    public AppSettings update(AppSettingsUpdate update) {
-        AppSettings current = get();
+    public synchronized AppSettings update(AppSettingsUpdate update) {
+        AppSettings current = transactionTemplate.execute(status -> get());
+        if (current == null) {
+            throw new IllegalStateException("读取当前应用设置失败");
+        }
         String activeProviderId = choose(update.activeProviderId(), current.activeProviderId());
         String sandboxMode = choose(update.sandboxMode(), current.sandboxMode());
         String approvalPolicy = choose(update.approvalPolicy(), current.approvalPolicy());
@@ -94,15 +99,72 @@ public class AppSettingsService {
         validateSandboxMode(sandboxMode);
         validateApprovalPolicy(approvalPolicy);
 
+        AppSettings committed = new AppSettings(
+                activeProviderId, sandboxMode, approvalPolicy, defaultCwd);
+        persistSettings(committed);
+        try {
+            providerRegistry.setActive(activeProviderId);
+        } catch (RuntimeException activationFailure) {
+            throw restoreAfterActivationFailure(current, activationFailure);
+        }
+        return committed;
+    }
+
+    /**
+     * 用独立 REQUIRES_NEW 事务保存完整设置快照，确保方法返回时 SQLite 已真实提交。
+     */
+    private void persistSettings(AppSettings settings) {
         Instant now = Instant.now();
         transactionTemplate.executeWithoutResult(status -> {
-            save(KEY_ACTIVE_PROVIDER, activeProviderId, now);
-            save(KEY_SANDBOX_MODE, sandboxMode, now);
-            save(KEY_APPROVAL_POLICY, approvalPolicy, now);
-            save(KEY_DEFAULT_CWD, defaultCwd, now);
+            save(KEY_ACTIVE_PROVIDER, settings.activeProviderId(), now);
+            save(KEY_SANDBOX_MODE, settings.sandboxMode(), now);
+            save(KEY_APPROVAL_POLICY, settings.approvalPolicy(), now);
+            save(KEY_DEFAULT_CWD, settings.defaultCwd(), now);
         });
-        providerRegistry.setActive(activeProviderId);
-        return get();
+    }
+
+    /**
+     * active Provider 切换失败后先恢复提交前 SQLite 快照，再恢复运行时 registry。
+     *
+     * <p>所有原始异常只以类型名附加为 suppressed，避免 Provider 或外部组件错误 message
+     * 被 JSON-RPC 或日志链路意外回显。</p>
+     */
+    private IllegalStateException restoreAfterActivationFailure(AppSettings previous,
+                                                                RuntimeException activationFailure) {
+        RuntimeException databaseRestoreFailure = null;
+        RuntimeException runtimeRestoreFailure = null;
+        try {
+            persistSettings(previous);
+        } catch (RuntimeException restoreFailure) {
+            databaseRestoreFailure = restoreFailure;
+        }
+        if (databaseRestoreFailure == null) {
+            try {
+                providerRegistry.setActive(previous.activeProviderId());
+            } catch (RuntimeException restoreFailure) {
+                runtimeRestoreFailure = restoreFailure;
+            }
+        }
+
+        boolean fullyRestored = databaseRestoreFailure == null && runtimeRestoreFailure == null;
+        IllegalStateException safeFailure = new IllegalStateException(fullyRestored
+                ? "应用设置运行时切换失败，已恢复原设置"
+                : "应用设置运行时切换失败，原设置恢复不完整");
+        addSanitizedSuppressed(safeFailure, "运行时切换失败", activationFailure);
+        addSanitizedSuppressed(safeFailure, "数据库恢复失败", databaseRestoreFailure);
+        addSanitizedSuppressed(safeFailure, "运行时恢复失败", runtimeRestoreFailure);
+        return safeFailure;
+    }
+
+    /** 把异常类型以固定文案附加为 suppressed，不传播可能含密钥的原始 message。 */
+    private static void addSanitizedSuppressed(IllegalStateException target,
+                                               String operation,
+                                               RuntimeException failure) {
+        if (failure == null) {
+            return;
+        }
+        target.addSuppressed(new IllegalStateException(
+                operation + " (" + failure.getClass().getSimpleName() + ")"));
     }
 
     private String valueOrDefault(String key, String defaultValue) {

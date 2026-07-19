@@ -10,11 +10,14 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.nio.file.Path;
 import java.util.UUID;
@@ -23,6 +26,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 
@@ -34,6 +38,9 @@ import static org.mockito.Mockito.doThrow;
  */
 @SpringBootTest
 class AppSettingsServiceTest {
+
+    /** 用于证明运行时切换失败不会通过异常回显敏感原始信息。 */
+    private static final String SENSITIVE_MARKER = "sk-fake-sensitive-marker";
 
     /** 独立 SQLite 文件，确保设置读写测试不污染真实用户设置。 */
     private static final Path TEST_DB = Path.of("target", "test-db",
@@ -48,16 +55,21 @@ class AppSettingsServiceTest {
     private AppSettingsService appSettingsService;
     @Autowired
     private AgentLoopProperties agentLoopProperties;
-    @Autowired
+    @MockitoSpyBean
     private ModelProviderRegistry providerRegistry;
     @MockitoSpyBean
     private AppSettingPersistenceService appSettingPersistenceService;
+    @Autowired
+    private PlatformTransactionManager transactionManager;
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
 
     /**
      * 每个测试都把运行时 active 恢复为稳定基线，避免前一用例的切换影响时序断言。
      */
     @BeforeEach
     void resetActiveProvider() {
+        jdbcTemplate.update("DELETE FROM bq_app_settings");
         providerRegistry.setActive("dashscope-default");
     }
 
@@ -147,6 +159,53 @@ class AppSettingsServiceTest {
         assertThat(commitObserved).isTrue();
         assertThat(settings.activeProviderId()).isEqualTo("deepseek-official");
         assertThat(providerRegistry.active().id()).isEqualTo("deepseek-official");
+    }
+
+    @Test
+    @DisplayName("外层事务回滚不能撤销已独立提交的应用设置")
+    void setting_update_uses_independent_commit_boundary_inside_outer_transaction() {
+        AppSettings baseline = appSettingsService.update(new AppSettingsService.AppSettingsUpdate(
+                "dashscope-default",
+                SandboxMode.WORKSPACE_WRITE.name(),
+                ApprovalPolicy.ON_REQUEST.name(),
+                "D:\\baseline"));
+        assertThat(baseline.activeProviderId()).isEqualTo("dashscope-default");
+
+        TransactionTemplate outer = new TransactionTemplate(transactionManager);
+        outer.executeWithoutResult(status -> {
+            appSettingsService.update(activeProvider("deepseek-official"));
+            status.setRollbackOnly();
+        });
+
+        assertThat(appSettingsService.get().activeProviderId()).isEqualTo("deepseek-official");
+        assertThat(providerRegistry.active().id()).isEqualTo("deepseek-official");
+    }
+
+    @Test
+    @DisplayName("运行时 active 切换失败时恢复提交前设置和 registry")
+    void registry_activation_failure_restores_previous_persisted_settings_and_runtime() {
+        AppSettings baseline = appSettingsService.update(new AppSettingsService.AppSettingsUpdate(
+                "dashscope-default",
+                SandboxMode.READ_ONLY.name(),
+                ApprovalPolicy.ALWAYS.name(),
+                "D:\\before-registry-failure"));
+        clearInvocations(providerRegistry);
+        doAnswer(invocation -> {
+            invocation.callRealMethod();
+            throw new IllegalStateException(SENSITIVE_MARKER);
+        }).when(providerRegistry).setActive("deepseek-official");
+
+        Throwable failure = org.assertj.core.api.Assertions.catchThrowable(() -> appSettingsService.update(
+                new AppSettingsService.AppSettingsUpdate(
+                        "deepseek-official",
+                        SandboxMode.WORKSPACE_WRITE.name(),
+                        ApprovalPolicy.NEVER.name(),
+                        "D:\\after-registry-failure")));
+
+        assertThat(failure).isInstanceOf(IllegalStateException.class);
+        assertThat(failure.toString().contains(SENSITIVE_MARKER)).isFalse();
+        assertThat(appSettingsService.get()).isEqualTo(baseline);
+        assertThat(providerRegistry.active().id()).isEqualTo("dashscope-default");
     }
 
     /** 构造只修改 active Provider 的部分更新请求。 */

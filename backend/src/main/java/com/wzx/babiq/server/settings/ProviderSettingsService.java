@@ -12,6 +12,7 @@ import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -62,6 +63,7 @@ public class ProviderSettingsService {
         this.chatClientFactoryProvider = chatClientFactoryProvider;
         this.anthropicOAuthCredentialSourceProvider = anthropicOAuthCredentialSourceProvider;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
+        this.transactionTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
     /**
@@ -106,7 +108,7 @@ public class ProviderSettingsService {
      * @param draft 桌面端提交的 Provider 草稿
      * @return 非敏感 Provider 视图
      */
-    public ProviderView create(ProviderDraft draft) {
+    public synchronized ProviderView create(ProviderDraft draft) {
         validateRequired(draft, true);
         if (providerPersistenceService.findProvider(draft.providerId()).isPresent()) {
             throw new IllegalArgumentException("Provider 已存在: " + draft.providerId());
@@ -127,13 +129,14 @@ public class ProviderSettingsService {
                 effectiveContextWindow(draft.model(), draft.contextWindow()),
                 draft.enabled(),
                 now);
+        ModelProviderConfig runtimeConfig = resolveRuntimeConfigBeforeWrite(record, stagedSecretRef);
         executeProviderWrite(stagedSecretRef, () -> {
             if (providerPersistenceService.findProvider(record.providerId()).isPresent()) {
                 throw new IllegalArgumentException("Provider 已存在: " + record.providerId());
             }
             providerPersistenceService.insertProvider(record);
         });
-        applyCommittedRuntimeConfig(record);
+        applyCommittedRuntimeConfig(record, runtimeConfig);
         invalidateClient(record.providerId());
         return toView(record, true);
     }
@@ -144,7 +147,7 @@ public class ProviderSettingsService {
      * @param draft Provider 草稿
      * @return 更新后的非敏感视图
      */
-    public ProviderView update(ProviderDraft draft) {
+    public synchronized ProviderView update(ProviderDraft draft) {
         validateRequired(draft, false);
         ProviderConfigRecord existing = providerPersistenceService.findProvider(draft.providerId())
                 .orElseThrow(() -> new IllegalArgumentException("Provider 不存在: " + draft.providerId()));
@@ -175,10 +178,14 @@ public class ProviderSettingsService {
                 existing.createdAt(),
                 Instant.now());
         String stagedRefForCompensation = stagedSecretRef;
+        ModelProviderConfig previousRuntimeConfig = resolveRuntimeConfigBeforeWrite(
+                existing, stagedRefForCompensation);
+        ModelProviderConfig committedRuntimeConfig = resolveRuntimeConfigBeforeWrite(
+                record, stagedRefForCompensation);
         executeProviderWrite(stagedRefForCompensation, () -> providerPersistenceService.updateProvider(record));
-        applyCommittedRuntimeConfig(record);
+        applyCommittedRuntimeConfig(record, committedRuntimeConfig);
         invalidateClient(record.providerId());
-        deleteReplacedSecret(existing.secretRef(), record.secretRef());
+        deleteReplacedSecretOrRestore(existing, record, previousRuntimeConfig, stagedRefForCompensation);
         return toView(record, record.secretRef() != null);
     }
 
@@ -247,12 +254,36 @@ public class ProviderSettingsService {
      * <p>禁用配置从 registry 移除；启用配置会在事务外解析 SecretStore 引用并替换运行时快照，
      * 因而 ChatClient 永远不会观察到尚未提交的数据库草稿。</p>
      */
-    private void applyCommittedRuntimeConfig(ProviderConfigRecord record) {
+    private void applyCommittedRuntimeConfig(ProviderConfigRecord record, ModelProviderConfig runtimeConfig) {
         if (record.enabled()) {
-            registry.registerOrUpdate(toRuntimeConfig(record));
+            if (runtimeConfig == null) {
+                throw new IllegalStateException("启用 Provider 缺少预解析运行时配置: " + record.providerId());
+            }
+            registry.registerOrUpdate(runtimeConfig);
             return;
         }
         registry.disable(record.providerId());
+    }
+
+    /**
+     * 在 SQLite 写入前解析完整运行时配置，避免提交成功后才发现 SecretStore 引用不可读。
+     *
+     * @param record 准备写入或用于恢复的 Provider 记录
+     * @param stagedSecretRef 本次新建的密钥引用；解析失败时需要补偿删除
+     * @return 启用 Provider 的不可变运行时配置；禁用 Provider 返回 null
+     */
+    private ModelProviderConfig resolveRuntimeConfigBeforeWrite(ProviderConfigRecord record, String stagedSecretRef) {
+        if (!record.enabled()) {
+            return null;
+        }
+        try {
+            return toRuntimeConfig(record);
+        } catch (RuntimeException resolutionFailure) {
+            IllegalStateException safeFailure = safeFailure(
+                    "Provider 运行时配置解析失败: " + record.providerId(), resolutionFailure);
+            compensateStagedSecret(stagedSecretRef, safeFailure);
+            throw safeFailure;
+        }
     }
 
     /**
@@ -280,18 +311,93 @@ public class ProviderSettingsService {
         try {
             secretStore.delete(stagedSecretRef);
         } catch (RuntimeException cleanupFailure) {
-            databaseFailure.addSuppressed(cleanupFailure);
+            addSanitizedSuppressed(databaseFailure, "新密钥补偿删除失败", cleanupFailure);
         }
     }
 
     /**
-     * 新配置提交且运行时缓存失效后，删除已经不再被数据库引用的旧密钥。
+     * 删除已被新提交替换的旧密钥；若删除失败，则恢复提交前数据库和运行时状态。
+     *
+     * <p>恢复顺序固定为 SQLite existing record、previous runtime、ChatClient cache、staged 新 alias。
+     * 这样正常补偿完成后，旧 alias 重新被数据库引用，新 alias 不会成为孤儿。</p>
      */
-    private void deleteReplacedSecret(String oldSecretRef, String committedSecretRef) {
-        if (oldSecretRef == null || oldSecretRef.isBlank() || oldSecretRef.equals(committedSecretRef)) {
+    private void deleteReplacedSecretOrRestore(ProviderConfigRecord existing,
+                                               ProviderConfigRecord committed,
+                                               ModelProviderConfig previousRuntimeConfig,
+                                               String stagedSecretRef) {
+        String oldSecretRef = existing.secretRef();
+        if (oldSecretRef == null || oldSecretRef.isBlank() || oldSecretRef.equals(committed.secretRef())) {
             return;
         }
-        secretStore.delete(oldSecretRef);
+        try {
+            secretStore.delete(oldSecretRef);
+            return;
+        } catch (RuntimeException cleanupFailure) {
+            boolean databaseRestored = false;
+            RuntimeException databaseRestoreFailure = null;
+            try {
+                transactionTemplate.executeWithoutResult(status ->
+                        providerPersistenceService.updateProvider(existing));
+                databaseRestored = true;
+            } catch (RuntimeException restoreFailure) {
+                databaseRestoreFailure = restoreFailure;
+            }
+
+            RuntimeException runtimeRestoreFailure = null;
+            RuntimeException invalidateFailure = null;
+            RuntimeException stagedCleanupFailure = null;
+            if (databaseRestored) {
+                try {
+                    applyCommittedRuntimeConfig(existing, previousRuntimeConfig);
+                } catch (RuntimeException restoreFailure) {
+                    runtimeRestoreFailure = restoreFailure;
+                }
+                try {
+                    invalidateClient(existing.providerId());
+                } catch (RuntimeException restoreFailure) {
+                    invalidateFailure = restoreFailure;
+                }
+                if (stagedSecretRef != null && !stagedSecretRef.isBlank()) {
+                    try {
+                        secretStore.delete(stagedSecretRef);
+                    } catch (RuntimeException restoreFailure) {
+                        stagedCleanupFailure = restoreFailure;
+                    }
+                }
+            }
+
+            boolean fullyRestored = databaseRestored
+                    && runtimeRestoreFailure == null
+                    && invalidateFailure == null
+                    && stagedCleanupFailure == null;
+            IllegalStateException safeFailure = new IllegalStateException(fullyRestored
+                    ? "Provider 密钥清理失败，已恢复原配置: " + existing.providerId()
+                    : "Provider 密钥清理失败，原配置恢复不完整: " + existing.providerId());
+            addSanitizedSuppressed(safeFailure, "旧密钥清理失败", cleanupFailure);
+            addSanitizedSuppressed(safeFailure, "数据库恢复失败", databaseRestoreFailure);
+            addSanitizedSuppressed(safeFailure, "运行时配置恢复失败", runtimeRestoreFailure);
+            addSanitizedSuppressed(safeFailure, "ChatClient 缓存恢复失败", invalidateFailure);
+            addSanitizedSuppressed(safeFailure, "新密钥清理失败", stagedCleanupFailure);
+            throw safeFailure;
+        }
+    }
+
+    /** 创建不包含原始异常 message 的安全失败，并保留脱敏后的失败类型。 */
+    private static IllegalStateException safeFailure(String message, RuntimeException originalFailure) {
+        IllegalStateException safeFailure = new IllegalStateException(message);
+        addSanitizedSuppressed(safeFailure, "原始失败", originalFailure);
+        return safeFailure;
+    }
+
+    /** 把失败类型以固定文案附加为 suppressed，不传播可能含密钥的原始 message。 */
+    private static void addSanitizedSuppressed(RuntimeException target,
+                                               String operation,
+                                               RuntimeException failure) {
+        if (failure == null) {
+            return;
+        }
+        target.addSuppressed(new IllegalStateException(
+                operation + " (" + failure.getClass().getSimpleName() + ")"));
     }
 
     private ProviderView toView(ProviderConfigRecord record, boolean active) {

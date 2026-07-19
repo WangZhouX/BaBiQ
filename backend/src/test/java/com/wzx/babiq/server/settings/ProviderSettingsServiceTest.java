@@ -20,8 +20,15 @@ import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -31,6 +38,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -213,6 +221,160 @@ class ProviderSettingsServiceTest {
         verify(secretStore, never()).save(anyString(), anyString());
         verify(secretStore, never()).delete(anyString());
         verify(chatClientFactory, never()).invalidate(providerId);
+    }
+
+    @Test
+    @DisplayName("创建 Provider 时新密钥解析失败必须发生在 SQLite 写入前并补偿 alias")
+    void create_runtime_secret_resolution_failure_happens_before_database_write_and_compensates_alias(
+            CapturedOutput output) {
+        String providerId = "create-runtime-resolution-failure";
+        AtomicReference<String> stagedSecretRef = captureSavedSecret(
+                "provider." + providerId, "sk-create-runtime-failure");
+        List<String> providerIdsBefore = providerIds();
+        String activeBefore = providerRegistry.active().id();
+        doAnswer(invocation -> {
+            throw new IllegalStateException(SENSITIVE_MARKER);
+        }).when(secretStore).require(anyString());
+
+        Throwable failure = catchThrowable(() -> providerSettingsService.create(
+                apiKeyDraft(providerId, "sk-create-runtime-failure", "gpt-4o-mini")));
+
+        assertSafeFailure(failure, "运行时配置");
+        assertThat(stagedSecretRef.get()).isNotBlank();
+        assertThat(secretStore.load(stagedSecretRef.get()).isPresent()).isFalse();
+        assertThat(providerPersistenceService.findProvider(providerId)).isEmpty();
+        assertThat(providerIds()).containsExactlyElementsOf(providerIdsBefore);
+        assertThat(providerRegistry.active().id()).isEqualTo(activeBefore);
+        verify(secretStore).delete(stagedSecretRef.get());
+        verify(chatClientFactory, never()).invalidate(providerId);
+        assertThat(output.getAll().contains(SENSITIVE_MARKER)).isFalse();
+    }
+
+    @Test
+    @DisplayName("沿用旧密钥的运行时解析失败必须发生在 SQLite 更新前")
+    void reused_secret_resolution_failure_happens_before_database_update(CapturedOutput output) {
+        String providerId = "reuse-secret-runtime-resolution-failure";
+        providerSettingsService.create(apiKeyDraft(providerId, "sk-existing-runtime", "gpt-4o-mini"));
+        ProviderConfigRecord persistedBefore = providerPersistenceService.findProvider(providerId).orElseThrow();
+        ModelProviderConfig runtimeBefore = providerRegistry.get(providerId);
+        String activeBefore = providerRegistry.active().id();
+        clearInvocations(secretStore, chatClientFactory);
+        doAnswer(invocation -> {
+            throw new IllegalStateException(SENSITIVE_MARKER);
+        }).when(secretStore).require(persistedBefore.secretRef());
+
+        Throwable failure = catchThrowable(() -> providerSettingsService.update(
+                apiKeyDraft(providerId, "   ", "should-not-commit-model")));
+
+        assertSafeFailure(failure, "运行时配置");
+        assertThat(providerPersistenceService.findProvider(providerId)).contains(persistedBefore);
+        assertThat(providerRegistry.get(providerId)).isEqualTo(runtimeBefore);
+        assertThat(providerRegistry.active().id()).isEqualTo(activeBefore);
+        assertThat(secretStore.load(persistedBefore.secretRef())).contains("sk-existing-runtime");
+        verify(secretStore, never()).save(anyString(), anyString());
+        verify(secretStore, never()).delete(anyString());
+        verify(chatClientFactory, never()).invalidate(providerId);
+        assertThat(output.getAll().contains(SENSITIVE_MARKER)).isFalse();
+    }
+
+    @Test
+    @DisplayName("轮换密钥后旧 alias 删除失败必须恢复数据库、运行时和密钥引用")
+    void old_alias_cleanup_failure_rolls_back_committed_rotation(CapturedOutput output) {
+        String providerId = "rotation-cleanup-rollback";
+        providerSettingsService.create(apiKeyDraft(providerId, "sk-before-cleanup-failure", "gpt-4o-mini"));
+        ProviderConfigRecord persistedBefore = providerPersistenceService.findProvider(providerId).orElseThrow();
+        ModelProviderConfig runtimeBefore = providerRegistry.get(providerId);
+        String activeBefore = providerRegistry.active().id();
+        clearInvocations(secretStore, chatClientFactory);
+        AtomicReference<String> stagedSecretRef = captureSavedSecret(
+                "provider." + providerId, "sk-after-cleanup-failure");
+        doAnswer(invocation -> {
+            throw new IllegalStateException(SENSITIVE_MARKER);
+        }).when(secretStore).delete(persistedBefore.secretRef());
+
+        Throwable failure = catchThrowable(() -> providerSettingsService.update(
+                apiKeyDraft(providerId, "sk-after-cleanup-failure", "gpt-4.1-mini")));
+
+        assertSafeFailure(failure, "已恢复原配置");
+        assertThat(providerPersistenceService.findProvider(providerId)).contains(persistedBefore);
+        assertThat(providerRegistry.get(providerId)).isEqualTo(runtimeBefore);
+        assertThat(providerRegistry.active().id()).isEqualTo(activeBefore);
+        assertThat(secretStore.load(persistedBefore.secretRef())).contains("sk-before-cleanup-failure");
+        assertThat(stagedSecretRef.get()).isNotBlank();
+        assertThat(secretStore.load(stagedSecretRef.get()).isPresent()).isFalse();
+        verify(chatClientFactory, times(2)).invalidate(providerId);
+        assertThat(output.getAll().contains(SENSITIVE_MARKER)).isFalse();
+    }
+
+    @Test
+    @DisplayName("并发更新同一 Provider 时串行提交且清理中间 alias")
+    void concurrent_updates_are_serialized_and_leave_database_registry_and_secret_consistent() throws Exception {
+        String providerId = "serialized-provider-updates";
+        providerSettingsService.create(apiKeyDraft(providerId, "sk-before-concurrency", "gpt-4o-mini"));
+        String originalSecretRef = providerPersistenceService.findProvider(providerId).orElseThrow().secretRef();
+        clearInvocations(secretStore, chatClientFactory);
+
+        AtomicReference<String> firstSecretRef = new AtomicReference<>();
+        AtomicReference<String> secondSecretRef = new AtomicReference<>();
+        CountDownLatch firstRequireEntered = new CountDownLatch(1);
+        CountDownLatch releaseFirstRequire = new CountDownLatch(1);
+        CountDownLatch secondCallStarted = new CountDownLatch(1);
+        CountDownLatch secondSecretStaged = new CountDownLatch(1);
+        doAnswer(invocation -> {
+            String secret = invocation.getArgument(1);
+            String secretRef = (String) invocation.callRealMethod();
+            if ("sk-concurrent-first".equals(secret)) {
+                firstSecretRef.set(secretRef);
+            } else if ("sk-concurrent-second".equals(secret)) {
+                secondSecretRef.set(secretRef);
+                secondSecretStaged.countDown();
+            }
+            return secretRef;
+        }).when(secretStore).save(eq("provider." + providerId), anyString());
+        doAnswer(invocation -> {
+            String secretRef = invocation.getArgument(0);
+            if (secretRef.equals(firstSecretRef.get())) {
+                firstRequireEntered.countDown();
+                if (!releaseFirstRequire.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("等待并发测试释放超时");
+                }
+            }
+            return invocation.callRealMethod();
+        }).when(secretStore).require(anyString());
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> first = executor.submit(() -> providerSettingsService.update(
+                    apiKeyDraft(providerId, "sk-concurrent-first", "model-first")));
+            assertThat(firstRequireEntered.await(5, TimeUnit.SECONDS)).isTrue();
+            Future<?> second = executor.submit(() -> {
+                secondCallStarted.countDown();
+                return providerSettingsService.update(
+                        apiKeyDraft(providerId, "sk-concurrent-second", "model-second"));
+            });
+            assertThat(secondCallStarted.await(5, TimeUnit.SECONDS)).isTrue();
+            boolean secondStagedWhileFirstBlocked = secondSecretStaged.await(500, TimeUnit.MILLISECONDS);
+            releaseFirstRequire.countDown();
+            Throwable firstFailure = futureFailure(first);
+            Throwable secondFailure = futureFailure(second);
+
+            assertThat(secondStagedWhileFirstBlocked).isFalse();
+            assertThat(firstFailure).isNull();
+            assertThat(secondFailure).isNull();
+        } finally {
+            releaseFirstRequire.countDown();
+            executor.shutdownNow();
+        }
+
+        ProviderConfigRecord saved = providerPersistenceService.findProvider(providerId).orElseThrow();
+        assertThat(saved.model()).isEqualTo("model-second");
+        assertThat(saved.secretRef()).isEqualTo(secondSecretRef.get());
+        assertThat(providerRegistry.get(providerId).model()).isEqualTo("model-second");
+        assertThat(providerRegistry.get(providerId).apiKey()).isEqualTo("sk-concurrent-second");
+        assertThat(secretStore.load(originalSecretRef)).isEmpty();
+        assertThat(secretStore.load(firstSecretRef.get())).isEmpty();
+        assertThat(secretStore.load(secondSecretRef.get())).contains("sk-concurrent-second");
+        verify(chatClientFactory, times(2)).invalidate(providerId);
     }
 
     @Test
@@ -461,5 +623,27 @@ class ProviderSettingsServiceTest {
     /** 返回当前运行时 Provider ID 顺序快照。 */
     private List<String> providerIds() {
         return providerRegistry.list().stream().map(ModelProviderConfig::id).toList();
+    }
+
+    /** 断言对外失败信息和 suppressed 补偿错误都不包含敏感标记。 */
+    private static void assertSafeFailure(Throwable failure, String messagePart) {
+        assertThat(failure)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(messagePart);
+        assertThat(failure.toString().contains(SENSITIVE_MARKER)).isFalse();
+        assertThat(Arrays.stream(failure.getSuppressed())
+                .noneMatch(suppressed -> suppressed.toString().contains(SENSITIVE_MARKER))).isTrue();
+    }
+
+    /** 等待并发调用结束并把执行异常转换成可断言的结果。 */
+    private static Throwable futureFailure(Future<?> future) throws InterruptedException {
+        try {
+            future.get(5, TimeUnit.SECONDS);
+            return null;
+        } catch (ExecutionException exception) {
+            return exception.getCause();
+        } catch (java.util.concurrent.TimeoutException exception) {
+            return exception;
+        }
     }
 }
