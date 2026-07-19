@@ -11,7 +11,9 @@ import com.wzx.huitai.agent.protocol.JsonRpcSuccessResponse
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
@@ -34,7 +36,7 @@ class BusinessAgentClientTest {
             when (request.getValue("method").jsonPrimitive.content) {
                 "provider/list" -> buildJsonObject {
                     put("providers", ApplicationProtocol.JSON.parseToJsonElement(
-                        """[{"id":"p1","displayName":"P1","authMode":"api_key","hasApiKey":true,"active":true,"apiKey":"must-not-escape","models":[{"id":"m1","label":"M1","active":true}]}]""",
+                        """[{"id":"p1","displayName":"P1","type":"OPENAI_COMPATIBLE","authMode":"api_key","baseUrl":"https://relay.example.com/v1","model":"m1","contextWindow":64000,"enabled":true,"hasApiKey":true,"active":true,"apiKey":"must-not-escape","models":[{"id":"m1","label":"M1","active":true}]}]""",
                     ))
                 }
                 "provider/set-active" -> buildJsonObject { put("ok", true); put("providerId", "p1"); put("modelId", "m1") }
@@ -61,6 +63,120 @@ class BusinessAgentClientTest {
             listOf("provider/list", "provider/set-active", "thread/create", "turn/start", "turn/cancel"),
             connection.methods(),
         )
+        client.close()
+        rpc.close()
+    }
+
+    @Test
+    fun `provider settings requests preserve the key only in create and update params`() = runTest {
+        val marker = "sk-fake-sensitive-marker"
+        val connection = FakeConnection()
+        val rpc = AgentJsonRpcClient(connection, this)
+        val client: BusinessConversationGateway = BusinessAgentClient(rpc, this)
+        connection.responder = { request ->
+            when (request.getValue("method").jsonPrimitive.content) {
+                "provider/create", "provider/update" -> providerPayload()
+                "provider/delete" -> buildJsonObject {
+                    put("ok", true)
+                    put("providerId", "relay")
+                    put("activeProviderId", "fallback")
+                }
+                "provider/test" -> buildJsonObject {
+                    put("ok", true)
+                    put("providerId", "relay")
+                    put("message", marker)
+                }
+                "provider/oauth/status" -> buildJsonObject {
+                    put("providerType", "ANTHROPIC")
+                    put("authMode", "oauth_cli")
+                    put("cliInstalled", true)
+                    put("loggedIn", false)
+                    put("message", marker)
+                }
+                "provider/oauth/login" -> buildJsonObject {
+                    put("ok", true)
+                    put("pid", 12345L)
+                    put("message", marker)
+                }
+                else -> error("unexpected method")
+            }
+        }
+        val draft = BusinessProviderDraft(
+            providerId = "relay",
+            displayName = "Relay",
+            type = "OPENAI_COMPATIBLE",
+            authMode = "api_key",
+            baseUrl = "https://relay.example.com/v1",
+            model = "kimi-k3",
+            apiKey = marker,
+            contextWindow = 131072,
+            enabled = true,
+        )
+
+        val created = client.createProvider(draft)
+        val updated = client.updateProvider(draft)
+        val deleted = client.deleteProvider("relay")
+        val tested = client.testProvider("relay")
+        val oauthStatus = client.providerOAuthStatus("relay")
+        val oauthLogin = client.loginProviderOAuth("relay")
+
+        assertEquals(
+            listOf(
+                "provider/create",
+                "provider/update",
+                "provider/delete",
+                "provider/test",
+                "provider/oauth/status",
+                "provider/oauth/login",
+            ),
+            connection.methods(),
+        )
+        assertEquals(marker, connection.params(0).getValue("apiKey").jsonPrimitive.content)
+        assertEquals(marker, connection.params(1).getValue("apiKey").jsonPrimitive.content)
+        assertEquals("kimi-k3", connection.params(0).getValue("model").jsonPrimitive.content)
+        assertEquals("kimi-k3", connection.params(1).getValue("model").jsonPrimitive.content)
+        connection.params().take(2).forEach { params ->
+            assertEquals(
+                setOf(
+                    "providerId",
+                    "displayName",
+                    "type",
+                    "authMode",
+                    "baseUrl",
+                    "model",
+                    "apiKey",
+                    "contextWindow",
+                    "enabled",
+                ),
+                params.keys,
+            )
+        }
+        connection.params().drop(2).forEach { params ->
+            assertEquals(setOf("providerId"), params.keys)
+        }
+        assertEquals("relay", connection.params(2).getValue("providerId").jsonPrimitive.content)
+        assertEquals("relay", connection.params(3).getValue("providerId").jsonPrimitive.content)
+        assertEquals("relay", connection.params(4).getValue("providerId").jsonPrimitive.content)
+        assertEquals("relay", connection.params(5).getValue("providerId").jsonPrimitive.content)
+
+        assertEquals("kimi-k3", created.model)
+        assertEquals("kimi-k3", updated.model)
+        assertEquals("fallback", deleted.activeProviderId)
+        assertEquals("Provider 配置可用", tested.message)
+        assertEquals("未登录", oauthStatus.message)
+        assertEquals("登录已启动", oauthLogin.message)
+        assertNull(created::class.members.singleOrNull { it.name == "apiKey" })
+        assertNull(updated::class.members.singleOrNull { it.name == "apiKey" })
+        listOf(created, updated, deleted, tested, oauthStatus, oauthLogin).forEach { result ->
+            assertNull(result::class.members.singleOrNull { it.name == "apiKey" })
+            assertFalse(result.toString().contains(marker))
+        }
+        assertEquals(
+            "BusinessProviderDraft(providerId=relay, model=kimi-k3, apiKey=[REDACTED])",
+            draft.toString(),
+        )
+        assertFalse(draft.toString().contains(marker))
+
         client.close()
         rpc.close()
     }
@@ -113,9 +229,19 @@ class BusinessAgentClientTest {
         assertTrue(!event.toString().contains("secret"))
 
         connection.errorCode = -32044
-        val failure = assertFailsWith<AgentJsonRpcException> { client.createThread("C:/demo") }
+        val failure = assertFailsWith<AgentJsonRpcException> {
+            client.createProvider(
+                BusinessProviderDraft(
+                    providerId = "relay",
+                    displayName = "Relay",
+                    type = "OPENAI_COMPATIBLE",
+                    model = "kimi-k3",
+                    apiKey = "sk-fake-sensitive-marker",
+                ),
+            )
+        }
         assertEquals(-32044, failure.remoteCode)
-        assertTrue(!failure.message.orEmpty().contains("remote secret"))
+        assertFalse(failure.toString().contains("sk-fake-sensitive-marker"))
 
         client.close()
         rpc.close()
@@ -125,6 +251,20 @@ class BusinessAgentClientTest {
         put("threadId", "thread-1")
         put("turnId", "turn-1")
         put("item", buildJsonObject { put("id", id); put("type", type); put(valueName, value) })
+    }
+
+    private fun providerPayload() = buildJsonObject {
+        put("id", "relay")
+        put("displayName", "Relay")
+        put("type", "OPENAI_COMPATIBLE")
+        put("authMode", "api_key")
+        put("baseUrl", "https://relay.example.com/v1")
+        put("model", "kimi-k3")
+        put("contextWindow", 131072)
+        put("enabled", true)
+        put("hasApiKey", true)
+        put("active", false)
+        put("apiKey", "must-not-escape")
     }
 
     private class FakeConnection : AgentConnection {
@@ -144,7 +284,7 @@ class BusinessAgentClientTest {
             val response = errorCode?.let { code ->
                 ApplicationProtocol.JSON.encodeToString(
                     JsonRpcErrorResponse.serializer(),
-                    JsonRpcErrorResponse(id = id, error = JsonRpcError(code, "remote secret")),
+                    JsonRpcErrorResponse(id = id, error = JsonRpcError(code, "sk-fake-sensitive-marker")),
                 )
             } ?: ApplicationProtocol.JSON.encodeToString(
                 JsonRpcSuccessResponse.serializer(),
@@ -161,6 +301,8 @@ class BusinessAgentClientTest {
 
         fun requestIds() = sent.map { it.getValue("id").jsonPrimitive.content }
         fun methods() = sent.map { it.getValue("method").jsonPrimitive.content }
+        fun params() = sent.map { it.getValue("params").jsonObject }
+        fun params(index: Int) = params()[index]
 
         override suspend fun close() { incomingChannel.close() }
     }

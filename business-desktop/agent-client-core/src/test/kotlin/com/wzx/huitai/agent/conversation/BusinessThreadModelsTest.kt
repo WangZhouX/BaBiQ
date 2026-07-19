@@ -2,9 +2,11 @@ package com.wzx.huitai.agent.conversation
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -63,23 +65,57 @@ class BusinessThreadModelsTest {
     }
 
     @Test
-    fun `provider decoding exposes only safe metadata`() {
+    fun `provider decoding exposes complete safe metadata and projects the configured model`() {
         val result = BusinessProviderCodec.decodeList(buildJsonObject {
             put("providers", json.parseToJsonElement(
-                """[{"id":"provider-1","displayName":"Provider One","authMode":"api_key","hasApiKey":true,"active":true,"apiKey":"secret","baseUrl":"https://private","models":[{"id":"model-1","label":"Model One","active":true}]}]""",
+                """[{"id":"provider-1","displayName":"Provider One","type":"OPENAI_COMPATIBLE","authMode":"api_key","baseUrl":"https://relay.example.com/v1","model":"kimi-k3","contextWindow":131072,"enabled":true,"hasApiKey":true,"active":true,"apiKey":"sk-fake-sensitive-marker"}]""",
             ))
         })
 
         val provider = result.single()
         assertEquals("provider-1", provider.id)
         assertEquals("Provider One", provider.displayName)
+        assertEquals("OPENAI_COMPATIBLE", provider.type)
         assertEquals("api_key", provider.authMode)
+        assertEquals("https://relay.example.com/v1", provider.baseUrl)
+        assertEquals("kimi-k3", provider.model)
+        assertEquals(131072, provider.contextWindow)
+        assertEquals(true, provider.enabled)
         assertEquals(true, provider.hasApiKey)
-        assertEquals(BusinessProviderModel("model-1", "Model One", active = true), provider.models.single())
-        assertFalse(provider.toString().contains("secret"))
-        assertFalse(provider.toString().contains("private"))
+        assertEquals(true, provider.active)
+        assertEquals(BusinessProviderModel("kimi-k3", "kimi-k3", active = true), provider.models.single())
+        assertFalse(provider.toString().contains("sk-fake-sensitive-marker"))
         assertNull(provider::class.members.singleOrNull { it.name == "apiKey" })
-        assertNull(provider::class.members.singleOrNull { it.name == "baseUrl" })
+    }
+
+    @Test
+    fun `provider decoding keeps safe defaults but requires id and model`() {
+        val defaulted = BusinessProviderCodec.decodeList(buildJsonObject {
+            put("providers", json.parseToJsonElement(
+                """[{"id":"minimal","model":"custom-model"}]""",
+            ))
+        }).single()
+
+        assertEquals("minimal", defaulted.displayName)
+        assertEquals("UNKNOWN", defaulted.type)
+        assertEquals("api_key", defaulted.authMode)
+        assertEquals("", defaulted.baseUrl)
+        assertEquals(0, defaulted.contextWindow)
+        assertEquals(true, defaulted.enabled)
+        assertFalse(defaulted.hasApiKey)
+        assertFalse(defaulted.active)
+        assertEquals(BusinessProviderModel("custom-model", "custom-model"), defaulted.models.single())
+
+        assertFailsWith<SerializationException> {
+            BusinessProviderCodec.decodeList(buildJsonObject {
+                put("providers", json.parseToJsonElement("""[{"model":"custom-model"}]"""))
+            })
+        }
+        assertFailsWith<SerializationException> {
+            BusinessProviderCodec.decodeList(buildJsonObject {
+                put("providers", json.parseToJsonElement("""[{"id":"missing-model"}]"""))
+            })
+        }
     }
 
     private fun decode(value: String): BusinessThreadItem =

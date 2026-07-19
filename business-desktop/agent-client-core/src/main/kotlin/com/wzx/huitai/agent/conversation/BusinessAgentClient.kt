@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.serialization.SerializationException
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -18,6 +19,18 @@ import kotlinx.serialization.json.put
 interface BusinessConversationGateway : Closeable {
     val events: Flow<BusinessAgentEvent>
     suspend fun listProviders(): List<BusinessProvider>
+    suspend fun createProvider(draft: BusinessProviderDraft): BusinessProvider =
+        throw UnsupportedOperationException("Provider create is not supported")
+    suspend fun updateProvider(draft: BusinessProviderDraft): BusinessProvider =
+        throw UnsupportedOperationException("Provider update is not supported")
+    suspend fun deleteProvider(providerId: String): BusinessProviderDeleteResult =
+        throw UnsupportedOperationException("Provider delete is not supported")
+    suspend fun testProvider(providerId: String): BusinessProviderTestResult =
+        throw UnsupportedOperationException("Provider test is not supported")
+    suspend fun providerOAuthStatus(providerId: String): BusinessProviderOAuthStatus =
+        throw UnsupportedOperationException("Provider OAuth status is not supported")
+    suspend fun loginProviderOAuth(providerId: String): BusinessProviderOAuthLoginResult =
+        throw UnsupportedOperationException("Provider OAuth login is not supported")
     suspend fun setActiveProvider(providerId: String, modelId: String? = null): BusinessProviderSelection
     suspend fun createThread(cwd: String): BusinessThread
     suspend fun startTurn(threadId: String, text: String, providerId: String? = null): BusinessTurn
@@ -36,6 +49,36 @@ class BusinessAgentClient(
 
     override suspend fun listProviders(): List<BusinessProvider> =
         BusinessProviderCodec.decodeList(rpc.request("provider/list", buildJsonObject { }))
+
+    override suspend fun createProvider(draft: BusinessProviderDraft): BusinessProvider =
+        BusinessProviderCodec.decodeProvider(rpc.request("provider/create", draft.toRequestParams()))
+
+    override suspend fun updateProvider(draft: BusinessProviderDraft): BusinessProvider =
+        BusinessProviderCodec.decodeProvider(rpc.request("provider/update", draft.toRequestParams()))
+
+    override suspend fun deleteProvider(providerId: String): BusinessProviderDeleteResult {
+        requireProviderId(providerId)
+        return BusinessProviderCodec.decodeDeleteResult(rpc.request("provider/delete", providerIdParams(providerId)))
+    }
+
+    override suspend fun testProvider(providerId: String): BusinessProviderTestResult {
+        requireProviderId(providerId)
+        return BusinessProviderCodec.decodeTestResult(rpc.request("provider/test", providerIdParams(providerId)))
+    }
+
+    override suspend fun providerOAuthStatus(providerId: String): BusinessProviderOAuthStatus {
+        requireProviderId(providerId)
+        return BusinessProviderCodec.decodeOAuthStatus(
+            rpc.request("provider/oauth/status", providerIdParams(providerId)),
+        )
+    }
+
+    override suspend fun loginProviderOAuth(providerId: String): BusinessProviderOAuthLoginResult {
+        requireProviderId(providerId)
+        return BusinessProviderCodec.decodeOAuthLoginResult(
+            rpc.request("provider/oauth/login", providerIdParams(providerId)),
+        )
+    }
 
     override suspend fun setActiveProvider(providerId: String, modelId: String?): BusinessProviderSelection {
         require(providerId.isNotBlank()) { "providerId must not be blank" }
@@ -86,5 +129,28 @@ class BusinessAgentClient(
     override fun close() {
         // Event collection is owned and canceled by BusinessConversationController.
         // The shared JSON-RPC lifecycle remains owned by its connection composition.
+    }
+
+    private fun BusinessProviderDraft.toRequestParams(): JsonObject {
+        require(providerId.isNotBlank()) { "providerId must not be blank" }
+        require(model.isNotBlank()) { "model must not be blank" }
+        return buildJsonObject {
+            put("providerId", providerId)
+            put("displayName", displayName)
+            put("type", type)
+            put("authMode", authMode)
+            put("baseUrl", baseUrl)
+            put("model", model)
+            apiKey?.let { put("apiKey", it) }
+            put("contextWindow", contextWindow)
+            put("enabled", enabled)
+        }
+    }
+
+    private fun providerIdParams(providerId: String): JsonObject =
+        buildJsonObject { put("providerId", providerId) }
+
+    private fun requireProviderId(providerId: String) {
+        require(providerId.isNotBlank()) { "providerId must not be blank" }
     }
 }
