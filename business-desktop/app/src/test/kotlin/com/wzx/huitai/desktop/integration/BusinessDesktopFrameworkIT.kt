@@ -104,6 +104,36 @@ class BusinessDesktopFrameworkIT {
                 fixture.auditStates("read-1"),
             )
 
+            val invalidRead = "read-invalid"
+            val invalidReadResponse = fixture.request(invalidRead, "form.read_state", buildJsonObject {})
+            assertTrue(
+                invalidReadResponse.getValue("result").jsonObject["accepted"]?.jsonPrimitive?.content == "true",
+            )
+            val failed = fixture.awaitNotification(ApplicationMethod.ACTION_FAILED, invalidRead)
+            assertEquals(
+                "validation_failed",
+                failed.getValue("params").jsonObject
+                    .getValue("payload").jsonObject
+                    .getValue("errorCode").jsonPrimitive.content,
+            )
+            assertEquals(
+                listOf(
+                    ActionExecutionState.VALIDATING,
+                    ActionExecutionState.EXECUTING,
+                    ActionExecutionState.FAILED,
+                ),
+                fixture.auditStates(invalidRead),
+            )
+            assertEquals(
+                listOf(
+                    ApplicationMethod.ACTION_ACCEPTED.wireName,
+                    ApplicationMethod.ACTION_RUNNING.wireName,
+                    ApplicationMethod.ACTION_FAILED.wireName,
+                ),
+                fixture.methodsFor(invalidRead),
+            )
+            assertFalse(ApplicationMethod.ACTION_REJECTED.wireName in fixture.methodsFor(invalidRead))
+
             val patchExecution = "patch-1"
             val patchRequest = async { fixture.request(patchExecution, "form.apply_patch", fixture.patchInput(patchExecution)) }
             fixture.awaitDecision(patchExecution, ActionDecisionPhase.CONFIRMATION)

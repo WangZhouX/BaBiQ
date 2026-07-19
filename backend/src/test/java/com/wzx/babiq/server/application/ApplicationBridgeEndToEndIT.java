@@ -275,6 +275,8 @@ class ApplicationBridgeEndToEndIT {
             long outboundId = outbound.path("id").asLong();
             JsonNode action = outbound.path("params");
             String executionId = action.path("executionId").asText();
+            assertThat(action.path("payload").path("input").path("executionId").asText())
+                    .isEqualTo(executionId);
             send(session, response(outboundId,
                     json.createObjectNode().put("accepted", true).put("executionId", executionId)));
             request(session, received, 15, "application/action/accepted",
@@ -312,6 +314,38 @@ class ApplicationBridgeEndToEndIT {
                     });
             assertApplicationActionItemSequence(capturedItems.messages(), executionId,
                     "requested", "accepted", "running", "completed");
+        }
+    }
+
+    @Test
+    void desktopValidationFailureCompletesToolImmediatelyAndPersistsFailedSequence() throws Exception {
+        List<String> received = new CopyOnWriteArrayList<>();
+        try (WebSocketSession session = connect(received)) {
+            BridgeInvocation invocation = beginInvocation(session, received, 80, "case.read", "read_only");
+            JsonNode outbound = awaitOutbound(received, "application/action/request");
+            JsonNode action = outbound.path("params");
+            String executionId = action.path("executionId").asText();
+            send(session, response(outbound.path("id").asLong(),
+                    json.createObjectNode().put("accepted", true).put("executionId", executionId)));
+            request(session, received, 84, "application/action/accepted",
+                    actionProgress(action, "received", null));
+            request(session, received, 85, "application/action/running",
+                    actionProgress(action, "executing", null));
+            request(session, received, 86, "application/action/failed",
+                    actionProgress(action, "failed",
+                            json.createObjectNode().put("errorCode", "validation_failed")));
+
+            JsonNode toolResult = json.readTree(
+                    invocation.result().get(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertThat(toolResult.path("status").asText()).isEqualTo("failed");
+            assertThat(toolResult.path("errorCode").asText()).isEqualTo("validation_failed");
+            assertToolCallExecutionBinding(invocation, executionId);
+            assertStoredApplicationAction(invocation, executionId, "failed");
+            assertApplicationActionItemSequence(invocation.itemMessages(), executionId,
+                    "requested", "accepted", "running", "failed");
+            await().atMost(Duration.ofSeconds(3)).untilAsserted(() ->
+                    assertThat(applicationActionStates(executionId))
+                            .containsExactly("REQUESTED", "ACCEPTED", "EXECUTING", "FAILED"));
         }
     }
 
@@ -717,6 +751,10 @@ class ApplicationBridgeEndToEndIT {
         var action = payload.putObject("actions").putObject(actionId);
         action.put("id", actionId).put("version", 1).put("risk", risk).put("enabled", true);
         action.putArray("requiredPermissions").add("case:read");
+        var inputSchema = action.putObject("inputSchema");
+        inputSchema.put("type", "object");
+        inputSchema.putObject("properties").putObject("executionId").put("type", "string");
+        inputSchema.putArray("required").add("executionId");
         return catalogEnvelope(2, 1, payload);
     }
 
