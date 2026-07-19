@@ -115,31 +115,28 @@ object BusinessProviderCodec {
         )
 
     fun decodeTestResult(result: JsonObject): BusinessProviderTestResult {
-        val ok = result.optionalBoolean("ok") ?: false
         return BusinessProviderTestResult(
-            ok = ok,
+            ok = result.optionalBoolean("ok") ?: false,
             providerId = result.requiredText("providerId"),
-            message = if (ok) "Provider 配置可用" else "Provider 配置检查失败",
+            message = result.requiredText("message"),
         )
     }
 
     fun decodeOAuthStatus(result: JsonObject): BusinessProviderOAuthStatus {
-        val loggedIn = result.optionalBoolean("loggedIn") ?: false
         return BusinessProviderOAuthStatus(
             providerType = result.optionalText("providerType") ?: "ANTHROPIC",
             authMode = result.optionalText("authMode") ?: "oauth_cli",
             cliInstalled = result.optionalBoolean("cliInstalled") ?: false,
-            loggedIn = loggedIn,
-            message = if (loggedIn) "已登录" else "未登录",
+            loggedIn = result.optionalBoolean("loggedIn") ?: false,
+            message = result.requiredText("message"),
         )
     }
 
     fun decodeOAuthLoginResult(result: JsonObject): BusinessProviderOAuthLoginResult {
-        val ok = result.optionalBoolean("ok") ?: false
         return BusinessProviderOAuthLoginResult(
-            ok = ok,
+            ok = result.optionalBoolean("ok") ?: false,
             pid = result.optionalLong("pid"),
-            message = if (ok) "登录已启动" else "登录失败",
+            message = result.requiredText("message"),
         )
     }
 }

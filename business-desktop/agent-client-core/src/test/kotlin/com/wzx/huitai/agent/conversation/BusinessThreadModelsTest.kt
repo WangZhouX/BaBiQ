@@ -118,6 +118,48 @@ class BusinessThreadModelsTest {
         }
     }
 
+    @Test
+    fun `provider operation result codecs require and preserve backend safe messages`() {
+        val tested = BusinessProviderCodec.decodeTestResult(buildJsonObject {
+            put("ok", true)
+            put("providerId", "relay")
+            put("message", "Provider 配置可用")
+        })
+        val oauthStatus = BusinessProviderCodec.decodeOAuthStatus(buildJsonObject {
+            put("providerType", "ANTHROPIC")
+            put("authMode", "oauth_cli")
+            put("cliInstalled", true)
+            put("loggedIn", false)
+            put("message", "未登录")
+        })
+        val oauthLogin = BusinessProviderCodec.decodeOAuthLoginResult(buildJsonObject {
+            put("ok", true)
+            put("pid", 12345L)
+            put("message", "登录已启动")
+        })
+
+        assertEquals("Provider 配置可用", tested.message)
+        assertEquals("未登录", oauthStatus.message)
+        assertEquals("登录已启动", oauthLogin.message)
+
+        assertFailsWith<SerializationException> {
+            BusinessProviderCodec.decodeTestResult(buildJsonObject {
+                put("ok", true)
+                put("providerId", "relay")
+            })
+        }
+        assertFailsWith<SerializationException> {
+            BusinessProviderCodec.decodeOAuthStatus(buildJsonObject {
+                put("loggedIn", false)
+            })
+        }
+        assertFailsWith<SerializationException> {
+            BusinessProviderCodec.decodeOAuthLoginResult(buildJsonObject {
+                put("ok", true)
+            })
+        }
+    }
+
     private fun decode(value: String): BusinessThreadItem =
         BusinessThreadItemCodec.decode(json.parseToJsonElement(value))
 }

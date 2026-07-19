@@ -27,9 +27,9 @@ interface BusinessConversationGateway : Closeable {
         throw UnsupportedOperationException("Provider delete is not supported")
     suspend fun testProvider(providerId: String): BusinessProviderTestResult =
         throw UnsupportedOperationException("Provider test is not supported")
-    suspend fun providerOAuthStatus(providerId: String): BusinessProviderOAuthStatus =
+    suspend fun providerOAuthStatus(): BusinessProviderOAuthStatus =
         throw UnsupportedOperationException("Provider OAuth status is not supported")
-    suspend fun loginProviderOAuth(providerId: String): BusinessProviderOAuthLoginResult =
+    suspend fun loginProviderOAuth(): BusinessProviderOAuthLoginResult =
         throw UnsupportedOperationException("Provider OAuth login is not supported")
     suspend fun setActiveProvider(providerId: String, modelId: String? = null): BusinessProviderSelection
     suspend fun createThread(cwd: String): BusinessThread
@@ -66,17 +66,15 @@ class BusinessAgentClient(
         return BusinessProviderCodec.decodeTestResult(rpc.request("provider/test", providerIdParams(providerId)))
     }
 
-    override suspend fun providerOAuthStatus(providerId: String): BusinessProviderOAuthStatus {
-        requireProviderId(providerId)
+    override suspend fun providerOAuthStatus(): BusinessProviderOAuthStatus {
         return BusinessProviderCodec.decodeOAuthStatus(
-            rpc.request("provider/oauth/status", providerIdParams(providerId)),
+            rpc.request("provider/oauth/status", buildJsonObject { }),
         )
     }
 
-    override suspend fun loginProviderOAuth(providerId: String): BusinessProviderOAuthLoginResult {
-        requireProviderId(providerId)
+    override suspend fun loginProviderOAuth(): BusinessProviderOAuthLoginResult {
         return BusinessProviderCodec.decodeOAuthLoginResult(
-            rpc.request("provider/oauth/login", providerIdParams(providerId)),
+            rpc.request("provider/oauth/login", buildJsonObject { }),
         )
     }
 

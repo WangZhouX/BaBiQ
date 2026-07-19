@@ -84,19 +84,19 @@ class BusinessAgentClientTest {
                 "provider/test" -> buildJsonObject {
                     put("ok", true)
                     put("providerId", "relay")
-                    put("message", marker)
+                    put("message", "Provider 配置可用")
                 }
                 "provider/oauth/status" -> buildJsonObject {
                     put("providerType", "ANTHROPIC")
                     put("authMode", "oauth_cli")
                     put("cliInstalled", true)
                     put("loggedIn", false)
-                    put("message", marker)
+                    put("message", "未登录")
                 }
                 "provider/oauth/login" -> buildJsonObject {
                     put("ok", true)
                     put("pid", 12345L)
-                    put("message", marker)
+                    put("message", "登录已启动")
                 }
                 else -> error("unexpected method")
             }
@@ -117,8 +117,8 @@ class BusinessAgentClientTest {
         val updated = client.updateProvider(draft)
         val deleted = client.deleteProvider("relay")
         val tested = client.testProvider("relay")
-        val oauthStatus = client.providerOAuthStatus("relay")
-        val oauthLogin = client.loginProviderOAuth("relay")
+        val oauthStatus = client.providerOAuthStatus()
+        val oauthLogin = client.loginProviderOAuth()
 
         assertEquals(
             listOf(
@@ -151,13 +151,14 @@ class BusinessAgentClientTest {
                 params.keys,
             )
         }
-        connection.params().drop(2).forEach { params ->
+        connection.params().slice(2..3).forEach { params ->
             assertEquals(setOf("providerId"), params.keys)
+        }
+        connection.params().drop(4).forEach { params ->
+            assertTrue(params.isEmpty())
         }
         assertEquals("relay", connection.params(2).getValue("providerId").jsonPrimitive.content)
         assertEquals("relay", connection.params(3).getValue("providerId").jsonPrimitive.content)
-        assertEquals("relay", connection.params(4).getValue("providerId").jsonPrimitive.content)
-        assertEquals("relay", connection.params(5).getValue("providerId").jsonPrimitive.content)
 
         assertEquals("kimi-k3", created.model)
         assertEquals("kimi-k3", updated.model)
