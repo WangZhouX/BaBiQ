@@ -172,6 +172,31 @@ class ProviderSettingsHandlersTest {
     }
 
     @Test
+    @DisplayName("provider/update 把 enabled 不变量错误映射为安全 INVALID_PARAMS")
+    void provider_update_should_map_enabled_validation_failure_safely() {
+        String sensitiveMarker = "sk-fake-sensitive-marker";
+        ProviderSettingsService service = mock(ProviderSettingsService.class);
+        doThrow(new IllegalArgumentException("enabled " + sensitiveMarker)).when(service).update(any());
+        ProviderUpdateHandler handler = new ProviderUpdateHandler(service, objectMapper);
+
+        Throwable failure = catchThrowable(() -> handler.handle(objectMapper.valueToTree(Map.of(
+                "providerId", "p1",
+                "displayName", "Provider 1",
+                "type", "OPENAI_COMPATIBLE",
+                "baseUrl", "https://relay.example.com/v1",
+                "model", "gpt-4o-mini",
+                "enabled", false
+        )), null));
+
+        assertThat(failure).isInstanceOfSatisfying(JsonRpcException.class, exception -> {
+            assertThat(exception.errorCode()).isEqualTo(JsonRpcErrorCode.INVALID_PARAMS);
+            assertThat(exception.getMessage()).isEqualTo("Provider 更新请求无效");
+            assertThat(exception.getCause()).isNull();
+            assertThat(exception.toString()).doesNotContain(sensitiveMarker);
+        });
+    }
+
+    @Test
     @DisplayName("provider/set-active 作为新协议别名持久化 active provider")
     void provider_set_active_should_delegate_to_legacy_handler() {
         AppSettingsService appSettingsService = mock(AppSettingsService.class);

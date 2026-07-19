@@ -7,9 +7,11 @@ import com.wzx.babiq.server.model.ChatClientFactory;
 import com.wzx.babiq.server.model.ModelProviderConfig;
 import com.wzx.babiq.server.model.ModelProviderRegistry;
 import com.wzx.babiq.server.model.ProviderType;
+import com.wzx.babiq.server.model.provider.ProviderFactory;
 import com.wzx.babiq.server.persistence.service.AppSettingPersistenceService;
 import com.wzx.babiq.server.persistence.service.ProviderPersistenceService;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -24,8 +26,10 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.ai.chat.model.ChatModel;
 
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
@@ -42,6 +46,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowable;
+import static org.awaitility.Awaitility.await;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
@@ -103,6 +108,34 @@ class ProviderSettingsServiceTest {
     private ChatClientFactory chatClientFactory;
     @MockitoBean
     private AnthropicOAuthCredentialSource anthropicOAuthCredentialSource;
+
+    /**
+     * 每个用例清理动态 Provider、密钥和 active 设置，避免静态 SQLite 累积掩盖最后 Provider 语义。
+     */
+    @AfterEach
+    void cleanupDynamicProviderState() {
+        org.mockito.Mockito.reset(secretStore, providerRegistry, chatClientFactory, anthropicOAuthCredentialSource);
+        List<String> baselineProviderIds = baBiQProperties.providers().stream()
+                .map(ModelProviderConfig::id)
+                .toList();
+        for (ProviderConfigRecord record : providerPersistenceService.listProviders(false)) {
+            if (baselineProviderIds.contains(record.providerId())) {
+                continue;
+            }
+            if (record.secretRef() != null && !record.secretRef().isBlank()) {
+                secretStore.delete(record.secretRef());
+            }
+            providerPersistenceService.hardDeleteProviderForCompensation(record.providerId());
+        }
+        for (ModelProviderConfig config : providerRegistry.list()) {
+            if (!baselineProviderIds.contains(config.id())) {
+                providerRegistry.disable(config.id());
+            }
+        }
+        baBiQProperties.providers().forEach(providerRegistry::registerOrUpdate);
+        providerRegistry.setActive(baBiQProperties.activeProvider());
+        jdbcTemplate.update("DELETE FROM bq_app_settings");
+    }
 
     @Test
     @DisplayName("创建 Provider 时明文 API Key 进入 SecretStore，数据库只保存 secretRef")
@@ -196,6 +229,54 @@ class ProviderSettingsServiceTest {
         ProviderConfigRecord saved = providerPersistenceService.findProvider(providerId).orElseThrow();
         assertThat(saved.authMode()).isEqualTo("oauth_cli");
         assertThat(saved.secretRef()).isNull();
+    }
+
+    @Test
+    @DisplayName("更新不得改变 enabled 状态或禁用当前 Provider")
+    void update_rejects_enabled_state_change_without_touching_database_runtime_or_active() {
+        String providerId = "update-enabled-state-rejected";
+        providerSettingsService.create(apiKeyDraft(providerId, "sk-enabled-before", "gpt-4o-mini"));
+        appSettingsService.update(new AppSettingsService.AppSettingsUpdate(providerId, null, null, null));
+        ProviderConfigRecord before = providerPersistenceService.findProvider(providerId).orElseThrow();
+        ModelProviderConfig runtimeBefore = providerRegistry.get(providerId);
+        AppSettingRecord activeBefore = appSettingPersistenceService.findByKey(
+                AppSettingsService.KEY_ACTIVE_PROVIDER).orElseThrow();
+        ProviderSettingsService.ProviderDraft disabledDraft = new ProviderSettingsService.ProviderDraft(
+                providerId, providerId, "OPENAI_COMPATIBLE", "api_key",
+                "https://relay.example.com/v1", "gpt-4o-mini", "", 64000, false);
+
+        Throwable failure = catchThrowable(() -> providerSettingsService.update(disabledDraft));
+
+        assertThat(failure)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("enabled");
+        assertThat(providerPersistenceService.findProvider(providerId)).contains(before);
+        assertThat(providerRegistry.get(providerId)).isEqualTo(runtimeBefore);
+        assertThat(providerRegistry.active().id()).isEqualTo(providerId);
+        assertThat(appSettingPersistenceService.findByKey(AppSettingsService.KEY_ACTIVE_PROVIDER))
+                .contains(activeBefore);
+    }
+
+    @Test
+    @DisplayName("已禁用 Provider 不得通过 update 复活或继续编辑")
+    void update_rejects_disabled_provider_without_staging_new_secret_or_runtime() {
+        String providerId = "disabled-provider-update-rejected";
+        providerSettingsService.create(apiKeyDraft(providerId, "sk-disabled-before", "gpt-4o-mini"));
+        providerSettingsService.delete(providerId);
+        ProviderConfigRecord disabledBefore = providerPersistenceService.findProvider(providerId).orElseThrow();
+        clearInvocations(secretStore, chatClientFactory);
+
+        Throwable failure = catchThrowable(() -> providerSettingsService.update(
+                apiKeyDraft(providerId, SENSITIVE_MARKER, "must-not-revive")));
+
+        assertThat(failure)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("已禁用");
+        assertThat(providerPersistenceService.findProvider(providerId)).contains(disabledBefore);
+        assertThatThrownBy(() -> providerRegistry.get(providerId))
+                .isInstanceOf(IllegalArgumentException.class);
+        verify(secretStore, never()).save(eq("provider." + providerId), eq(SENSITIVE_MARKER));
+        verify(chatClientFactory, never()).invalidate(providerId);
     }
 
     @Test
@@ -683,6 +764,37 @@ class ProviderSettingsServiceTest {
     }
 
     @Test
+    @DisplayName("最后一个启用 Provider 也不得通过 update(enabled=false) 绕过删除不变量")
+    void last_enabled_provider_cannot_be_disabled_through_update() {
+        String providerId = "only-provider-update";
+        ProviderConfigRecord record = ProviderConfigRecord.of(
+                providerId, providerId, "OPENAI_COMPATIBLE", "api_key",
+                "https://relay.example.com/v1", "gpt-4o-mini", "keystore://only-update", 64000, true,
+                java.time.Instant.now());
+        ProviderPersistenceService persistence = org.mockito.Mockito.mock(ProviderPersistenceService.class);
+        AppSettingPersistenceService settings = org.mockito.Mockito.mock(AppSettingPersistenceService.class);
+        SecretStore isolatedSecretStore = org.mockito.Mockito.mock(SecretStore.class);
+        ModelProviderRegistry isolatedRegistry = registryWith(new ModelProviderConfig(
+                providerId, providerId, ProviderType.OPENAI_COMPATIBLE, "gpt-4o-mini", "sk-only",
+                "https://relay.example.com/v1", 64000));
+        when(persistence.findProvider(providerId)).thenReturn(Optional.of(record));
+        ProviderSettingsService isolatedService = newProviderSettingsService(
+                persistence, settings, isolatedSecretStore, isolatedRegistry);
+        ProviderSettingsService.ProviderDraft disabledDraft = new ProviderSettingsService.ProviderDraft(
+                providerId, providerId, "OPENAI_COMPATIBLE", "api_key",
+                "https://relay.example.com/v1", "gpt-4o-mini", "", 64000, false);
+
+        Throwable failure = catchThrowable(() -> isolatedService.update(disabledDraft));
+
+        assertThat(failure)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("enabled");
+        verify(persistence, never()).updateProvider(org.mockito.ArgumentMatchers.any());
+        verify(isolatedSecretStore, never()).save(anyString(), anyString());
+        assertThat(isolatedRegistry.active().id()).isEqualTo(providerId);
+    }
+
+    @Test
     @DisplayName("删除当前 Provider 时按 providerId 升序持久化 fallback 并清理旧密钥")
     void deleting_active_provider_persists_deterministic_fallback_and_returns_it() {
         String providerId = "zz-delete-current-provider";
@@ -788,6 +900,76 @@ class ProviderSettingsServiceTest {
         assertThat(providerPersistenceService.findProvider(persistedActive)).get()
                 .extracting(ProviderConfigRecord::enabled).isEqualTo(true);
         assertThat(providerRegistry.active().id()).isEqualTo(persistedActive);
+    }
+
+    @Test
+    @DisplayName("首次 resolve 与删除并发时不得因 cache/registry 反向锁序死锁")
+    void first_resolve_and_delete_complete_without_cache_registry_deadlock() throws Exception {
+        String providerId = "deadlock-target";
+        ModelProviderConfig target = new ModelProviderConfig(
+                providerId, providerId, ProviderType.OPENAI_COMPATIBLE, "gpt-4o-mini", null,
+                "https://relay.example.com/v1", 64000);
+        ModelProviderConfig fallback = new ModelProviderConfig(
+                "deadlock-fallback", "deadlock-fallback", ProviderType.OPENAI_COMPATIBLE,
+                "gpt-4o-mini", null, "https://relay.example.com/v1", 64000);
+        ModelProviderRegistry isolatedRegistry = registryWith(target, fallback);
+        BaBiQProperties isolatedProperties = new BaBiQProperties(providerId, List.of(target, fallback), null);
+        ProviderFactory providerFactory = org.mockito.Mockito.mock(ProviderFactory.class);
+        when(providerFactory.supports()).thenReturn(ProviderType.OPENAI_COMPATIBLE);
+        when(providerFactory.build(org.mockito.ArgumentMatchers.any())).thenReturn(
+                org.mockito.Mockito.mock(ChatModel.class));
+        CountDownLatch invalidateEntered = new CountDownLatch(1);
+        CountDownLatch releaseInvalidate = new CountDownLatch(1);
+        BlockingChatClientFactory blockingFactory = new BlockingChatClientFactory(
+                isolatedRegistry, List.of(providerFactory), isolatedProperties,
+                invalidateEntered, releaseInvalidate);
+        ProviderPersistenceService persistence = org.mockito.Mockito.mock(ProviderPersistenceService.class);
+        AppSettingPersistenceService settings = org.mockito.Mockito.mock(AppSettingPersistenceService.class);
+        SecretStore secrets = org.mockito.Mockito.mock(SecretStore.class);
+        ProviderConfigRecord targetRecord = ProviderConfigRecord.of(
+                providerId, providerId, "OPENAI_COMPATIBLE", "api_key",
+                "https://relay.example.com/v1", "gpt-4o-mini", null, 64000, true,
+                java.time.Instant.now());
+        ProviderConfigRecord fallbackRecord = ProviderConfigRecord.of(
+                fallback.id(), fallback.displayName(), "OPENAI_COMPATIBLE", "api_key",
+                fallback.baseUrl(), fallback.model(), null, 64000, true, java.time.Instant.now());
+        when(persistence.findProvider(providerId)).thenReturn(Optional.of(targetRecord));
+        when(persistence.listProviders(true)).thenReturn(List.of(targetRecord, fallbackRecord));
+        when(settings.findByKey(AppSettingsService.KEY_ACTIVE_PROVIDER)).thenReturn(Optional.of(
+                new AppSettingRecord(AppSettingsService.KEY_ACTIVE_PROVIDER, providerId, "string",
+                        java.time.Instant.now())));
+        ProviderSettingsService isolatedService = newProviderSettingsService(
+                persistence, settings, secrets, isolatedRegistry, blockingFactory);
+        AtomicReference<Throwable> deleteFailure = new AtomicReference<>();
+        AtomicReference<Throwable> resolveFailure = new AtomicReference<>();
+        Thread deleteThread = daemonThread("provider-delete-deadlock", () -> {
+            try {
+                isolatedService.delete(providerId);
+            } catch (Throwable failure) {
+                deleteFailure.set(failure);
+            }
+        });
+        Thread resolveThread = daemonThread("provider-resolve-deadlock", () -> {
+            try {
+                blockingFactory.resolve(providerId);
+            } catch (Throwable failure) {
+                resolveFailure.set(failure);
+            }
+        });
+
+        deleteThread.start();
+        assertThat(invalidateEntered.await(5, TimeUnit.SECONDS)).isTrue();
+        resolveThread.start();
+        await().atMost(Duration.ofSeconds(2)).until(() ->
+                resolveThread.getState() == Thread.State.BLOCKED || !resolveThread.isAlive());
+        releaseInvalidate.countDown();
+        deleteThread.join(2_000);
+        resolveThread.join(2_000);
+
+        assertThat(deleteThread.isAlive()).isFalse();
+        assertThat(resolveThread.isAlive()).isFalse();
+        assertThat(deleteFailure.get()).isNull();
+        assertThat(resolveFailure.get()).isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
@@ -1136,7 +1318,31 @@ class ProviderSettingsServiceTest {
         ObjectProvider<AnthropicOAuthCredentialSource> oauthProvider = org.mockito.Mockito.mock(ObjectProvider.class);
         when(oauthProvider.getObject()).thenReturn(anthropicOAuthCredentialSource);
         return new ProviderSettingsService(
-                persistence, settings, secrets, targetRegistry, chatClientProvider, oauthProvider, transactionManager);
+                persistence, settings, new ProviderMutationCoordinator(), secrets, targetRegistry,
+                chatClientProvider, oauthProvider, transactionManager);
+    }
+
+    private ProviderSettingsService newProviderSettingsService(ProviderPersistenceService persistence,
+                                                                AppSettingPersistenceService settings,
+                                                                SecretStore secrets,
+                                                                ModelProviderRegistry targetRegistry,
+                                                                ChatClientFactory targetChatClientFactory) {
+        @SuppressWarnings("unchecked")
+        ObjectProvider<ChatClientFactory> chatClientProvider = org.mockito.Mockito.mock(ObjectProvider.class);
+        when(chatClientProvider.getIfAvailable()).thenReturn(targetChatClientFactory);
+        when(chatClientProvider.getObject()).thenReturn(targetChatClientFactory);
+        @SuppressWarnings("unchecked")
+        ObjectProvider<AnthropicOAuthCredentialSource> oauthProvider = org.mockito.Mockito.mock(ObjectProvider.class);
+        when(oauthProvider.getObject()).thenReturn(anthropicOAuthCredentialSource);
+        return new ProviderSettingsService(
+                persistence, settings, new ProviderMutationCoordinator(), secrets, targetRegistry,
+                chatClientProvider, oauthProvider, transactionManager);
+    }
+
+    private static Thread daemonThread(String name, Runnable task) {
+        Thread thread = new Thread(task, name);
+        thread.setDaemon(true);
+        return thread;
     }
 
     private static ModelProviderRegistry registryWith(ModelProviderConfig... providers) {
@@ -1213,6 +1419,37 @@ class ProviderSettingsServiceTest {
             return exception.getCause();
         } catch (java.util.concurrent.TimeoutException exception) {
             return exception;
+        }
+    }
+
+    /** 在 invalidate 入口暂停，供测试精确构造 cache/registry 反向锁序。 */
+    private static final class BlockingChatClientFactory extends ChatClientFactory {
+
+        private final CountDownLatch invalidateEntered;
+        private final CountDownLatch releaseInvalidate;
+
+        private BlockingChatClientFactory(ModelProviderRegistry registry,
+                                          List<ProviderFactory> factories,
+                                          BaBiQProperties properties,
+                                          CountDownLatch invalidateEntered,
+                                          CountDownLatch releaseInvalidate) {
+            super(registry, factories, properties);
+            this.invalidateEntered = invalidateEntered;
+            this.releaseInvalidate = releaseInvalidate;
+        }
+
+        @Override
+        public void invalidate(String providerId) {
+            invalidateEntered.countDown();
+            try {
+                if (!releaseInvalidate.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("等待 deadlock 测试释放超时");
+                }
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("deadlock 测试被中断");
+            }
+            super.invalidate(providerId);
         }
     }
 }

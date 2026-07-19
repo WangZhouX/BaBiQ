@@ -38,6 +38,8 @@ public class ProviderSettingsService {
     private final ProviderPersistenceService providerPersistenceService;
     /** active Provider 设置持久化服务，删除 fallback 与 Provider 记录共用事务。 */
     private final AppSettingPersistenceService appSettingPersistenceService;
+    /** Provider CRUD、bootstrap 和 active 切换共享的机器级协调锁。 */
+    private final ProviderMutationCoordinator mutationCoordinator;
     /** 本地密钥存储，保存 API Key 明文。 */
     private final SecretStore secretStore;
     /** 运行期模型 Provider 注册表，下一轮 turn 会从这里读取最新配置。 */
@@ -61,6 +63,7 @@ public class ProviderSettingsService {
      */
     public ProviderSettingsService(ProviderPersistenceService providerPersistenceService,
                                    AppSettingPersistenceService appSettingPersistenceService,
+                                   ProviderMutationCoordinator mutationCoordinator,
                                    SecretStore secretStore,
                                    ModelProviderRegistry registry,
                                    ObjectProvider<ChatClientFactory> chatClientFactoryProvider,
@@ -68,6 +71,7 @@ public class ProviderSettingsService {
                                    PlatformTransactionManager transactionManager) {
         this.providerPersistenceService = providerPersistenceService;
         this.appSettingPersistenceService = appSettingPersistenceService;
+        this.mutationCoordinator = mutationCoordinator;
         this.secretStore = secretStore;
         this.registry = registry;
         this.chatClientFactoryProvider = chatClientFactoryProvider;
@@ -83,7 +87,12 @@ public class ProviderSettingsService {
      * 服务重启后也会重新注册到运行期 registry。</p>
      */
     @PostConstruct
-    public synchronized void bootstrap() {
+    public void bootstrap() {
+        mutationCoordinator.execute(this::bootstrapWithMutationLock);
+    }
+
+    /** 在机器级 Provider mutation 锁内恢复 SQLite 真相源。 */
+    private void bootstrapWithMutationLock() {
         List<ModelProviderConfig> yamlSnapshot = List.copyOf(registry.list());
         String yamlActiveProviderId = registry.active().id();
         List<StagedBootstrapProvider> stagedProviders = new ArrayList<>();
@@ -164,7 +173,12 @@ public class ProviderSettingsService {
      * @param draft 桌面端提交的 Provider 草稿
      * @return 非敏感 Provider 视图
      */
-    public synchronized ProviderView create(ProviderDraft draft) {
+    public ProviderView create(ProviderDraft draft) {
+        return mutationCoordinator.execute(() -> createWithMutationLock(draft));
+    }
+
+    /** 在机器级 Provider mutation 锁内创建 Provider。 */
+    private ProviderView createWithMutationLock(ProviderDraft draft) {
         validateRequired(draft, true);
         if (providerPersistenceService.findProvider(draft.providerId()).isPresent()) {
             throw new IllegalArgumentException("Provider 已存在: " + draft.providerId());
@@ -201,10 +215,21 @@ public class ProviderSettingsService {
      * @param draft Provider 草稿
      * @return 更新后的非敏感视图
      */
-    public synchronized ProviderView update(ProviderDraft draft) {
+    public ProviderView update(ProviderDraft draft) {
+        return mutationCoordinator.execute(() -> updateWithMutationLock(draft));
+    }
+
+    /** 在机器级 Provider mutation 锁内更新 Provider。 */
+    private ProviderView updateWithMutationLock(ProviderDraft draft) {
         validateRequired(draft, false);
         ProviderConfigRecord existing = providerPersistenceService.findProvider(draft.providerId())
                 .orElseThrow(() -> new IllegalArgumentException("Provider 不存在: " + draft.providerId()));
+        if (!existing.enabled()) {
+            throw new IllegalArgumentException("Provider 已禁用，不允许继续编辑: " + draft.providerId());
+        }
+        if (draft.enabled() != existing.enabled()) {
+            throw new IllegalArgumentException("不允许通过 update 修改 Provider enabled 状态");
+        }
         ProviderAuthMode authMode = ProviderAuthMode.fromWireValue(draft.authMode());
         String secretRef = null;
         String stagedSecretRef = null;
@@ -246,14 +271,12 @@ public class ProviderSettingsService {
      *
      * @param providerId Provider 标识
      */
-    public synchronized ProviderDeleteResult delete(String providerId) {
-        synchronized (registry) {
-            return deleteWithProviderRegistryLock(providerId);
-        }
+    public ProviderDeleteResult delete(String providerId) {
+        return mutationCoordinator.execute(() -> deleteWithMutationLock(providerId));
     }
 
-    /** 在与 AppSettingsService 共享的 registry 锁内完成删除和 active fallback。 */
-    private ProviderDeleteResult deleteWithProviderRegistryLock(String providerId) {
+    /** 在与 AppSettingsService 共享的 mutation 锁内完成删除和 active fallback。 */
+    private ProviderDeleteResult deleteWithMutationLock(String providerId) {
         requireText(providerId, "providerId");
         ProviderConfigRecord existing = providerPersistenceService.findProvider(providerId)
                 .filter(ProviderConfigRecord::enabled)

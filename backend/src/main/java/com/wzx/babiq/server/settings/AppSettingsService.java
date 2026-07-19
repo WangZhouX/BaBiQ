@@ -41,6 +41,8 @@ public class AppSettingsService {
     private final AgentLoopProperties agentLoopProperties;
     /** Provider 注册表；activeProviderId 更新后同步这里，下一轮 turn 立即生效。 */
     private final ModelProviderRegistry providerRegistry;
+    /** 与 Provider CRUD 共享的机器级变更协调器。 */
+    private final ProviderMutationCoordinator mutationCoordinator;
     /** SQLite 显式事务边界；registry 只在事务成功提交后更新。 */
     private final TransactionTemplate transactionTemplate;
 
@@ -57,11 +59,13 @@ public class AppSettingsService {
                               BaBiQProperties baBiQProperties,
                               AgentLoopProperties agentLoopProperties,
                               ModelProviderRegistry providerRegistry,
+                              ProviderMutationCoordinator mutationCoordinator,
                               PlatformTransactionManager transactionManager) {
         this.appSettingPersistenceService = appSettingPersistenceService;
         this.baBiQProperties = baBiQProperties;
         this.agentLoopProperties = agentLoopProperties;
         this.providerRegistry = providerRegistry;
+        this.mutationCoordinator = mutationCoordinator;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
         this.transactionTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
@@ -85,14 +89,12 @@ public class AppSettingsService {
      * @param update 更新请求；字段为 null 时保留原值
      * @return 更新后的设置快照
      */
-    public synchronized AppSettings update(AppSettingsUpdate update) {
-        synchronized (providerRegistry) {
-            return updateWithProviderRegistryLock(update);
-        }
+    public AppSettings update(AppSettingsUpdate update) {
+        return mutationCoordinator.execute(() -> updateWithMutationLock(update));
     }
 
-    /** 在共享 Provider registry 锁内完成 active 校验、提交和运行时切换。 */
-    private AppSettings updateWithProviderRegistryLock(AppSettingsUpdate update) {
+    /** 在共享 Provider mutation 锁内完成 active 校验、提交和运行时切换。 */
+    private AppSettings updateWithMutationLock(AppSettingsUpdate update) {
         AppSettings current = transactionTemplate.execute(status -> get());
         if (current == null) {
             throw new IllegalStateException("读取当前应用设置失败");

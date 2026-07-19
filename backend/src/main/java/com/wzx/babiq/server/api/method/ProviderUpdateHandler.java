@@ -37,7 +37,7 @@ public class ProviderUpdateHandler implements JsonRpcMethodHandler {
         try {
             return ProviderPayloadMapper.toPayload(providerSettingsService.update(draftParser.draftFrom(params, false)));
         } catch (IllegalArgumentException exception) {
-            throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, exception.getMessage());
+            throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "Provider 更新请求无效");
         }
     }
 }
