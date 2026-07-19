@@ -716,6 +716,9 @@ public class ProviderSettingsService {
         requireText(draft.displayName(), "displayName");
         requireText(draft.type(), "type");
         requireText(draft.model(), "model");
+        if (creating && !draft.enabled()) {
+            throw new IllegalArgumentException("不允许创建 enabled=false 的 Provider");
+        }
         ProviderType providerType = ProviderType.valueOf(draft.type());
         ProviderAuthMode authMode = ProviderAuthMode.fromWireValue(draft.authMode());
         if (providerType == ProviderType.OPENAI_COMPATIBLE) {

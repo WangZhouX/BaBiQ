@@ -39,7 +39,7 @@ public class ProviderCreateHandler implements JsonRpcMethodHandler {
         try {
             return ProviderPayloadMapper.toPayload(providerSettingsService.create(draft));
         } catch (IllegalArgumentException exception) {
-            throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, exception.getMessage());
+            throw new JsonRpcException(JsonRpcErrorCode.INVALID_PARAMS, "Provider 创建请求无效");
         }
     }
 

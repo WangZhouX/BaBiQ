@@ -72,6 +72,32 @@ class ProviderSettingsHandlersTest {
     }
 
     @Test
+    @DisplayName("provider/create 把禁用创建错误映射为安全 INVALID_PARAMS")
+    void provider_create_should_map_disabled_validation_failure_safely() {
+        String sensitiveMarker = "sk-fake-sensitive-marker";
+        ProviderSettingsService service = mock(ProviderSettingsService.class);
+        doThrow(new IllegalArgumentException("enabled " + sensitiveMarker)).when(service).create(any());
+        ProviderCreateHandler handler = new ProviderCreateHandler(service, objectMapper);
+
+        Throwable failure = catchThrowable(() -> handler.handle(objectMapper.valueToTree(Map.of(
+                "providerId", "p-disabled",
+                "displayName", "Disabled Provider",
+                "type", "OPENAI_COMPATIBLE",
+                "baseUrl", "https://relay.example.com/v1",
+                "model", "gpt-4o-mini",
+                "apiKey", sensitiveMarker,
+                "enabled", false
+        )), null));
+
+        assertThat(failure).isInstanceOfSatisfying(JsonRpcException.class, exception -> {
+            assertThat(exception.errorCode()).isEqualTo(JsonRpcErrorCode.INVALID_PARAMS);
+            assertThat(exception.getMessage()).isEqualTo("Provider 创建请求无效");
+            assertThat(exception.getCause()).isNull();
+            assertThat(exception.toString()).doesNotContain(sensitiveMarker);
+        });
+    }
+
+    @Test
     @DisplayName("provider/create 支持 Anthropic OAuth CLI 无 API Key 和无 Base URL")
     void provider_create_should_accept_anthropic_oauth_cli_without_api_key_or_base_url() {
         ProviderSettingsService service = mock(ProviderSettingsService.class);

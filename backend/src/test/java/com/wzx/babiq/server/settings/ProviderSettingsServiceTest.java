@@ -188,6 +188,32 @@ class ProviderSettingsServiceTest {
     }
 
     @Test
+    @DisplayName("创建 enabled=false Provider 必须在数据库、密钥、运行时和缓存副作用前拒绝")
+    void create_rejects_disabled_provider_without_any_side_effects(CapturedOutput output) {
+        String providerId = "disabled-create-rejected";
+        List<String> providerIdsBefore = providerIds();
+        String activeBefore = providerRegistry.active().id();
+        clearInvocations(secretStore, chatClientFactory);
+        ProviderSettingsService.ProviderDraft disabledDraft = new ProviderSettingsService.ProviderDraft(
+                providerId, providerId, "OPENAI_COMPATIBLE", "api_key",
+                "https://relay.example.com/v1", "gpt-4o-mini", SENSITIVE_MARKER, 64000, false);
+
+        Throwable failure = catchThrowable(() -> providerSettingsService.create(disabledDraft));
+
+        assertThat(failure)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("enabled");
+        assertThat(failure.toString()).doesNotContain(SENSITIVE_MARKER);
+        assertThat(providerPersistenceService.findProvider(providerId)).isEmpty();
+        assertThat(providerIds()).containsExactlyElementsOf(providerIdsBefore);
+        assertThat(providerRegistry.active().id()).isEqualTo(activeBefore);
+        verify(secretStore, never()).save(anyString(), anyString());
+        verify(secretStore, never()).delete(anyString());
+        verify(chatClientFactory, never()).invalidate(providerId);
+        assertThat(output.getAll()).doesNotContain(SENSITIVE_MARKER);
+    }
+
+    @Test
     @DisplayName("重复创建 Provider 时不得覆盖已有配置和旧密钥")
     void duplicate_create_must_not_overwrite_existing_provider(CapturedOutput output) {
         String providerId = "duplicate-create-provider";
