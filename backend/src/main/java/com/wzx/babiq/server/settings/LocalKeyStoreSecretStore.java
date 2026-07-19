@@ -13,6 +13,7 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.security.KeyStore;
 import java.security.KeyStoreException;
 import java.util.Optional;
@@ -40,6 +41,17 @@ public class LocalKeyStoreSecretStore implements SecretStore {
     private final Path storePath;
     /** KeyStore 文件和条目共用的本地保护口令。 */
     private final char[] password;
+    /** 完整临时文件写入后负责替换正式 KeyStore 文件的提交器。 */
+    private final StoreFileCommitter storeFileCommitter;
+
+    /** 同目录临时 KeyStore 文件的最终提交边界。 */
+    @FunctionalInterface
+    interface StoreFileCommitter {
+        /**
+         * 原子替换目标文件；抛出异常时目标文件必须保持调用前内容不变。
+         */
+        void commit(Path temporaryPath, Path targetPath) throws IOException;
+    }
 
     /**
      * Spring 生产构造器。
@@ -61,8 +73,22 @@ public class LocalKeyStoreSecretStore implements SecretStore {
      * @param password 本地保护口令
      */
     public LocalKeyStoreSecretStore(Path storePath, char[] password) {
+        this(storePath, password, LocalKeyStoreSecretStore::atomicReplace);
+    }
+
+    /**
+     * 允许包内测试注入目标文件替换失败，不向生产调用方暴露额外配置面。
+     */
+    LocalKeyStoreSecretStore(Path storePath, char[] password, StoreFileCommitter storeFileCommitter) {
         this.storePath = storePath;
         this.password = password.clone();
+        this.storeFileCommitter = storeFileCommitter;
+    }
+
+    private static void atomicReplace(Path temporaryPath, Path targetPath) throws IOException {
+        Files.move(temporaryPath, targetPath,
+                StandardCopyOption.ATOMIC_MOVE,
+                StandardCopyOption.REPLACE_EXISTING);
     }
 
     /**
@@ -158,12 +184,32 @@ public class LocalKeyStoreSecretStore implements SecretStore {
 
     private void store(KeyStore keyStore) throws IOException, KeyStoreException, java.security.NoSuchAlgorithmException,
             java.security.cert.CertificateException {
-        Path parent = storePath.getParent();
-        if (parent != null) {
-            Files.createDirectories(parent);
+        Path targetPath = storePath.toAbsolutePath().normalize();
+        Path parent = targetPath.getParent();
+        if (parent == null) {
+            throw new IOException("KeyStore 目标文件缺少父目录: " + targetPath);
         }
-        try (OutputStream output = Files.newOutputStream(storePath)) {
-            keyStore.store(output, password);
+        Files.createDirectories(parent);
+        String fileName = targetPath.getFileName() == null
+                ? "babiq-secrets"
+                : targetPath.getFileName().toString();
+        String temporaryPrefix = fileName.length() >= 3 ? fileName : (fileName + "___").substring(0, 3);
+        Path temporaryPath = Files.createTempFile(parent, temporaryPrefix + "-", ".tmp");
+        boolean committed = false;
+        try {
+            try (OutputStream output = Files.newOutputStream(temporaryPath)) {
+                keyStore.store(output, password);
+            }
+            storeFileCommitter.commit(temporaryPath, targetPath);
+            committed = true;
+        } finally {
+            try {
+                Files.deleteIfExists(temporaryPath);
+            } catch (IOException cleanupFailure) {
+                if (!committed) {
+                    throw cleanupFailure;
+                }
+            }
         }
     }
 

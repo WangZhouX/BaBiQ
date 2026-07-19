@@ -29,14 +29,17 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doCallRealMethod;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -74,7 +77,7 @@ class ProviderSettingsServiceTest {
     private ProviderSettingsService providerSettingsService;
     @Autowired
     private ProviderPersistenceService providerPersistenceService;
-    @Autowired
+    @MockitoSpyBean
     private ModelProviderRegistry providerRegistry;
     @Autowired
     private JdbcTemplate jdbcTemplate;
@@ -275,6 +278,91 @@ class ProviderSettingsServiceTest {
         verify(secretStore, never()).delete(anyString());
         verify(chatClientFactory, never()).invalidate(providerId);
         assertThat(output.getAll().contains(SENSITIVE_MARKER)).isFalse();
+    }
+
+    @Test
+    @DisplayName("创建提交后 registry 更新失败必须硬删除记录并允许安全重试")
+    void create_registry_failure_after_commit_restores_database_runtime_cache_and_alias(CapturedOutput output) {
+        String providerId = "create-registry-compensation";
+        List<String> providerIdsBefore = providerIds();
+        String activeBefore = providerRegistry.active().id();
+        AtomicReference<String> stagedSecretRef = captureSavedSecret(
+                "provider." + providerId, "sk-create-registry-failure");
+        doAnswer(invocation -> {
+            invocation.callRealMethod();
+            throw new IllegalStateException(SENSITIVE_MARKER);
+        }).when(providerRegistry).registerOrUpdate(argThat(config -> providerId.equals(config.id())));
+
+        Throwable failure = catchThrowable(() -> providerSettingsService.create(
+                apiKeyDraft(providerId, "sk-create-registry-failure", "model-before-retry")));
+
+        assertSafeFailure(failure, "已恢复");
+        assertThat(providerPersistenceService.findProvider(providerId)).isEmpty();
+        assertThat(providerIds()).containsExactlyElementsOf(providerIdsBefore);
+        assertThat(providerRegistry.active().id()).isEqualTo(activeBefore);
+        assertThat(stagedSecretRef.get()).isNotBlank();
+        assertThat(secretStore.load(stagedSecretRef.get())).isEmpty();
+        verify(chatClientFactory).invalidate(providerId);
+        assertThat(output.getAll().contains(SENSITIVE_MARKER)).isFalse();
+
+        doCallRealMethod().when(providerRegistry)
+                .registerOrUpdate(argThat(config -> providerId.equals(config.id())));
+        clearInvocations(chatClientFactory);
+
+        ProviderSettingsService.ProviderView retried = providerSettingsService.create(
+                apiKeyDraft(providerId, "sk-create-registry-retry", "model-after-retry"));
+
+        ProviderConfigRecord savedAfterRetry = providerPersistenceService.findProvider(providerId).orElseThrow();
+        assertThat(retried.id()).isEqualTo(providerId);
+        assertThat(savedAfterRetry.model()).isEqualTo("model-after-retry");
+        assertThat(providerRegistry.get(providerId).model()).isEqualTo("model-after-retry");
+        assertThat(secretStore.load(savedAfterRetry.secretRef())).contains("sk-create-registry-retry");
+        verify(chatClientFactory).invalidate(providerId);
+    }
+
+    @Test
+    @DisplayName("更新提交后 ChatClient 失效失败必须恢复旧快照并允许安全重试")
+    void update_invalidate_failure_after_commit_restores_database_runtime_cache_and_alias(CapturedOutput output) {
+        String providerId = "update-invalidate-compensation";
+        providerSettingsService.create(apiKeyDraft(providerId, "sk-before-invalidate-failure", "model-before"));
+        ProviderConfigRecord persistedBefore = providerPersistenceService.findProvider(providerId).orElseThrow();
+        ModelProviderConfig runtimeBefore = providerRegistry.get(providerId);
+        String activeBefore = providerRegistry.active().id();
+        clearInvocations(secretStore, providerRegistry, chatClientFactory);
+        AtomicReference<String> failedStagedSecretRef = captureSavedSecret(
+                "provider." + providerId, "sk-failed-invalidate-stage");
+        AtomicInteger invalidateCalls = new AtomicInteger();
+        doAnswer(invocation -> {
+            if (invalidateCalls.incrementAndGet() == 1) {
+                throw new IllegalStateException(SENSITIVE_MARKER);
+            }
+            return null;
+        }).when(chatClientFactory).invalidate(providerId);
+
+        Throwable failure = catchThrowable(() -> providerSettingsService.update(
+                apiKeyDraft(providerId, "sk-failed-invalidate-stage", "model-should-rollback")));
+
+        assertSafeFailure(failure, "已恢复");
+        assertThat(providerPersistenceService.findProvider(providerId)).contains(persistedBefore);
+        assertThat(providerRegistry.get(providerId)).isEqualTo(runtimeBefore);
+        assertThat(providerRegistry.active().id()).isEqualTo(activeBefore);
+        assertThat(secretStore.load(persistedBefore.secretRef())).contains("sk-before-invalidate-failure");
+        assertThat(failedStagedSecretRef.get()).isNotBlank();
+        assertThat(secretStore.load(failedStagedSecretRef.get())).isEmpty();
+        verify(chatClientFactory, times(2)).invalidate(providerId);
+        assertThat(output.getAll().contains(SENSITIVE_MARKER)).isFalse();
+
+        ProviderSettingsService.ProviderView retried = providerSettingsService.update(
+                apiKeyDraft(providerId, "sk-invalidate-retry", "model-after-retry"));
+
+        ProviderConfigRecord savedAfterRetry = providerPersistenceService.findProvider(providerId).orElseThrow();
+        assertThat(retried.id()).isEqualTo(providerId);
+        assertThat(savedAfterRetry.model()).isEqualTo("model-after-retry");
+        assertThat(providerRegistry.get(providerId).model()).isEqualTo("model-after-retry");
+        assertThat(providerRegistry.get(providerId).apiKey()).isEqualTo("sk-invalidate-retry");
+        assertThat(secretStore.load(persistedBefore.secretRef())).isEmpty();
+        assertThat(secretStore.load(savedAfterRetry.secretRef())).contains("sk-invalidate-retry");
+        verify(chatClientFactory, times(3)).invalidate(providerId);
     }
 
     @Test

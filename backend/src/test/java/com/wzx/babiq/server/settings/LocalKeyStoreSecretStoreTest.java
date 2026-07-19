@@ -4,6 +4,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -51,5 +53,62 @@ class LocalKeyStoreSecretStoreTest {
         assertThatThrownBy(() -> secretStore.require("keystore://missing"))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("密钥不存在");
+    }
+
+    @Test
+    @DisplayName("保存新密钥的文件提交失败时原 KeyStore 文件和旧 entry 保持不变")
+    void failed_save_keeps_original_keystore_file_and_existing_entries() throws Exception {
+        Path storePath = tempDir.resolve("save-failure.jceks");
+        char[] password = "test-store-password".toCharArray();
+        LocalKeyStoreSecretStore stableStore = new LocalKeyStoreSecretStore(storePath, password);
+        String existingRef = stableStore.save("provider.existing", "sk-existing");
+        byte[] originalFile = Files.readAllBytes(storePath);
+        LocalKeyStoreSecretStore failingStore = new LocalKeyStoreSecretStore(
+                storePath, password, controlledCommitFailure());
+
+        assertThatThrownBy(() -> failingStore.save("provider.new", "sk-new"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("写入本地 KeyStore 密钥失败");
+
+        assertThat(Files.readAllBytes(storePath)).containsExactly(originalFile);
+        LocalKeyStoreSecretStore reopened = new LocalKeyStoreSecretStore(storePath, password);
+        assertThat(reopened.load(existingRef)).contains("sk-existing");
+        assertNoTemporaryStoreFiles();
+    }
+
+    @Test
+    @DisplayName("删除密钥的文件提交失败时原 KeyStore 文件和原 entry 保持不变")
+    void failed_delete_keeps_original_keystore_file_and_entry() throws Exception {
+        Path storePath = tempDir.resolve("delete-failure.jceks");
+        char[] password = "test-store-password".toCharArray();
+        LocalKeyStoreSecretStore stableStore = new LocalKeyStoreSecretStore(storePath, password);
+        String existingRef = stableStore.save("provider.existing", "sk-existing");
+        byte[] originalFile = Files.readAllBytes(storePath);
+        LocalKeyStoreSecretStore failingStore = new LocalKeyStoreSecretStore(
+                storePath, password, controlledCommitFailure());
+
+        assertThatThrownBy(() -> failingStore.delete(existingRef))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("删除本地 KeyStore 密钥失败");
+
+        assertThat(Files.readAllBytes(storePath)).containsExactly(originalFile);
+        LocalKeyStoreSecretStore reopened = new LocalKeyStoreSecretStore(storePath, password);
+        assertThat(reopened.load(existingRef)).contains("sk-existing");
+        assertNoTemporaryStoreFiles();
+    }
+
+    /** 构造发生在目标文件替换前的可控提交失败。 */
+    private static LocalKeyStoreSecretStore.StoreFileCommitter controlledCommitFailure() {
+        return (temporaryPath, targetPath) -> {
+            throw new IOException("controlled-store-commit-failure");
+        };
+    }
+
+    /** 原子提交失败后不得遗留本地临时 KeyStore 文件。 */
+    private void assertNoTemporaryStoreFiles() throws IOException {
+        try (var files = Files.list(tempDir)) {
+            assertThat(files.map(path -> path.getFileName().toString()))
+                    .noneMatch(name -> name.endsWith(".tmp"));
+        }
     }
 }

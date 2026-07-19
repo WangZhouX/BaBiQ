@@ -130,14 +130,12 @@ public class ProviderSettingsService {
                 draft.enabled(),
                 now);
         ModelProviderConfig runtimeConfig = resolveRuntimeConfigBeforeWrite(record, stagedSecretRef);
-        executeProviderWrite(stagedSecretRef, () -> {
+        commitAndApplyProvider(null, record, null, runtimeConfig, stagedSecretRef, () -> {
             if (providerPersistenceService.findProvider(record.providerId()).isPresent()) {
                 throw new IllegalArgumentException("Provider 已存在: " + record.providerId());
             }
             providerPersistenceService.insertProvider(record);
         });
-        applyCommittedRuntimeConfig(record, runtimeConfig);
-        invalidateClient(record.providerId());
         return toView(record, true);
     }
 
@@ -182,10 +180,8 @@ public class ProviderSettingsService {
                 existing, stagedRefForCompensation);
         ModelProviderConfig committedRuntimeConfig = resolveRuntimeConfigBeforeWrite(
                 record, stagedRefForCompensation);
-        executeProviderWrite(stagedRefForCompensation, () -> providerPersistenceService.updateProvider(record));
-        applyCommittedRuntimeConfig(record, committedRuntimeConfig);
-        invalidateClient(record.providerId());
-        deleteReplacedSecretOrRestore(existing, record, previousRuntimeConfig, stagedRefForCompensation);
+        commitAndApplyProvider(existing, record, previousRuntimeConfig, committedRuntimeConfig,
+                stagedRefForCompensation, () -> providerPersistenceService.updateProvider(record));
         return toView(record, record.secretRef() != null);
     }
 
@@ -302,6 +298,28 @@ public class ProviderSettingsService {
     }
 
     /**
+     * 提交 SQLite 记录后统一应用运行时配置、失效客户端缓存并清理被替换的旧密钥。
+     *
+     * <p>三个提交后副作用共享同一个补偿边界，任一步失败都会撤销已提交记录并恢复提交前运行时快照。</p>
+     */
+    private void commitAndApplyProvider(ProviderConfigRecord previous,
+                                        ProviderConfigRecord committed,
+                                        ModelProviderConfig previousRuntimeConfig,
+                                        ModelProviderConfig committedRuntimeConfig,
+                                        String stagedSecretRef,
+                                        Runnable databaseWrite) {
+        executeProviderWrite(stagedSecretRef, databaseWrite);
+        try {
+            applyCommittedRuntimeConfig(committed, committedRuntimeConfig);
+            invalidateClient(committed.providerId());
+            deleteReplacedSecret(previous, committed);
+        } catch (RuntimeException sideEffectFailure) {
+            throw compensateCommittedProvider(
+                    previous, committed, previousRuntimeConfig, stagedSecretRef, sideEffectFailure);
+        }
+    }
+
+    /**
      * 数据库失败后删除尚未被提交记录引用的新密钥；清理失败作为 suppressed 异常保留原始失败类型。
      */
     private void compensateStagedSecret(String stagedSecretRef, RuntimeException databaseFailure) {
@@ -315,71 +333,81 @@ public class ProviderSettingsService {
         }
     }
 
-    /**
-     * 删除已被新提交替换的旧密钥；若删除失败，则恢复提交前数据库和运行时状态。
-     *
-     * <p>恢复顺序固定为 SQLite existing record、previous runtime、ChatClient cache、staged 新 alias。
-     * 这样正常补偿完成后，旧 alias 重新被数据库引用，新 alias 不会成为孤儿。</p>
-     */
-    private void deleteReplacedSecretOrRestore(ProviderConfigRecord existing,
-                                               ProviderConfigRecord committed,
-                                               ModelProviderConfig previousRuntimeConfig,
-                                               String stagedSecretRef) {
-        String oldSecretRef = existing.secretRef();
+    /** 删除已被新提交替换的旧密钥；SecretStore 保证抛异常时旧 entry 未改变。 */
+    private void deleteReplacedSecret(ProviderConfigRecord previous, ProviderConfigRecord committed) {
+        if (previous == null) {
+            return;
+        }
+        String oldSecretRef = previous.secretRef();
         if (oldSecretRef == null || oldSecretRef.isBlank() || oldSecretRef.equals(committed.secretRef())) {
             return;
         }
+        secretStore.delete(oldSecretRef);
+    }
+
+    /**
+     * 撤销已经提交但提交后副作用失败的 create/update，并返回不含原始错误 message 的固定异常。
+     */
+    private IllegalStateException compensateCommittedProvider(ProviderConfigRecord previous,
+                                                               ProviderConfigRecord committed,
+                                                               ModelProviderConfig previousRuntimeConfig,
+                                                               String stagedSecretRef,
+                                                               RuntimeException sideEffectFailure) {
+        boolean databaseRestored = false;
+        RuntimeException databaseRestoreFailure = null;
         try {
-            secretStore.delete(oldSecretRef);
-            return;
-        } catch (RuntimeException cleanupFailure) {
-            boolean databaseRestored = false;
-            RuntimeException databaseRestoreFailure = null;
-            try {
-                transactionTemplate.executeWithoutResult(status ->
-                        providerPersistenceService.updateProvider(existing));
-                databaseRestored = true;
-            } catch (RuntimeException restoreFailure) {
-                databaseRestoreFailure = restoreFailure;
-            }
-
-            RuntimeException runtimeRestoreFailure = null;
-            RuntimeException invalidateFailure = null;
-            RuntimeException stagedCleanupFailure = null;
-            if (databaseRestored) {
-                try {
-                    applyCommittedRuntimeConfig(existing, previousRuntimeConfig);
-                } catch (RuntimeException restoreFailure) {
-                    runtimeRestoreFailure = restoreFailure;
+            transactionTemplate.executeWithoutResult(status -> {
+                if (previous == null) {
+                    providerPersistenceService.hardDeleteProviderForCompensation(committed.providerId());
+                } else {
+                    providerPersistenceService.updateProvider(previous);
                 }
-                try {
-                    invalidateClient(existing.providerId());
-                } catch (RuntimeException restoreFailure) {
-                    invalidateFailure = restoreFailure;
-                }
-                if (stagedSecretRef != null && !stagedSecretRef.isBlank()) {
-                    try {
-                        secretStore.delete(stagedSecretRef);
-                    } catch (RuntimeException restoreFailure) {
-                        stagedCleanupFailure = restoreFailure;
-                    }
-                }
-            }
-
-            boolean fullyRestored = databaseRestored
-                    && runtimeRestoreFailure == null
-                    && invalidateFailure == null
-                    && stagedCleanupFailure == null;
-            IllegalStateException safeFailure = new IllegalStateException(fullyRestored
-                    ? "Provider 密钥清理失败，已恢复原配置: " + existing.providerId()
-                    : "Provider 密钥清理失败，原配置恢复不完整: " + existing.providerId());
-            addSanitizedSuppressed(safeFailure, "旧密钥清理失败", cleanupFailure);
-            addSanitizedSuppressed(safeFailure, "数据库恢复失败", databaseRestoreFailure);
-            addSanitizedSuppressed(safeFailure, "运行时配置恢复失败", runtimeRestoreFailure);
-            addSanitizedSuppressed(safeFailure, "ChatClient 缓存恢复失败", invalidateFailure);
-            addSanitizedSuppressed(safeFailure, "新密钥清理失败", stagedCleanupFailure);
-            throw safeFailure;
+            });
+            databaseRestored = true;
+        } catch (RuntimeException restoreFailure) {
+            databaseRestoreFailure = restoreFailure;
         }
+
+        RuntimeException runtimeRestoreFailure = null;
+        RuntimeException invalidateFailure = null;
+        RuntimeException stagedCleanupFailure = null;
+        if (databaseRestored) {
+            try {
+                if (previous == null) {
+                    registry.disable(committed.providerId());
+                } else {
+                    applyCommittedRuntimeConfig(previous, previousRuntimeConfig);
+                }
+            } catch (RuntimeException restoreFailure) {
+                runtimeRestoreFailure = restoreFailure;
+            }
+            try {
+                invalidateClient(committed.providerId());
+            } catch (RuntimeException restoreFailure) {
+                invalidateFailure = restoreFailure;
+            }
+            if (stagedSecretRef != null && !stagedSecretRef.isBlank()) {
+                try {
+                    secretStore.delete(stagedSecretRef);
+                } catch (RuntimeException restoreFailure) {
+                    stagedCleanupFailure = restoreFailure;
+                }
+            }
+        }
+
+        boolean fullyRestored = databaseRestored
+                && runtimeRestoreFailure == null
+                && invalidateFailure == null
+                && stagedCleanupFailure == null;
+        IllegalStateException safeFailure = new IllegalStateException(fullyRestored
+                ? "Provider 提交后应用失败，已恢复原配置: " + committed.providerId()
+                : "Provider 提交后应用失败，原配置恢复不完整: " + committed.providerId());
+        addSanitizedSuppressed(safeFailure, "提交后副作用失败", sideEffectFailure);
+        addSanitizedSuppressed(safeFailure, "数据库恢复失败", databaseRestoreFailure);
+        addSanitizedSuppressed(safeFailure, "运行时配置恢复失败", runtimeRestoreFailure);
+        addSanitizedSuppressed(safeFailure, "ChatClient 缓存恢复失败", invalidateFailure);
+        addSanitizedSuppressed(safeFailure, "新密钥清理失败", stagedCleanupFailure);
+        return safeFailure;
     }
 
     /** 创建不包含原始异常 message 的安全失败，并保留脱敏后的失败类型。 */

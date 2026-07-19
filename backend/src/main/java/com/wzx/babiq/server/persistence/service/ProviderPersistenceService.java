@@ -82,6 +82,19 @@ public class ProviderPersistenceService {
     }
 
     /**
+     * 物理删除刚刚插入但尚未对外成功的 Provider，仅供 create 提交后副作用失败时补偿。
+     *
+     * <p>正常业务删除仍必须走 settings service 的软删除语义；该入口不得用于用户发起的删除。</p>
+     *
+     * @param providerId 已提交但需要撤销的 Provider 标识
+     */
+    @Transactional
+    public void hardDeleteProviderForCompensation(String providerId) {
+        providerConfigMapper.delete(Wrappers.<ProviderConfigEntity>lambdaQuery()
+                .eq(ProviderConfigEntity::getProviderId, providerId));
+    }
+
+    /**
      * 按 providerId 查询 Provider 配置。
      *
      * @param providerId Provider 标识

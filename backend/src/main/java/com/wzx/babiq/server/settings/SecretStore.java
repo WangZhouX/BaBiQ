@@ -13,6 +13,8 @@ public interface SecretStore {
     /**
      * 保存一段明文密钥，并返回外部可持久化引用。
      *
+     * <p>如果本方法抛出异常，调用前已有的密钥和底层持久化文件必须保持不变。</p>
+     *
      * @param namespace 密钥命名空间，例如 provider.deepseek
      * @param secretPlainText 明文密钥，只能在 SecretStore 内部短暂出现
      * @return 可写入数据库的 secretRef
@@ -43,6 +45,10 @@ public interface SecretStore {
 
     /**
      * 删除引用对应的密钥。
+     *
+     * <p>实现必须提供失败原子性：如果本方法抛出异常，调用前可读取的原 entry 和底层持久化文件
+     * 必须保持不变。上层 Provider 补偿逻辑会在删除失败后重新引用旧 secretRef，不能接受
+     * “已经删除但仍抛异常”的不确定状态。</p>
      *
      * @param secretRef `save` 返回的引用
      */
