@@ -199,6 +199,8 @@ public final class ApplicationActionTool implements Tool {
             validateInput(input);
             PendingApplicationAction.Path path = path(descriptor.get("risk"));
             String executionId = executionIds.get();
+            JsonNode normalizedInput = normalizeInput(descriptor, input, executionId);
+            validateInput(normalizedInput);
             PendingApplicationAction.Correlation correlation = new PendingApplicationAction.Correlation(
                     invocation.threadId(), invocation.turnId(), invocation.toolCallId());
             PendingApplicationAction.ConnectionContext connectionContext = connectionContext(trusted);
@@ -207,7 +209,7 @@ public final class ApplicationActionTool implements Tool {
             DeferredProgressListener<PendingApplicationAction> progress = new DeferredProgressListener<>(snapshot -> emitUpdated(
                     emitter, progressItem(itemId, actionId, descriptor, snapshot, elapsed(started))));
             String requestFingerprint = requestFingerprint(
-                    actionId, actionVersion, input, pageId, contextRevision);
+                    actionId, actionVersion, normalizedInput, pageId, contextRevision);
             CompletableFuture<PendingApplicationAction> terminal = pending.register(
                     executionId, correlation, path, connectionContext,
                     new PendingApplicationActions.RegistrationMetadata(
@@ -227,7 +229,7 @@ public final class ApplicationActionTool implements Tool {
             ApplicationActionItem requestedItem = item(
                     itemId, executionId, actionId, descriptor, "requested", null, null, null, 0L);
             ObjectNode frozenRequest = requestPayload(
-                    actionId, actionVersion, input, pageId, contextRevision);
+                    actionId, actionVersion, normalizedInput, pageId, contextRevision);
             return ActionPreparation.success(new PreparedAction(
                     executionId, correlation, connectionContext, requestedAction, frozenRequest,
                     requestedItem, terminal, progress));
@@ -313,6 +315,42 @@ public final class ApplicationActionTool implements Tool {
         } catch (IllegalArgumentException invalid) {
             throw new ActionValidation("validation_failed", "action input exceeds the safe size limit");
         }
+    }
+
+    private JsonNode normalizeInput(JsonNode descriptor, JsonNode input, String executionId) {
+        if (!descriptor.has("inputSchema")) {
+            return input.deepCopy();
+        }
+        JsonNode inputSchema = descriptor.get("inputSchema");
+        JsonNode properties = inputSchema == null ? null : inputSchema.get("properties");
+        JsonNode required = inputSchema == null ? null : inputSchema.get("required");
+        JsonNode executionIdProperty = properties == null ? null : properties.get("executionId");
+        JsonNode executionIdType = executionIdProperty == null ? null : executionIdProperty.get("type");
+        if (inputSchema == null || !inputSchema.isObject()
+                || properties == null || !properties.isObject()
+                || required == null || !required.isArray()
+                || executionIdProperty == null || !executionIdProperty.isObject()
+                || executionIdType == null || !executionIdType.isTextual()
+                || !"string".equals(executionIdType.textValue())) {
+            throw invalidExecutionIdSchema();
+        }
+        boolean executionIdRequired = false;
+        for (JsonNode requiredProperty : required) {
+            if (!requiredProperty.isTextual()) {
+                throw invalidExecutionIdSchema();
+            }
+            executionIdRequired |= "executionId".equals(requiredProperty.textValue());
+        }
+        if (!executionIdRequired) {
+            throw invalidExecutionIdSchema();
+        }
+        ObjectNode normalized = input.deepCopy();
+        normalized.put("executionId", executionId);
+        return normalized;
+    }
+
+    private ActionValidation invalidExecutionIdSchema() {
+        return new ActionValidation("validation_failed", "reserved executionId schema is invalid");
     }
 
     private PendingApplicationAction.Path path(JsonNode riskNode) {

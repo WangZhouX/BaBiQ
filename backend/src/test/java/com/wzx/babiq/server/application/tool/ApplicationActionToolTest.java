@@ -144,6 +144,141 @@ class ApplicationActionToolTest {
     }
 
     @Test
+    void injectsGeneratedExecutionIdIntoEmptyInputWhenSchemaDeclaresReservedField() {
+        arrangeSnapshots(catalogPayloadWithInputSchema(executionIdInputSchema()), contextPayload(7));
+        when(pending.register(any(), any(), any(), any(), any(), any())).thenReturn(
+                CompletableFuture.completedFuture(action(PendingApplicationAction.State.COMPLETED, null)));
+        when(protocol.sendActionRequest(any(), any())).thenReturn(CompletableFuture.completedFuture(null));
+
+        try (ApplicationToolInvocationContext.Scope ignored = invocationScope()) {
+            invoke("framework.demo", 2, json.createObjectNode(), 7);
+        }
+
+        ArgumentCaptor<JsonNode> request = ArgumentCaptor.forClass(JsonNode.class);
+        verify(protocol).sendActionRequest(any(), request.capture());
+        assertThat(request.getValue().path("input").path("executionId").asText())
+                .isEqualTo("execution-fixed");
+    }
+
+    @Test
+    void authoritativeExecutionIdOverridesCallerValueWithoutMutatingCallerInput() {
+        arrangeSnapshots(catalogPayloadWithInputSchema(executionIdInputSchema()), contextPayload(7));
+        when(pending.register(any(), any(), any(), any(), any(), any())).thenReturn(
+                CompletableFuture.completedFuture(action(PendingApplicationAction.State.COMPLETED, null)));
+        when(protocol.sendActionRequest(any(), any())).thenReturn(CompletableFuture.completedFuture(null));
+        ObjectNode callerInput = json.createObjectNode()
+                .put("executionId", "forged-by-model")
+                .put("query", "safe");
+
+        try (ApplicationToolInvocationContext.Scope ignored = invocationScope()) {
+            invoke("framework.demo", 2, callerInput, 7);
+        }
+
+        ArgumentCaptor<JsonNode> request = ArgumentCaptor.forClass(JsonNode.class);
+        verify(protocol).sendActionRequest(any(), request.capture());
+        assertThat(request.getValue().path("input").path("executionId").asText())
+                .isEqualTo("execution-fixed");
+        assertThat(callerInput.path("executionId").asText()).isEqualTo("forged-by-model");
+    }
+
+    @Test
+    void requestFingerprintUsesNormalizedInputAfterAuthoritativeExecutionIdInjection() {
+        arrangeSnapshots(catalogPayloadWithInputSchema(executionIdInputSchema()), contextPayload(7));
+        when(pending.register(any(), any(), any(), any(), any(), any())).thenReturn(
+                CompletableFuture.completedFuture(action(PendingApplicationAction.State.COMPLETED, null)));
+        when(protocol.sendActionRequest(any(), any())).thenReturn(CompletableFuture.completedFuture(null));
+
+        try (ApplicationToolInvocationContext.Scope ignored = invocationScope()) {
+            invoke("framework.demo", 2,
+                    json.createObjectNode().put("executionId", "forged-a").put("query", "safe"), 7);
+        }
+        try (ApplicationToolInvocationContext.Scope ignored = invocationScope()) {
+            invoke("framework.demo", 2,
+                    json.createObjectNode().put("query", "safe").put("executionId", "forged-b"), 7);
+        }
+
+        ArgumentCaptor<PendingApplicationActions.RegistrationMetadata> metadata =
+                ArgumentCaptor.forClass(PendingApplicationActions.RegistrationMetadata.class);
+        verify(pending, times(2)).register(any(), any(), any(), any(), metadata.capture(), any());
+        assertThat(metadata.getAllValues()).extracting(
+                        PendingApplicationActions.RegistrationMetadata::requestFingerprint)
+                .containsExactly(metadata.getAllValues().get(0).requestFingerprint(),
+                        metadata.getAllValues().get(0).requestFingerprint());
+    }
+
+    @Test
+    void leavesInputUnchangedWhenDescriptorDoesNotDeclareInputSchema() {
+        arrangeSnapshots(catalogPayload(false), contextPayload(7));
+        when(pending.register(any(), any(), any(), any(), any(), any())).thenReturn(
+                CompletableFuture.completedFuture(action(PendingApplicationAction.State.COMPLETED, null)));
+        when(protocol.sendActionRequest(any(), any())).thenReturn(CompletableFuture.completedFuture(null));
+        ObjectNode callerInput = json.createObjectNode().put("query", "safe");
+
+        try (ApplicationToolInvocationContext.Scope ignored = invocationScope()) {
+            invoke("framework.demo", 2, callerInput, 7);
+        }
+
+        ArgumentCaptor<JsonNode> request = ArgumentCaptor.forClass(JsonNode.class);
+        verify(protocol).sendActionRequest(any(), request.capture());
+        assertThat(request.getValue().path("input")).isEqualTo(callerInput);
+        assertThat(request.getValue().path("input").has("executionId")).isFalse();
+    }
+
+    @Test
+    void rejectsPartialOrMalformedReservedExecutionIdSchemaBeforeRegistration() {
+        ObjectNode optional = executionIdInputSchema();
+        optional.putArray("required");
+        ObjectNode nonString = executionIdInputSchema();
+        ((ObjectNode) nonString.path("properties").path("executionId")).put("type", "integer");
+        ObjectNode requiredOnly = json.createObjectNode();
+        requiredOnly.putObject("properties");
+        requiredOnly.putArray("required").add("executionId");
+        ObjectNode propertyOnly = json.createObjectNode();
+        propertyOnly.putObject("properties").putObject("executionId").put("type", "string");
+        ObjectNode malformedProperties = executionIdInputSchema();
+        malformedProperties.put("properties", "not-an-object");
+        ObjectNode malformedRequired = executionIdInputSchema();
+        malformedRequired.put("required", "executionId");
+        ObjectNode malformedProperty = executionIdInputSchema();
+        ((ObjectNode) malformedProperty.path("properties")).put("executionId", "string");
+
+        java.util.List<JsonNode> invalidSchemas = java.util.List.of(
+                json.createObjectNode(), optional, nonString, requiredOnly, propertyOnly,
+                json.createArrayNode(), malformedProperties, malformedRequired, malformedProperty);
+
+        for (JsonNode invalidSchema : invalidSchemas) {
+            arrangeSnapshots(catalogPayloadWithInputSchema(invalidSchema), contextPayload(7));
+            ApplicationActionToolResult result;
+            try (ApplicationToolInvocationContext.Scope ignored = invocationScope()) {
+                result = invoke("framework.demo", 2, json.createObjectNode(), 7);
+            }
+            assertThat(result.errorCode()).as("schema=%s", invalidSchema).isEqualTo("validation_failed");
+        }
+
+        verify(pending, never()).register(any(), any(), any(), any(), any(), any());
+        verify(protocol, never()).sendActionRequest(any(), any());
+    }
+
+    @Test
+    void rejectsInputThatExceedsLimitOnlyAfterExecutionIdInjectionBeforeRegistration() {
+        arrangeSnapshots(catalogPayloadWithInputSchema(executionIdInputSchema()), contextPayload(7));
+        int emptyPayloadBytes = "{\"padding\":\"\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        ObjectNode callerInput = json.createObjectNode().put(
+                "padding",
+                "x".repeat(com.wzx.babiq.server.application.protocol.ApplicationProtocolValidator.MAX_ACTION_INPUT_BYTES
+                        - emptyPayloadBytes));
+
+        ApplicationActionToolResult result;
+        try (ApplicationToolInvocationContext.Scope ignored = invocationScope()) {
+            result = invoke("framework.demo", 2, callerInput, 7);
+        }
+
+        assertThat(result.errorCode()).isEqualTo("validation_failed");
+        verify(pending, never()).register(any(), any(), any(), any(), any(), any());
+        verify(protocol, never()).sendActionRequest(any(), any());
+    }
+
+    @Test
     void registrationPersistenceFailurePreventsOutboundAndReturnsStableLocalError() {
         arrangeSnapshots(catalogPayload(false), contextPayload(7));
         when(pending.register(any(), any(), any(), any(), any(), any()))
@@ -592,6 +727,19 @@ class ApplicationActionToolTest {
                 .put("enabled", true);
         action.putArray("requiredPermissions").add("framework:read");
         return json.createObjectNode().set("actions", json.createObjectNode().set("framework.demo", action));
+    }
+
+    private ObjectNode catalogPayloadWithInputSchema(JsonNode inputSchema) {
+        ObjectNode catalog = catalogPayload(false);
+        ((ObjectNode) catalog.path("actions").path("framework.demo")).set("inputSchema", inputSchema);
+        return catalog;
+    }
+
+    private ObjectNode executionIdInputSchema() {
+        ObjectNode schema = json.createObjectNode();
+        schema.putObject("properties").putObject("executionId").put("type", "string");
+        schema.putArray("required").add("executionId");
+        return schema;
     }
 
     private ObjectNode contextPayload(long revision) {
