@@ -11,7 +11,9 @@ import com.wzx.babiq.server.persistence.service.ProviderPersistenceService;
 import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Instant;
 import java.util.List;
@@ -35,6 +37,8 @@ public class ProviderSettingsService {
     private final ObjectProvider<ChatClientFactory> chatClientFactoryProvider;
     /** Anthropic OAuth CLI 凭证源，provider/test 需要显式检查登录状态。 */
     private final ObjectProvider<AnthropicOAuthCredentialSource> anthropicOAuthCredentialSourceProvider;
+    /** SQLite 显式事务边界；SecretStore 和运行时 registry 副作用始终位于事务外。 */
+    private final TransactionTemplate transactionTemplate;
 
     /**
      * 创建 Provider 设置服务。
@@ -43,17 +47,21 @@ public class ProviderSettingsService {
      * @param secretStore 本地密钥存储
      * @param registry 运行期 Provider 注册表
      * @param chatClientFactoryProvider ChatClient 工厂懒加载引用，避免启动期循环依赖
+     * @param anthropicOAuthCredentialSourceProvider Anthropic OAuth CLI 凭证源
+     * @param transactionManager SQLite 事务管理器
      */
     public ProviderSettingsService(ProviderPersistenceService providerPersistenceService,
                                    SecretStore secretStore,
                                    ModelProviderRegistry registry,
                                    ObjectProvider<ChatClientFactory> chatClientFactoryProvider,
-                                   ObjectProvider<AnthropicOAuthCredentialSource> anthropicOAuthCredentialSourceProvider) {
+                                   ObjectProvider<AnthropicOAuthCredentialSource> anthropicOAuthCredentialSourceProvider,
+                                   PlatformTransactionManager transactionManager) {
         this.providerPersistenceService = providerPersistenceService;
         this.secretStore = secretStore;
         this.registry = registry;
         this.chatClientFactoryProvider = chatClientFactoryProvider;
         this.anthropicOAuthCredentialSourceProvider = anthropicOAuthCredentialSourceProvider;
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
     /**
@@ -98,12 +106,14 @@ public class ProviderSettingsService {
      * @param draft 桌面端提交的 Provider 草稿
      * @return 非敏感 Provider 视图
      */
-    @Transactional
     public ProviderView create(ProviderDraft draft) {
         validateRequired(draft, true);
+        if (providerPersistenceService.findProvider(draft.providerId()).isPresent()) {
+            throw new IllegalArgumentException("Provider 已存在: " + draft.providerId());
+        }
         Instant now = Instant.now();
         ProviderAuthMode authMode = ProviderAuthMode.fromWireValue(draft.authMode());
-        String secretRef = authMode == ProviderAuthMode.API_KEY
+        String stagedSecretRef = authMode == ProviderAuthMode.API_KEY
                 ? secretStore.save("provider." + draft.providerId(), draft.apiKey())
                 : null;
         ProviderConfigRecord record = ProviderConfigRecord.of(
@@ -113,12 +123,17 @@ public class ProviderSettingsService {
                 authMode.wireValue(),
                 persistenceBaseUrl(draft.baseUrl()),
                 draft.model(),
-                secretRef,
+                stagedSecretRef,
                 effectiveContextWindow(draft.model(), draft.contextWindow()),
                 draft.enabled(),
                 now);
-        providerPersistenceService.saveProvider(record);
-        registry.registerOrUpdate(toRuntimeConfig(record));
+        executeProviderWrite(stagedSecretRef, () -> {
+            if (providerPersistenceService.findProvider(record.providerId()).isPresent()) {
+                throw new IllegalArgumentException("Provider 已存在: " + record.providerId());
+            }
+            providerPersistenceService.insertProvider(record);
+        });
+        applyCommittedRuntimeConfig(record);
         invalidateClient(record.providerId());
         return toView(record, true);
     }
@@ -129,17 +144,23 @@ public class ProviderSettingsService {
      * @param draft Provider 草稿
      * @return 更新后的非敏感视图
      */
-    @Transactional
     public ProviderView update(ProviderDraft draft) {
         validateRequired(draft, false);
         ProviderConfigRecord existing = providerPersistenceService.findProvider(draft.providerId())
                 .orElseThrow(() -> new IllegalArgumentException("Provider 不存在: " + draft.providerId()));
         ProviderAuthMode authMode = ProviderAuthMode.fromWireValue(draft.authMode());
         String secretRef = null;
+        String stagedSecretRef = null;
         if (authMode == ProviderAuthMode.API_KEY) {
-            secretRef = draft.apiKey() == null || draft.apiKey().isBlank()
-                    ? existing.secretRef()
-                    : secretStore.save("provider." + draft.providerId(), draft.apiKey());
+            if (draft.apiKey() == null || draft.apiKey().isBlank()) {
+                if (existing.secretRef() == null || existing.secretRef().isBlank()) {
+                    throw new IllegalArgumentException("缺少必填字段: apiKey");
+                }
+                secretRef = existing.secretRef();
+            } else {
+                stagedSecretRef = secretStore.save("provider." + draft.providerId(), draft.apiKey());
+                secretRef = stagedSecretRef;
+            }
         }
         ProviderConfigRecord record = new ProviderConfigRecord(
                 draft.providerId(),
@@ -153,13 +174,11 @@ public class ProviderSettingsService {
                 draft.enabled(),
                 existing.createdAt(),
                 Instant.now());
-        providerPersistenceService.saveProvider(record);
-        if (record.enabled()) {
-            registry.registerOrUpdate(toRuntimeConfig(record));
-        } else {
-            registry.disable(record.providerId());
-        }
+        String stagedRefForCompensation = stagedSecretRef;
+        executeProviderWrite(stagedRefForCompensation, () -> providerPersistenceService.updateProvider(record));
+        applyCommittedRuntimeConfig(record);
         invalidateClient(record.providerId());
+        deleteReplacedSecret(existing.secretRef(), record.secretRef());
         return toView(record, record.secretRef() != null);
     }
 
@@ -220,6 +239,59 @@ public class ProviderSettingsService {
                 apiKey,
                 runtimeBaseUrl(record.baseUrl()),
                 effectiveContextWindow(record.model(), record.contextWindow()));
+    }
+
+    /**
+     * 在 SQLite 事务提交后把已提交 Provider 安装进运行时 registry。
+     *
+     * <p>禁用配置从 registry 移除；启用配置会在事务外解析 SecretStore 引用并替换运行时快照，
+     * 因而 ChatClient 永远不会观察到尚未提交的数据库草稿。</p>
+     */
+    private void applyCommittedRuntimeConfig(ProviderConfigRecord record) {
+        if (record.enabled()) {
+            registry.registerOrUpdate(toRuntimeConfig(record));
+            return;
+        }
+        registry.disable(record.providerId());
+    }
+
+    /**
+     * 只在显式 SQLite 事务中执行 Provider 写入；失败时补偿删除本次新建的密钥引用。
+     *
+     * @param stagedSecretRef 本次写入前新建的 SecretStore 引用；未创建新密钥时为空
+     * @param databaseWrite 只允许包含 SQLite 读写的事务体
+     */
+    private void executeProviderWrite(String stagedSecretRef, Runnable databaseWrite) {
+        try {
+            transactionTemplate.executeWithoutResult(status -> databaseWrite.run());
+        } catch (RuntimeException databaseFailure) {
+            compensateStagedSecret(stagedSecretRef, databaseFailure);
+            throw databaseFailure;
+        }
+    }
+
+    /**
+     * 数据库失败后删除尚未被提交记录引用的新密钥；清理失败作为 suppressed 异常保留原始失败类型。
+     */
+    private void compensateStagedSecret(String stagedSecretRef, RuntimeException databaseFailure) {
+        if (stagedSecretRef == null || stagedSecretRef.isBlank()) {
+            return;
+        }
+        try {
+            secretStore.delete(stagedSecretRef);
+        } catch (RuntimeException cleanupFailure) {
+            databaseFailure.addSuppressed(cleanupFailure);
+        }
+    }
+
+    /**
+     * 新配置提交且运行时缓存失效后，删除已经不再被数据库引用的旧密钥。
+     */
+    private void deleteReplacedSecret(String oldSecretRef, String committedSecretRef) {
+        if (oldSecretRef == null || oldSecretRef.isBlank() || oldSecretRef.equals(committedSecretRef)) {
+            return;
+        }
+        secretStore.delete(oldSecretRef);
     }
 
     private ProviderView toView(ProviderConfigRecord record, boolean active) {
@@ -341,6 +413,23 @@ public class ProviderSettingsService {
                              boolean enabled) {
             this(providerId, displayName, type, ProviderAuthMode.API_KEY.wireValue(), baseUrl, model,
                     apiKey, contextWindow, enabled);
+        }
+
+        /**
+         * 返回可安全进入异常诊断和测试输出的草稿摘要，始终隐藏明文 API Key。
+         */
+        @Override
+        public String toString() {
+            return "ProviderDraft[providerId=" + providerId
+                    + ", displayName=" + displayName
+                    + ", type=" + type
+                    + ", authMode=" + authMode
+                    + ", baseUrl=" + baseUrl
+                    + ", model=" + model
+                    + ", apiKey=<hidden>"
+                    + ", contextWindow=" + contextWindow
+                    + ", enabled=" + enabled
+                    + "]";
         }
     }
 

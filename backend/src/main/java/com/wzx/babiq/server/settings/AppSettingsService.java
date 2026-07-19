@@ -8,7 +8,8 @@ import com.wzx.babiq.server.model.ModelProviderRegistry;
 import com.wzx.babiq.server.persistence.service.AppSettingPersistenceService;
 import com.wzx.babiq.server.sandbox.SandboxMode;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.nio.file.Path;
 import java.time.Instant;
@@ -39,6 +40,8 @@ public class AppSettingsService {
     private final AgentLoopProperties agentLoopProperties;
     /** Provider 注册表；activeProviderId 更新后同步这里，下一轮 turn 立即生效。 */
     private final ModelProviderRegistry providerRegistry;
+    /** SQLite 显式事务边界；registry 只在事务成功提交后更新。 */
+    private final TransactionTemplate transactionTemplate;
 
     /**
      * 创建应用设置服务。
@@ -47,15 +50,18 @@ public class AppSettingsService {
      * @param baBiQProperties BaBiQ 根配置
      * @param agentLoopProperties Agent Loop 默认配置
      * @param providerRegistry Provider 注册表
+     * @param transactionManager SQLite 事务管理器
      */
     public AppSettingsService(AppSettingPersistenceService appSettingPersistenceService,
                               BaBiQProperties baBiQProperties,
                               AgentLoopProperties agentLoopProperties,
-                              ModelProviderRegistry providerRegistry) {
+                              ModelProviderRegistry providerRegistry,
+                              PlatformTransactionManager transactionManager) {
         this.appSettingPersistenceService = appSettingPersistenceService;
         this.baBiQProperties = baBiQProperties;
         this.agentLoopProperties = agentLoopProperties;
         this.providerRegistry = providerRegistry;
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
     /**
@@ -77,7 +83,6 @@ public class AppSettingsService {
      * @param update 更新请求；字段为 null 时保留原值
      * @return 更新后的设置快照
      */
-    @Transactional
     public AppSettings update(AppSettingsUpdate update) {
         AppSettings current = get();
         String activeProviderId = choose(update.activeProviderId(), current.activeProviderId());
@@ -85,15 +90,18 @@ public class AppSettingsService {
         String approvalPolicy = choose(update.approvalPolicy(), current.approvalPolicy());
         String defaultCwd = choose(update.defaultCwd(), current.defaultCwd());
 
-        providerRegistry.setActive(activeProviderId);
+        providerRegistry.get(activeProviderId);
         validateSandboxMode(sandboxMode);
         validateApprovalPolicy(approvalPolicy);
 
         Instant now = Instant.now();
-        save(KEY_ACTIVE_PROVIDER, activeProviderId, now);
-        save(KEY_SANDBOX_MODE, sandboxMode, now);
-        save(KEY_APPROVAL_POLICY, approvalPolicy, now);
-        save(KEY_DEFAULT_CWD, defaultCwd, now);
+        transactionTemplate.executeWithoutResult(status -> {
+            save(KEY_ACTIVE_PROVIDER, activeProviderId, now);
+            save(KEY_SANDBOX_MODE, sandboxMode, now);
+            save(KEY_APPROVAL_POLICY, approvalPolicy, now);
+            save(KEY_DEFAULT_CWD, defaultCwd, now);
+        });
+        providerRegistry.setActive(activeProviderId);
         return get();
     }
 

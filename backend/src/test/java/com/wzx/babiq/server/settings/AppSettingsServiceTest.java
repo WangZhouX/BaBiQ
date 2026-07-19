@@ -2,19 +2,29 @@ package com.wzx.babiq.server.settings;
 
 import com.wzx.babiq.server.agent.AgentLoopProperties;
 import com.wzx.babiq.server.approval.ApprovalPolicy;
+import com.wzx.babiq.server.model.ModelProviderRegistry;
+import com.wzx.babiq.server.persistence.service.AppSettingPersistenceService;
 import com.wzx.babiq.server.sandbox.SandboxMode;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.nio.file.Path;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
 
 /**
  * 应用设置服务测试。
@@ -38,6 +48,18 @@ class AppSettingsServiceTest {
     private AppSettingsService appSettingsService;
     @Autowired
     private AgentLoopProperties agentLoopProperties;
+    @Autowired
+    private ModelProviderRegistry providerRegistry;
+    @MockitoSpyBean
+    private AppSettingPersistenceService appSettingPersistenceService;
+
+    /**
+     * 每个测试都把运行时 active 恢复为稳定基线，避免前一用例的切换影响时序断言。
+     */
+    @BeforeEach
+    void resetActiveProvider() {
+        providerRegistry.setActive("dashscope-default");
+    }
 
     @Test
     @DisplayName("缺失设置时返回 application.yml 和 AgentLoopProperties 的默认快照")
@@ -85,5 +107,50 @@ class AppSettingsServiceTest {
                 null)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("approvalPolicy");
+    }
+
+    @Test
+    @DisplayName("设置持久化失败时不得改变运行时 active Provider")
+    void failed_setting_persistence_must_not_change_runtime_active_provider() {
+        doThrow(new IllegalStateException("db-failed"))
+                .when(appSettingPersistenceService).save(any());
+
+        assertThatThrownBy(() -> appSettingsService.update(activeProvider("deepseek-official")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("db-failed");
+
+        assertThat(providerRegistry.active().id()).isEqualTo("dashscope-default");
+    }
+
+    @Test
+    @DisplayName("设置成功时事务提交后才切换运行时 active Provider")
+    void successful_setting_update_changes_registry_only_after_transaction_commit() {
+        AtomicBoolean synchronizationRegistered = new AtomicBoolean();
+        AtomicBoolean commitObserved = new AtomicBoolean();
+        doAnswer(invocation -> {
+            assertThat(providerRegistry.active().id()).isEqualTo("dashscope-default");
+            assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isTrue();
+            if (synchronizationRegistered.compareAndSet(false, true)) {
+                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                    @Override
+                    public void afterCommit() {
+                        assertThat(providerRegistry.active().id()).isEqualTo("dashscope-default");
+                        commitObserved.set(true);
+                    }
+                });
+            }
+            return invocation.callRealMethod();
+        }).when(appSettingPersistenceService).save(any());
+
+        AppSettings settings = appSettingsService.update(activeProvider("deepseek-official"));
+
+        assertThat(commitObserved).isTrue();
+        assertThat(settings.activeProviderId()).isEqualTo("deepseek-official");
+        assertThat(providerRegistry.active().id()).isEqualTo("deepseek-official");
+    }
+
+    /** 构造只修改 active Provider 的部分更新请求。 */
+    private static AppSettingsService.AppSettingsUpdate activeProvider(String providerId) {
+        return new AppSettingsService.AppSettingsUpdate(providerId, null, null, null);
     }
 }
