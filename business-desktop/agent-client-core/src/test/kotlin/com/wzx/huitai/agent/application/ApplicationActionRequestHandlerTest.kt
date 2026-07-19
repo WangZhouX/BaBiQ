@@ -309,7 +309,7 @@ class ApplicationActionRequestHandlerTest {
     }
 
     @Test
-    fun `progress payloads expose only safe preview and error summaries from real action results`() = runTest {
+    fun `protocol payloads redact persisted failure summaries while preserving safe previews`() = runTest {
         val fixture = Fixture(backgroundScope)
         val command = command()
         val preview = com.wzx.huitai.action.model.ActionPreview(
@@ -326,19 +326,31 @@ class ApplicationActionRequestHandlerTest {
         val failedRecord = record(command, ActionExecutionState.FAILED).copy(
             result = ActionResult.Failure(
                 command.executionId,
-                ActionError(ActionErrorCode.REMOTE_REQUEST_FAILED, "请求失败，请稍后重试"),
+                ActionError(ActionErrorCode.REMOTE_REQUEST_FAILED, "FAILURE_SECRET_MARKER"),
+            ),
+        )
+        val outcomeUnknownRecord = record(command, ActionExecutionState.OUTCOME_UNKNOWN).copy(
+            result = ActionResult.OutcomeUnknown(
+                command.executionId,
+                ActionError(ActionErrorCode.OUTCOME_UNKNOWN, "OUTCOME_SECRET_MARKER"),
+                reconciliationPolicy = com.wzx.huitai.action.model.ReconciliationPolicy.MANUAL,
             ),
         )
 
         fixture.status.publish(publication(), previewRecord, projectedResult = previewResult)
         fixture.status.publish(publication(), approvalRecord, projectedResult = approvalResult)
         fixture.status.publish(publication(), failedRecord)
+        fixture.status.publish(publication(), outcomeUnknownRecord)
 
         val payloads = fixture.connection.sent.map { it.json().getValue("params").jsonObject.getValue("payload").jsonObject }
         assertEquals("将更新两个字段", payloads[0].getValue("previewSummary").jsonPrimitive.content)
         assertEquals("将更新两个字段", payloads[1].getValue("previewSummary").jsonPrimitive.content)
-        assertEquals("请求失败，请稍后重试", payloads[2].getValue("errorSummary").jsonPrimitive.content)
-        assertEquals(false, fixture.connection.sent.joinToString().contains("[REDACTED]"))
+        assertEquals("remote_request_failed", payloads[2].getValue("errorCode").jsonPrimitive.content)
+        assertEquals("[REDACTED]", payloads[2].getValue("errorSummary").jsonPrimitive.content)
+        assertEquals("outcome_unknown", payloads[3].getValue("errorCode").jsonPrimitive.content)
+        assertEquals("[REDACTED]", payloads[3].getValue("errorSummary").jsonPrimitive.content)
+        assertEquals(false, fixture.connection.sent.joinToString().contains("FAILURE_SECRET_MARKER"))
+        assertEquals(false, fixture.connection.sent.joinToString().contains("OUTCOME_SECRET_MARKER"))
         fixture.close()
     }
 

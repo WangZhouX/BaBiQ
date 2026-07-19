@@ -166,11 +166,11 @@ internal fun ActionExecutionRecord.toProtocolPayload(
         is ActionResult.Success -> (terminal.redactedOutput as? JsonElement)?.let { put("output", it) }
         is ActionResult.Failure -> {
             put("errorCode", terminal.error.code.name.lowercase())
-            put("errorSummary", terminal.error.message.safeProtocolSummary())
+            put("errorSummary", SAFE_ERROR_SUMMARY)
         }
         is ActionResult.OutcomeUnknown -> {
             put("errorCode", terminal.error.code.name.lowercase())
-            put("errorSummary", terminal.error.message.safeProtocolSummary())
+            put("errorSummary", SAFE_ERROR_SUMMARY)
         }
         else -> Unit
     }
@@ -178,6 +178,7 @@ internal fun ActionExecutionRecord.toProtocolPayload(
 
 private fun String.safeProtocolSummary(): String = take(MAX_PROTOCOL_SUMMARY_LENGTH)
 
+private const val SAFE_ERROR_SUMMARY = "[REDACTED]"
 private const val MAX_PROTOCOL_SUMMARY_LENGTH = 240
 
 internal fun ActionExecutionState.wireName(): String = when (this) {
