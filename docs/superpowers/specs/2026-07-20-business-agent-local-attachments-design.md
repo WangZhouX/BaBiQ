@@ -207,6 +207,14 @@
 
 后端不信任客户端提供的文件名、类型和大小。日志只记录 threadId、turnId、附件 ID、类型和大小，不记录绝对路径、文件正文或哈希全文。
 
+### 9.1 实现确认偏差：业务 Profile 禁止 Mapper 参数 DEBUG 日志
+
+真实业务 Profile 集成测试确认：即使 JSON-RPC、AgentLoop 与 ItemEmitter 已完成路径脱敏，
+MyBatis Mapper 的 DEBUG bind-parameter 日志仍会把 `bq_items.payload_json` 中仅供本机持久化的
+`localPath` 作为 SQL 参数输出。业务桌面因此在 `application-business-desktop.yml` 中把
+`com.wzx.babiq.server.persistence.mapper` 固定为 `INFO`；其余业务诊断仍保持原有 DEBUG 级别。
+这是生产安全边界，不是测试专用覆盖，避免附件元数据经数据库驱动日志旁路泄漏。
+
 异步执行前再次确认文件存在；读取后核对大小和 SHA-256。如果从提交到读取期间文件发生变化，本轮以 `ATTACHMENT_CHANGED` 失败，不静默处理变化后的内容。
 
 所有 JSON-RPC 参数摘要和协议诊断在序列化前必须把 `input.attachments[*].localPath` 以及内部 canonical/internal path 字段替换为 `<local-path-redacted>`。该规则接入公共 JSON-RPC 日志摘要，不能只依赖 `TurnStartHandler` 自己不打印路径；摘要序列化失败时也只能返回固定占位符，不能拼接异常原文。

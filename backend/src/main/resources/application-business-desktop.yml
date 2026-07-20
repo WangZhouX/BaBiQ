@@ -5,6 +5,10 @@ server:
 logging:
   file:
     name: ${babiq.business.runtime-dir}/logs/backend.log
+  level:
+    # MyBatis DEBUG parameter logging can serialize local-only attachment metadata.
+    # Keep business diagnostics at their existing level while suppressing SQL bind values.
+    com.wzx.babiq.server.persistence.mapper: INFO
 
 babiq:
   business:
