@@ -175,8 +175,8 @@ WebSocket 连接 future 现在有 8 秒硬超时。每次测试生成的 UUID ru
 - 选择 1.1 MiB PNG 成功，chip 为 `A-QZFE2U`，不显示原始路径。
 - 仅附件发送被后端接受：`turn/start` 准备 2 个附件、总计 2,514,479 B；历史用户消息显示同一组
   `A-UA6SYY` / `A-QZFE2U` chip。隔离 HOME 没有真实 Provider 凭据，因此模型阶段以安全提示失败、
-  token 为 0；真实模型输入中的图片 media 和文档正文装配由 `BusinessAttachmentEndToEndIT` 的确定性
-  捕获模型桩覆盖，本次人工烟测不把“无凭据”误报为模型理解成功。
+  token 为 0；文档正文装配由 `BusinessAttachmentEndToEndIT` 的确定性捕获模型桩覆盖，图片 media
+  装配由 `AgentLoopAttachmentTest` 覆盖，本次人工烟测不把“无凭据”误报为模型理解成功。
 - 文本加 TXT 发送时，`A-8F2RFE` 被准备为 1 个附件、279 B。下一轮只发送文本引用 `A-8F2RFE`，
   入站 `attachments=0`，历史解析仍准备出 1 个附件、279 B、`[A-8F2RFE]`。
 - 把原 TXT 安全改名后再次引用，UI 显示“附件已不存在，请重新选择后再发送”，草稿保留；后端返回
