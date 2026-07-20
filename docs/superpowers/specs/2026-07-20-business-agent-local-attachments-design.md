@@ -209,7 +209,9 @@
 
 异步执行前再次确认文件存在；读取后核对大小和 SHA-256。如果从提交到读取期间文件发生变化，本轮以 `ATTACHMENT_CHANGED` 失败，不静默处理变化后的内容。
 
-所有 JSON-RPC 参数摘要和协议诊断在序列化前必须把 `input.attachments[*].localPath` 替换为 `<local-path-redacted>`。该规则接入公共 JSON-RPC 日志摘要，不能只依赖 `TurnStartHandler` 自己不打印路径。当前仓库的应用动作审计链不接收 `turn/start` 附件参数，因此没有附件承载型业务审计序列化入口；若以后新增此类入口，必须复用同一结构化附件诊断脱敏器后才能落审计。
+所有 JSON-RPC 参数摘要和协议诊断在序列化前必须把 `input.attachments[*].localPath` 以及内部 canonical/internal path 字段替换为 `<local-path-redacted>`。该规则接入公共 JSON-RPC 日志摘要，不能只依赖 `TurnStartHandler` 自己不打印路径；摘要序列化失败时也只能返回固定占位符，不能拼接异常原文。
+
+当前代码边界经 `turn/start`、`application/action/*` 与 `ActionAuditDraft` 调用链搜索确认：`TurnStartHandler` 只把准备后的对话/Turn/item 数据交给 `ConversationService`、`ItemEmitter` 和 `TurnExecutor`；应用动作审计仅由桌面动作执行链生成 `ActionAuditDraft`，不会接收 JSON-RPC `turn/start` 的原始 params。因此当前没有附件承载型应用动作审计序列化入口。若以后新增此类入口，必须在构造审计载荷前复用 `AttachmentDiagnosticRedactor`，并以测试证明路径字段已脱敏。
 
 ## 10. 文档解析
 

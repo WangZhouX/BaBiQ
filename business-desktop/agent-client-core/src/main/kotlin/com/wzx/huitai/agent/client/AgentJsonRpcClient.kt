@@ -41,8 +41,11 @@ data class AgentRawNotification(
     val params: JsonObject,
 )
 
-/** 远端 JSON-RPC error 的脱敏本地投影，不保留远端 message 或 data。 */
-class AgentJsonRpcException(val remoteCode: Int) : IllegalStateException(
+/** 远端 JSON-RPC error 的脱敏本地投影；只保留数字码和白名单附件码。 */
+class AgentJsonRpcException(
+    val remoteCode: Int,
+    val attachmentCode: String? = null,
+) : IllegalStateException(
     "Agent JSON-RPC request failed (code=$remoteCode)",
 )
 
@@ -238,7 +241,12 @@ class AgentJsonRpcClient(
                     ApplicationProtocol.JSON.decodeFromJsonElement(JsonRpcErrorResponse.serializer(), value)
                 }.getOrNull() ?: return
                 response.id?.let { pendingResponses.remove(it) }
-                    ?.completeExceptionally(AgentJsonRpcException(response.error.code))
+                    ?.completeExceptionally(
+                        AgentJsonRpcException(
+                            response.error.code,
+                            whitelistedAttachmentCode(response.error.data),
+                        ),
+                    )
             }
 
             "method" in value && "id" in value -> runCatching {
@@ -352,5 +360,33 @@ class AgentJsonRpcClient(
 
     private companion object {
         const val OVERLOAD_RESPONSE_CAPACITY = 8
+        val ATTACHMENT_ERROR_CODES = setOf(
+            "ATTACHMENT_EMPTY",
+            "ATTACHMENT_LIMIT_EXCEEDED",
+            "ATTACHMENT_FILE_TOO_LARGE",
+            "ATTACHMENT_TOTAL_TOO_LARGE",
+            "ATTACHMENT_PATH_INVALID",
+            "ATTACHMENT_NOT_FOUND",
+            "ATTACHMENT_NOT_REGULAR_FILE",
+            "ATTACHMENT_TYPE_UNSUPPORTED",
+            "ATTACHMENT_CHANGED",
+            "ATTACHMENT_PARSE_FAILED",
+            "ATTACHMENT_ENCRYPTED",
+            "ATTACHMENT_TEXT_LIMIT_EXCEEDED",
+            "ATTACHMENT_IMAGE_TOO_LARGE",
+            "ATTACHMENT_MODEL_UNSUPPORTED",
+            "ATTACHMENT_CLIPBOARD_FAILED",
+            "ATTACHMENT_PARSE_TIMEOUT",
+            "ATTACHMENT_PARSE_OVERLOADED",
+            "ATTACHMENT_ARCHIVE_UNSAFE",
+            "ATTACHMENT_REFERENCE_AMBIGUOUS",
+        )
+
+        fun whitelistedAttachmentCode(data: JsonObject?): String? {
+            val candidate = data?.get("attachmentCode") ?: return null
+            val primitive = runCatching { candidate.jsonPrimitive }.getOrNull() ?: return null
+            if (!primitive.isString) return null
+            return primitive.content.takeIf(ATTACHMENT_ERROR_CODES::contains)
+        }
     }
 }

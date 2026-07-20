@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.TextNode;
+import com.wzx.babiq.server.attachment.AttachmentDiagnosticRedactor;
 
 import java.util.Locale;
 import java.util.Map;
@@ -43,11 +44,11 @@ public final class JsonRpcLogSupport {
         if (params == null || params.isNull()) {
             return "null";
         }
-        JsonNode sanitized = sanitize(params);
+        JsonNode sanitized = sanitize(AttachmentDiagnosticRedactor.redact(params));
         try {
             return abbreviate(OBJECT_MAPPER.writeValueAsString(sanitized), JSON_SUMMARY_LIMIT);
         } catch (JsonProcessingException exception) {
-            return "<params-summary-error:" + exception.getMessage() + ">";
+            return "<params-summary-error>";
         }
     }
 

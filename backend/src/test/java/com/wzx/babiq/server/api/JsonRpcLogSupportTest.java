@@ -1,6 +1,7 @@
 package com.wzx.babiq.server.api;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -46,5 +47,35 @@ class JsonRpcLogSupportTest {
 
         assertThat(summary).isEqualTo("[application-action-redacted]");
         assertThat(summary).doesNotContain("secret-action-payload");
+    }
+
+    @Test
+    @DisplayName("附件路径字段会递归脱敏且保留安全标识和名称")
+    void attachment_paths_should_be_recursively_redacted_without_hiding_safe_metadata() {
+        ObjectNode params = objectMapper.createObjectNode();
+        ObjectNode input = params.putObject("input");
+        ArrayNode attachments = input.putArray("attachments");
+        attachments.addObject()
+                .put("id", "550e8400-e29b-41d4-a716-446655440000")
+                .put("displayId", "A-7K3M2Q")
+                .put("name", "contract.pdf")
+                .put("localPath", "C:\\private\\customer\\contract.pdf")
+                .put("pathLabel", "selected-file")
+                .putObject("diagnostic")
+                .put("canonicalPath", "C:\\private\\customer\\canonical-contract.pdf")
+                .put("internalCachePath", "C:\\private\\cache\\contract.pdf");
+
+        String summary = JsonRpcLogSupport.paramsSummary(params);
+
+        assertThat(summary)
+                .contains("\"id\":\"550e8400-e29b-41d4-a716-446655440000\"")
+                .contains("\"displayId\":\"A-7K3M2Q\"")
+                .contains("\"name\":\"contract.pdf\"")
+                .contains("\"pathLabel\":\"selected-file\"")
+                .contains("<local-path-redacted>")
+                .doesNotContain("C:\\private")
+                .doesNotContain("canonical-contract.pdf");
+        assertThat(params.path("input").path("attachments").path(0).path("localPath").asText())
+                .isEqualTo("C:\\private\\customer\\contract.pdf");
     }
 }

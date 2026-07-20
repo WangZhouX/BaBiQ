@@ -345,8 +345,11 @@ class TurnStartHandlerTest {
                                 "type", "start_work_unit",
                                 "workUnitId", "wu_1"))),
                 recordingSession(payloads)))
-                .isInstanceOfSatisfying(AttachmentException.class, failure ->
-                        assertThat(failure.code()).isEqualTo(AttachmentErrorCode.ATTACHMENT_NOT_FOUND));
+                .isInstanceOfSatisfying(JsonRpcException.class, failure -> {
+                    assertThat(failure.errorCode()).isEqualTo(JsonRpcErrorCode.INVALID_PARAMS);
+                    assertThat(failure.errorData()).isEqualTo(Map.of(
+                            "attachmentCode", AttachmentErrorCode.ATTACHMENT_NOT_FOUND.name()));
+                });
 
         verify(workUnitService, never()).selectPendingGoalForTurn(any(), any());
         assertNoTurnOrWorkUnitMutation(
@@ -426,9 +429,10 @@ class TurnStartHandlerTest {
 
         Map<?, ?> first = (Map<?, ?>) handler.handle(params, recordingSession(new ArrayList<>()));
         assertThatThrownBy(() -> handler.handle(params, recordingSession(new ArrayList<>())))
-                .isInstanceOfSatisfying(AttachmentException.class, failure ->
-                        assertThat(failure.code())
-                                .isEqualTo(AttachmentErrorCode.ATTACHMENT_REFERENCE_AMBIGUOUS));
+                .isInstanceOfSatisfying(JsonRpcException.class, failure ->
+                        assertThat(failure.errorData()).isEqualTo(Map.of(
+                                "attachmentCode",
+                                AttachmentErrorCode.ATTACHMENT_REFERENCE_AMBIGUOUS.name())));
 
         verify(historyResolver, times(1))
                 .resolve(thread.id(), BusinessIdentityScope.UNSCOPED, prepared);
@@ -513,7 +517,10 @@ class TurnStartHandlerTest {
                                 "localPath", attachment.metadata().localPath())))));
 
         assertThatThrownBy(() -> handler.handle(params, recordingSession(new ArrayList<>())))
-                .isInstanceOf(AttachmentException.class);
+                .isInstanceOfSatisfying(JsonRpcException.class, failure ->
+                        assertThat(failure.errorData()).isEqualTo(Map.of(
+                                "attachmentCode",
+                                AttachmentErrorCode.ATTACHMENT_REFERENCE_AMBIGUOUS.name())));
 
         try (AttachmentReservationRegistry.Reservation next = registry.reserve(
                 thread.id(), BusinessIdentityScope.UNSCOPED, List.of(attachment))) {
@@ -571,8 +578,11 @@ class TurnStartHandlerTest {
                                         "name", "missing.pdf",
                                         "localPath", "C:\\missing.pdf"))))),
                 recordingSession(payloads)))
-                .isInstanceOfSatisfying(AttachmentException.class, failure ->
-                        assertThat(failure.code()).isEqualTo(AttachmentErrorCode.ATTACHMENT_NOT_FOUND));
+                .isInstanceOfSatisfying(JsonRpcException.class, failure -> {
+                    assertThat(failure.errorCode()).isEqualTo(JsonRpcErrorCode.INVALID_PARAMS);
+                    assertThat(failure.errorData()).isEqualTo(Map.of(
+                            "attachmentCode", AttachmentErrorCode.ATTACHMENT_NOT_FOUND.name()));
+                });
 
         assertThat(payloads).isEmpty();
         verify(conversationService, never()).startTurn(any());
@@ -581,6 +591,43 @@ class TurnStartHandlerTest {
                 any(), any(), any(), any(), any(), any(), any());
         verifyNoInteractions(executor);
         verifyNoInteractions(historyResolver);
+    }
+
+    @Test
+    void attachment_failure_maps_only_stable_code_and_never_exposes_path_or_cause() {
+        ConversationService conversationService = new ConversationService();
+        Thread thread = conversationService.createThread("C:/business");
+        AttachmentPreparationService preparationService = mock(AttachmentPreparationService.class);
+        String privatePath = "C:\\Users\\secret\\customer-contract.pdf";
+        when(preparationService.prepareNew(eq("review"), any()))
+                .thenThrow(new AttachmentException(
+                        AttachmentErrorCode.ATTACHMENT_PATH_INVALID,
+                        "cannot read " + privatePath));
+        TurnStartHandler handler = new TurnStartHandler(
+                conversationService, objectMapper, mock(TurnExecutor.class),
+                null, null, null, null, null, null,
+                preparationService, mock(AttachmentHistoryResolver.class));
+
+        assertThatThrownBy(() -> handler.handle(
+                objectMapper.valueToTree(Map.of(
+                        "threadId", thread.id(),
+                        "input", Map.of(
+                                "text", "review",
+                                "attachments", List.of(Map.of(
+                                        "id", "550e8400-e29b-41d4-a716-446655440000",
+                                        "displayId", "A-7K3M2Q",
+                                        "name", "customer-contract.pdf",
+                                        "localPath", privatePath))))),
+                recordingSession(new ArrayList<>())))
+                .isInstanceOfSatisfying(JsonRpcException.class, failure -> {
+                    assertThat(failure.errorCode()).isEqualTo(JsonRpcErrorCode.INVALID_PARAMS);
+                    assertThat(failure.errorData()).isEqualTo(Map.of(
+                            "attachmentCode", AttachmentErrorCode.ATTACHMENT_PATH_INVALID.name()));
+                    assertThat(failure.getMessage())
+                            .doesNotContain(privatePath)
+                            .doesNotContain("cannot read");
+                    assertThat(failure.getCause()).isNull();
+                });
     }
 
     @Test

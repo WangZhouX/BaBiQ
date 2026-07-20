@@ -1,5 +1,6 @@
 package com.wzx.huitai.desktop.controller
 
+import com.wzx.huitai.agent.client.AgentJsonRpcException
 import com.wzx.huitai.agent.conversation.BusinessConversationGateway
 import com.wzx.huitai.agent.conversation.BusinessAttachmentDraft
 import com.wzx.huitai.agent.conversation.BusinessProvider
@@ -82,6 +83,31 @@ class BusinessConversationController(
 }
 
 private fun safeFailureMessage(failure: Exception): String = when (failure) {
+    is AgentJsonRpcException -> safeAttachmentFailureMessage(failure.attachmentCode)
     is IllegalArgumentException, is IllegalStateException -> failure.message?.take(160) ?: "Request failed"
     else -> "Request failed"
+}
+
+private fun safeAttachmentFailureMessage(code: String?): String = when (code) {
+    "ATTACHMENT_EMPTY" -> "附件内容为空，请重新选择后再发送"
+    "ATTACHMENT_LIMIT_EXCEEDED" -> "附件数量过多，请移除部分附件后再发送"
+    "ATTACHMENT_FILE_TOO_LARGE" -> "单个附件超过大小限制，请选择更小的文件"
+    "ATTACHMENT_TOTAL_TOO_LARGE" -> "附件总大小超过限制，请移除部分附件后再发送"
+    "ATTACHMENT_PATH_INVALID",
+    "ATTACHMENT_NOT_REGULAR_FILE",
+    "ATTACHMENT_CHANGED",
+    -> "附件已移动、变更或不可读取，请重新选择后再发送"
+    "ATTACHMENT_NOT_FOUND" -> "附件已不存在，请重新选择后再发送"
+    "ATTACHMENT_TYPE_UNSUPPORTED" -> "不支持该附件类型，请选择图片、文本、PDF 或 Office 文件"
+    "ATTACHMENT_PARSE_FAILED" -> "附件内容无法解析，请检查文件后重试"
+    "ATTACHMENT_ENCRYPTED" -> "附件已加密，请先解除密码保护后重试"
+    "ATTACHMENT_TEXT_LIMIT_EXCEEDED" -> "附件文字内容过多，请拆分文件后重试"
+    "ATTACHMENT_IMAGE_TOO_LARGE" -> "图片尺寸过大，请压缩后重试"
+    "ATTACHMENT_MODEL_UNSUPPORTED" -> "当前模型不支持该附件，请更换模型后重试"
+    "ATTACHMENT_CLIPBOARD_FAILED" -> "截图附件读取失败，请重新粘贴"
+    "ATTACHMENT_PARSE_TIMEOUT" -> "附件解析超时，请缩小文件后重试"
+    "ATTACHMENT_PARSE_OVERLOADED" -> "附件解析任务繁忙，请稍后重试"
+    "ATTACHMENT_ARCHIVE_UNSAFE" -> "Office 附件结构不安全，请检查文件后重试"
+    "ATTACHMENT_REFERENCE_AMBIGUOUS" -> "附件标识存在冲突，请重新选择或明确引用"
+    else -> "请求失败，请检查后重试"
 }

@@ -6,11 +6,11 @@ import com.wzx.babiq.server.agent.TurnExecutor;
 import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
 import com.wzx.babiq.server.application.scope.BusinessIdentityScopeService;
 import com.wzx.babiq.server.attachment.AttachmentHistoryResolver;
+import com.wzx.babiq.server.attachment.AttachmentException;
 import com.wzx.babiq.server.attachment.AttachmentPreparationService;
 import com.wzx.babiq.server.attachment.AttachmentRequest;
 import com.wzx.babiq.server.attachment.AttachmentReservationRegistry;
 import com.wzx.babiq.server.attachment.PreparedTurnInput;
-import com.wzx.babiq.server.api.JsonRpcLogSupport;
 import com.wzx.babiq.server.api.JsonRpcMethodHandler;
 import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
 import com.wzx.babiq.server.api.error.JsonRpcException;
@@ -39,6 +39,7 @@ import org.springframework.web.socket.WebSocketSession;
 import java.util.Map;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Pattern;
 
 /**
  * turn/start 方法处理器。
@@ -51,6 +52,8 @@ import java.util.List;
 public class TurnStartHandler implements JsonRpcMethodHandler {
 
     private static final Logger log = LoggerFactory.getLogger(TurnStartHandler.class);
+    private static final Pattern SAFE_ATTACHMENT_DISPLAY_ID =
+            Pattern.compile("(?i)^A-[A-HJ-NP-Z2-9]{6}$");
 
     /** 创建或读取 thread/turn 的内存会话服务，是 turn/start 的状态来源。 */
     private final ConversationService conversationService;
@@ -204,6 +207,26 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
      */
     @Override
     public Object handle(JsonNode params, WebSocketSession session) {
+        try {
+            return handleRequest(params, session);
+        } catch (AttachmentException failure) {
+            String threadId = safeThreadId(params);
+            log.warn(
+                    "turn/start attachment rejected: threadId={}, attachmentCount={}, "
+                            + "attachmentDisplayIds={}, attachmentCode={}, reasonType={}",
+                    threadId,
+                    attachmentCount(params),
+                    safeAttachmentDisplayIds(params),
+                    failure.code().name(),
+                    failure.getClass().getSimpleName());
+            throw new JsonRpcException(
+                    JsonRpcErrorCode.INVALID_PARAMS,
+                    "附件处理失败，请检查附件后重试",
+                    Map.of("attachmentCode", failure.code().name()));
+        }
+    }
+
+    private Object handleRequest(JsonNode params, WebSocketSession session) {
         String threadId = requiredText(params, "threadId");
         TurnInputRequest input = parseTurnInput(params);
         String userText = input.text();
@@ -213,12 +236,9 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
             throw new JsonRpcException(JsonRpcErrorCode.INTERNAL_ERROR, "工作容器服务未初始化");
         }
         String workUnitIdToStart = workUnitRequest == null ? parseWorkUnitStartId(params) : null;
-        log.info("turn/start 收到请求: threadId={}, providerId={}, inputChars={}, attachments={}, inputPreview={}",
+        log.info("turn/start 收到请求: threadId={}, attachmentCount={}",
                 threadId,
-                providerId == null ? "<active-provider>" : providerId,
-                userText.length(),
-                input.attachments().size(),
-                JsonRpcLogSupport.preview(userText));
+                input.attachments().size());
         BusinessIdentityScope requestScope = businessIdentityScopeService == null
                 ? BusinessIdentityScope.UNSCOPED
                 : resolveBusinessScope(session, threadId);
@@ -236,11 +256,17 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
                         workUnitRequest != null, workUnitIdToStart);
         Thread thread = started.thread();
         Turn turn = started.turn();
-        log.info("turn/start 已创建 Turn: threadId={}, turnId={}, cwd={}, providerId={}",
+        log.info(
+                "turn/start 附件准备完成: threadId={}, attachmentCount={}, "
+                        + "attachmentTotalBytes={}, attachmentDisplayIds={}",
                 threadId,
-                turn.id(),
-                thread.cwd(),
-                providerId == null ? "<active-provider>" : providerId);
+                started.input().allAttachments().size(),
+                started.input().allAttachments().stream()
+                        .mapToLong(item -> item.metadata().sizeBytes())
+                        .sum(),
+                started.input().allAttachments().stream()
+                        .map(item -> item.metadata().displayId())
+                        .toList());
 
         ItemEmitter emitter = new ItemEmitter(session, objectMapper, threadId, turn.id(), eventRecorder);
         try {
@@ -286,11 +312,41 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
             started.releaseReservation();
             throw new JsonRpcException(JsonRpcErrorCode.INTERNAL_ERROR, "Turn 提交失败");
         }
-        log.info("turn/start 已提交 AgentLoop: threadId={}, turnId={}, providerId={}",
-                threadId,
-                turn.id(),
-                providerId == null ? "<active-provider>" : providerId);
+        log.info("turn/start 已提交 AgentLoop: threadId={}, turnId={}", threadId, turn.id());
         return Map.of("turnId", turn.id());
+    }
+
+    private static String safeThreadId(JsonNode params) {
+        JsonNode value = params == null ? null : params.get("threadId");
+        if (value == null || !value.isTextual()) {
+            return "<unknown>";
+        }
+        String threadId = value.textValue();
+        return threadId != null && threadId.matches("[A-Za-z0-9_-]{1,96}")
+                ? threadId
+                : "<invalid>";
+    }
+
+    private static int attachmentCount(JsonNode params) {
+        JsonNode attachments = params == null ? null : params.path("input").path("attachments");
+        return attachments != null && attachments.isArray() ? attachments.size() : 0;
+    }
+
+    private static List<String> safeAttachmentDisplayIds(JsonNode params) {
+        JsonNode attachments = params == null ? null : params.path("input").path("attachments");
+        if (attachments == null || !attachments.isArray()) {
+            return List.of();
+        }
+        List<String> result = new ArrayList<>();
+        for (JsonNode attachment : attachments) {
+            JsonNode displayId = attachment == null ? null : attachment.get("displayId");
+            if (displayId != null
+                    && displayId.isTextual()
+                    && SAFE_ATTACHMENT_DISPLAY_ID.matcher(displayId.textValue()).matches()) {
+                result.add(displayId.textValue().toUpperCase(java.util.Locale.ROOT));
+            }
+        }
+        return List.copyOf(result);
     }
 
     private void failStartedTurn(Turn turn, String step, Throwable failure) {
