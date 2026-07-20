@@ -13,6 +13,9 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
+import java.nio.file.WatchEvent;
+import java.nio.file.WatchKey;
+import java.nio.file.WatchService;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -24,6 +27,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.TimeUnit;
 import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -290,11 +294,81 @@ class AttachmentFileValidatorTest {
                 .doesNotContain(hostileName, "secret.doc", "\r", "\n", "987654321", hostileFileKey);
     }
 
+    @Test
+    void closesWatchServiceWhenALaterAncestorRegistrationFails() {
+        TrackingWatchService watchService = new TrackingWatchService();
+        AtomicBoolean firstRegistration = new AtomicBoolean(true);
+        String secretPath = tempDir.resolve("private-watch-path").toString();
+
+        assertThatThrownBy(() -> AttachmentFileValidator.PathMutationWatch.start(
+                tempDir.resolve("one/two/file.txt"),
+                () -> watchService,
+                (directory, service) -> {
+                    if (firstRegistration.getAndSet(false)) {
+                        return new StubWatchKey();
+                    }
+                    throw new IOException("registration failed for " + secretPath);
+                }))
+                .isInstanceOf(IOException.class);
+        assertThat(watchService.closed).isTrue();
+    }
+
+    @Test
+    void normalizesWatchAndBoundChannelRuntimeFailuresWithoutPathOrCause() throws Exception {
+        Path file = write("runtime-boundary.txt", "safe content".getBytes(StandardCharsets.UTF_8));
+        String secretPath = file.toString();
+        AttachmentFileValidator watchFailure = new AttachmentFileValidator(
+                new Tika(),
+                AttachmentFileValidator.ValidationRaceHook.NO_OP,
+                ignored -> {
+                    throw new SecurityException("watch denied " + secretPath);
+                },
+                (path, options) -> Files.newByteChannel(path, options));
+        assertSafeFailure(
+                watchFailure,
+                file,
+                "A-23457V",
+                AttachmentErrorCode.ATTACHMENT_PATH_INVALID,
+                secretPath);
+
+        AttachmentFileValidator channelFailure = new AttachmentFileValidator(
+                new Tika(),
+                AttachmentFileValidator.ValidationRaceHook.NO_OP,
+                AttachmentFileValidator.PathMutationWatch::start,
+                (path, options) -> {
+                    throw new UnsupportedOperationException("channel denied " + secretPath);
+                });
+        assertSafeFailure(
+                channelFailure,
+                file,
+                "A-23457W",
+                AttachmentErrorCode.ATTACHMENT_CHANGED,
+                secretPath);
+    }
+
     private void assertCode(AttachmentRequest request, AttachmentErrorCode expectedCode) {
         assertThatThrownBy(() -> validator.validate(request))
                 .isInstanceOf(AttachmentException.class)
                 .extracting(error -> ((AttachmentException) error).code())
                 .isEqualTo(expectedCode);
+    }
+
+    private void assertSafeFailure(
+            AttachmentFileValidator failingValidator,
+            Path file,
+            String displayId,
+            AttachmentErrorCode expectedCode,
+            String secretPath
+    ) {
+        assertThatThrownBy(() -> failingValidator.validate(request(file, displayId)))
+                .isInstanceOf(AttachmentException.class)
+                .satisfies(error -> {
+                    AttachmentException exception = (AttachmentException) error;
+                    assertThat(exception.code()).isEqualTo(expectedCode);
+                    assertThat(exception.getCause()).isNull();
+                    assertThat(exception.getMessage()).doesNotContain(secretPath);
+                    assertThat(exception.toString()).doesNotContain(secretPath);
+                });
     }
 
     private AttachmentRequest request(Path path, String displayId) {
@@ -428,5 +502,55 @@ class AttachmentFileValidatorTest {
             value /= alphabet.length();
         }
         return builder.toString();
+    }
+
+    private static final class TrackingWatchService implements WatchService {
+        private boolean closed;
+
+        @Override
+        public void close() {
+            closed = true;
+        }
+
+        @Override
+        public WatchKey poll() {
+            return null;
+        }
+
+        @Override
+        public WatchKey poll(long timeout, TimeUnit unit) {
+            return null;
+        }
+
+        @Override
+        public WatchKey take() {
+            return null;
+        }
+    }
+
+    private static final class StubWatchKey implements WatchKey {
+        @Override
+        public boolean isValid() {
+            return true;
+        }
+
+        @Override
+        public List<WatchEvent<?>> pollEvents() {
+            return List.of();
+        }
+
+        @Override
+        public boolean reset() {
+            return true;
+        }
+
+        @Override
+        public void cancel() {
+        }
+
+        @Override
+        public java.nio.file.Watchable watchable() {
+            return null;
+        }
     }
 }

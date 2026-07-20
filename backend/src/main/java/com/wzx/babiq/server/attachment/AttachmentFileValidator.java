@@ -82,18 +82,35 @@ public class AttachmentFileValidator {
 
     private final Tika tika;
     private final ValidationRaceHook raceHook;
+    private final PathMutationWatchOpener watchOpener;
+    private final BoundChannelOpener channelOpener;
 
     public AttachmentFileValidator() {
-        this(new Tika(), ValidationRaceHook.NO_OP);
+        this(
+                new Tika(),
+                ValidationRaceHook.NO_OP,
+                PathMutationWatch::start,
+                Files::newByteChannel);
     }
 
     AttachmentFileValidator(Tika tika) {
-        this(tika, ValidationRaceHook.NO_OP);
+        this(tika, ValidationRaceHook.NO_OP, PathMutationWatch::start, Files::newByteChannel);
     }
 
     AttachmentFileValidator(Tika tika, ValidationRaceHook raceHook) {
+        this(tika, raceHook, PathMutationWatch::start, Files::newByteChannel);
+    }
+
+    AttachmentFileValidator(
+            Tika tika,
+            ValidationRaceHook raceHook,
+            PathMutationWatchOpener watchOpener,
+            BoundChannelOpener channelOpener
+    ) {
         this.tika = tika;
         this.raceHook = raceHook;
+        this.watchOpener = watchOpener;
+        this.channelOpener = channelOpener;
     }
 
     public PreparedAttachment validate(AttachmentRequest request) {
@@ -122,7 +139,7 @@ public class AttachmentFileValidator {
             throw unsupported();
         }
 
-        try (PathMutationWatch mutationWatch = PathMutationWatch.start(requestedPath)) {
+        try (PathMutationWatch mutationWatch = watchOpener.open(requestedPath)) {
             invokeRaceHook(ValidationPhase.BEFORE_BOUND_OPEN, requestedPath, canonicalPath);
             rejectLinkedPathSegments(requestedPath);
             rejectLinkedPathSegments(canonicalPath);
@@ -158,9 +175,11 @@ public class AttachmentFileValidator {
                     snapshot.sha256(),
                     AttachmentSource.SELECTED_FILE);
             return new PreparedAttachment(metadata, canonicalPath, finalIdentity);
-        } catch (IOException exception) {
+        } catch (AttachmentException exception) {
+            throw exception;
+        } catch (IOException | SecurityException | UnsupportedOperationException exception) {
             throw failure(
-                    AttachmentErrorCode.ATTACHMENT_CHANGED,
+                    AttachmentErrorCode.ATTACHMENT_PATH_INVALID,
                     "无法安全监控附件路径",
                     exception);
         }
@@ -458,7 +477,7 @@ public class AttachmentFileValidator {
                     "附件超过 20 MiB 的单文件上限");
         }
         Set<OpenOption> options = Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS);
-        try (SeekableByteChannel channel = Files.newByteChannel(canonicalPath, options)) {
+        try (SeekableByteChannel channel = channelOpener.open(canonicalPath, options)) {
             if (channel.size() != expectedSize) {
                 throw failure(AttachmentErrorCode.ATTACHMENT_CHANGED, "附件在读取期间发生变化");
             }
@@ -484,7 +503,7 @@ public class AttachmentFileValidator {
             return new BoundFileSnapshot(bytes, HexFormat.of().formatHex(digest.digest()));
         } catch (AttachmentException exception) {
             throw exception;
-        } catch (IOException exception) {
+        } catch (IOException | SecurityException | UnsupportedOperationException exception) {
             throw failure(
                     AttachmentErrorCode.ATTACHMENT_CHANGED,
                     "附件在读取期间变得不可用",
@@ -664,6 +683,16 @@ public class AttachmentFileValidator {
         void onPhase(ValidationPhase phase, Path requestedPath, Path canonicalPath) throws IOException;
     }
 
+    @FunctionalInterface
+    interface PathMutationWatchOpener {
+        PathMutationWatch open(Path target) throws IOException;
+    }
+
+    @FunctionalInterface
+    interface BoundChannelOpener {
+        SeekableByteChannel open(Path path, Set<? extends OpenOption> options) throws IOException;
+    }
+
     private record BoundFileSnapshot(byte[] bytes, String sha256) {
         @Override
         public String toString() {
@@ -686,7 +715,7 @@ public class AttachmentFileValidator {
         }
     }
 
-    private static final class PathMutationWatch implements AutoCloseable {
+    static final class PathMutationWatch implements AutoCloseable {
 
         private final WatchService watchService;
         private final Map<WatchKey, Path> expectedChildren;
@@ -697,20 +726,47 @@ public class AttachmentFileValidator {
         }
 
         static PathMutationWatch start(Path target) throws IOException {
-            WatchService watchService = target.getFileSystem().newWatchService();
+            return start(
+                    target,
+                    () -> target.getFileSystem().newWatchService(),
+                    (directory, watchService) -> directory.register(
+                            watchService,
+                            StandardWatchEventKinds.ENTRY_CREATE,
+                            StandardWatchEventKinds.ENTRY_DELETE));
+        }
+
+        static PathMutationWatch start(
+                Path target,
+                WatchServiceFactory watchServiceFactory,
+                WatchRegistrar watchRegistrar
+        ) throws IOException {
+            WatchService watchService = watchServiceFactory.create();
             Map<WatchKey, Path> expectedChildren = new LinkedHashMap<>();
-            Path absolute = target.toAbsolutePath().normalize();
-            Path child = absolute;
-            while (child.getParent() != null) {
-                Path parent = child.getParent();
-                WatchKey key = parent.register(
-                        watchService,
-                        StandardWatchEventKinds.ENTRY_CREATE,
-                        StandardWatchEventKinds.ENTRY_DELETE);
-                expectedChildren.put(key, child.getFileName());
-                child = parent;
+            try {
+                Path absolute = target.toAbsolutePath().normalize();
+                Path child = absolute;
+                while (child.getParent() != null) {
+                    Path parent = child.getParent();
+                    WatchKey key = watchRegistrar.register(parent, watchService);
+                    expectedChildren.put(key, child.getFileName());
+                    child = parent;
+                }
+                return new PathMutationWatch(watchService, expectedChildren);
+            } catch (IOException exception) {
+                closeAfterFailedStart(watchService, exception);
+                throw exception;
+            } catch (RuntimeException exception) {
+                closeAfterFailedStart(watchService, exception);
+                throw exception;
             }
-            return new PathMutationWatch(watchService, expectedChildren);
+        }
+
+        private static void closeAfterFailedStart(WatchService watchService, Throwable failure) {
+            try {
+                watchService.close();
+            } catch (IOException closeFailure) {
+                failure.addSuppressed(closeFailure);
+            }
         }
 
         boolean targetChanged() {
@@ -742,5 +798,15 @@ public class AttachmentFileValidator {
         public void close() throws IOException {
             watchService.close();
         }
+    }
+
+    @FunctionalInterface
+    interface WatchServiceFactory {
+        WatchService create() throws IOException;
+    }
+
+    @FunctionalInterface
+    interface WatchRegistrar {
+        WatchKey register(Path directory, WatchService watchService) throws IOException;
     }
 }
