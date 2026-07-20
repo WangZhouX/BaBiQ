@@ -189,6 +189,97 @@ class AttachmentHistoryResolverTest {
                         assertThat(failure.code()).isEqualTo(AttachmentErrorCode.ATTACHMENT_CHANGED));
     }
 
+    @Test
+    void rejects_reference_only_count_above_the_per_turn_limit() throws Exception {
+        ConversationRepository repository = mock(ConversationRepository.class);
+        AttachmentFileValidator validator = mock(AttachmentFileValidator.class);
+        List<AttachmentMetadata> history = attachments(0, AttachmentLimits.MAX_ATTACHMENTS + 1, 42);
+        when(repository.listItems("thread-a", 200, null, SCOPE))
+                .thenReturn(List.of(userRecord("thread-a", 1, history.toArray(AttachmentMetadata[]::new))));
+        stubRevalidation(validator, history);
+        AttachmentHistoryResolver resolver = new AttachmentHistoryResolver(
+                repository, objectMapper, validator);
+
+        assertCode(
+                () -> resolver.resolve(
+                        "thread-a", SCOPE,
+                        new PreparedTurnInput(referenceText(history), List.of(), List.of())),
+                AttachmentErrorCode.ATTACHMENT_LIMIT_EXCEEDED);
+    }
+
+    @Test
+    void rejects_combined_new_and_referenced_count_above_the_per_turn_limit() throws Exception {
+        ConversationRepository repository = mock(ConversationRepository.class);
+        AttachmentFileValidator validator = mock(AttachmentFileValidator.class);
+        List<AttachmentMetadata> history = attachments(0, AttachmentLimits.MAX_ATTACHMENTS, 42);
+        when(repository.listItems("thread-a", 200, null, SCOPE))
+                .thenReturn(List.of(userRecord("thread-a", 1, history.toArray(AttachmentMetadata[]::new))));
+        stubRevalidation(validator, history);
+        PreparedAttachment selected = prepared(metadata(20, 42));
+        AttachmentHistoryResolver resolver = new AttachmentHistoryResolver(
+                repository, objectMapper, validator);
+
+        assertCode(
+                () -> resolver.resolve(
+                        "thread-a", SCOPE,
+                        new PreparedTurnInput(referenceText(history), List.of(selected), List.of())),
+                AttachmentErrorCode.ATTACHMENT_LIMIT_EXCEEDED);
+    }
+
+    @Test
+    void rejects_combined_new_and_referenced_bytes_and_saturates_on_long_overflow() throws Exception {
+        ConversationRepository repository = mock(ConversationRepository.class);
+        AttachmentFileValidator validator = mock(AttachmentFileValidator.class);
+        AttachmentMetadata historical = metadata(0, 21L * 1024 * 1024);
+        when(repository.listItems("thread-a", 200, null, SCOPE))
+                .thenReturn(List.of(userRecord("thread-a", 1, historical)));
+        stubRevalidation(validator, List.of(historical));
+        PreparedAttachment selected = prepared(metadata(20, 30L * 1024 * 1024));
+        AttachmentHistoryResolver resolver = new AttachmentHistoryResolver(
+                repository, objectMapper, validator);
+
+        assertCode(
+                () -> resolver.resolve(
+                        "thread-a", SCOPE,
+                        new PreparedTurnInput(
+                                historical.displayId(), List.of(selected), List.of())),
+                AttachmentErrorCode.ATTACHMENT_TOTAL_TOO_LARGE);
+
+        AttachmentMetadata huge = metadata(1, Long.MAX_VALUE);
+        AttachmentMetadata extra = metadata(2, 1);
+        when(repository.listItems("thread-b", 200, null, SCOPE))
+                .thenReturn(List.of(userRecord("thread-b", 2, huge, extra)));
+        stubRevalidation(validator, List.of(huge, extra));
+        assertCode(
+                () -> resolver.resolve(
+                        "thread-b", SCOPE,
+                        new PreparedTurnInput(
+                                huge.displayId() + " " + extra.displayId(), List.of(), List.of())),
+                AttachmentErrorCode.ATTACHMENT_TOTAL_TOO_LARGE);
+    }
+
+    @Test
+    void deduplicates_the_same_reference_before_counting_combined_bytes() throws Exception {
+        ConversationRepository repository = mock(ConversationRepository.class);
+        AttachmentFileValidator validator = mock(AttachmentFileValidator.class);
+        AttachmentMetadata historical = metadata(0, 30L * 1024 * 1024);
+        PreparedAttachment alreadyReferenced = prepared(historical);
+        when(repository.listItems("thread-a", 200, null, SCOPE))
+                .thenReturn(List.of(userRecord("thread-a", 1, historical)));
+        stubRevalidation(validator, List.of(historical));
+        AttachmentHistoryResolver resolver = new AttachmentHistoryResolver(
+                repository, objectMapper, validator);
+
+        PreparedTurnInput resolved = resolver.resolve(
+                "thread-a",
+                SCOPE,
+                new PreparedTurnInput(
+                        historical.displayId(), List.of(), List.of(alreadyReferenced)));
+
+        assertThat(resolved.referencedAttachments()).containsExactly(alreadyReferenced);
+        assertThat(resolved.allAttachments()).containsExactly(alreadyReferenced);
+    }
+
     private List<ItemRecord> fullPage(String threadId, int size) {
         List<ItemRecord> records = new ArrayList<>();
         for (int index = 0; index < size; index++) {
@@ -252,10 +343,57 @@ class AttachmentHistoryResolverTest {
                         metadata.sizeBytes(), FileTime.from(Instant.EPOCH), "file-key"));
     }
 
+    private static List<AttachmentMetadata> attachments(int start, int count, long sizeBytes) {
+        List<AttachmentMetadata> attachments = new ArrayList<>();
+        for (int index = start; index < start + count; index++) {
+            attachments.add(metadata(index, sizeBytes));
+        }
+        return attachments;
+    }
+
+    private static AttachmentMetadata metadata(int index, long sizeBytes) {
+        String alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+        return new AttachmentMetadata(
+                new java.util.UUID(0, index + 1L).toString(),
+                "A-23456" + alphabet.charAt(index),
+                "file-" + index + ".pdf",
+                "C:\\business\\file-" + index + ".pdf",
+                "application/pdf",
+                sizeBytes,
+                Integer.toHexString(index).repeat(64).substring(0, 64),
+                AttachmentSource.SELECTED_FILE);
+    }
+
+    private static String referenceText(List<AttachmentMetadata> attachments) {
+        return String.join(
+                " ",
+                attachments.stream().map(AttachmentMetadata::displayId).toList());
+    }
+
+    private static void stubRevalidation(
+            AttachmentFileValidator validator,
+            List<AttachmentMetadata> attachments
+    ) {
+        org.mockito.Mockito.doAnswer(invocation -> {
+            AttachmentRequest request = invocation.getArgument(0);
+            return attachments.stream()
+                    .filter(metadata -> metadata.id().equals(request.id()))
+                    .findFirst()
+                    .map(AttachmentHistoryResolverTest::prepared)
+                    .orElseThrow();
+        }).when(validator).validate(any());
+    }
+
     private static void assertAmbiguous(org.assertj.core.api.ThrowableAssert.ThrowingCallable action) {
+        assertCode(action, AttachmentErrorCode.ATTACHMENT_REFERENCE_AMBIGUOUS);
+    }
+
+    private static void assertCode(
+            org.assertj.core.api.ThrowableAssert.ThrowingCallable action,
+            AttachmentErrorCode code
+    ) {
         assertThatThrownBy(action)
                 .isInstanceOfSatisfying(AttachmentException.class, failure ->
-                        assertThat(failure.code())
-                                .isEqualTo(AttachmentErrorCode.ATTACHMENT_REFERENCE_AMBIGUOUS));
+                        assertThat(failure.code()).isEqualTo(code));
     }
 }

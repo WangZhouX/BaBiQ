@@ -101,8 +101,7 @@ public class TurnExecutor implements AutoCloseable {
      * @param workUnitGoalId 本轮要回写的工作容器目标 id，可为 null
      */
     public void submit(Turn turn, String userText, String providerId, String cwd,
-                       ItemEmitter emitter, AgentRunPolicy runPolicy, String workUnitGoalId,
-                       Object... compatibilityMarker) {
+                       ItemEmitter emitter, AgentRunPolicy runPolicy, String workUnitGoalId) {
         submit(turn, plainInput(userText), providerId, cwd, emitter, runPolicy, workUnitGoalId);
     }
 

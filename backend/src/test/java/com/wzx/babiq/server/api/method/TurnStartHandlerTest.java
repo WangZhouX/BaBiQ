@@ -18,6 +18,7 @@ import com.wzx.babiq.server.conversation.items.WorkUnitItem;
 import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
 import com.wzx.babiq.server.application.scope.BusinessIdentityScopeService;
 import com.wzx.babiq.server.api.error.JsonRpcException;
+import com.wzx.babiq.server.api.error.JsonRpcErrorCode;
 import com.wzx.babiq.server.sandbox.SandboxMode;
 import com.wzx.babiq.server.settings.AppSettings;
 import com.wzx.babiq.server.settings.AppSettingsService;
@@ -179,6 +180,83 @@ class TurnStartHandlerTest {
         assertThat(payloads).anyMatch(payload -> payload.contains("\"method\":\"item/added\"")
                 && payload.contains("\"type\":\"workUnit\""));
         assertThat(payloads).anyMatch(payload -> payload.contains("\"method\":\"turn/completed\""));
+    }
+
+    @Test
+    void create_work_unit_with_a_new_attachment_is_rejected_before_turn_or_event_mutation() {
+        ConversationService conversationService = spy(new ConversationService());
+        Thread thread = conversationService.createThread("C:/business");
+        TurnExecutor executor = mock(TurnExecutor.class);
+        WorkUnitService workUnitService = mock(WorkUnitService.class);
+        AttachmentPreparationService preparationService = mock(AttachmentPreparationService.class);
+        AttachmentHistoryResolver historyResolver = mock(AttachmentHistoryResolver.class);
+        PreparedAttachment selected = preparedAttachment(
+                "550e8400-e29b-41d4-a716-446655440000", "A-7K3M2Q");
+        PreparedTurnInput prepared = new PreparedTurnInput(
+                "/编排 合同审阅", List.of(selected), List.of());
+        when(preparationService.prepareNew(eq("/编排 合同审阅"), any())).thenReturn(prepared);
+        when(historyResolver.resolve(thread.id(), BusinessIdentityScope.UNSCOPED, prepared))
+                .thenReturn(prepared);
+        List<String> payloads = new ArrayList<>();
+        TurnStartHandler handler = new TurnStartHandler(
+                conversationService, objectMapper, executor,
+                null, null, null, null, workUnitService, null,
+                preparationService, historyResolver);
+
+        assertThatThrownBy(() -> handler.handle(
+                objectMapper.valueToTree(Map.of(
+                        "threadId", thread.id(),
+                        "input", Map.of(
+                                "type", "text",
+                                "text", "/编排 合同审阅",
+                                "attachments", List.of(Map.of(
+                                        "id", selected.metadata().id(),
+                                        "displayId", selected.metadata().displayId(),
+                                        "name", selected.metadata().name(),
+                                        "localPath", selected.metadata().localPath()))),
+                        "executionIntent", workUnitIntent())),
+                recordingSession(payloads)))
+                .isInstanceOfSatisfying(JsonRpcException.class, failure ->
+                        assertThat(failure.errorCode()).isEqualTo(JsonRpcErrorCode.INVALID_PARAMS));
+
+        assertNoTurnOrWorkUnitMutation(
+                conversationService, executor, workUnitService, payloads, thread.id());
+    }
+
+    @Test
+    void create_work_unit_with_a_resolved_text_reference_is_rejected_before_turn_or_event_mutation() {
+        ConversationService conversationService = spy(new ConversationService());
+        Thread thread = conversationService.createThread("C:/business");
+        TurnExecutor executor = mock(TurnExecutor.class);
+        WorkUnitService workUnitService = mock(WorkUnitService.class);
+        AttachmentPreparationService preparationService = mock(AttachmentPreparationService.class);
+        AttachmentHistoryResolver historyResolver = mock(AttachmentHistoryResolver.class);
+        PreparedAttachment referenced = preparedAttachment(
+                "550e8400-e29b-41d4-a716-446655440000", "A-7K3M2Q");
+        PreparedTurnInput prepared = new PreparedTurnInput(
+                "/编排 审阅 A-7K3M2Q", List.of(), List.of());
+        PreparedTurnInput resolved = new PreparedTurnInput(
+                prepared.text(), List.of(), List.of(referenced));
+        when(preparationService.prepareNew(eq(prepared.text()), any())).thenReturn(prepared);
+        when(historyResolver.resolve(thread.id(), BusinessIdentityScope.UNSCOPED, prepared))
+                .thenReturn(resolved);
+        List<String> payloads = new ArrayList<>();
+        TurnStartHandler handler = new TurnStartHandler(
+                conversationService, objectMapper, executor,
+                null, null, null, null, workUnitService, null,
+                preparationService, historyResolver);
+
+        assertThatThrownBy(() -> handler.handle(
+                objectMapper.valueToTree(Map.of(
+                        "threadId", thread.id(),
+                        "input", Map.of("type", "text", "text", prepared.text()),
+                        "executionIntent", workUnitIntent())),
+                recordingSession(payloads)))
+                .isInstanceOfSatisfying(JsonRpcException.class, failure ->
+                        assertThat(failure.errorCode()).isEqualTo(JsonRpcErrorCode.INVALID_PARAMS));
+
+        assertNoTurnOrWorkUnitMutation(
+                conversationService, executor, workUnitService, payloads, thread.id());
     }
 
     @Test
@@ -593,5 +671,27 @@ class TurnStartHandlerTest {
                 Path.of(metadata.localPath()),
                 new PreparedAttachment.FileIdentity(
                         metadata.sizeBytes(), FileTime.from(Instant.EPOCH), "file-key"));
+    }
+
+    private static Map<String, String> workUnitIntent() {
+        return Map.of(
+                "type", "create_work_unit",
+                "kind", "orchestration",
+                "name", "合同审阅",
+                "goal", "审阅合同");
+    }
+
+    private static void assertNoTurnOrWorkUnitMutation(
+            ConversationService conversationService,
+            TurnExecutor executor,
+            WorkUnitService workUnitService,
+            List<String> payloads,
+            String threadId
+    ) {
+        assertThat(payloads).isEmpty();
+        verify(conversationService, never()).startTurn(eq(threadId), any());
+        verify(conversationService, never()).persistTurnStarted(
+                any(), any(), any(), any(), any(), any(), any());
+        verifyNoInteractions(executor, workUnitService);
     }
 }

@@ -74,7 +74,9 @@ class BusinessTurnIdentityLinearizationTest {
         assertThatThrownBy(request::join).hasCauseInstanceOf(JsonRpcException.class);
         assertThat(conversations.hasActiveTurn(thread.id(), OLD_SCOPE)).isFalse();
         verify(executor, never()).submit(
-                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(
+                        com.wzx.babiq.server.attachment.PreparedTurnInput.class),
                 org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any());

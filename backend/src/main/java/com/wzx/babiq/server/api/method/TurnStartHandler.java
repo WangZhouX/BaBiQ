@@ -208,9 +208,11 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
         AgentRunPolicy runPolicy = AgentRunPolicy.fromSnapshots(sandboxMode, approvalPolicy, agentLoopProperties);
         StartedTurn started = requestScope.scoped()
                 ? createScopedTurn(
-                        threadId, requestScope, input, providerId, provider, runPolicy)
+                        threadId, requestScope, input, providerId, provider, runPolicy,
+                        workUnitRequest != null)
                 : createAndStartTurn(
-                        threadId, requestScope, input, providerId, provider, runPolicy);
+                        threadId, requestScope, input, providerId, provider, runPolicy,
+                        workUnitRequest != null);
         Thread thread = started.thread();
         Turn turn = started.turn();
         log.info("turn/start 已创建 Turn: threadId={}, turnId={}, cwd={}, providerId={}",
@@ -278,10 +280,16 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
             TurnInputRequest inputRequest,
             String requestedProviderId,
             ModelProviderConfig provider,
-            AgentRunPolicy runPolicy) {
+            AgentRunPolicy runPolicy,
+            boolean createWorkUnit) {
         Thread thread = conversationService.findThread(threadId, requestScope)
                 .orElseThrow(() -> threadNotFound(threadId));
         PreparedTurnInput input = prepareInput(threadId, requestScope, inputRequest);
+        if (createWorkUnit && !input.allAttachments().isEmpty()) {
+            throw new JsonRpcException(
+                    JsonRpcErrorCode.INVALID_PARAMS,
+                    "创建工作容器暂不支持附件");
+        }
         Turn turn = conversationService.startTurn(threadId, requestScope);
         if (!requestScope.scoped()) {
             turn.start();
@@ -309,7 +317,8 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
             TurnInputRequest input,
             String requestedProviderId,
             ModelProviderConfig provider,
-            AgentRunPolicy runPolicy
+            AgentRunPolicy runPolicy,
+            boolean createWorkUnit
     ) {
         ScopedStartResult result = businessIdentityScopeService.withActiveConnectionScope(
                         requestScope,
@@ -319,7 +328,8 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
                                 input,
                                 requestedProviderId,
                                 provider,
-                                runPolicy)))
+                                runPolicy,
+                                createWorkUnit)))
                 .orElseThrow(() -> threadNotFound(threadId));
         if (result.failure() != null) {
             throw result.failure();

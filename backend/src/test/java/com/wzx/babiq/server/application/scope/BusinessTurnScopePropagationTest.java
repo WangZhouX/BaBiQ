@@ -113,7 +113,8 @@ class BusinessTurnScopePropagationTest {
                 .isEqualTo(normalizeThreadId(missing.getMessage(), "thr_missing"));
         assertThat(conversations.hasActiveTurn(tenantAThread.id())).isFalse();
         verify(executor, never()).submit(
-                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(PreparedTurnInput.class),
                 org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any());
@@ -217,6 +218,29 @@ class BusinessTurnScopePropagationTest {
                     org.mockito.ArgumentMatchers.isNull(),
                     org.mockito.ArgumentMatchers.isNull());
         }
+    }
+
+    @Test
+    void string_compatibility_entry_points_keep_their_exact_pre_attachment_jvm_descriptors()
+            throws Exception {
+        assertThat(TurnExecutor.class.getMethod(
+                "submit",
+                Turn.class,
+                String.class,
+                String.class,
+                String.class,
+                ItemEmitter.class,
+                com.wzx.babiq.server.agent.AgentRunPolicy.class,
+                String.class)).isNotNull();
+        assertThat(AgentLoop.class.getMethod(
+                "invoke",
+                Turn.class,
+                String.class,
+                String.class,
+                String.class,
+                ItemEmitter.class,
+                com.wzx.babiq.server.agent.AgentRunPolicy.class,
+                String.class)).isNotNull();
     }
 
     @Test

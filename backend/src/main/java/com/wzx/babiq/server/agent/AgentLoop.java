@@ -44,7 +44,7 @@ public class AgentLoop {
     /** 执行普通用户输入：原文进入聊天历史，临时上下文窗口文本进入模型调用。 */
     public void invoke(Turn turn, String userText, String providerId, String cwd, ItemEmitter emitter, AgentRunPolicy runPolicy) { invoke(turn, userText, providerId, cwd, emitter, runPolicy, null); }
     /** 执行普通用户输入，并可选把本轮工具运行绑定到工作容器目标。 */
-    public void invoke(Turn turn, String userText, String providerId, String cwd, ItemEmitter emitter, AgentRunPolicy runPolicy, String workUnitGoalId, Object... compatibilityMarker) { invoke(turn, new PreparedTurnInput(userText, java.util.List.of(), java.util.List.of()), providerId, cwd, emitter, runPolicy, workUnitGoalId); }
+    public void invoke(Turn turn, String userText, String providerId, String cwd, ItemEmitter emitter, AgentRunPolicy runPolicy, String workUnitGoalId) { invoke(turn, new PreparedTurnInput(userText, java.util.List.of(), java.util.List.of()), providerId, cwd, emitter, runPolicy, workUnitGoalId); }
     public void invoke(Turn turn, PreparedTurnInput input, String providerId, String cwd, ItemEmitter emitter, AgentRunPolicy runPolicy, String workUnitGoalId) {
         String userText = java.util.Objects.requireNonNull(input, "input").text();
         TurnObservationContext context = observationRegistry.start(turn.threadId(), turn.id(), providerId,

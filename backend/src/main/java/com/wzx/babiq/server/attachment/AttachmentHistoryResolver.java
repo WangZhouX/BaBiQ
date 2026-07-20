@@ -74,10 +74,12 @@ public final class AttachmentHistoryResolver {
             PreparedAttachment referenced = revalidate(persisted);
             referencedById.putIfAbsent(referenced.metadata().id(), referenced);
         }
-        return new PreparedTurnInput(
+        PreparedTurnInput resolved = new PreparedTurnInput(
                 preparedNew.text(),
                 preparedNew.newAttachments(),
                 List.copyOf(referencedById.values()));
+        validateCombinedLimits(resolved.allAttachments());
+        return resolved;
     }
 
     private HistoryIndex indexHistory(String threadId, BusinessIdentityScope scope) {
@@ -147,6 +149,26 @@ public final class AttachmentHistoryResolver {
             if (history.byUuid().containsKey(uuid)
                     || history.byDisplayId().containsKey(displayId)) {
                 throw ambiguous("附件标识已在当前会话中使用，请重新选择附件");
+            }
+        }
+    }
+
+    private static void validateCombinedLimits(List<PreparedAttachment> attachments) {
+        if (attachments.size() > AttachmentLimits.MAX_ATTACHMENTS) {
+            throw new AttachmentException(
+                    AttachmentErrorCode.ATTACHMENT_LIMIT_EXCEEDED,
+                    "单轮最多使用 8 个附件");
+        }
+        long totalBytes = 0;
+        for (PreparedAttachment attachment : attachments) {
+            long sizeBytes = attachment.metadata().sizeBytes();
+            totalBytes = sizeBytes < 0 || totalBytes > Long.MAX_VALUE - sizeBytes
+                    ? Long.MAX_VALUE
+                    : totalBytes + sizeBytes;
+            if (totalBytes > AttachmentLimits.MAX_TOTAL_BYTES) {
+                throw new AttachmentException(
+                        AttachmentErrorCode.ATTACHMENT_TOTAL_TOO_LARGE,
+                        "本轮附件总大小超过 50 MiB 上限");
             }
         }
     }
