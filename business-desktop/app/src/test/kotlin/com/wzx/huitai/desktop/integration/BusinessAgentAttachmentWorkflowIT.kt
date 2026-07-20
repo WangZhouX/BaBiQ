@@ -201,9 +201,8 @@ class BusinessAgentAttachmentWorkflowIT {
         listOf("A-BCDEFG", "private-contract-one.txt", "A-HJKLMN", "private-contract-two.txt").forEach {
             rule.onNodeWithText(it, substring = true).assertExists()
         }
-        listOf(documentOne.toString(), documentTwo.toString()).forEach {
-            rule.onAllNodesWithText(it, substring = true).assertCountEquals(0)
-        }
+        assertPathVariantsNotDisplayed(documentOne)
+        assertPathVariantsNotDisplayed(documentTwo)
 
         rule.onNodeWithContentDescription("移除附件 A-BCDEFG").performClick()
         rule.onNodeWithText("private-contract-one.txt", substring = true).assertDoesNotExist()
@@ -216,6 +215,7 @@ class BusinessAgentAttachmentWorkflowIT {
         assertEquals("", gateway.starts.first().text)
         assertEquals(listOf("A-HJKLMN"), gateway.starts.first().attachments.map { it.displayId })
 
+        waitForComposerSendEnabled()
         rule.onNodeWithTag("agent-composer-send").performClick()
         rule.waitUntil(5_000) { gateway.startCalls == 2 }
         rule.waitUntil(5_000) {
@@ -225,7 +225,7 @@ class BusinessAgentAttachmentWorkflowIT {
             rule.onAllNodesWithTag("agent-message-attachment-A-HJKLMN").fetchSemanticsNodes().size == 1
         }
         rule.onNodeWithTag("agent-message-attachment-A-HJKLMN").assertExists()
-        rule.onAllNodesWithText(documentTwo.toString(), substring = true).assertCountEquals(0)
+        assertPathVariantsNotDisplayed(documentTwo)
 
         rule.onNodeWithTag("agent-composer-input").performClick().performKeyInput {
             keyDown(Key.CtrlLeft)
@@ -237,10 +237,31 @@ class BusinessAgentAttachmentWorkflowIT {
         }
         rule.onNodeWithText("A-PQRSTU", substring = true).assertExists()
         val screenshot = clipboard.controlledRoot.toFile().listFiles().orEmpty().single { it.extension == "png" }
-        rule.onAllNodesWithText(screenshot.absolutePath, substring = true).assertCountEquals(0)
+        assertPathVariantsNotDisplayed(screenshot.toPath())
 
         assertTrue(gateway.starts[1].attachments.single().localPath == documentTwo.toString())
         assertFalse(gateway.starts[1].toString().contains(documentTwo.toString()))
+    }
+
+    private fun waitForComposerSendEnabled() {
+        rule.waitUntil(5_000) {
+            runCatching {
+                rule.onNodeWithTag("agent-composer-send").assertIsEnabled()
+                true
+            }.getOrDefault(false)
+        }
+        rule.onNodeWithTag("agent-composer-send").assertIsEnabled()
+    }
+
+    private fun assertPathVariantsNotDisplayed(path: Path) {
+        pathVariants(path).forEach { sensitive ->
+            rule.onAllNodesWithText(sensitive, substring = true).assertCountEquals(0)
+        }
+    }
+
+    private fun pathVariants(path: Path): Set<String> {
+        val raw = path.toAbsolutePath().normalize().toString()
+        return linkedSetOf(raw, raw.replace('\\', '/'), path.toAbsolutePath().normalize().toUri().toString())
     }
 
     private fun authenticatedState(): BusinessDesktopState = BusinessDesktopState(
@@ -291,6 +312,7 @@ class BusinessAgentAttachmentWorkflowIT {
             starts += Start(text, attachments.toList())
             if (failNext) {
                 failNext = false
+                delay(100)
                 error("offline")
             }
             val turn = BusinessTurn("turn-attachment-$startCalls", threadId)

@@ -96,9 +96,24 @@ $env:GRADLE_USER_HOME='E:\huitai-work\BaBiQ\.tmp-gradle-review'
 真实 dispatcher/TurnExecutor/AgentLoop 执行、模型两轮都收到提取正文、第二轮稳定 ID 引用成功；
 WebSocket 无 Base64/正文，模型无路径，context snapshot 无路径/正文，日志无 raw/JSON-escaped/URI 路径。
 
+2026-07-21 复审补强后，后端 IT 还会保存完整 `Prompt`，逐项检查 instructions text、message metadata、
+`UserMessage` media metadata/数据描述和 options 的可文本化表面；第一轮与第二轮 snapshot 都会检查 raw、
+JSON escaped、双层 escaped、forward-slash 和 file URI 路径变体。全部 WebSocket frame 会结构化解析并
+递归收集敏感文本 JSON Pointer，精确白名单仅允许显式附件请求和 `userMessage` 本机元数据字段。
+第三个真实 missing-file 请求确认 `ATTACHMENT_NOT_FOUND`，错误节点与日志不回显缺失路径，且不会调用模型。
+这些增强断言在现有生产实现上直接通过，因此本次复审没有伪造 RED，也不需要额外生产代码修复。
+
 桌面 IT 明确证明：Shell → Panel callback → SendCoordinator → ConversationController → fake gateway 的
 真实路径工作；chooser/imageSource 仅作为可注入 OS seam，覆盖选择、移除、纯附件发送、发送失败保留、
 成功精确清理、历史消息 chip 和 Ctrl+V 截图，测试期间不打开 JFileChooser 或系统剪贴板。
+复审补强会对选择文件和截图的 raw、forward-slash、file URI 三类路径逐一做 UI 不可见断言，并在失败
+重发前显式等待发送按钮恢复 enabled，不依赖 `startCalls` 或 Compose 隐式 idle。注：该 IT 在测试组合中
+接入 chooser/imageSource OS seam，验证的是 Shell/Panel 到 Controller 的回调事务；它不会捕获 `Main` 自身
+接线漂移，`Main` composition root 由现有 `BusinessDesktopCompositionRootTest` 等测试另行覆盖。
+
+WebSocket 连接 future 现在有 8 秒硬超时。每次测试生成的 UUID runtime 仅在确认位于本模块 `target` 且
+具有专用前缀后做 best-effort 递归清理；SQLite 尚未关闭时登记 `deleteOnExit`，不强关共享 Spring context。
+复审运行生成的 runtime 已清除，历史运行遗留目录未被测试代码越权批量删除。
 
 ## 6. 手工烟测
 

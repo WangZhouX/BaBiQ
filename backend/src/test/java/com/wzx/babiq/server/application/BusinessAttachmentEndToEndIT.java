@@ -5,7 +5,9 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.wzx.babiq.server.model.ChatClientFactory;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.slf4j.LoggerFactory;
@@ -15,10 +17,13 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.content.Media;
+import org.springframework.ai.content.MediaContent;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -37,9 +42,13 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -60,12 +69,15 @@ class BusinessAttachmentEndToEndIT {
     private static final String SESSION_ID = "42222222-2222-4222-8222-222222222222";
     private static final String DISPLAY_ID = "A-BCDEFG";
     private static final String ATTACHMENT_ID = "00000000-0000-4000-8000-000000000711";
+    private static final String MISSING_DISPLAY_ID = "A-MNPQRS";
+    private static final String MISSING_ATTACHMENT_ID = "00000000-0000-4000-8000-000000000712";
     private static final String DOCUMENT_BODY = "PRIVATE_EXTRACTED_ATTACHMENT_BODY_711";
     private static final Path RUNTIME = Path.of(
             "target", "business-attachment-e2e-" + UUID.randomUUID()).toAbsolutePath().normalize();
     private static final Path TOKEN_FILE = RUNTIME.resolve("session-token");
     private static final Path WORKSPACE = RUNTIME.resolve("workspace");
     private static final Path DOCUMENT = RUNTIME.resolve("private-customer-contract.txt");
+    private static final Path MISSING_DOCUMENT = RUNTIME.resolve("private-missing-customer-contract.txt");
 
     static {
         try {
@@ -85,6 +97,29 @@ class BusinessAttachmentEndToEndIT {
         registry.add("babiq.memory.long-term.enabled", () -> "false");
         registry.add("babiq.memory.long-term.generate-enabled", () -> "false");
         registry.add("babiq.memory.long-term.read-enabled", () -> "false");
+    }
+
+    @AfterAll
+    static void cleanRuntimeBestEffort() {
+        Path targetRoot = Path.of("target").toAbsolutePath().normalize();
+        if (!RUNTIME.startsWith(targetRoot)
+                || RUNTIME.getFileName() == null
+                || !RUNTIME.getFileName().toString().startsWith("business-attachment-e2e-")) {
+            return;
+        }
+        try (var paths = Files.walk(RUNTIME)) {
+            List<Path> all = paths.sorted(Comparator.comparingInt(Path::getNameCount)).toList();
+            all.forEach(path -> path.toFile().deleteOnExit());
+            for (int index = all.size() - 1; index >= 0; index--) {
+                try {
+                    Files.deleteIfExists(all.get(index));
+                } catch (Exception ignored) {
+                    // SQLite may stay open until the cached Spring context closes; deleteOnExit handles that boundary.
+                }
+            }
+        } catch (Exception ignored) {
+            RUNTIME.toFile().deleteOnExit();
+        }
     }
 
     @LocalServerPort
@@ -119,8 +154,7 @@ class BusinessAttachmentEndToEndIT {
                     json.createObjectNode().put("cwd", WORKSPACE.toString()));
             String threadId = thread.path("threadId").asText();
 
-            com.fasterxml.jackson.databind.node.ObjectNode firstInput =
-                    json.createObjectNode().put("text", "请总结附件");
+            ObjectNode firstInput = json.createObjectNode().put("text", "请总结附件");
             firstInput.putArray("attachments").add(json.createObjectNode()
                     .put("id", ATTACHMENT_ID)
                     .put("displayId", DISPLAY_ID)
@@ -132,6 +166,7 @@ class BusinessAttachmentEndToEndIT {
                             .set("input", firstInput));
             String firstTurnId = firstTurn.path("turnId").asText();
             awaitTurnCompleted(inbound, firstTurnId);
+            await().atMost(Duration.ofSeconds(8)).untilAsserted(() -> assertThat(model.prompts()).hasSize(1));
 
             JsonNode firstUserMessage = awaitUserMessage(inbound, firstTurnId);
             assertThat(firstUserMessage.path("attachments")).hasSize(1);
@@ -143,10 +178,16 @@ class BusinessAttachmentEndToEndIT {
             assertThat(persisted.path("localPath").asText()).isEqualTo(DOCUMENT.toString());
             assertThat(persisted.path("sha256").asText()).hasSize(64);
 
-            com.fasterxml.jackson.databind.node.ObjectNode secondInput = json.createObjectNode().put(
+            JsonNode firstStatus = request(session, inbound, outbound, 4, "context/status",
+                    json.createObjectNode().put("threadId", threadId));
+            JsonNode firstSnapshot = request(session, inbound, outbound, 5, "context/snapshot/get",
+                    json.createObjectNode().put("snapshotId", firstStatus.path("lastSnapshotId").asText()));
+            assertSnapshotSafe(firstSnapshot);
+
+            ObjectNode secondInput = json.createObjectNode().put(
                     "text", "请再次读取并总结 " + DISPLAY_ID);
             secondInput.putArray("attachments");
-            JsonNode secondTurn = request(session, inbound, outbound, 4, "turn/start",
+            JsonNode secondTurn = request(session, inbound, outbound, 6, "turn/start",
                     json.createObjectNode()
                             .put("threadId", threadId)
                             .set("input", secondInput));
@@ -154,20 +195,32 @@ class BusinessAttachmentEndToEndIT {
             awaitTurnCompleted(inbound, secondTurnId);
 
             await().atMost(Duration.ofSeconds(8)).untilAsserted(() -> assertThat(model.prompts()).hasSize(2));
-            assertThat(model.prompts().get(0))
-                    .contains(DOCUMENT_BODY, DISPLAY_ID)
-                    .doesNotContain(DOCUMENT.toString());
-            assertThat(model.prompts().get(1))
-                    .contains(DOCUMENT_BODY, DISPLAY_ID)
-                    .doesNotContain(DOCUMENT.toString());
+            model.prompts().forEach(prompt -> {
+                assertThat(prompt.getInstructions().stream().map(Message::getText).toList())
+                        .anySatisfy(text -> assertThat(text).contains(DOCUMENT_BODY, DISPLAY_ID));
+                assertPromptSurfacesPathFree(prompt, DOCUMENT, MISSING_DOCUMENT);
+            });
 
-            JsonNode status = request(session, inbound, outbound, 5, "context/status",
+            JsonNode secondStatus = request(session, inbound, outbound, 7, "context/status",
                     json.createObjectNode().put("threadId", threadId));
-            JsonNode snapshot = request(session, inbound, outbound, 6, "context/snapshot/get",
-                    json.createObjectNode().put("snapshotId", status.path("lastSnapshotId").asText()));
-            assertThat(snapshot.toString())
-                    .contains(DISPLAY_ID)
-                    .doesNotContain(DOCUMENT.toString(), DOCUMENT_BODY);
+            JsonNode secondSnapshot = request(session, inbound, outbound, 8, "context/snapshot/get",
+                    json.createObjectNode().put("snapshotId", secondStatus.path("lastSnapshotId").asText()));
+            assertSnapshotSafe(secondSnapshot);
+
+            ObjectNode missingInput = json.createObjectNode().put("text", "请读取缺失附件");
+            missingInput.putArray("attachments").add(json.createObjectNode()
+                    .put("id", MISSING_ATTACHMENT_ID)
+                    .put("displayId", MISSING_DISPLAY_ID)
+                    .put("name", "client-missing.txt")
+                    .put("localPath", MISSING_DOCUMENT.toString()));
+            JsonNode missingResponse = exchange(session, inbound, outbound, 9, "turn/start",
+                    json.createObjectNode()
+                            .put("threadId", threadId)
+                            .set("input", missingInput));
+            assertThat(missingResponse.path("error").path("data").path("attachmentCode").asText())
+                    .isEqualTo("ATTACHMENT_NOT_FOUND");
+            assertNoPathVariants(missingResponse.path("error").toString(), MISSING_DOCUMENT);
+            assertThat(model.prompts()).hasSize(2);
 
             String wire = String.join("\n", outbound) + "\n" + String.join("\n", inbound);
             assertThat(wire)
@@ -175,39 +228,160 @@ class BusinessAttachmentEndToEndIT {
                     .doesNotContain(Base64.getEncoder().encodeToString(
                             DOCUMENT_BODY.getBytes(StandardCharsets.UTF_8)))
                     .doesNotContain("data:application", "data:text/plain");
-            assertPathAppearsOnlyInAttachmentFields(outbound, inbound);
+            assertSensitivePathPointers(outbound, inbound);
             String diagnostic = logs.list.stream()
                     .map(ILoggingEvent::getFormattedMessage)
                     .reduce("", (left, right) -> left + "\n" + right);
-            assertThat(diagnostic).doesNotContain(
-                    DOCUMENT.toString(),
-                    DOCUMENT.toString().replace("\\", "\\\\"),
-                    DOCUMENT.toUri().toString(),
-                    DOCUMENT_BODY);
-            assertThat(inbound.stream().map(this::read)
+            assertNoPathVariants(diagnostic, DOCUMENT, MISSING_DOCUMENT);
+            assertThat(diagnostic).doesNotContain(DOCUMENT_BODY);
+            List<JsonNode> errorResponses = inbound.stream().map(this::read)
                     .filter(node -> node.has("error"))
-                    .toList()).isEmpty();
+                    .toList();
+            assertThat(errorResponses).containsExactly(missingResponse);
         } finally {
             packageLogger.detachAppender(logs);
             logs.stop();
         }
     }
 
-    private void assertPathAppearsOnlyInAttachmentFields(List<String> outbound, List<String> inbound) {
-        List<String> combined = new ArrayList<>(outbound);
-        combined.addAll(inbound);
-        List<String> containingPath = combined.stream()
-                .filter(frame -> frame.contains(DOCUMENT.toString().replace("\\", "\\\\")))
-                .toList();
-        assertThat(containingPath).hasSize(2);
-        assertThat(read(containingPath.get(0)).path("method").asText()).isEqualTo("turn/start");
-        assertThat(read(containingPath.get(0)).path("params").path("input")
-                .path("attachments").get(0).path("localPath").asText()).isEqualTo(DOCUMENT.toString());
-        JsonNode notification = read(containingPath.get(1));
-        assertThat(notification.path("method").asText()).isEqualTo("item/added");
-        assertThat(notification.path("params").path("item").path("type").asText()).isEqualTo("userMessage");
-        assertThat(notification.path("params").path("item").path("attachments")
-                .get(0).path("localPath").asText()).isEqualTo(DOCUMENT.toString());
+    private void assertSnapshotSafe(JsonNode snapshot) {
+        String serialized = snapshot.toString();
+        assertThat(serialized).contains(DISPLAY_ID).doesNotContain(DOCUMENT_BODY);
+        assertNoPathVariants(serialized, DOCUMENT, MISSING_DOCUMENT);
+    }
+
+    private void assertPromptSurfacesPathFree(Prompt prompt, Path... sensitivePaths) {
+        List<String> surfaces = new ArrayList<>();
+        addObjectSurfaces(surfaces, prompt.getContents());
+        addObjectSurfaces(surfaces, prompt);
+        addObjectSurfaces(surfaces, prompt.getOptions());
+        if (prompt.getOptions() != null) {
+            addObjectSurfaces(surfaces, prompt.getOptions().getModel());
+            addObjectSurfaces(surfaces, prompt.getOptions().getStopSequences());
+        }
+        for (Message message : prompt.getInstructions()) {
+            addObjectSurfaces(surfaces, message.getText());
+            addObjectSurfaces(surfaces, message.getMetadata());
+            addObjectSurfaces(surfaces, message);
+            if (message instanceof MediaContent mediaContent) {
+                for (Media media : mediaContent.getMedia()) {
+                    addObjectSurfaces(surfaces, media.getMimeType());
+                    addObjectSurfaces(surfaces, media.getId());
+                    addObjectSurfaces(surfaces, media.getName());
+                    addObjectSurfaces(surfaces, media.getData());
+                    if (media.getData() instanceof Resource resource) {
+                        addObjectSurfaces(surfaces, resource.getDescription());
+                        addObjectSurfaces(surfaces, resource.getFilename());
+                        try {
+                            addObjectSurfaces(surfaces, resource.getURI());
+                        } catch (Exception ignored) {
+                            // Some in-memory resources intentionally have no URI.
+                        }
+                    }
+                }
+            }
+        }
+        surfaces.forEach(surface -> assertNoPathVariants(surface, sensitivePaths));
+    }
+
+    private void addObjectSurfaces(List<String> surfaces, Object value) {
+        if (value == null) {
+            return;
+        }
+        surfaces.add(String.valueOf(value));
+        try {
+            surfaces.add(json.writeValueAsString(value));
+        } catch (Exception ignored) {
+            // toString and explicit typed getters above remain available for non-serializable options/resources.
+        }
+    }
+
+    private void assertSensitivePathPointers(List<String> outbound, List<String> inbound) {
+        assertThat(sensitivePointers(outbound, "outbound", DOCUMENT))
+                .containsExactlyInAnyOrder(
+                        new SensitivePointer("outbound#3:turn/start", "/params/input/attachments/0/localPath"));
+        assertThat(sensitivePointers(inbound, "inbound", DOCUMENT))
+                .containsExactlyInAnyOrder(
+                        new SensitivePointer("inbound:item/added:userMessage",
+                                "/params/item/attachments/0/localPath"));
+        assertThat(sensitivePointers(outbound, "outbound", MISSING_DOCUMENT))
+                .containsExactlyInAnyOrder(
+                        new SensitivePointer("outbound#9:turn/start", "/params/input/attachments/0/localPath"));
+        assertThat(sensitivePointers(inbound, "inbound", MISSING_DOCUMENT)).isEmpty();
+    }
+
+    private List<SensitivePointer> sensitivePointers(List<String> frames, String direction, Path path) {
+        List<SensitivePointer> pointers = new ArrayList<>();
+        for (String frame : frames) {
+            JsonNode root = read(frame);
+            String frameName;
+            if ("outbound".equals(direction)) {
+                frameName = "outbound#" + root.path("id").asText() + ":" + root.path("method").asText();
+            } else {
+                String itemType = root.at("/params/item/type").asText();
+                frameName = "inbound:" + root.path("method").asText()
+                        + (itemType.isBlank() ? "" : ":" + itemType);
+            }
+            collectSensitivePointers(root, "", pathVariants(path), frameName, pointers);
+        }
+        return pointers;
+    }
+
+    private void collectSensitivePointers(
+            JsonNode node,
+            String pointer,
+            Set<String> variants,
+            String frameName,
+            List<SensitivePointer> pointers) {
+        if (node.isTextual()) {
+            if (variants.stream().anyMatch(node.textValue()::contains)) {
+                pointers.add(new SensitivePointer(frameName, pointer));
+            }
+            return;
+        }
+        if (node.isObject()) {
+            node.fields().forEachRemaining(entry -> collectSensitivePointers(
+                    entry.getValue(),
+                    pointer + "/" + escapePointerToken(entry.getKey()),
+                    variants,
+                    frameName,
+                    pointers));
+            return;
+        }
+        if (node.isArray()) {
+            for (int index = 0; index < node.size(); index++) {
+                collectSensitivePointers(node.get(index), pointer + "/" + index, variants, frameName, pointers);
+            }
+        }
+    }
+
+    private static String escapePointerToken(String token) {
+        return token.replace("~", "~0").replace("/", "~1");
+    }
+
+    private void assertNoPathVariants(String surface, Path... paths) {
+        for (Path path : paths) {
+            for (String variant : pathVariants(path)) {
+                assertThat(surface)
+                        .as("must not expose path variant %s", variant)
+                        .doesNotContain(variant);
+            }
+        }
+    }
+
+    private static Set<String> pathVariants(Path path) {
+        String raw = path.toAbsolutePath().normalize().toString();
+        Set<String> variants = new LinkedHashSet<>();
+        variants.add(raw);
+        variants.add(raw.replace('\\', '/'));
+        variants.add(path.toAbsolutePath().normalize().toUri().toString());
+        variants.add(path.toAbsolutePath().normalize().toUri().toASCIIString());
+        variants.add(raw.replace("\\", "\\\\"));
+        variants.add(raw.replace("\\", "\\\\\\\\"));
+        return Set.copyOf(variants);
+    }
+
+    private record SensitivePointer(String frame, String pointer) {
     }
 
     private JsonNode identity() {
@@ -242,10 +416,22 @@ class BusinessAttachmentEndToEndIT {
                     }
                 },
                 headers,
-                URI.create("ws://127.0.0.1:" + port + "/ws/agent")).get();
+                URI.create("ws://127.0.0.1:" + port + "/ws/agent")).get(8, TimeUnit.SECONDS);
     }
 
     private JsonNode request(
+            WebSocketSession session,
+            List<String> inbound,
+            List<String> outbound,
+            long id,
+            String method,
+            JsonNode params) throws Exception {
+        JsonNode response = exchange(session, inbound, outbound, id, method, params);
+        assertThat(response.path("error").isMissingNode()).as(response.toString()).isTrue();
+        return response.path("result");
+    }
+
+    private JsonNode exchange(
             WebSocketSession session,
             List<String> inbound,
             List<String> outbound,
@@ -265,8 +451,7 @@ class BusinessAttachmentEndToEndIT {
         JsonNode response = inbound.stream().map(this::read)
                 .filter(node -> !node.has("method") && node.path("id").asLong() == id)
                 .findFirst().orElseThrow();
-        assertThat(response.path("error").isMissingNode()).as(response.toString()).isTrue();
-        return response.path("result");
+        return response;
     }
 
     private void awaitTurnCompleted(List<String> inbound, String turnId) {
@@ -303,13 +488,11 @@ class BusinessAttachmentEndToEndIT {
     }
 
     private static final class RecordingChatModel implements ChatModel {
-        private final List<String> prompts = new CopyOnWriteArrayList<>();
+        private final List<Prompt> prompts = new CopyOnWriteArrayList<>();
 
         @Override
         public ChatResponse call(Prompt prompt) {
-            prompts.add(prompt.getInstructions().stream()
-                    .map(Message::getText)
-                    .reduce("", (left, right) -> left + "\n" + right));
+            prompts.add(prompt.copy());
             return new ChatResponse(List.of(new Generation(new AssistantMessage("附件已读取并完成总结。"))));
         }
 
@@ -318,7 +501,7 @@ class BusinessAttachmentEndToEndIT {
             return Flux.just(call(prompt));
         }
 
-        private List<String> prompts() {
+        private List<Prompt> prompts() {
             return List.copyOf(prompts);
         }
     }
