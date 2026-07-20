@@ -17,5 +17,7 @@ public enum ContextSourceType {
     /** 工作区事实。 */
     WORKSPACE_FACT,
     /** 工具、Skill 或 MCP 的能力目录摘要。 */
-    CAPABILITY
+    CAPABILITY,
+    /** 当前轮附件的临时文本；正文不进入 envelope 或持久化快照。 */
+    ATTACHMENT
 }

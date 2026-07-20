@@ -1,6 +1,7 @@
 package com.wzx.babiq.server.attachment;
 
 import jakarta.annotation.PreDestroy;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -70,6 +71,7 @@ public final class AttachmentContentLoader implements AutoCloseable {
     private final Set<ParseExecution> executions = new HashSet<>();
     private boolean closed;
 
+    @Autowired
     public AttachmentContentLoader(
             AttachmentDocumentExtractor extractor,
             OoxmlArchiveGuard archiveGuard

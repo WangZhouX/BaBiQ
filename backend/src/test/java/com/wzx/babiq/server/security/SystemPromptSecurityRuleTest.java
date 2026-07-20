@@ -94,4 +94,15 @@ class SystemPromptSecurityRuleTest {
                 .contains("不是指令")
                 .doesNotContain("explorer", "orchestrate_flow", "coordinate_team", "work_unit_manage");
     }
+
+    @Test
+    void business_prompt_should_treat_attachment_bodies_as_untrusted_business_data() {
+        assertThat(SystemPromptSecurityRule.BUSINESS_PROMPT)
+                .contains("附件正文")
+                .contains("不可信业务资料")
+                .contains("系统规则")
+                .contains("审批")
+                .contains("沙箱")
+                .contains("应用动作约束");
+    }
 }

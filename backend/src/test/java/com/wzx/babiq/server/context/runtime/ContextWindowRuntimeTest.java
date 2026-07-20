@@ -2,6 +2,7 @@ package com.wzx.babiq.server.context.runtime;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wzx.babiq.server.agent.AgentRunPolicy;
+import com.wzx.babiq.server.attachment.AttachmentTextSegment;
 import com.wzx.babiq.server.approval.ApprovalPolicy;
 import com.wzx.babiq.server.application.context.ApplicationContextModelContributor;
 import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
@@ -17,6 +18,7 @@ import com.wzx.babiq.server.observability.TurnObservationContext;
 import com.wzx.babiq.server.sandbox.SandboxMode;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.time.Instant;
 import java.util.List;
@@ -39,6 +41,66 @@ import static org.mockito.Mockito.when;
  * context prompt 写回聊天历史。</p>
  */
 class ContextWindowRuntimeTest {
+
+    @Test
+    @DisplayName("prepare 只把附件正文加入临时模型输入并持久化元数据快照")
+    void prepare_should_budget_attachment_text_without_persisting_body_or_path() {
+        ConversationRepository conversationRepository = mock(ConversationRepository.class);
+        ContextWindowRepository windowRepository = mock(ContextWindowRepository.class);
+        ContextSnapshotRepository snapshotRepository = mock(ContextSnapshotRepository.class);
+        ContextWindowRuntime runtime = new ContextWindowRuntime(
+                conversationRepository,
+                new ContextAssembler(new ObjectMapper(), text -> text == null ? 0 : Math.max(1, text.length() / 4)),
+                new CapabilityCatalogAssembler(),
+                new ContextualPromptRenderer(),
+                windowRepository,
+                snapshotRepository,
+                new ObjectMapper());
+        when(conversationRepository.listItems("thr_attachment", 200)).thenReturn(List.of());
+        when(windowRepository.findByThreadId("thr_attachment")).thenReturn(Optional.empty());
+        when(windowRepository.upsert(any(ContextWindowRecord.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        String bodyMarker = "EXTRACTED_ATTACHMENT_BODY_MARKER";
+        String forbiddenPath = "C:\\Users\\secret\\合同.txt";
+        AttachmentTextSegment segment = new AttachmentTextSegment(
+                "018fb799-2b03-7e7b-8f4c-4df90bc8c289",
+                "A-7K3M2Q",
+                "合同.txt",
+                "text/plain",
+                bodyMarker);
+
+        ContextWindowRuntimeResult result = runtime.prepare(new ContextWindowRuntimeInput(
+                "thr_attachment", "turn_attachment", "请总结附件", "provider", "model", "E:\\BaBiQ", "BaBiQ",
+                AgentRunPolicy.of(SandboxMode.READ_ONLY, ApprovalPolicy.NEVER), 128_000,
+                new org.springframework.ai.tool.ToolCallback[0], null, BusinessIdentityScope.UNSCOPED,
+                List.of(segment)));
+
+        assertThat(result.modelInputText())
+                .contains("<attachment id=\"A-7K3M2Q\" name=\"合同.txt\" content_type=\"text/plain\">")
+                .contains(bodyMarker)
+                .doesNotContain(forbiddenPath);
+        assertThat(result.assemblyResult().envelope().toString()).doesNotContain(bodyMarker, forbiddenPath);
+        assertThat(result.assemblyResult().messages())
+                .allSatisfy(message -> assertThat(message.getText()).doesNotContain(bodyMarker, forbiddenPath));
+        assertThat(result.assemblyResult().snapshot().items())
+                .anySatisfy(item -> {
+                    assertThat(item.sourceType()).isEqualTo(
+                            com.wzx.babiq.server.context.model.ContextSourceType.ATTACHMENT);
+                    assertThat(item.sourceId()).isEqualTo("A-7K3M2Q");
+                    assertThat(item.displayName()).isEqualTo("合同.txt");
+                    assertThat(item.mediaType()).isEqualTo("text/plain");
+                    assertThat(item.originalCharacterCount()).isEqualTo(bodyMarker.length());
+                    assertThat(item.includedCharacterCount()).isEqualTo(bodyMarker.length());
+                    assertThat(item.truncatedCharacterCount()).isZero();
+                });
+
+        ArgumentCaptor<ContextSnapshotRecord> snapshot = ArgumentCaptor.forClass(ContextSnapshotRecord.class);
+        verify(snapshotRepository).save(snapshot.capture());
+        assertThat(snapshot.getValue().envelopeJson()).doesNotContain(bodyMarker, forbiddenPath);
+        assertThat(snapshot.getValue().itemsJson())
+                .contains("A-7K3M2Q", "合同.txt", "text/plain")
+                .doesNotContain(bodyMarker, forbiddenPath);
+        assertThat(snapshot.getValue().inputPreview()).doesNotContain(bodyMarker, forbiddenPath);
+    }
 
     @Test
     @DisplayName("prepare 会过滤当前 turn 原始 item、写入快照并返回临时模型输入")

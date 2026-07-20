@@ -1,9 +1,12 @@
 package com.wzx.babiq.server.context.runtime;
 
 import com.wzx.babiq.server.agent.AgentRunPolicy;
+import com.wzx.babiq.server.attachment.AttachmentTextSegment;
 import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
 import com.wzx.babiq.server.conversation.ItemEmitter;
 import org.springframework.ai.tool.ToolCallback;
+
+import java.util.List;
 
 /**
  * ContextWindowRuntime 的单轮输入。
@@ -19,6 +22,7 @@ import org.springframework.ai.tool.ToolCallback;
  * @param modelContextWindow 当前模型上下文窗口 token 数。
  * @param toolCallbacks 当前候选工具 callback，用于生成能力目录摘要。
  * @param emitter 当前 WebSocket item 发射器；为空时只做后端审计，不推送压缩事件 item。
+ * @param attachmentTextSegments 当前轮临时附件文本；仅可进入模型输入和元数据快照。
  */
 public record ContextWindowRuntimeInput(
         String threadId,
@@ -32,7 +36,8 @@ public record ContextWindowRuntimeInput(
         int modelContextWindow,
         ToolCallback[] toolCallbacks,
         ItemEmitter emitter,
-        BusinessIdentityScope businessIdentityScope
+        BusinessIdentityScope businessIdentityScope,
+        List<AttachmentTextSegment> attachmentTextSegments
 ) {
     /**
      * 兼容旧测试和旧调用点：没有 emitter 时仍可正常装配上下文。
@@ -48,7 +53,7 @@ public record ContextWindowRuntimeInput(
                                      int modelContextWindow,
                                      ToolCallback[] toolCallbacks) {
         this(threadId, turnId, userText, providerId, model, cwd, projectId,
-                runPolicy, modelContextWindow, toolCallbacks, null, BusinessIdentityScope.UNSCOPED);
+                runPolicy, modelContextWindow, toolCallbacks, null, BusinessIdentityScope.UNSCOPED, List.of());
     }
 
     /** 兼容 Task 25 之前已携带 emitter 的调用点。 */
@@ -56,7 +61,16 @@ public record ContextWindowRuntimeInput(
                                      String model, String cwd, String projectId, AgentRunPolicy runPolicy,
                                      int modelContextWindow, ToolCallback[] toolCallbacks, ItemEmitter emitter) {
         this(threadId, turnId, userText, providerId, model, cwd, projectId, runPolicy,
-                modelContextWindow, toolCallbacks, emitter, BusinessIdentityScope.UNSCOPED);
+                modelContextWindow, toolCallbacks, emitter, BusinessIdentityScope.UNSCOPED, List.of());
+    }
+
+    /** 兼容业务 identity scope 已接入、附件上下文尚未接入的调用点。 */
+    public ContextWindowRuntimeInput(String threadId, String turnId, String userText, String providerId,
+                                     String model, String cwd, String projectId, AgentRunPolicy runPolicy,
+                                     int modelContextWindow, ToolCallback[] toolCallbacks, ItemEmitter emitter,
+                                     BusinessIdentityScope businessIdentityScope) {
+        this(threadId, turnId, userText, providerId, model, cwd, projectId, runPolicy,
+                modelContextWindow, toolCallbacks, emitter, businessIdentityScope, List.of());
     }
 
     public ContextWindowRuntimeInput {
@@ -65,6 +79,9 @@ public record ContextWindowRuntimeInput(
         businessIdentityScope = businessIdentityScope == null
                 ? BusinessIdentityScope.UNSCOPED
                 : businessIdentityScope;
+        attachmentTextSegments = attachmentTextSegments == null
+                ? List.of()
+                : List.copyOf(attachmentTextSegments);
     }
 
     /** record 默认数组访问器会暴露内部引用，这里继续防御复制以保持输入快照不可变。 */

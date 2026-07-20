@@ -4,7 +4,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.wzx.babiq.server.context.CapabilityCatalogAssembler;
 import com.wzx.babiq.server.application.context.ApplicationContextModelContributor;
+import com.wzx.babiq.server.context.ApproximateContextTokenEstimator;
 import com.wzx.babiq.server.context.ContextAssembler;
+import com.wzx.babiq.server.context.attachment.AttachmentContextBudgeter;
+import com.wzx.babiq.server.context.attachment.AttachmentPromptRenderer;
 import com.wzx.babiq.server.context.compaction.ContextBudget;
 import com.wzx.babiq.server.context.compaction.ContextBudgetPolicy;
 import com.wzx.babiq.server.context.compaction.ContextCompactionOutcome;
@@ -14,6 +17,8 @@ import com.wzx.babiq.server.context.compaction.WindowInstallRequest;
 import com.wzx.babiq.server.context.model.CapabilityCatalog;
 import com.wzx.babiq.server.context.model.ContextAssemblyInput;
 import com.wzx.babiq.server.context.model.ContextAssemblyResult;
+import com.wzx.babiq.server.context.model.ContextSnapshot;
+import com.wzx.babiq.server.context.model.ContextSnapshotItem;
 import com.wzx.babiq.server.context.model.LongTermMemoryReference;
 import com.wzx.babiq.server.context.model.ShortTermSummary;
 import com.wzx.babiq.server.context.repository.ContextSummaryRecord;
@@ -37,6 +42,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -75,6 +81,8 @@ public class ContextWindowRuntime {
     private final ApplicationContextModelContributor applicationContextContributor;
     /** 默认预算策略，主要服务测试或未启用压缩服务的场景。 */
     private final ContextBudgetPolicy fallbackBudgetPolicy;
+    /** 当前轮附件的临时文本预算器；只返回渲染文本和元数据快照。 */
+    private final AttachmentContextBudgeter attachmentContextBudgeter;
     /** snake_case JSON mapper，保证 envelope/snapshot JSON 和 P3-1 结构一致。 */
     private final ObjectMapper objectMapper;
     /** 协议历史 item 保持 WebSocket/ConversationEventRecorder 的 camelCase 映射。 */
@@ -128,7 +136,6 @@ public class ContextWindowRuntime {
     /**
      * 创建生产运行时，接入短期压缩和摘要恢复。
      */
-    @Autowired
     public ContextWindowRuntime(ConversationRepository conversationRepository,
                                 ContextAssembler contextAssembler,
                                 CapabilityCatalogAssembler capabilityCatalogAssembler,
@@ -140,6 +147,30 @@ public class ContextWindowRuntime {
                                 ContextSummaryRepository summaryRepository,
                                 LongTermMemoryReadService longTermMemoryReadService,
                                 ObjectProvider<ApplicationContextModelContributor> applicationContextContributorProvider) {
+        this(conversationRepository, contextAssembler, capabilityCatalogAssembler, promptRenderer,
+                windowRepository, snapshotRepository, objectMapper, compactionService, summaryRepository,
+                longTermMemoryReadService, applicationContextContributorProvider,
+                new AttachmentContextBudgeter(
+                        new ApproximateContextTokenEstimator(),
+                        new AttachmentPromptRenderer()));
+    }
+
+    /**
+     * 创建生产运行时，接入短期压缩、摘要恢复和附件上下文预算。
+     */
+    @Autowired
+    public ContextWindowRuntime(ConversationRepository conversationRepository,
+                                ContextAssembler contextAssembler,
+                                CapabilityCatalogAssembler capabilityCatalogAssembler,
+                                ContextualPromptRenderer promptRenderer,
+                                ContextWindowRepository windowRepository,
+                                ContextSnapshotRepository snapshotRepository,
+                                ObjectMapper objectMapper,
+                                ContextCompactionService compactionService,
+                                ContextSummaryRepository summaryRepository,
+                                LongTermMemoryReadService longTermMemoryReadService,
+                                ObjectProvider<ApplicationContextModelContributor> applicationContextContributorProvider,
+                                AttachmentContextBudgeter attachmentContextBudgeter) {
         this.conversationRepository = conversationRepository;
         this.contextAssembler = contextAssembler;
         this.capabilityCatalogAssembler = capabilityCatalogAssembler;
@@ -152,6 +183,11 @@ public class ContextWindowRuntime {
         this.applicationContextContributor = applicationContextContributorProvider == null
                 ? null : applicationContextContributorProvider.getIfAvailable();
         this.fallbackBudgetPolicy = new ContextBudgetPolicy();
+        this.attachmentContextBudgeter = attachmentContextBudgeter == null
+                ? new AttachmentContextBudgeter(
+                        new ApproximateContextTokenEstimator(),
+                        new AttachmentPromptRenderer())
+                : attachmentContextBudgeter;
         ObjectMapper base = objectMapper == null ? new ObjectMapper() : objectMapper;
         this.protocolObjectMapper = base.copy();
         this.objectMapper = base.copy().setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
@@ -191,9 +227,13 @@ public class ContextWindowRuntime {
             assemblyResult = assemble(input, historyItems, activeSummary, capabilityCatalog,
                     memoryReadResult.references());
         }
+        AttachmentContextBudgeter.Result attachmentContext = attachmentContextBudgeter.budget(
+                input.attachmentTextSegments(), budget, assemblyResult.snapshot().estimatedTokens());
+        assemblyResult = withAttachmentSnapshot(assemblyResult, attachmentContext);
         ContextSnapshotRecord snapshot = snapshotRecord(input, assemblyResult, capabilityCatalog,
                 snapshotId, windowOrdinal, modelWindow, threshold, memoryReadResult, now);
-        String modelInputText = promptRenderer.render(assemblyResult);
+        String modelInputText = appendAttachmentContext(
+                promptRenderer.render(assemblyResult), attachmentContext.renderedText());
         try {
             snapshotRepository.save(snapshot);
             if (longTermMemoryReadService != null) {
@@ -376,6 +416,38 @@ public class ContextWindowRuntime {
                     input.threadId(), input.turnId(), exception.getClass().getSimpleName(), exception.getMessage());
             return LongTermMemoryReadResult.empty();
         }
+    }
+
+    private static ContextAssemblyResult withAttachmentSnapshot(
+            ContextAssemblyResult assemblyResult,
+            AttachmentContextBudgeter.Result attachmentContext) {
+        if (attachmentContext.snapshotItems().isEmpty()) {
+            return assemblyResult;
+        }
+        ContextSnapshot base = assemblyResult.snapshot();
+        List<ContextSnapshotItem> items = new ArrayList<>(
+                base.items().size() + attachmentContext.snapshotItems().size());
+        items.addAll(base.items());
+        items.addAll(attachmentContext.snapshotItems());
+        ContextSnapshot augmented = new ContextSnapshot(
+                base.threadId(),
+                base.turnId(),
+                base.createdAt(),
+                Math.addExact(base.estimatedTokens(), attachmentContext.tokenEstimate()),
+                items);
+        return assemblyResult.withSnapshot(augmented);
+    }
+
+    private static String appendAttachmentContext(String baseModelInput, String attachmentText) {
+        String base = baseModelInput == null ? "" : baseModelInput;
+        String attachments = attachmentText == null ? "" : attachmentText;
+        if (attachments.isBlank()) {
+            return base;
+        }
+        if (base.isBlank()) {
+            return attachments;
+        }
+        return base + "\n\n" + attachments;
     }
 
     private List<String> workspaceFacts(ContextWindowRuntimeInput input) {

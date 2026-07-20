@@ -26,4 +26,12 @@ public record ContextAssemblyResult(
     public ContextAssemblyResult {
         messages = messages == null ? List.of() : List.copyOf(messages);
     }
+
+    /**
+     * Replace only the metadata snapshot while retaining the content-free
+     * envelope and Spring AI messages.
+     */
+    public ContextAssemblyResult withSnapshot(ContextSnapshot replacement) {
+        return new ContextAssemblyResult(envelope, replacement, messages);
+    }
 }

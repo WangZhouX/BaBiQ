@@ -1,6 +1,11 @@
 package com.wzx.babiq.server.persistence;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
+import com.wzx.babiq.server.context.model.ContextPriority;
+import com.wzx.babiq.server.context.model.ContextSnapshotItem;
+import com.wzx.babiq.server.context.model.ContextSourceType;
 import com.wzx.babiq.server.context.repository.ContextSnapshotRecord;
 import com.wzx.babiq.server.context.repository.ContextSnapshotRepository;
 import com.wzx.babiq.server.context.repository.ContextWindowRecord;
@@ -17,6 +22,7 @@ import org.springframework.test.context.DynamicPropertySource;
 
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -30,6 +36,41 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 @SpringBootTest
 class ContextSnapshotPersistenceTest {
+
+    @Test
+    @DisplayName("attachment snapshot round-trip 只保存安全元数据不保存正文或路径")
+    void attachment_snapshot_should_persist_metadata_only() throws Exception {
+        String suffix = UUID.randomUUID().toString();
+        String threadId = "thr_attachment_" + suffix;
+        String turnId = "turn_attachment_" + suffix;
+        String snapshotId = "ctxsnap_attachment_" + suffix;
+        String bodyMarker = "EXTRACTED_ATTACHMENT_BODY_MARKER";
+        String forbiddenPath = "C:\\Users\\secret\\合同.txt";
+        Instant now = Instant.now();
+        conversationRepository.createThread(threadId, "attachment", "E:\\BaBiQ",
+                "provider", "model", "READ_ONLY", "NEVER", now);
+        turnPersistenceService.saveTurn(TurnRecord.started(
+                turnId, threadId, "RUNNING", "input", "E:\\BaBiQ", "provider", "model",
+                "READ_ONLY", "NEVER", now));
+        ObjectMapper snakeCase = new ObjectMapper()
+                .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
+        String itemsJson = snakeCase.writeValueAsString(List.of(new ContextSnapshotItem(
+                "A-7K3M2Q", ContextSourceType.ATTACHMENT, ContextPriority.AUTHORITATIVE,
+                true, "ATTACHMENT_INCLUDED", 12, "合同.txt", "text/plain",
+                20, 20, 0)));
+        snapshotRepository.save(new ContextSnapshotRecord(
+                snapshotId, threadId, turnId, "pre_model_call", "provider", "model", "E:\\BaBiQ",
+                0, 1000, 750, 22, null, 1, 0, "{\"current_turn\":{}}", itemsJson,
+                "{}", null, 0, "input", now));
+
+        ContextSnapshotRecord stored = snapshotRepository.findBySnapshotId(snapshotId).orElseThrow();
+
+        assertThat(stored.itemsJson())
+                .contains("A-7K3M2Q", "合同.txt", "text/plain")
+                .doesNotContain(bodyMarker, forbiddenPath);
+        assertThat(stored.envelopeJson()).doesNotContain(bodyMarker, forbiddenPath);
+        assertThat(stored.inputPreview()).doesNotContain(bodyMarker, forbiddenPath);
+    }
 
     private static final BusinessIdentityScope SCOPE_A = BusinessIdentityScope.scoped(
             "desktop", "session-a", "auth-a", 1, "user-a", "tenant-a", "platform");
