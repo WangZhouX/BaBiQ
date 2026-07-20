@@ -134,4 +134,61 @@ WebSocket 连接 future 现在有 8 秒硬超时。每次测试生成的 UUID ru
   业务附件的隔离开发数据。
 - 业务桌面当前只恢复当前打开 thread 的附件元数据；没有在本阶段新增独立历史会话页面。
 - Office/PDF 只提取文本，不执行宏、脚本或嵌入对象；图片仅作为当前轮瞬时多模态输入。
-- Task 12 仍需重新执行计划中的 focused suites、后端 `clean verify`、业务桌面全量测试与前后端分离烟测。
+- Task 12 已完成计划中的 focused suites、后端 `clean verify`、业务桌面强制全量测试与前后端分离烟测；
+  新鲜证据见下一节。
+
+## 8. Task 12 最终验证证据
+
+### 8.1 自动化验证
+
+全部命令均在 2026-07-21 使用 JDK 21 新鲜执行；业务桌面同时固定
+`GRADLE_USER_HOME=E:\huitai-work\BaBiQ\.tmp-gradle-review`。
+
+- 后端附件聚焦套件在计划清单上额外包含
+  `AttachmentPublicationCleanupRaceTest`、`AttachmentReservationRegistryTest`、
+  `WindowsSafeAttachmentDeletionStrategyTest`、`ConversationEventRecorderTest` 和 `TurnExecutorTest`：
+  `Tests run: 174, Failures: 0, Errors: 0, Skipped: 3`，`BUILD SUCCESS`，63.361 秒。
+- 后端 `.\mvnw.cmd clean verify`：Surefire 200 个报告、1085 个测试，Failsafe 20 个 IT 报告、
+  65 个测试；合计 1150 个测试，0 失败、0 错误、3 跳过，`BUILD SUCCESS`，约 248.8 秒。
+- 业务桌面 `:agent-client-core:test` 聚焦验证：18 个测试，0 失败、0 错误、0 跳过，5.517 秒。
+- 业务桌面 `:app:test` 聚焦验证（含 `BusinessAgentAttachmentWorkflowIT`）：11 个测试类、
+  86 个测试，0 失败、0 错误、0 跳过，28.575 秒。
+- 业务桌面 `.\gradlew.bat test --rerun-tasks`：42/42 actionable tasks 实际执行；7 个模块、
+  92 个测试报告、797 个测试，0 失败、0 错误、0 跳过，`BUILD SUCCESSFUL`，119.790 秒。
+
+### 8.2 前后端分离烟测
+
+烟测只使用 `backend/target/smoke` 下的隔离 HOME、临时数据库、密钥、日志与测试附件，没有访问用户
+真实业务数据。先单独运行 `:app:runBusinessBackendDevelopment`，再单独运行
+`:app:runBusinessFrontendDevelopment`，没有使用组合启动任务。后端在 11.324 秒启动并监听
+`127.0.0.1:49391`；前端窗口标题为“汇泰业务桌面 Agent”，窗口响应正常且与后端保持已建立连接。
+
+独立命令行启动前端时，除了任务自身注入的 `HUITAI_DESKTOP_EXTERNAL_BACKEND=1`，隔离演示环境还必须
+显式设置 `HUITAI_DESKTOP_FRAMEWORK_DEMO_IDENTITY=1`；IDEA 的 `Business Frontend（前端）` 配置已经包含
+该变量。正确启动后，`application/identity/bind`、`application/catalog/register` 和 `provider/list`
+均真实成功。Skiko 的 DirectX 12 初始化失败后自动回退到下一渲染 API，窗口仍正常显示和响应，不是启动失败。
+
+人工操作结果：
+
+- 选择 279 B 的 TXT 成功，chip 为 `A-MPPDFS`，只显示稳定 ID、文本类型和大小；移除成功。
+- Ctrl+V 粘贴真实截图成功，生成 `A-UA6SYY`，PNG 原子落入隔离受控 clipboard 目录。
+- 选择 1.1 MiB PNG 成功，chip 为 `A-QZFE2U`，不显示原始路径。
+- 仅附件发送被后端接受：`turn/start` 准备 2 个附件、总计 2,514,479 B；历史用户消息显示同一组
+  `A-UA6SYY` / `A-QZFE2U` chip。隔离 HOME 没有真实 Provider 凭据，因此模型阶段以安全提示失败、
+  token 为 0；真实模型输入中的图片 media 和文档正文装配由 `BusinessAttachmentEndToEndIT` 的确定性
+  捕获模型桩覆盖，本次人工烟测不把“无凭据”误报为模型理解成功。
+- 文本加 TXT 发送时，`A-8F2RFE` 被准备为 1 个附件、279 B。下一轮只发送文本引用 `A-8F2RFE`，
+  入站 `attachments=0`，历史解析仍准备出 1 个附件、279 B、`[A-8F2RFE]`。
+- 把原 TXT 安全改名后再次引用，UI 显示“附件已不存在，请重新选择后再发送”，草稿保留；后端返回
+  `ATTACHMENT_NOT_FOUND`，并在调用模型前结束。
+
+### 8.3 日志隐私与清理
+
+停止进程后扫描烟测产生的 8 个日志文件：原 TXT 路径、改名后 TXT 路径、原 PNG 路径和受控截图路径的
+反斜杠、正斜杠、file URI、JSON 转义和 URL 编码变体均为 0 命中；`data:image`、`base64,` 和连续
+512 字符以上 Base64-like 串均为 0；`SQLITE_BUSY` / `database is locked` 均为 0。诊断中的本机路径
+使用 `<local-path-redacted>`，共命中 10 次。
+
+烟测后前端窗口已关闭，后端及 Gradle 启动链已退出，49391 端口不再监听，相关进程计数为 0；删除前将
+目标解析为 `E:\huitai-work\BaBiQ\backend\target\smoke` 并确认严格位于
+`E:\huitai-work\BaBiQ\backend\target` 下，随后清理整个隔离目录并确认不存在。
