@@ -2,6 +2,7 @@ package com.wzx.huitai.desktop.controller
 
 import com.wzx.huitai.agent.client.AgentSupervisorState
 import com.wzx.huitai.agent.conversation.BusinessAgentEvent
+import com.wzx.huitai.agent.conversation.BusinessAttachmentDraft
 import com.wzx.huitai.agent.conversation.BusinessConversationGateway
 import com.wzx.huitai.agent.conversation.BusinessProvider
 import com.wzx.huitai.agent.conversation.BusinessProviderDeleteResult
@@ -565,7 +566,12 @@ class BusinessProviderSettingsControllerTest {
         }
 
         override suspend fun createThread(cwd: String) = BusinessThread("thread-1", "demo", cwd)
-        override suspend fun startTurn(threadId: String, text: String, providerId: String?) =
+        override suspend fun startTurn(
+            threadId: String,
+            text: String,
+            attachments: List<BusinessAttachmentDraft>,
+            providerId: String?,
+        ) =
             BusinessTurn("turn-1", threadId)
         override suspend fun cancelTurn(turnId: String) = true
 

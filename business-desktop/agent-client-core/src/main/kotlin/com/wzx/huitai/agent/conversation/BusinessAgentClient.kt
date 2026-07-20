@@ -35,16 +35,17 @@ interface BusinessConversationGateway : Closeable {
         throw UnsupportedOperationException("Provider OAuth login is not supported")
     suspend fun setActiveProvider(providerId: String, modelId: String? = null): BusinessProviderSelection
     suspend fun createThread(cwd: String): BusinessThread
-    suspend fun startTurn(threadId: String, text: String, providerId: String? = null): BusinessTurn
+    suspend fun startTurn(
+        threadId: String,
+        text: String,
+        providerId: String? = null,
+    ): BusinessTurn = startTurn(threadId, text, emptyList(), providerId)
     suspend fun startTurn(
         threadId: String,
         text: String,
         attachments: List<BusinessAttachmentDraft>,
         providerId: String? = null,
-    ): BusinessTurn {
-        require(attachments.isEmpty()) { "This gateway does not support attachments" }
-        return startTurn(threadId, text, providerId)
-    }
+    ): BusinessTurn
     suspend fun cancelTurn(turnId: String): Boolean
 }
 
@@ -113,12 +114,6 @@ class BusinessAgentClient(
             cwd = result.requiredText("cwd"),
         )
     }
-
-    override suspend fun startTurn(
-        threadId: String,
-        text: String,
-        providerId: String?,
-    ): BusinessTurn = startTurn(threadId, text, emptyList(), providerId)
 
     override suspend fun startTurn(
         threadId: String,

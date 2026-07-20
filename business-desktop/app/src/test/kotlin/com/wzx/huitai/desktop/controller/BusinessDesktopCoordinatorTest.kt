@@ -63,6 +63,7 @@ class BusinessDesktopCoordinatorTest {
         assertEquals("provider-1", controller.state.value.activeProviderId)
         assertEquals("thread-1", controller.state.value.currentThread?.id)
         assertEquals("provider-1", gateway.startedWithProvider)
+        assertEquals(emptyList(), gateway.startedAttachments)
         assertEquals("hello", (controller.state.value.messages.single() as BusinessThreadItem.UserMessage).text)
         assertTrue(controller.cancelActiveTurn())
         assertEquals("turn-1", gateway.canceledTurnId)
@@ -434,6 +435,7 @@ class BusinessDesktopCoordinatorTest {
         val mutableEvents = MutableSharedFlow<BusinessAgentEvent>()
         override val events: Flow<BusinessAgentEvent> = mutableEvents
         var startedWithProvider: String? = null
+        var startedAttachments: List<BusinessAttachmentDraft>? = null
         var canceledTurnId: String? = null
         override suspend fun listProviders(): List<BusinessProvider> = listOf(
             BusinessProvider(
@@ -448,16 +450,16 @@ class BusinessDesktopCoordinatorTest {
         override suspend fun setActiveProvider(providerId: String, modelId: String?): BusinessProviderSelection =
             BusinessProviderSelection(providerId, requireNotNull(modelId))
         override suspend fun createThread(cwd: String): BusinessThread = BusinessThread("thread-1", "demo", cwd)
-        override suspend fun startTurn(threadId: String, text: String, providerId: String?): BusinessTurn {
-            startedWithProvider = providerId
-            return BusinessTurn("turn-1", threadId)
-        }
         override suspend fun startTurn(
             threadId: String,
             text: String,
             attachments: List<BusinessAttachmentDraft>,
             providerId: String?,
-        ): BusinessTurn = startTurn(threadId, text, providerId)
+        ): BusinessTurn {
+            startedAttachments = attachments
+            startedWithProvider = providerId
+            return BusinessTurn("turn-1", threadId)
+        }
         override suspend fun cancelTurn(turnId: String): Boolean {
             canceledTurnId = turnId
             return true
