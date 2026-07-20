@@ -4,6 +4,9 @@ import com.wzx.babiq.server.application.config.BusinessDesktopModeProperties;
 import org.springframework.stereotype.Service;
 
 import java.nio.file.Path;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -21,7 +24,8 @@ public final class AttachmentPreparationService {
     private static final Pattern DISPLAY_ID_PATTERN = Pattern.compile("A-[A-HJ-NP-Z2-9]{6}");
 
     private final AttachmentFileValidator validator;
-    private final Path controlledClipboardRoot;
+    private final Path configuredClipboardRoot;
+    private final ClipboardRootCanonicalizer clipboardRootCanonicalizer;
 
     public AttachmentPreparationService(
             AttachmentFileValidator validator,
@@ -35,10 +39,19 @@ public final class AttachmentPreparationService {
     }
 
     AttachmentPreparationService(AttachmentFileValidator validator, Path controlledClipboardRoot) {
+        this(validator, controlledClipboardRoot, AttachmentPreparationService::canonicalizeExistingRoot);
+    }
+
+    AttachmentPreparationService(
+            AttachmentFileValidator validator,
+            Path controlledClipboardRoot,
+            ClipboardRootCanonicalizer clipboardRootCanonicalizer
+    ) {
         this.validator = validator;
-        this.controlledClipboardRoot = controlledClipboardRoot == null
+        this.configuredClipboardRoot = controlledClipboardRoot == null
                 ? null
                 : controlledClipboardRoot.toAbsolutePath().normalize();
+        this.clipboardRootCanonicalizer = clipboardRootCanonicalizer;
     }
 
     public PreparedTurnInput prepareNew(String text, List<AttachmentRequest> requests) {
@@ -114,9 +127,33 @@ public final class AttachmentPreparationService {
     }
 
     private boolean isTrustedClipboardImage(PreparedAttachment attachment) {
-        return controlledClipboardRoot != null
-                && attachment.canonicalPath().startsWith(controlledClipboardRoot)
+        Path canonicalClipboardRoot = canonicalClipboardRoot();
+        return canonicalClipboardRoot != null
+                && attachment.canonicalPath().startsWith(canonicalClipboardRoot)
                 && attachment.metadata().mediaType().startsWith("image/");
+    }
+
+    private Path canonicalClipboardRoot() {
+        if (configuredClipboardRoot == null) {
+            return null;
+        }
+        try {
+            Path canonical = clipboardRootCanonicalizer.canonicalize(configuredClipboardRoot);
+            if (canonical == null) {
+                return null;
+            }
+            canonical = canonical.toAbsolutePath().normalize();
+            return Files.isDirectory(canonical, LinkOption.NOFOLLOW_LINKS) ? canonical : null;
+        } catch (IOException | RuntimeException exception) {
+            return null;
+        }
+    }
+
+    private static Path canonicalizeExistingRoot(Path configuredRoot) throws IOException {
+        if (!Files.exists(configuredRoot, LinkOption.NOFOLLOW_LINKS)) {
+            return null;
+        }
+        return configuredRoot.toRealPath();
     }
 
     private static long addWithoutOverflow(long left, long right) {
@@ -124,5 +161,10 @@ public final class AttachmentPreparationService {
             return Long.MAX_VALUE;
         }
         return left + right;
+    }
+
+    @FunctionalInterface
+    interface ClipboardRootCanonicalizer {
+        Path canonicalize(Path configuredRoot) throws IOException;
     }
 }

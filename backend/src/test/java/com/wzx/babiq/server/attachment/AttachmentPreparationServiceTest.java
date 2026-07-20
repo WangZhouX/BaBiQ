@@ -104,6 +104,40 @@ class AttachmentPreparationServiceTest {
     }
 
     @Test
+    void missingClipboardRootFailsClosedInsteadOfTrustingAStringPrefix() {
+        Path missingRoot = tempDir.resolve("missing-runtime/attachments/clipboard");
+        Path apparentChild = missingRoot.resolve("capture.png").toAbsolutePath().normalize();
+        AttachmentRequest request = request(apparentChild, "A-23457T");
+        AttachmentFileValidator validator = mock(AttachmentFileValidator.class);
+        when(validator.validate(request)).thenReturn(prepared(request, apparentChild, 1, "image/png"));
+        AttachmentPreparationService service = new AttachmentPreparationService(validator, missingRoot);
+
+        PreparedTurnInput input = service.prepareNew("", List.of(request));
+
+        assertThat(input.newAttachments().getFirst().metadata().source())
+                .isEqualTo(AttachmentSource.SELECTED_FILE);
+    }
+
+    @Test
+    void comparesAgainstTheCanonicalClipboardRootInsteadOfItsConfiguredAlias() throws Exception {
+        Path realRoot = Files.createDirectories(tempDir.resolve("real-runtime/attachments/clipboard")).toRealPath();
+        Path configuredAlias = tempDir.resolve("configured-alias");
+        Path image = Files.write(realRoot.resolve("capture.png"), new byte[]{1});
+        AttachmentRequest request = request(image, "A-23457U");
+        AttachmentFileValidator validator = mock(AttachmentFileValidator.class);
+        when(validator.validate(request)).thenReturn(prepared(request, image, 1, "image/png"));
+        AttachmentPreparationService service = new AttachmentPreparationService(
+                validator,
+                configuredAlias,
+                ignored -> realRoot);
+
+        PreparedTurnInput input = service.prepareNew("", List.of(request));
+
+        assertThat(input.newAttachments().getFirst().metadata().source())
+                .isEqualTo(AttachmentSource.CLIPBOARD_IMAGE);
+    }
+
+    @Test
     void preparedTurnInputKeepsNewAndReferencedAttachmentsSeparateAndDeduplicatesCombinedOrder() {
         PreparedAttachment first = prepared(
                 request(tempDir.resolve("first.txt"), "A-234567"),

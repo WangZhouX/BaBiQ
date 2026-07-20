@@ -7,26 +7,36 @@ import org.springframework.stereotype.Component;
 import javax.imageio.ImageIO;
 import javax.imageio.ImageReader;
 import javax.imageio.stream.ImageInputStream;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
+import java.nio.file.OpenOption;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.StandardWatchEventKinds;
+import java.nio.file.WatchEvent;
+import java.nio.file.WatchKey;
+import java.nio.file.WatchService;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.LinkedHashMap;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipEntry;
-import java.util.zip.ZipFile;
+import java.util.zip.ZipInputStream;
 
 /**
  * Authoritative local-file validation performed before a Turn is created.
@@ -71,13 +81,19 @@ public class AttachmentFileValidator {
     };
 
     private final Tika tika;
+    private final ValidationRaceHook raceHook;
 
     public AttachmentFileValidator() {
-        this(new Tika());
+        this(new Tika(), ValidationRaceHook.NO_OP);
     }
 
     AttachmentFileValidator(Tika tika) {
+        this(tika, ValidationRaceHook.NO_OP);
+    }
+
+    AttachmentFileValidator(Tika tika, ValidationRaceHook raceHook) {
         this.tika = tika;
+        this.raceHook = raceHook;
     }
 
     public PreparedAttachment validate(AttachmentRequest request) {
@@ -99,36 +115,55 @@ public class AttachmentFileValidator {
             throw failure(AttachmentErrorCode.ATTACHMENT_CHANGED, "附件在读取期间发生变化，请重新选择");
         }
         initialAttributes = canonicalAttributes;
+        List<PathSegmentFingerprint> pathChainBefore = capturePathChain(requestedPath);
         String actualName = requireActualFileName(canonicalPath);
         String extension = extension(actualName);
         if (!TEXT_EXTENSIONS.contains(extension) && !STRICT_MEDIA_TYPES.containsKey(extension)) {
             throw unsupported();
         }
 
-        String mediaType = detectMediaType(canonicalPath);
-        verifyContentMatchesExtension(canonicalPath, extension, mediaType);
-        if (mediaType.startsWith("image/")) {
-            validateImageDimensions(canonicalPath, mediaType);
-        }
+        try (PathMutationWatch mutationWatch = PathMutationWatch.start(requestedPath)) {
+            invokeRaceHook(ValidationPhase.BEFORE_BOUND_OPEN, requestedPath, canonicalPath);
+            rejectLinkedPathSegments(requestedPath);
+            rejectLinkedPathSegments(canonicalPath);
+            BoundFileSnapshot snapshot = readBoundSnapshot(
+                    requestedPath, canonicalPath, initialAttributes.size());
 
-        String sha256 = calculateSha256(canonicalPath);
-        BasicFileAttributes finalAttributes = readFinalAttributes(canonicalPath);
-        PreparedAttachment.FileIdentity initialIdentity = identity(initialAttributes);
-        PreparedAttachment.FileIdentity finalIdentity = identity(finalAttributes);
-        if (!sameIdentity(initialIdentity, finalIdentity)) {
-            throw failure(AttachmentErrorCode.ATTACHMENT_CHANGED, "附件在读取期间发生变化，请重新选择");
-        }
+            String mediaType = detectMediaType(snapshot.bytes());
+            verifyContentMatchesExtension(snapshot.bytes(), extension, mediaType);
+            if (mediaType.startsWith("image/")) {
+                validateImageDimensions(snapshot.bytes(), mediaType);
+            }
 
-        AttachmentMetadata metadata = new AttachmentMetadata(
-                request.id(),
-                request.displayId(),
-                actualName,
-                canonicalPath.toString(),
-                normalizedMediaType(extension, mediaType),
-                finalAttributes.size(),
-                sha256,
-                AttachmentSource.SELECTED_FILE);
-        return new PreparedAttachment(metadata, canonicalPath, finalIdentity);
+            rejectLinkedPathSegments(requestedPath);
+            rejectLinkedPathSegments(canonicalPath);
+            if (mutationWatch.targetChanged()
+                    || !pathChainBefore.equals(capturePathChain(requestedPath))) {
+                throw failure(AttachmentErrorCode.ATTACHMENT_CHANGED, "附件路径在读取期间发生变化");
+            }
+            BasicFileAttributes finalAttributes = readFinalAttributes(canonicalPath);
+            PreparedAttachment.FileIdentity initialIdentity = identity(initialAttributes);
+            PreparedAttachment.FileIdentity finalIdentity = identity(finalAttributes);
+            if (!sameIdentity(initialIdentity, finalIdentity)) {
+                throw failure(AttachmentErrorCode.ATTACHMENT_CHANGED, "附件在读取期间发生变化，请重新选择");
+            }
+
+            AttachmentMetadata metadata = new AttachmentMetadata(
+                    request.id(),
+                    request.displayId(),
+                    actualName,
+                    canonicalPath.toString(),
+                    normalizedMediaType(extension, mediaType),
+                    finalAttributes.size(),
+                    snapshot.sha256(),
+                    AttachmentSource.SELECTED_FILE);
+            return new PreparedAttachment(metadata, canonicalPath, finalIdentity);
+        } catch (IOException exception) {
+            throw failure(
+                    AttachmentErrorCode.ATTACHMENT_CHANGED,
+                    "无法安全监控附件路径",
+                    exception);
+        }
     }
 
     private static void requireRequestShape(AttachmentRequest request) {
@@ -212,8 +247,8 @@ public class AttachmentFileValidator {
         return value;
     }
 
-    private String detectMediaType(Path path) {
-        try (TikaInputStream input = TikaInputStream.get(path)) {
+    private String detectMediaType(byte[] bytes) {
+        try (TikaInputStream input = TikaInputStream.get(bytes)) {
             String mediaType = tika.detect(input);
             if (mediaType == null || mediaType.isBlank()) {
                 throw unsupported();
@@ -229,7 +264,11 @@ public class AttachmentFileValidator {
         }
     }
 
-    private static void verifyContentMatchesExtension(Path path, String extension, String detectedMediaType) {
+    private static void verifyContentMatchesExtension(
+            byte[] bytes,
+            String extension,
+            String detectedMediaType
+    ) {
         if (TEXT_EXTENSIONS.contains(extension)) {
             if (!isTextMediaType(detectedMediaType)) {
                 throw unsupported();
@@ -242,19 +281,19 @@ public class AttachmentFileValidator {
             throw unsupported();
         }
         if ("pdf".equals(extension)) {
-            if (!"application/pdf".equals(detectedMediaType) || !hasPrefix(path, "%PDF-".getBytes())) {
+            if (!"application/pdf".equals(detectedMediaType) || !hasPrefix(bytes, "%PDF-".getBytes())) {
                 throw unsupported();
             }
             return;
         }
         if (LEGACY_OFFICE_EXTENSIONS.contains(extension)) {
-            if (!hasPrefix(path, OLE_SIGNATURE) || !expected.equals(detectedMediaType)) {
+            if (!hasPrefix(bytes, OLE_SIGNATURE) || !expected.equals(detectedMediaType)) {
                 throw unsupported();
             }
             return;
         }
         if (OOXML_EXTENSIONS.contains(extension)) {
-            if (!hasOoxmlContentType(path, expected)) {
+            if (!hasOoxmlContentType(bytes, expected)) {
                 throw unsupported();
             }
             return;
@@ -275,45 +314,39 @@ public class AttachmentFileValidator {
         return STRICT_MEDIA_TYPES.getOrDefault(extension, detectedMediaType);
     }
 
-    private static boolean hasPrefix(Path path, byte[] expected) {
-        try (InputStream input = Files.newInputStream(path)) {
-            byte[] actual = input.readNBytes(expected.length);
-            return MessageDigest.isEqual(expected, actual);
-        } catch (IOException exception) {
-            throw failure(AttachmentErrorCode.ATTACHMENT_CHANGED, "附件在读取期间变得不可用");
+    private static boolean hasPrefix(byte[] bytes, byte[] expected) {
+        if (bytes.length < expected.length) {
+            return false;
         }
+        byte[] actual = java.util.Arrays.copyOf(bytes, expected.length);
+        return MessageDigest.isEqual(expected, actual);
     }
 
-    private static boolean hasOoxmlContentType(Path path, String expectedMediaType) {
-        try (ZipFile zip = new ZipFile(path.toFile())) {
-            ZipEntry entry = zip.getEntry("[Content_Types].xml");
-            if (entry == null
-                    || entry.isDirectory()
-                    || entry.getSize() < 0
-                    || entry.getSize() > CONTENT_TYPE_XML_LIMIT) {
-                return false;
-            }
-            long compressedSize = entry.getCompressedSize();
-            if (compressedSize <= 0 || entry.getSize() / (double) compressedSize > 100.0d) {
-                return false;
-            }
-            try (InputStream input = zip.getInputStream(entry)) {
-                byte[] content = input.readNBytes(CONTENT_TYPE_XML_LIMIT + 1);
-                if (content.length > CONTENT_TYPE_XML_LIMIT) {
+    private static boolean hasOoxmlContentType(byte[] bytes, String expectedMediaType) {
+        try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(bytes))) {
+            ZipEntry entry;
+            while ((entry = zip.getNextEntry()) != null) {
+                if (!"[Content_Types].xml".equals(entry.getName())) {
+                    continue;
+                }
+                if (entry.isDirectory() || entry.getSize() > CONTENT_TYPE_XML_LIMIT) {
                     return false;
                 }
-                return new String(content, java.nio.charset.StandardCharsets.UTF_8)
+                byte[] content = zip.readNBytes(CONTENT_TYPE_XML_LIMIT + 1);
+                return content.length <= CONTENT_TYPE_XML_LIMIT
+                        && new String(content, java.nio.charset.StandardCharsets.UTF_8)
                         .contains(expectedMediaType);
             }
+            return false;
         } catch (IOException exception) {
             return false;
         }
     }
 
-    private static void validateImageDimensions(Path path, String mediaType) {
+    private static void validateImageDimensions(byte[] bytes, String mediaType) {
         ImageDimensions dimensions = "image/webp".equals(mediaType)
-                ? readWebpDimensions(path)
-                : readImageIoDimensions(path);
+                ? readWebpDimensions(bytes)
+                : readImageIoDimensions(bytes);
         long pixels = (long) dimensions.width() * dimensions.height();
         if (dimensions.width() <= 0
                 || dimensions.height() <= 0
@@ -326,8 +359,8 @@ public class AttachmentFileValidator {
         }
     }
 
-    private static ImageDimensions readImageIoDimensions(Path path) {
-        try (ImageInputStream input = ImageIO.createImageInputStream(path.toFile())) {
+    private static ImageDimensions readImageIoDimensions(byte[] bytes) {
+        try (ImageInputStream input = ImageIO.createImageInputStream(new ByteArrayInputStream(bytes))) {
             if (input == null) {
                 throw unsupported();
             }
@@ -352,9 +385,9 @@ public class AttachmentFileValidator {
         }
     }
 
-    private static ImageDimensions readWebpDimensions(Path path) {
-        try (InputStream input = Files.newInputStream(path)) {
-            byte[] header = input.readNBytes(30);
+    private static ImageDimensions readWebpDimensions(byte[] bytes) {
+        try {
+            byte[] header = java.util.Arrays.copyOf(bytes, Math.min(bytes.length, 30));
             if (header.length < 25
                     || !asciiEquals(header, 0, "RIFF")
                     || !asciiEquals(header, 8, "WEBP")) {
@@ -383,11 +416,6 @@ public class AttachmentFileValidator {
             throw unsupported();
         } catch (AttachmentException exception) {
             throw exception;
-        } catch (IOException exception) {
-            throw failure(
-                    AttachmentErrorCode.ATTACHMENT_TYPE_UNSUPPORTED,
-                    "图片内容无效",
-                    exception);
         }
     }
 
@@ -413,26 +441,64 @@ public class AttachmentFileValidator {
                 | (bytes[offset + 2] & 0xff) << 16;
     }
 
-    private static String calculateSha256(Path path) {
+    private BoundFileSnapshot readBoundSnapshot(
+            Path requestedPath,
+            Path canonicalPath,
+            long expectedSize
+    ) {
         MessageDigest digest;
         try {
             digest = MessageDigest.getInstance("SHA-256");
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("SHA-256 is required", exception);
         }
-        byte[] buffer = new byte[HASH_BUFFER_BYTES];
-        try (InputStream input = Files.newInputStream(path)) {
-            int read;
-            while ((read = input.read(buffer)) >= 0) {
-                if (read > 0) {
-                    digest.update(buffer, 0, read);
-                }
+        if (expectedSize < 0 || expectedSize > AttachmentLimits.MAX_FILE_BYTES) {
+            throw failure(
+                    AttachmentErrorCode.ATTACHMENT_FILE_TOO_LARGE,
+                    "附件超过 20 MiB 的单文件上限");
+        }
+        Set<OpenOption> options = Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS);
+        try (SeekableByteChannel channel = Files.newByteChannel(canonicalPath, options)) {
+            if (channel.size() != expectedSize) {
+                throw failure(AttachmentErrorCode.ATTACHMENT_CHANGED, "附件在读取期间发生变化");
             }
-            return HexFormat.of().formatHex(digest.digest());
+            invokeRaceHook(ValidationPhase.AFTER_BOUND_OPEN, requestedPath, canonicalPath);
+            byte[] bytes = new byte[(int) expectedSize];
+            int offset = 0;
+            while (offset < bytes.length) {
+                int chunkSize = Math.min(HASH_BUFFER_BYTES, bytes.length - offset);
+                ByteBuffer target = ByteBuffer.wrap(bytes, offset, chunkSize);
+                int read = channel.read(target);
+                if (read < 0) {
+                    throw failure(AttachmentErrorCode.ATTACHMENT_CHANGED, "附件在读取期间发生变化");
+                }
+                if (read == 0) {
+                    continue;
+                }
+                digest.update(bytes, offset, read);
+                offset += read;
+            }
+            if (channel.read(ByteBuffer.allocate(1)) >= 0 || channel.size() != expectedSize) {
+                throw failure(AttachmentErrorCode.ATTACHMENT_CHANGED, "附件在读取期间发生变化");
+            }
+            return new BoundFileSnapshot(bytes, HexFormat.of().formatHex(digest.digest()));
+        } catch (AttachmentException exception) {
+            throw exception;
         } catch (IOException exception) {
             throw failure(
                     AttachmentErrorCode.ATTACHMENT_CHANGED,
                     "附件在读取期间变得不可用",
+                    exception);
+        }
+    }
+
+    private void invokeRaceHook(ValidationPhase phase, Path requestedPath, Path canonicalPath) {
+        try {
+            raceHook.onPhase(phase, requestedPath, canonicalPath);
+        } catch (IOException | RuntimeException exception) {
+            throw failure(
+                    AttachmentErrorCode.ATTACHMENT_CHANGED,
+                    "附件路径在读取期间发生变化",
                     exception);
         }
     }
@@ -468,6 +534,40 @@ public class AttachmentFileValidator {
             current = current == null ? segment : current.resolve(segment);
             index++;
             rejectLinkedSegment(current, index < segmentCount);
+        }
+    }
+
+    private static List<PathSegmentFingerprint> capturePathChain(Path path) {
+        java.util.ArrayList<PathSegmentFingerprint> fingerprints = new java.util.ArrayList<>();
+        Path absolute = path.toAbsolutePath().normalize();
+        Path current = absolute.getRoot();
+        if (current != null) {
+            fingerprints.add(readPathFingerprint(current));
+        }
+        for (Path segment : absolute) {
+            current = current == null ? segment : current.resolve(segment);
+            fingerprints.add(readPathFingerprint(current));
+        }
+        return List.copyOf(fingerprints);
+    }
+
+    private static PathSegmentFingerprint readPathFingerprint(Path path) {
+        try {
+            BasicFileAttributes attributes = Files.readAttributes(
+                    path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            Object fileKey = attributes.fileKey();
+            boolean directory = attributes.isDirectory();
+            return new PathSegmentFingerprint(
+                    directory,
+                    attributes.isRegularFile(),
+                    directory ? 0 : attributes.size(),
+                    directory ? FileTime.fromMillis(0) : attributes.lastModifiedTime(),
+                    fileKey == null ? null : fileKey.toString());
+        } catch (IOException | SecurityException exception) {
+            throw failure(
+                    AttachmentErrorCode.ATTACHMENT_CHANGED,
+                    "附件路径在读取期间发生变化",
+                    exception);
         }
     }
 
@@ -549,5 +649,98 @@ public class AttachmentFileValidator {
     }
 
     private record ImageDimensions(int width, int height) {
+    }
+
+    enum ValidationPhase {
+        BEFORE_BOUND_OPEN,
+        AFTER_BOUND_OPEN
+    }
+
+    @FunctionalInterface
+    interface ValidationRaceHook {
+        ValidationRaceHook NO_OP = (phase, requestedPath, canonicalPath) -> {
+        };
+
+        void onPhase(ValidationPhase phase, Path requestedPath, Path canonicalPath) throws IOException;
+    }
+
+    private record BoundFileSnapshot(byte[] bytes, String sha256) {
+        @Override
+        public String toString() {
+            return "BoundFileSnapshot[bytes=<redacted>, sha256=<redacted>]";
+        }
+    }
+
+    private record PathSegmentFingerprint(
+            boolean directory,
+            boolean regularFile,
+            long size,
+            FileTime lastModifiedTime,
+            String fileKey
+    ) {
+        @Override
+        public String toString() {
+            return "PathSegmentFingerprint[directory=%s, regularFile=%s, size=%d, "
+                    .formatted(directory, regularFile, size)
+                    + "lastModifiedTime=<redacted>, fileKey=<redacted>]";
+        }
+    }
+
+    private static final class PathMutationWatch implements AutoCloseable {
+
+        private final WatchService watchService;
+        private final Map<WatchKey, Path> expectedChildren;
+
+        private PathMutationWatch(WatchService watchService, Map<WatchKey, Path> expectedChildren) {
+            this.watchService = watchService;
+            this.expectedChildren = expectedChildren;
+        }
+
+        static PathMutationWatch start(Path target) throws IOException {
+            WatchService watchService = target.getFileSystem().newWatchService();
+            Map<WatchKey, Path> expectedChildren = new LinkedHashMap<>();
+            Path absolute = target.toAbsolutePath().normalize();
+            Path child = absolute;
+            while (child.getParent() != null) {
+                Path parent = child.getParent();
+                WatchKey key = parent.register(
+                        watchService,
+                        StandardWatchEventKinds.ENTRY_CREATE,
+                        StandardWatchEventKinds.ENTRY_DELETE);
+                expectedChildren.put(key, child.getFileName());
+                child = parent;
+            }
+            return new PathMutationWatch(watchService, expectedChildren);
+        }
+
+        boolean targetChanged() {
+            boolean changed = false;
+            WatchKey key;
+            try {
+                key = watchService.poll(25, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                return true;
+            }
+            while (key != null) {
+                Path expectedChild = expectedChildren.get(key);
+                for (WatchEvent<?> event : key.pollEvents()) {
+                    if (event.kind() == StandardWatchEventKinds.OVERFLOW
+                            || expectedChild != null && expectedChild.equals(event.context())) {
+                        changed = true;
+                    }
+                }
+                if (!key.reset()) {
+                    changed = true;
+                }
+                key = watchService.poll();
+            }
+            return changed;
+        }
+
+        @Override
+        public void close() throws IOException {
+            watchService.close();
+        }
     }
 }

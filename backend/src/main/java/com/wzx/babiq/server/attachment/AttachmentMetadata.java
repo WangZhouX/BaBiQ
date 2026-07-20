@@ -36,8 +36,9 @@ public record AttachmentMetadata(
 
     @Override
     public String toString() {
-        return ("AttachmentMetadata[id=%s, displayId=%s, name=%s, localPath=<redacted>, "
-                + "mediaType=%s, sizeBytes=%d, sha256=<redacted>, source=%s]")
-                .formatted(id, displayId, name, mediaType, sizeBytes, source);
+        return "AttachmentMetadata[id=%s, displayId=%s, name=<redacted>, localPath=<redacted>, "
+                .formatted(id, displayId)
+                + "mediaType=%s, sizeBytes=%d, sha256=<redacted>, source=%s]"
+                .formatted(mediaType, sizeBytes, source);
     }
 }

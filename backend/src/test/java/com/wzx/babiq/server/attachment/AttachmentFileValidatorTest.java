@@ -3,6 +3,7 @@ package com.wzx.babiq.server.attachment;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.apache.poi.poifs.filesystem.POIFSFileSystem;
+import org.apache.tika.Tika;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
@@ -16,9 +17,13 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.FileTime;
+import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -35,27 +40,33 @@ class AttachmentFileValidatorTest {
     private final AttachmentFileValidator validator = new AttachmentFileValidator();
 
     @Test
-    void acceptsSupportedImagesTextCodePdfAndOfficeDocumentsFromDetectedContent() throws Exception {
+    void acceptsSupportedContentSignaturesAndLegacyOfficeTypeContainers() throws Exception {
         List<Path> files = List.of(
                 writePng("sample.png", 4, 3),
+                writeImage("sample.jpg", "jpeg", 5, 4),
+                writeImage("sample.gif", "gif", 6, 5),
+                writeWebpVp8x("sample.webp", 7, 6),
                 write("sample.txt", "plain business text".getBytes(StandardCharsets.UTF_8)),
                 write("sample.java", "class Example {}".getBytes(StandardCharsets.UTF_8)),
                 write("sample.pdf", "%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF".getBytes(StandardCharsets.US_ASCII)),
-                writeLegacyOffice("sample.doc", "WordDocument"),
+                writeLegacyOfficeTypeContainer("sample.doc", "WordDocument"),
                 writeOoxml("sample.docx",
                         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                         "word/document.xml"),
-                writeLegacyOffice("sample.xls", "Workbook"),
+                writeLegacyOfficeTypeContainer("sample.xls", "Workbook"),
                 writeOoxml("sample.xlsx",
                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         "xl/workbook.xml"),
-                writeLegacyOffice("sample.ppt", "PowerPoint Document"),
+                writeLegacyOfficeTypeContainer("sample.ppt", "PowerPoint Document"),
                 writeOoxml("sample.pptx",
                         "application/vnd.openxmlformats-officedocument.presentationml.presentation",
                         "ppt/presentation.xml")
         );
         List<String> expectedMediaTypes = List.of(
                 "image/png",
+                "image/jpeg",
+                "image/gif",
+                "image/webp",
                 "text/plain",
                 "text/plain",
                 "application/pdf",
@@ -99,13 +110,60 @@ class AttachmentFileValidatorTest {
     }
 
     @Test
+    void rejectsWindowsJunctionInAncestorDirectoryWhenThePlatformSupportsIt() throws Exception {
+        assumeTrue(System.getProperty("os.name").toLowerCase().contains("windows"), "Windows-only reparse test");
+        Path targetDirectory = Files.createDirectories(tempDir.resolve("junction-target"));
+        Files.writeString(targetDirectory.resolve("inside.txt"), "junction target");
+        Path junction = tempDir.resolve("junction-parent");
+        Process process = new ProcessBuilder(
+                "cmd.exe", "/c", "mklink", "/J", junction.toString(), targetDirectory.toString())
+                .redirectErrorStream(true)
+                .start();
+        String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        int exitCode = process.waitFor();
+        assumeTrue(exitCode == 0, "Windows junctions are unavailable: " + output);
+
+        assertCode(
+                request(junction.resolve("inside.txt"), "A-23457Q"),
+                AttachmentErrorCode.ATTACHMENT_NOT_REGULAR_FILE);
+    }
+
+    @Test
+    void rejectsAPathThatWasSwappedAndRestoredAfterTheNoFollowHandleWasOpened() throws Exception {
+        Path file = write("race.txt", "trusted-content".getBytes(StandardCharsets.UTF_8));
+        Path backup = tempDir.resolve("race-backup.txt");
+        AtomicBoolean swapCompleted = new AtomicBoolean();
+        AttachmentFileValidator racingValidator = new AttachmentFileValidator(
+                new Tika(),
+                (phase, requestedPath, canonicalPath) -> {
+                    if (phase != AttachmentFileValidator.ValidationPhase.AFTER_BOUND_OPEN) {
+                        return;
+                    }
+                    Files.move(file, backup, StandardCopyOption.REPLACE_EXISTING);
+                    Files.writeString(file, "hostile-content", StandardCharsets.UTF_8);
+                    Files.delete(file);
+                    Files.move(backup, file, StandardCopyOption.REPLACE_EXISTING);
+                    Files.setLastModifiedTime(
+                            tempDir,
+                            FileTime.from(Instant.now().plusSeconds(5)));
+                    swapCompleted.set(true);
+                });
+
+        assertThatThrownBy(() -> racingValidator.validate(request(file, "A-23457R")))
+                .isInstanceOf(AttachmentException.class)
+                .extracting(error -> ((AttachmentException) error).code())
+                .isEqualTo(AttachmentErrorCode.ATTACHMENT_CHANGED);
+        assertThat(swapCompleted).isTrue();
+    }
+
+    @Test
     void rejectsAmbiguousOleContainersEvenWhenTheyUseLegacyOfficeExtensions() throws Exception {
         for (String extension : List.of("doc", "xls", "ppt")) {
             Path ambiguous = writeOleHeaderOnly("ambiguous." + extension);
             assertCode(request(ambiguous, "A-23457N"), AttachmentErrorCode.ATTACHMENT_TYPE_UNSUPPORTED);
         }
 
-        Path excelContentWithWordExtension = writeLegacyOffice("mismatched.doc", "Workbook");
+        Path excelContentWithWordExtension = writeLegacyOfficeTypeContainer("mismatched.doc", "Workbook");
         assertCode(
                 request(excelContentWithWordExtension, "A-23457P"),
                 AttachmentErrorCode.ATTACHMENT_TYPE_UNSUPPORTED);
@@ -199,6 +257,39 @@ class AttachmentFileValidatorTest {
                 });
     }
 
+    @Test
+    void diagnosticsNeverPrintHostileFilenameControlCharactersOrFileIdentity() {
+        String hostileName = "contract\r\nC:\\private\\secret.doc";
+        String hostileFileKey = "file-key\r\nC:\\private\\volume";
+        AttachmentMetadata metadata = new AttachmentMetadata(
+                UUID.randomUUID().toString(),
+                "A-23457S",
+                hostileName,
+                tempDir.resolve("secret.doc").toString(),
+                "application/msword",
+                123,
+                "f".repeat(64),
+                AttachmentSource.SELECTED_FILE);
+        PreparedAttachment.FileIdentity identity = new PreparedAttachment.FileIdentity(
+                123,
+                FileTime.fromMillis(987654321),
+                hostileFileKey);
+        PreparedAttachment prepared = new PreparedAttachment(
+                metadata,
+                tempDir.resolve("secret.doc"),
+                identity);
+
+        assertThat(metadata.toString())
+                .contains(metadata.id(), metadata.displayId(), metadata.mediaType(), "123", "SELECTED_FILE")
+                .doesNotContain(hostileName, "secret.doc", "\r", "\n", "987654321", hostileFileKey);
+        assertThat(identity.toString())
+                .contains("123")
+                .doesNotContain("987654321", hostileFileKey, "\r", "\n");
+        assertThat(prepared.toString())
+                .contains(metadata.id(), metadata.displayId(), metadata.mediaType(), "123", "SELECTED_FILE")
+                .doesNotContain(hostileName, "secret.doc", "\r", "\n", "987654321", hostileFileKey);
+    }
+
     private void assertCode(AttachmentRequest request, AttachmentErrorCode expectedCode) {
         assertThatThrownBy(() -> validator.validate(request))
                 .isInstanceOf(AttachmentException.class)
@@ -225,6 +316,36 @@ class AttachmentFileValidatorTest {
         return path;
     }
 
+    private Path writeImage(String name, String format, int width, int height) throws IOException {
+        BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        Path path = tempDir.resolve(name);
+        assertThat(ImageIO.write(image, format, path.toFile())).isTrue();
+        return path;
+    }
+
+    private Path writeWebpVp8x(String name, int width, int height) throws IOException {
+        byte[] bytes = new byte[30];
+        putAscii(bytes, 0, "RIFF");
+        ByteBuffer.wrap(bytes, 4, 4).order(ByteOrder.LITTLE_ENDIAN).putInt(bytes.length - 8);
+        putAscii(bytes, 8, "WEBP");
+        putAscii(bytes, 12, "VP8X");
+        ByteBuffer.wrap(bytes, 16, 4).order(ByteOrder.LITTLE_ENDIAN).putInt(10);
+        putLittleEndian24(bytes, 24, width - 1);
+        putLittleEndian24(bytes, 27, height - 1);
+        return write(name, bytes);
+    }
+
+    private static void putAscii(byte[] target, int offset, String value) {
+        byte[] bytes = value.getBytes(StandardCharsets.US_ASCII);
+        System.arraycopy(bytes, 0, target, offset, bytes.length);
+    }
+
+    private static void putLittleEndian24(byte[] target, int offset, int value) {
+        target[offset] = (byte) value;
+        target[offset + 1] = (byte) (value >>> 8);
+        target[offset + 2] = (byte) (value >>> 16);
+    }
+
     private Path writeOleHeaderOnly(String name) throws IOException {
         byte[] bytes = new byte[512];
         byte[] signature = {
@@ -235,7 +356,11 @@ class AttachmentFileValidatorTest {
         return write(name, bytes);
     }
 
-    private Path writeLegacyOffice(String name, String primaryStreamName) throws IOException {
+    /**
+     * Builds only the minimum POIFS named-stream structure needed to test Tika type detection.
+     * Full parseable legacy Office fixtures are intentionally covered by Task 7 extraction tests.
+     */
+    private Path writeLegacyOfficeTypeContainer(String name, String primaryStreamName) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (POIFSFileSystem filesystem = new POIFSFileSystem()) {
             filesystem.createDocument(

@@ -27,8 +27,14 @@ public record PreparedAttachment(
 
     @Override
     public String toString() {
-        return "PreparedAttachment[id=%s, displayId=%s, canonicalPath=<redacted>, identity=%s]"
-                .formatted(metadata.id(), metadata.displayId(), identity);
+        return "PreparedAttachment[id=%s, displayId=%s, mediaType=%s, sizeBytes=%d, source=%s, "
+                .formatted(
+                        metadata.id(),
+                        metadata.displayId(),
+                        metadata.mediaType(),
+                        metadata.sizeBytes(),
+                        metadata.source())
+                + "canonicalPath=<redacted>, identity=<redacted>]";
     }
 
     public record FileIdentity(
@@ -42,6 +48,12 @@ public record PreparedAttachment(
                 throw new IllegalArgumentException("sizeBytes must not be negative");
             }
             lastModifiedTime = Objects.requireNonNull(lastModifiedTime, "lastModifiedTime");
+        }
+
+        @Override
+        public String toString() {
+            return "FileIdentity[sizeBytes=%d, lastModifiedTime=<redacted>, fileKey=<redacted>]"
+                    .formatted(sizeBytes);
         }
     }
 }
