@@ -370,7 +370,8 @@ Turn 创建前发现的参数和文件问题返回 JSON-RPC `INVALID_PARAMS` 加
 - `TurnStartHandler`：解析附件、执行业务 identity/thread 校验、同步准备附件后提交执行器。
 - `TurnExecutor`：传递不可变 `PreparedTurnInput`，避免参数继续膨胀。
 - `AgentLoop`：发射带附件元数据的用户消息，并构造文本加媒体的模型输入。
-- `ContextAssembler`：历史中只加入附件标识和文件名，不加入路径、哈希或正文。
+- `ContextAssembler`：历史仍只装配用户文本，不自动注入历史附件元数据；下一轮显式引用
+  `A-XXXXXX` 时由附件历史解析器重新解析，路径、哈希和正文均不写入通用历史。
 - `ContextWindowRuntime`：把当前轮附件 segment 纳入 token 预算和 snapshot 统计，但不持久化附件正文。
 - `thread/load`：保持扩展 `UserMessageItem` 的元数据 round-trip；不在本阶段新增业务桌面历史导航。
 
