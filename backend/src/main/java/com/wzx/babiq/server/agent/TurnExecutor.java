@@ -17,6 +17,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Turn 异步执行器。
@@ -39,8 +40,8 @@ public class TurnExecutor implements AutoCloseable {
     private final boolean ownedExecutor;
     private final AttachmentReservationRegistry attachmentReservationRegistry;
 
-    /** turnId -> Future，用于 turn/interrupt 找到正在运行的 worker。 */
-    private final Map<String, Future<?>> running = new ConcurrentHashMap<>();
+    /** turnId -> 带 QUEUED/STARTED 状态的 worker，用于安全地区分取消与真实退出。 */
+    private final Map<String, RunningTask> running = new ConcurrentHashMap<>();
 
     /**
      * 创建执行器。
@@ -137,14 +138,8 @@ public class TurnExecutor implements AutoCloseable {
         log.info("TurnExecutor 提交普通 turn: threadId={}, turnId={}, providerId={}, attachments={}",
                 turn.threadId(), turn.id(), providerId == null ? "<active-provider>" : providerId,
                 safeInput.allAttachments().size());
-        Future<?> future = executor.submit(() -> run(turn.id(),
-                () -> agentLoop.invoke(
-                        turn, safeInput, providerId, cwd, emitter, runPolicy, workUnitGoalId)));
-        // submit 之后再放入 running，interrupt 才能通过 turnId 找到后台任务。
-        running.put(turn.id(), future);
-        if (future.isDone()) {
-            running.remove(turn.id(), future);
-        }
+        submitTask(turn.id(), () -> agentLoop.invoke(
+                turn, safeInput, providerId, cwd, emitter, runPolicy, workUnitGoalId));
     }
 
     /**
@@ -172,13 +167,7 @@ public class TurnExecutor implements AutoCloseable {
                              ItemEmitter emitter, AgentRunPolicy runPolicy) {
         log.info("TurnExecutor 提交审批恢复 turn: threadId={}, turnId={}, cwd={}",
                 turn.threadId(), turn.id(), cwd);
-        Future<?> future = executor.submit(() -> run(turn.id(),
-                () -> agentLoop.invokeResume(turn, feedback, cwd, emitter, runPolicy)));
-        // resume 仍然属于同一个 turn，所以复用同一个 turnId 作为 running key。
-        running.put(turn.id(), future);
-        if (future.isDone()) {
-            running.remove(turn.id(), future);
-        }
+        submitTask(turn.id(), () -> agentLoop.invokeResume(turn, feedback, cwd, emitter, runPolicy));
     }
 
     /**
@@ -188,14 +177,12 @@ public class TurnExecutor implements AutoCloseable {
      * @return 找到运行任务并发出取消时返回 true
      */
     public boolean interrupt(String turnId) {
-        Future<?> future = running.get(turnId);
-        if (future == null) {
+        RunningTask task = running.get(turnId);
+        if (task == null) {
             log.warn("turn/interrupt 未找到运行中的 turn: {}", turnId);
             return false;
         }
-        boolean canceled = future.cancel(true);
-        running.remove(turnId, future);
-        releaseAttachmentReservation(turnId);
+        boolean canceled = task.cancel();
         log.info("turn/interrupt 已请求取消: turnId={}, canceled={}", turnId, canceled);
         return canceled;
     }
@@ -204,10 +191,7 @@ public class TurnExecutor implements AutoCloseable {
     @Override
     @PreDestroy
     public void close() {
-        java.util.Set<String> turnIds = java.util.Set.copyOf(running.keySet());
-        running.values().forEach(future -> future.cancel(true));
-        running.clear();
-        turnIds.forEach(this::releaseAttachmentReservation);
+        java.util.Set.copyOf(running.values()).forEach(RunningTask::cancel);
         if (ownedExecutor) {
             executor.shutdownNow();
         }
@@ -216,15 +200,30 @@ public class TurnExecutor implements AutoCloseable {
     /**
      * 包装 worker 生命周期日志和 running 清理。
      */
-    private void run(String turnId, Runnable action) {
-        log.info("TurnExecutor worker 开始: turnId={}", turnId);
+    private void submitTask(String turnId, Runnable action) {
+        RunningTask task = new RunningTask(turnId, action);
+        Future<?> future = executor.submit(task);
+        task.attach(future);
+        running.put(turnId, task);
+        if (task.state.get() == TaskState.FINISHED) {
+            running.remove(turnId, task);
+        } else if (future.isDone()) {
+            if (!task.releaseIfNeverStarted()) {
+                running.remove(turnId, task);
+            }
+        }
+    }
+
+    private void run(RunningTask task) {
+        log.info("TurnExecutor worker 开始: turnId={}", task.turnId);
         try {
-            action.run();
+            task.action.run();
         } finally {
-            // finally 中清理，确保 AgentLoop 成功、失败或被取消后 running 都不会残留。
-            running.remove(turnId);
-            releaseAttachmentReservation(turnId);
-            log.info("TurnExecutor worker 结束: turnId={}", turnId);
+            // STARTED worker 的 reservation 只能在真实 worker 退出后释放。
+            releaseAttachmentReservation(task.turnId);
+            task.state.set(TaskState.FINISHED);
+            running.remove(task.turnId, task);
+            log.info("TurnExecutor worker 结束: turnId={}", task.turnId);
         }
     }
 
@@ -236,5 +235,57 @@ public class TurnExecutor implements AutoCloseable {
 
     private static PreparedTurnInput plainInput(String userText) {
         return new PreparedTurnInput(userText, java.util.List.of(), java.util.List.of());
+    }
+
+    private enum TaskState {
+        QUEUED,
+        STARTED,
+        CANCELED_BEFORE_START,
+        FINISHED
+    }
+
+    private final class RunningTask implements Runnable {
+
+        private final String turnId;
+        private final Runnable action;
+        private final AtomicReference<TaskState> state = new AtomicReference<>(TaskState.QUEUED);
+        private volatile Future<?> future;
+
+        private RunningTask(String turnId, Runnable action) {
+            this.turnId = turnId;
+            this.action = action;
+        }
+
+        private void attach(Future<?> value) {
+            future = value;
+        }
+
+        @Override
+        public void run() {
+            if (state.compareAndSet(TaskState.QUEUED, TaskState.STARTED)) {
+                TurnExecutor.this.run(this);
+            }
+        }
+
+        private boolean cancel() {
+            Future<?> current = future;
+            if (current == null) {
+                return false;
+            }
+            boolean canceled = current.cancel(true);
+            if (canceled) {
+                releaseIfNeverStarted();
+            }
+            return canceled;
+        }
+
+        private boolean releaseIfNeverStarted() {
+            if (!state.compareAndSet(TaskState.QUEUED, TaskState.CANCELED_BEFORE_START)) {
+                return false;
+            }
+            running.remove(turnId, this);
+            releaseAttachmentReservation(turnId);
+            return true;
+        }
     }
 }

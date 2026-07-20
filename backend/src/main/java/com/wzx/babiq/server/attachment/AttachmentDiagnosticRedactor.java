@@ -46,11 +46,14 @@ public final class AttachmentDiagnosticRedactor {
     }
 
     private static boolean isPathBearingField(String fieldName) {
-        String normalized = fieldName.toLowerCase(Locale.ROOT)
-                .replace("-", "")
-                .replace("_", "");
-        return "localpath".equals(normalized)
-                || ((normalized.contains("canonical") || normalized.contains("internal"))
-                && normalized.endsWith("path"));
+        StringBuilder normalizedBuilder = new StringBuilder(fieldName.length());
+        fieldName.toLowerCase(Locale.ROOT).codePoints()
+                .filter(Character::isLetterOrDigit)
+                .forEach(normalizedBuilder::appendCodePoint);
+        String normalized = normalizedBuilder.toString();
+        return normalized.endsWith("path")
+                && (normalized.contains("local")
+                || normalized.contains("canonical")
+                || normalized.contains("internal"));
     }
 }

@@ -29,6 +29,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlin.coroutines.coroutineContext
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -382,8 +383,8 @@ class AgentJsonRpcClient(
             "ATTACHMENT_REFERENCE_AMBIGUOUS",
         )
 
-        fun whitelistedAttachmentCode(data: JsonObject?): String? {
-            val candidate = data?.get("attachmentCode") ?: return null
+        fun whitelistedAttachmentCode(data: JsonElement?): String? {
+            val candidate = (data as? JsonObject)?.get("attachmentCode") ?: return null
             val primitive = runCatching { candidate.jsonPrimitive }.getOrNull() ?: return null
             if (!primitive.isString) return null
             return primitive.content.takeIf(ATTACHMENT_ERROR_CODES::contains)

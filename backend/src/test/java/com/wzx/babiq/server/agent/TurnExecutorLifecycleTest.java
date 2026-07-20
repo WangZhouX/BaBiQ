@@ -5,6 +5,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
 import com.wzx.babiq.server.attachment.AttachmentMetadata;
+import com.wzx.babiq.server.attachment.AttachmentException;
 import com.wzx.babiq.server.attachment.AttachmentReservationRegistry;
 import com.wzx.babiq.server.attachment.AttachmentSource;
 import com.wzx.babiq.server.attachment.PreparedAttachment;
@@ -17,13 +18,21 @@ import org.slf4j.LoggerFactory;
 import java.lang.reflect.Field;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.awaitility.Awaitility.await;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -65,6 +74,7 @@ class TurnExecutorLifecycleTest {
         ExecutorService external = mock(ExecutorService.class);
         Future<?> future = mock(Future.class);
         when(external.submit(any(Runnable.class))).thenAnswer(ignored -> future);
+        when(future.cancel(true)).thenReturn(true);
         AttachmentReservationRegistry registry = new AttachmentReservationRegistry();
         PreparedAttachment attachment = attachment();
         AttachmentReservationRegistry.Reservation reservation = registry.reserve(
@@ -80,6 +90,16 @@ class TurnExecutorLifecycleTest {
                 "thread-a", BusinessIdentityScope.UNSCOPED, List.of(attachment))) {
             assertThat(next.active()).isTrue();
         }
+    }
+
+    @Test
+    void interrupt_keeps_started_attachment_reservation_until_worker_actually_exits() throws Exception {
+        assertStartedReservationHeldUntilWorkerExit(false);
+    }
+
+    @Test
+    void close_keeps_started_attachment_reservation_until_worker_actually_exits() throws Exception {
+        assertStartedReservationHeldUntilWorkerExit(true);
     }
 
     @Test
@@ -131,6 +151,76 @@ class TurnExecutorLifecycleTest {
         Field field = TurnExecutor.class.getDeclaredField("executor");
         field.setAccessible(true);
         return (ExecutorService) field.get(executor);
+    }
+
+    private static void assertStartedReservationHeldUntilWorkerExit(boolean close) throws Exception {
+        AgentLoop loop = mock(AgentLoop.class);
+        ExecutorService worker = Executors.newSingleThreadExecutor();
+        CountDownLatch workerStarted = new CountDownLatch(1);
+        CountDownLatch allowWorkerExit = new CountDownLatch(1);
+        doAnswer(ignored -> {
+            workerStarted.countDown();
+            boolean interrupted = false;
+            while (true) {
+                try {
+                    allowWorkerExit.await();
+                    break;
+                } catch (InterruptedException exception) {
+                    interrupted = true;
+                }
+            }
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+            return null;
+        }).when(loop).invoke(
+                any(Turn.class),
+                any(PreparedTurnInput.class),
+                anyString(),
+                anyString(),
+                any(ItemEmitter.class),
+                any(AgentRunPolicy.class),
+                anyString());
+        AttachmentReservationRegistry registry = new AttachmentReservationRegistry();
+        PreparedAttachment attachment = attachment();
+        AttachmentReservationRegistry.Reservation reservation = registry.reserve(
+                "thread-started", BusinessIdentityScope.UNSCOPED, List.of(attachment));
+        reservation.bindToTurn("turn-started");
+        TurnExecutor executor = new TurnExecutor(loop, worker, registry);
+        Turn turn = new Turn("turn-started", "thread-started");
+
+        try {
+            executor.submit(
+                    turn,
+                    new PreparedTurnInput("input", List.of(attachment), List.of()),
+                    "provider",
+                    ".",
+                    mock(ItemEmitter.class),
+                    mock(AgentRunPolicy.class),
+                    "goal");
+            assertThat(workerStarted.await(3, TimeUnit.SECONDS)).isTrue();
+
+            if (close) {
+                executor.close();
+            } else {
+                assertThat(executor.interrupt(turn.id())).isTrue();
+            }
+            assertThatThrownBy(() -> registry.reserve(
+                    turn.threadId(), BusinessIdentityScope.UNSCOPED, List.of(attachment)))
+                    .isInstanceOf(AttachmentException.class);
+
+            allowWorkerExit.countDown();
+            await().atMost(Duration.ofSeconds(3)).untilAsserted(() -> {
+                try (AttachmentReservationRegistry.Reservation next = registry.reserve(
+                        turn.threadId(), BusinessIdentityScope.UNSCOPED, List.of(attachment))) {
+                    assertThat(next.active()).isTrue();
+                }
+            });
+        } finally {
+            allowWorkerExit.countDown();
+            executor.close();
+            worker.shutdownNow();
+        }
     }
 
     private static PreparedAttachment attachment() {

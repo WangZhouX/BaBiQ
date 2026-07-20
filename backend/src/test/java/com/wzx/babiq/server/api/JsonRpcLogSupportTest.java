@@ -78,4 +78,38 @@ class JsonRpcLogSupportTest {
         assertThat(params.path("input").path("attachments").path(0).path("localPath").asText())
                 .isEqualTo("C:\\private\\customer\\contract.pdf");
     }
+
+    @Test
+    @DisplayName("附件路径键会归一化全部分隔符并穿透嵌套数组脱敏")
+    void attachment_path_key_normalization_should_cover_separator_and_case_variants() {
+        ObjectNode params = objectMapper.createObjectNode();
+        ArrayNode batches = params.putArray("batches");
+        batches.addObject()
+                .put("name", "contract.pdf")
+                .put("pathLabel", "selected-file")
+                .put("pathCount", 4)
+                .put("LOCAL.PATH", "C:\\private\\dot-secret.pdf")
+                .put("local path", "C:\\private\\space-secret.pdf")
+                .put("Local/File\\Path", "C:\\private\\mixed-secret.pdf")
+                .putArray("nested")
+                .addObject()
+                .put("localFilePath", "C:\\private\\local-file-secret.pdf")
+                .put("Canonical File Path", "C:\\private\\canonical-secret.pdf")
+                .put("x.INTERNAL-cache.path", "C:\\private\\internal-secret.pdf");
+
+        String summary = JsonRpcLogSupport.paramsSummary(params);
+
+        assertThat(summary)
+                .contains("\"name\":\"contract.pdf\"")
+                .contains("\"pathLabel\":\"selected-file\"")
+                .contains("\"pathCount\":4")
+                .contains("<local-path-redacted>")
+                .doesNotContain("C:\\private")
+                .doesNotContain("dot-secret.pdf")
+                .doesNotContain("space-secret.pdf")
+                .doesNotContain("mixed-secret.pdf")
+                .doesNotContain("local-file-secret.pdf")
+                .doesNotContain("canonical-secret.pdf")
+                .doesNotContain("internal-secret.pdf");
+    }
 }
