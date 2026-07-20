@@ -47,7 +47,7 @@ class RecoveryStartupRunnerTest {
 
     @Test
     void cleanupMethodUsesConfiguredSixHourFixedDelay() throws Exception {
-        Method cleanup = ClipboardAttachmentRetentionService.class.getMethod("cleanup");
+        Method cleanup = ClipboardAttachmentRetentionService.class.getMethod("scheduledCleanup");
 
         Scheduled scheduled = cleanup.getAnnotation(Scheduled.class);
 

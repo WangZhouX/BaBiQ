@@ -2,6 +2,7 @@ package com.wzx.babiq.server.attachment;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wzx.babiq.server.conversation.items.UserMessageItem;
+import com.wzx.babiq.server.recovery.StartupRecoveryCoordinator;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -19,6 +20,8 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class ClipboardAttachmentRetentionServiceTest {
@@ -83,7 +86,7 @@ class ClipboardAttachmentRetentionServiceTest {
         Path root = Files.createDirectories(tempDir.resolve("attachments/clipboard"));
         Path orphan = generated(root, "截图-20260104-000000-89ABCW.png", Duration.ofDays(2));
         Path archived = generated(root, "截图-20260105-000000-9ABCDX.png", Duration.ofDays(90));
-        Path active = generated(root, "截图-20260106-000000-ABCDEFG.png", Duration.ofDays(90));
+        Path active = generated(root, "截图-20260106-000000-ABCDEF.png", Duration.ofDays(90));
 
         service(root, List.of(
                 reference(archived, NOW.minus(Duration.ofDays(31))),
@@ -136,6 +139,68 @@ class ClipboardAttachmentRetentionServiceTest {
 
         assertThat(orphan).exists();
         assertThat(result.invalidReferenceRecords()).isEqualTo(1);
+    }
+
+    @Test
+    void structurallyInvalidAttachmentPayloadsFailClosedWhileMissingFieldIsLegacyCompatible()
+            throws Exception {
+        List<String> invalidPayloads = List.of(
+                "[]",
+                "{\"attachments\":null}",
+                "{\"attachments\":{}}",
+                "{\"attachments\":[\"not-an-object\"]}");
+        for (int index = 0; index < invalidPayloads.size(); index++) {
+            Path root = Files.createDirectories(tempDir.resolve("structural-" + index));
+            Path orphan = generated(
+                    root,
+                    "截图-20260112-00000" + index + "-HJKLMN.png",
+                    Duration.ofDays(2));
+
+            ClipboardAttachmentRetentionService.CleanupResult result = service(
+                    root,
+                    List.of(new AttachmentReferenceRecord(invalidPayloads.get(index), null))).cleanup();
+
+            assertThat(orphan).exists();
+            assertThat(result.invalidReferenceRecords()).isEqualTo(1);
+        }
+
+        Path legacyRoot = Files.createDirectories(tempDir.resolve("legacy"));
+        Path legacyOrphan = generated(
+                legacyRoot, "截图-20260112-010000-JKLMNP.png", Duration.ofDays(2));
+        ClipboardAttachmentRetentionService.CleanupResult legacyResult = service(
+                legacyRoot,
+                List.of(new AttachmentReferenceRecord(
+                        "{\"id\":\"legacy\",\"type\":\"userMessage\",\"text\":\"old\"}",
+                        null))).cleanup();
+
+        assertThat(legacyOrphan).doesNotExist();
+        assertThat(legacyResult.invalidReferenceRecords()).isZero();
+    }
+
+    @Test
+    void invalidClipboardReferencePathFailsClosedForOutsideIllegalAndDotDotPaths() throws Exception {
+        Path root = Files.createDirectories(tempDir.resolve("attachments/clipboard"));
+        Path orphan = generated(root, "截图-20260113-000000-KLMNPQ.png", Duration.ofDays(2));
+        Path outside = oldFile(
+                tempDir.resolve("截图-20260113-010000-LMNPQR.png"),
+                Duration.ofDays(2));
+        String dotDot = root.resolve("nested")
+                .resolve("..")
+                .resolve(orphan.getFileName())
+                .toString();
+        String illegalName = root.resolve("not-generated.png").toString();
+
+        List<AttachmentReferenceRecord> invalidReferences = List.of(
+                rawReference(outside.toString(), outside.getFileName().toString()),
+                rawReference(dotDot, orphan.getFileName().toString()),
+                rawReference(illegalName, "not-generated.png"));
+
+        ClipboardAttachmentRetentionService.CleanupResult result =
+                service(root, invalidReferences).cleanup();
+
+        assertThat(orphan).exists();
+        assertThat(outside).exists();
+        assertThat(result.invalidReferenceRecords()).isEqualTo(3);
     }
 
     @Test
@@ -202,6 +267,47 @@ class ClipboardAttachmentRetentionServiceTest {
                 .isTrue();
     }
 
+    @Test
+    void syntheticLinkAndReparseAttributesAreAlwaysRejectedForRootsAndEntries() {
+        BasicFileAttributes directory = mock(BasicFileAttributes.class);
+        when(directory.isDirectory()).thenReturn(true);
+        BasicFileAttributes regular = mock(BasicFileAttributes.class);
+        when(regular.isRegularFile()).thenReturn(true);
+        BasicFileAttributes reparseDirectory = mock(BasicFileAttributes.class);
+        when(reparseDirectory.isDirectory()).thenReturn(true);
+        when(reparseDirectory.isOther()).thenReturn(true);
+        BasicFileAttributes reparseFile = mock(BasicFileAttributes.class);
+        when(reparseFile.isRegularFile()).thenReturn(true);
+        when(reparseFile.isOther()).thenReturn(true);
+
+        assertThat(ClipboardAttachmentRetentionService.safeRootAttributes(false, directory)).isTrue();
+        assertThat(ClipboardAttachmentRetentionService.safeRootAttributes(true, directory)).isFalse();
+        assertThat(ClipboardAttachmentRetentionService.safeRootAttributes(false, reparseDirectory))
+                .isFalse();
+        assertThat(ClipboardAttachmentRetentionService.safeCandidateAttributes(false, regular)).isTrue();
+        assertThat(ClipboardAttachmentRetentionService.safeCandidateAttributes(true, regular)).isFalse();
+        assertThat(ClipboardAttachmentRetentionService.safeCandidateAttributes(false, reparseFile))
+                .isFalse();
+    }
+
+    @Test
+    void scheduledCleanupWaitsForStartupRecoveryAndThenReusesCoreCleanup() throws Exception {
+        Path root = Files.createDirectories(tempDir.resolve("scheduled"));
+        AttachmentReferenceRepository repository = mock(AttachmentReferenceRepository.class);
+        when(repository.findAll()).thenReturn(List.of());
+        StartupRecoveryCoordinator coordinator = mock(StartupRecoveryCoordinator.class);
+        ClipboardAttachmentRetentionService service = new ClipboardAttachmentRetentionService(
+                repository, new ObjectMapper(), root, CLOCK, coordinator);
+
+        when(coordinator.isRecoveryComplete()).thenReturn(false);
+        service.scheduledCleanup();
+        verify(repository, never()).findAll();
+
+        when(coordinator.isRecoveryComplete()).thenReturn(true);
+        service.scheduledCleanup();
+        verify(repository).findAll();
+    }
+
     private ClipboardAttachmentRetentionService service(
             Path root,
             List<AttachmentReferenceRecord> references
@@ -236,6 +342,22 @@ class ClipboardAttachmentRetentionServiceTest {
         return new AttachmentReferenceRecord(
                 payload,
                 archivedAt == null ? null : archivedAt.toString());
+    }
+
+    private AttachmentReferenceRecord rawReference(String localPath, String name) throws Exception {
+        AttachmentMetadata metadata = new AttachmentMetadata(
+                "550e8400-e29b-41d4-a716-446655440000",
+                "A-23457Q",
+                name,
+                localPath,
+                "image/png",
+                3,
+                "a".repeat(64),
+                AttachmentSource.CLIPBOARD_IMAGE);
+        return new AttachmentReferenceRecord(
+                new ObjectMapper().writeValueAsString(
+                        UserMessageItem.of("item-invalid", "attachment", List.of(metadata))),
+                null);
     }
 
     private Path generated(Path root, String name, Duration age) throws IOException {

@@ -3,6 +3,7 @@ package com.wzx.babiq.server.attachment;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wzx.babiq.server.application.config.BusinessDesktopModeProperties;
+import com.wzx.babiq.server.recovery.StartupRecoveryCoordinator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -44,14 +45,21 @@ public final class ClipboardAttachmentRetentionService {
     private final ObjectMapper objectMapper;
     private final Path configuredRoot;
     private final Clock clock;
+    private final StartupRecoveryCoordinator startupRecoveryCoordinator;
 
     @Autowired
     public ClipboardAttachmentRetentionService(
             AttachmentReferenceRepository repository,
             ObjectMapper objectMapper,
-            BusinessDesktopModeProperties properties
+            BusinessDesktopModeProperties properties,
+            StartupRecoveryCoordinator startupRecoveryCoordinator
     ) {
-        this(repository, objectMapper, properties.attachmentClipboardRoot(), Clock.systemUTC());
+        this(
+                repository,
+                objectMapper,
+                properties.attachmentClipboardRoot(),
+                Clock.systemUTC(),
+                startupRecoveryCoordinator);
     }
 
     ClipboardAttachmentRetentionService(
@@ -60,10 +68,26 @@ public final class ClipboardAttachmentRetentionService {
             Path configuredRoot,
             Clock clock
     ) {
+        this(
+                repository,
+                objectMapper,
+                configuredRoot,
+                clock,
+                new StartupRecoveryCoordinator());
+    }
+
+    ClipboardAttachmentRetentionService(
+            AttachmentReferenceRepository repository,
+            ObjectMapper objectMapper,
+            Path configuredRoot,
+            Clock clock,
+            StartupRecoveryCoordinator startupRecoveryCoordinator
+    ) {
         this.repository = repository;
         this.objectMapper = objectMapper;
         this.configuredRoot = configuredRoot.toAbsolutePath().normalize();
         this.clock = clock;
+        this.startupRecoveryCoordinator = Objects.requireNonNull(startupRecoveryCoordinator);
     }
 
     /**
@@ -71,11 +95,6 @@ public final class ClipboardAttachmentRetentionService {
      *
      * @return aggregate path-free cleanup statistics
      */
-    @Scheduled(
-            fixedDelayString =
-                    "${babiq.business.attachment-cleanup-interval-millis:21600000}",
-            initialDelayString =
-                    "${babiq.business.attachment-cleanup-interval-millis:21600000}")
     public CleanupResult cleanup() {
         Path root = canonicalControlledRoot();
         if (root == null) {
@@ -137,6 +156,21 @@ public final class ClipboardAttachmentRetentionService {
         return new CleanupResult(scanned, deleted, references.invalidRecords(), failures);
     }
 
+    /**
+     * Runs periodic cleanup only after startup recovery has released the SQLite write barrier.
+     */
+    @Scheduled(
+            fixedDelayString =
+                    "${babiq.business.attachment-cleanup-interval-millis:21600000}",
+            initialDelayString =
+                    "${babiq.business.attachment-cleanup-interval-millis:21600000}")
+    public void scheduledCleanup() {
+        if (!startupRecoveryCoordinator.isRecoveryComplete()) {
+            return;
+        }
+        cleanup();
+    }
+
     private ReferenceIndex readReferences(Path root) {
         Map<Path, ReferenceRetention> byPath = new HashMap<>();
         int invalid = 0;
@@ -152,14 +186,27 @@ public final class ClipboardAttachmentRetentionService {
             try {
                 ReferenceRetention retention = retentionFor(record.archivedAt());
                 JsonNode rootNode = objectMapper.readTree(record.payloadJson());
-                JsonNode attachments = rootNode.path("attachments");
-                if (!attachments.isArray()) {
+                if (rootNode == null || !rootNode.isObject()) {
+                    throw new InvalidAttachmentReferenceException();
+                }
+                if (!rootNode.has("attachments")) {
                     continue;
                 }
+                JsonNode attachments = rootNode.get("attachments");
+                if (attachments == null || !attachments.isArray()) {
+                    throw new InvalidAttachmentReferenceException();
+                }
                 for (JsonNode attachmentNode : attachments) {
+                    if (!attachmentNode.isObject()) {
+                        throw new InvalidAttachmentReferenceException();
+                    }
                     AttachmentMetadata metadata =
                             objectMapper.treeToValue(attachmentNode, AttachmentMetadata.class);
                     Path referencedPath = controlledPath(root, metadata);
+                    if (metadata.source() == AttachmentSource.CLIPBOARD_IMAGE
+                            && referencedPath == null) {
+                        throw new InvalidAttachmentReferenceException();
+                    }
                     if (referencedPath != null) {
                         ReferenceRetention attachmentRetention =
                                 metadata.source() == AttachmentSource.CLIPBOARD_IMAGE
@@ -190,7 +237,11 @@ public final class ClipboardAttachmentRetentionService {
 
     private static Path controlledPath(Path root, AttachmentMetadata metadata) {
         try {
-            Path path = Path.of(metadata.localPath()).toAbsolutePath().normalize();
+            Path rawPath = Path.of(metadata.localPath());
+            if (!rawPath.isAbsolute() || !rawPath.equals(rawPath.normalize())) {
+                return null;
+            }
+            Path path = rawPath.toAbsolutePath();
             Path parent = path.getParent();
             Path name = path.getFileName();
             if (parent == null || name == null
@@ -209,8 +260,7 @@ public final class ClipboardAttachmentRetentionService {
             rejectLinkedSegments(configuredRoot);
             BasicFileAttributes attributes = Files.readAttributes(
                     configuredRoot, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
-            if (!attributes.isDirectory() || attributes.isOther()
-                    || Files.isSymbolicLink(configuredRoot)) {
+            if (!safeRootAttributes(Files.isSymbolicLink(configuredRoot), attributes)) {
                 return null;
             }
             Path canonical = configuredRoot.toRealPath(LinkOption.NOFOLLOW_LINKS)
@@ -247,9 +297,7 @@ public final class ClipboardAttachmentRetentionService {
         try {
             BasicFileAttributes attributes = Files.readAttributes(
                     path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
-            if (Files.isSymbolicLink(path)
-                    || !attributes.isRegularFile()
-                    || attributes.isOther()) {
+            if (!safeCandidateAttributes(Files.isSymbolicLink(path), attributes)) {
                 return null;
             }
             return attributes;
@@ -275,6 +323,20 @@ public final class ClipboardAttachmentRetentionService {
                 || expectedKey != null && expectedKey.equals(currentKey));
     }
 
+    static boolean safeRootAttributes(
+            boolean symbolicLink,
+            BasicFileAttributes attributes
+    ) {
+        return !symbolicLink && attributes.isDirectory() && !attributes.isOther();
+    }
+
+    static boolean safeCandidateAttributes(
+            boolean symbolicLink,
+            BasicFileAttributes attributes
+    ) {
+        return !symbolicLink && attributes.isRegularFile() && !attributes.isOther();
+    }
+
     private static String fileName(Path path) {
         Path fileName = path.getFileName();
         return fileName == null ? null : fileName.toString();
@@ -298,6 +360,9 @@ public final class ClipboardAttachmentRetentionService {
             int invalidRecords,
             boolean safeToDelete
     ) {
+    }
+
+    private static final class InvalidAttachmentReferenceException extends RuntimeException {
     }
 
     public record CleanupResult(
