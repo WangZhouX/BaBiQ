@@ -56,7 +56,7 @@ public class AgentLoop {
         long startedNanos = System.nanoTime();
         ContextWindowRuntimeResult contextInput = null;
         boolean imageInputPresent = false;
-        AgentLoopDiagnostics.started(turn, context, cwd, userText);
+        AgentLoopDiagnostics.started(turn, context, userText);
         try {
             emitter.emitItemAdded(UserMessageItem.of(AgentLoopSupport.newItemId(), userText, input.newAttachments().stream().map(item -> item.metadata()).toList()));
             AgentLoopDiagnostics.userItemEmitted(turn);

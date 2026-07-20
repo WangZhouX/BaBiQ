@@ -153,16 +153,69 @@ class AgentLoopAttachmentTest {
     }
 
     @Test
+    void missing_attachment_fails_before_context_and_both_model_stream_paths_without_logging_path()
+            throws Exception {
+        Fixture fixture = fixture("turn_missing", "thr_missing");
+        PreparedAttachment image = attachment(
+                "018fb799-2b03-7e7b-8f4c-4df90bc8c294", "A-JK7L8M",
+                "missing-private.png", "image/png", "d".repeat(64));
+        PreparedTurnInput input = new PreparedTurnInput("", List.of(image), List.of());
+        String forbiddenPath = image.metadata().localPath();
+        when(fixture.loader.load(input.allAttachments())).thenThrow(new AttachmentException(
+                AttachmentErrorCode.ATTACHMENT_NOT_FOUND,
+                "附件已不存在，请重新选择"));
+
+        Logger logger = (Logger) LoggerFactory.getLogger(AgentLoop.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            fixture.loop.invoke(
+                    fixture.turn, input, "provider-a", ".", fixture.emitter, null, null);
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+
+        assertThat(fixture.turn.status()).isEqualTo(TurnStatus.FAILED);
+        assertThat(fixture.turn.failureReason())
+                .contains("ATTACHMENT_NOT_FOUND")
+                .doesNotContain(forbiddenPath);
+        verify(fixture.emitter).emitTurnFailed(fixture.turn.failureReason());
+        verifyNoInteractions(fixture.runtime);
+        verify(fixture.strategy, never()).buildAgent(any(), any(), any(), any(), any());
+        verify(fixture.agent, never()).stream(any(String.class), any(RunnableConfig.class));
+        verify(fixture.agent, never()).stream(any(UserMessage.class), any(RunnableConfig.class));
+        String diagnosticLogs = appender.list.stream()
+                .map(ILoggingEvent::getFormattedMessage)
+                .reduce("", (left, right) -> left + "\n" + right);
+        assertThat(diagnosticLogs)
+                .contains("reasonCode=ATTACHMENT_NOT_FOUND")
+                .doesNotContain(forbiddenPath, image.metadata().name());
+    }
+
+    @Test
     void known_provider_image_rejection_is_mapped_without_echoing_remote_body() throws Exception {
         Fixture fixture = fixture("turn_rejected", "thr_rejected");
         PreparedAttachment image = attachment(
                 "018fb799-2b03-7e7b-8f4c-4df90bc8c293", "A-EF5G6H",
                 "screen.webp", "image/webp", "c".repeat(64));
-        PreparedTurnInput input = new PreparedTurnInput("看看", List.of(image), List.of());
+        String privateCwd = "C:\\Users\\secret\\private-workspace";
+        String privateInputPath = "D:\\business\\private\\customer-contract.xlsx";
+        PreparedTurnInput input = new PreparedTurnInput(
+                "请分析 " + privateInputPath, List.of(image), List.of());
         when(fixture.loader.load(input.allAttachments()))
                 .thenReturn(List.of(AttachmentContent.image(image, new byte[]{1, 2, 3})));
         when(fixture.runtime.prepare(any())).thenReturn(
                 ContextWindowRuntimeResult.prepared("ctx_rejected", input.text(), "MODEL_TEXT"));
+        when(fixture.strategy.buildAgent(
+                eq("provider-a"), eq(privateCwd), eq(fixture.emitter),
+                any(TurnObservationContext.class), nullable(AgentRunPolicy.class)))
+                .thenReturn(fixture.agent);
+        when(fixture.strategy.buildConfig(
+                eq(fixture.turn.threadId()), eq(privateCwd), eq(fixture.emitter),
+                any(TurnObservationContext.class), nullable(AgentRunPolicy.class)))
+                .thenReturn(fixture.config);
         WebClientResponseException rejection = WebClientResponseException.create(
                 400,
                 "Bad Request",
@@ -183,7 +236,7 @@ class AgentLoopAttachmentTest {
         logger.addAppender(appender);
         try {
             fixture.loop.invoke(
-                    fixture.turn, input, "provider-a", ".", fixture.emitter, null, null);
+                    fixture.turn, input, "provider-a", privateCwd, fixture.emitter, null, null);
         } finally {
             logger.detachAppender(appender);
             appender.stop();
@@ -200,7 +253,12 @@ class AgentLoopAttachmentTest {
         assertThat(diagnosticLogs)
                 .contains("reasonCode=ATTACHMENT_MODEL_UNSUPPORTED")
                 .contains("reasonType=RuntimeException")
-                .doesNotContain("secret-remote-body", forbiddenPath, image.metadata().name());
+                .doesNotContain(
+                        "secret-remote-body",
+                        forbiddenPath,
+                        image.metadata().name(),
+                        privateCwd,
+                        privateInputPath);
     }
 
     private static AttachmentTextSegment segment(PreparedAttachment attachment, String body) {

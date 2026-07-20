@@ -22,10 +22,10 @@ final class AgentLoopDiagnostics {
     private AgentLoopDiagnostics() {
     }
 
-    static void started(Turn turn, TurnObservationContext context, String cwd, String userText) {
-        log.info("AgentLoop 开始执行: threadId={}, turnId={}, providerId={}, model={}, cwd={}, inputChars={}, inputPreview={}",
-                turn.threadId(), turn.id(), context.providerId(), context.model(), cwd,
-                userText == null ? 0 : userText.length(), JsonRpcLogSupport.preview(userText));
+    static void started(Turn turn, TurnObservationContext context, String userText) {
+        log.info("AgentLoop 开始执行: threadId={}, turnId={}, providerId={}, model={}, inputChars={}",
+                turn.threadId(), turn.id(), context.providerId(), context.model(),
+                userText == null ? 0 : userText.length());
     }
 
     static void userItemEmitted(Turn turn) {
