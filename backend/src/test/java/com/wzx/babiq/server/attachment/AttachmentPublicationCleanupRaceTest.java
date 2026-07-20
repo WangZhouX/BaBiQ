@@ -1,10 +1,19 @@
 package com.wzx.babiq.server.attachment;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wzx.babiq.server.agent.AgentLoop;
+import com.wzx.babiq.server.agent.PendingApprovals;
+import com.wzx.babiq.server.agent.ReActStrategy;
 import com.wzx.babiq.server.agent.TurnExecutor;
 import com.wzx.babiq.server.api.error.JsonRpcException;
 import com.wzx.babiq.server.api.method.TurnStartHandler;
+import com.wzx.babiq.server.conversation.ConversationEventRecorder;
 import com.wzx.babiq.server.conversation.ConversationService;
+import com.wzx.babiq.server.conversation.items.UserMessageItem;
+import com.wzx.babiq.server.conversation.repository.ConversationRepository;
+import com.wzx.babiq.server.observability.TurnObservationRegistry;
+import com.wzx.babiq.server.observability.TurnSummaryEmitter;
+import com.wzx.babiq.server.persistence.service.TurnPersistenceService;
 import com.wzx.babiq.server.recovery.StartupRecoveryCoordinator;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -27,6 +36,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -260,6 +271,104 @@ class AttachmentPublicationCleanupRaceTest {
         }
     }
 
+    @Test
+    void archivedHistoryPathStaysProtectedAfterUserMessagePersistenceUntilWorkerExit()
+            throws Exception {
+        Path root = Files.createDirectories(tempDir.resolve("archived-worker-lifecycle"));
+        Path candidate = oldScreenshot(root, "截图-20260116-000000-PQRSTU.png");
+        PreparedAttachment attachment = clipboardAttachment(candidate);
+        AttachmentReservationRegistry registry = new AttachmentReservationRegistry();
+        AttachmentReferenceRecord expiredReference = expiredReference(attachment);
+        ClipboardAttachmentRetentionService retention = retention(
+                root,
+                () -> List.of(expiredReference),
+                registry);
+
+        ConversationRepository persistedItems = mock(ConversationRepository.class);
+        ConversationEventRecorder recorder = new ConversationEventRecorder(
+                persistedItems,
+                mock(TurnPersistenceService.class),
+                null,
+                new ObjectMapper());
+        CountDownLatch persistedBeforeLoad = new CountDownLatch(1);
+        CountDownLatch allowAttachmentLoad = new CountDownLatch(1);
+        AtomicBoolean blockedUserMessage = new AtomicBoolean();
+        WebSocketSession session = session();
+        org.mockito.Mockito.doAnswer(invocation -> {
+            org.springframework.web.socket.TextMessage message = invocation.getArgument(0);
+            if (message.getPayload().contains("\"method\":\"item/added\"")
+                    && blockedUserMessage.compareAndSet(false, true)) {
+                persistedBeforeLoad.countDown();
+                allowAttachmentLoad.await();
+            }
+            return null;
+        }).when(session).sendMessage(any());
+
+        AtomicReference<Boolean> existedAtLoad = new AtomicReference<>();
+        CountDownLatch attachmentLoadAttempted = new CountDownLatch(1);
+        AttachmentContentLoader loader = mock(AttachmentContentLoader.class);
+        when(loader.load(any())).thenAnswer(invocation -> {
+            existedAtLoad.set(Files.exists(candidate));
+            attachmentLoadAttempted.countDown();
+            throw new IllegalStateException("stop after attachment load observation");
+        });
+        ReActStrategy strategy = mock(ReActStrategy.class);
+        when(strategy.resolveModelName(any())).thenReturn("test-model");
+        AgentLoop loop = new AgentLoop(
+                strategy,
+                new PendingApprovals(),
+                mock(TurnSummaryEmitter.class),
+                new TurnObservationRegistry(),
+                null,
+                loader);
+        ExecutorService worker = Executors.newSingleThreadExecutor();
+        TurnExecutor executor = new TurnExecutor(loop, worker, registry);
+
+        AttachmentPreparationService preparation = mock(AttachmentPreparationService.class);
+        AttachmentHistoryResolver history = mock(AttachmentHistoryResolver.class);
+        PreparedTurnInput prepared = new PreparedTurnInput(
+                "reuse " + attachment.metadata().displayId(), List.of(), List.of());
+        PreparedTurnInput resolved = new PreparedTurnInput(
+                prepared.text(), List.of(), List.of(attachment));
+        when(preparation.prepareNew(prepared.text(), List.of())).thenReturn(prepared);
+        when(history.resolve(any(), any(), any())).thenReturn(resolved);
+        ConversationService conversations = new ConversationService();
+        String threadId = conversations.createThread(tempDir.toString()).id();
+        TurnStartHandler handler = new TurnStartHandler(
+                conversations,
+                new ObjectMapper(),
+                executor,
+                null,
+                null,
+                recorder,
+                null,
+                null,
+                null,
+                preparation,
+                history,
+                registry);
+
+        try {
+            handler.handle(request(threadId, attachment, false), session);
+            assertThat(persistedBeforeLoad.await(5, TimeUnit.SECONDS)).isTrue();
+            verify(persistedItems).saveItem(any());
+
+            ClipboardAttachmentRetentionService.CleanupResult result = retention.cleanup();
+
+            assertThat(result.deletedFiles()).isZero();
+            assertThat(candidate).exists();
+            allowAttachmentLoad.countDown();
+            assertThat(attachmentLoadAttempted.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(existedAtLoad).hasValue(true);
+            org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                    assertThat(registry.isPathProtected(candidate)).isFalse());
+        } finally {
+            allowAttachmentLoad.countDown();
+            executor.close();
+            worker.shutdownNow();
+        }
+    }
+
     private ClipboardAttachmentRetentionService retention(
             Path root,
             AttachmentReferenceRepository repository,
@@ -347,6 +456,17 @@ class AttachmentPublicationCleanupRaceTest {
         return new AttachmentException(
                 AttachmentErrorCode.ATTACHMENT_NOT_FOUND,
                 "attachment no longer exists");
+    }
+
+    private static AttachmentReferenceRecord expiredReference(PreparedAttachment attachment)
+            throws Exception {
+        String payload = new ObjectMapper().writeValueAsString(UserMessageItem.of(
+                "item-archived",
+                "reuse archived attachment",
+                List.of(attachment.metadata())));
+        return new AttachmentReferenceRecord(
+                payload,
+                NOW.minus(Duration.ofDays(31)).toString());
     }
 
     private static Path oldScreenshot(Path root, String name) throws Exception {

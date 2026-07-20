@@ -97,7 +97,7 @@ class ConversationEventRecorderTest {
     }
 
     @Test
-    void persisted_user_message_releases_the_turn_attachment_reservation() {
+    void persisted_user_message_keeps_the_turn_attachment_reservation_until_executor_cleanup() {
         ConversationRepository repository = mock(ConversationRepository.class);
         AttachmentReservationRegistry registry = new AttachmentReservationRegistry();
         PreparedAttachment attachment = attachment();
@@ -108,14 +108,18 @@ class ConversationEventRecorderTest {
                 repository,
                 mock(TurnPersistenceService.class),
                 null,
-                objectMapper,
-                registry);
+                objectMapper);
 
         recorder.recordItemAdded(
                 "thread-a",
                 "turn-a",
                 UserMessageItem.of("it_user", "review", List.of(attachment.metadata())));
 
+        assertThatThrownBy(() -> registry.reserve(
+                "thread-a", BusinessIdentityScope.UNSCOPED, List.of(attachment)))
+                .isInstanceOf(com.wzx.babiq.server.attachment.AttachmentException.class);
+
+        registry.releaseTurn("turn-a");
         try (AttachmentReservationRegistry.Reservation next = registry.reserve(
                 "thread-a", BusinessIdentityScope.UNSCOPED, List.of(attachment))) {
             assertThat(next.active()).isTrue();
@@ -136,8 +140,7 @@ class ConversationEventRecorderTest {
                 repository,
                 mock(TurnPersistenceService.class),
                 null,
-                objectMapper,
-                registry);
+                objectMapper);
 
         assertThatThrownBy(() -> recorder.recordItemAdded(
                 "thread-a",
