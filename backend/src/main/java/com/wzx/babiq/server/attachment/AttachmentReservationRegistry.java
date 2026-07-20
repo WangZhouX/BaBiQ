@@ -3,6 +3,7 @@ package com.wzx.babiq.server.attachment;
 import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
 import org.springframework.stereotype.Component;
 
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.HashMap;
@@ -13,6 +14,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 /**
@@ -27,6 +29,7 @@ public final class AttachmentReservationRegistry {
     private final Map<ScopeThreadKey, Map<String, String>> ownersByIdentity = new HashMap<>();
     private final Map<String, ReservationState> statesByToken = new HashMap<>();
     private final Map<String, String> tokensByTurn = new HashMap<>();
+    private final Map<Path, Integer> activePathReferences = new HashMap<>();
 
     public AttachmentReservationRegistry() {
         this(Clock.systemUTC());
@@ -34,6 +37,22 @@ public final class AttachmentReservationRegistry {
 
     AttachmentReservationRegistry(Clock clock) {
         this.clock = Objects.requireNonNull(clock, "clock");
+    }
+
+    /**
+     * Serializes synchronous attachment validation/history resolution/reservation with cleanup.
+     *
+     * <p>The supplied operation must not wait for asynchronous persistence or worker completion.</p>
+     */
+    public synchronized <T> T withinPublicationGuard(Supplier<T> operation) {
+        return Objects.requireNonNull(operation, "operation").get();
+    }
+
+    /**
+     * Serializes the complete retention query/scan/delete operation with attachment publication.
+     */
+    public synchronized <T> T withinCleanupGuard(Supplier<T> operation) {
+        return Objects.requireNonNull(operation, "operation").get();
     }
 
     /**
@@ -54,23 +73,77 @@ public final class AttachmentReservationRegistry {
                 threadId,
                 scope == null ? BusinessIdentityScope.UNSCOPED : scope);
         Set<String> identities = new LinkedHashSet<>();
+        Set<Path> protectedPaths = new LinkedHashSet<>();
+        for (PreparedAttachment attachment : attachments) {
+            AttachmentMetadata metadata = Objects.requireNonNull(attachment, "attachment").metadata();
+            identities.add("id:" + canonicalUuid(metadata.id()));
+            identities.add("display:" + canonicalDisplayId(metadata.displayId()));
+            protectedPaths.add(attachment.canonicalPath().toAbsolutePath().normalize());
+        }
+
+        Map<String, String> owners = ownersByIdentity.computeIfAbsent(key, ignored -> new HashMap<>());
+        rejectOwnedIdentities(owners, identities);
+
+        String token = UUID.randomUUID().toString();
+        identities.forEach(identity -> owners.put(identity, token));
+        protectedPaths.forEach(path ->
+                activePathReferences.merge(path, 1, Math::addExact));
+        statesByToken.put(token, new ReservationState(
+                key,
+                Set.copyOf(identities),
+                Set.copyOf(protectedPaths),
+                clock.instant()));
+        return new Reservation(this, token);
+    }
+
+    /**
+     * Rejects already-pending new identities before the more expensive history scan.
+     *
+     * <p>Callers that depend on this check must keep the surrounding publication guard until
+     * {@link #reserve(String, BusinessIdentityScope, List)} completes.</p>
+     */
+    public synchronized void assertAvailable(
+            String threadId,
+            BusinessIdentityScope scope,
+            List<PreparedAttachment> attachments
+    ) {
+        Objects.requireNonNull(threadId, "threadId");
+        Objects.requireNonNull(attachments, "attachments");
+        if (attachments.isEmpty()) {
+            return;
+        }
+        ScopeThreadKey key = new ScopeThreadKey(
+                threadId,
+                scope == null ? BusinessIdentityScope.UNSCOPED : scope);
+        Map<String, String> owners = ownersByIdentity.get(key);
+        if (owners == null) {
+            return;
+        }
+        Set<String> identities = new LinkedHashSet<>();
         for (PreparedAttachment attachment : attachments) {
             AttachmentMetadata metadata = Objects.requireNonNull(attachment, "attachment").metadata();
             identities.add("id:" + canonicalUuid(metadata.id()));
             identities.add("display:" + canonicalDisplayId(metadata.displayId()));
         }
+        rejectOwnedIdentities(owners, identities);
+    }
 
-        Map<String, String> owners = ownersByIdentity.computeIfAbsent(key, ignored -> new HashMap<>());
+    private static void rejectOwnedIdentities(
+            Map<String, String> owners,
+            Set<String> identities
+    ) {
         for (String identity : identities) {
             if (owners.containsKey(identity)) {
                 throw ambiguous();
             }
         }
+    }
 
-        String token = UUID.randomUUID().toString();
-        identities.forEach(identity -> owners.put(identity, token));
-        statesByToken.put(token, new ReservationState(key, Set.copyOf(identities), clock.instant()));
-        return new Reservation(this, token);
+    synchronized boolean isPathProtected(Path path) {
+        if (path == null) {
+            return false;
+        }
+        return activePathReferences.containsKey(path.toAbsolutePath().normalize());
     }
 
     /**
@@ -117,6 +190,10 @@ public final class AttachmentReservationRegistry {
         }
         if (state.turnId() != null) {
             tokensByTurn.remove(state.turnId(), token);
+        }
+        for (Path path : state.protectedPaths()) {
+            activePathReferences.computeIfPresent(path, (ignored, references) ->
+                    references <= 1 ? null : references - 1);
         }
         Map<String, String> owners = ownersByIdentity.get(state.key());
         if (owners == null) {
@@ -195,16 +272,22 @@ public final class AttachmentReservationRegistry {
     private record ReservationState(
             ScopeThreadKey key,
             Set<String> identities,
+            Set<Path> protectedPaths,
             Instant createdAt,
             String turnId
     ) {
 
-        private ReservationState(ScopeThreadKey key, Set<String> identities, Instant createdAt) {
-            this(key, identities, createdAt, null);
+        private ReservationState(
+                ScopeThreadKey key,
+                Set<String> identities,
+                Set<Path> protectedPaths,
+                Instant createdAt
+        ) {
+            this(key, identities, protectedPaths, createdAt, null);
         }
 
         private ReservationState withTurnId(String value) {
-            return new ReservationState(key, identities, createdAt, value);
+            return new ReservationState(key, identities, protectedPaths, createdAt, value);
         }
     }
 }

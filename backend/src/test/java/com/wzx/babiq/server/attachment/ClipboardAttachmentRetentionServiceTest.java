@@ -16,6 +16,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -211,7 +212,13 @@ class ClipboardAttachmentRetentionServiceTest {
             throw new IllegalStateException("private database detail");
         };
         ClipboardAttachmentRetentionService service = new ClipboardAttachmentRetentionService(
-                failingRepository, new ObjectMapper(), root, CLOCK);
+                failingRepository,
+                new ObjectMapper(),
+                root,
+                CLOCK,
+                new StartupRecoveryCoordinator(),
+                new AttachmentReservationRegistry(),
+                stableFileAttributes(root));
 
         ClipboardAttachmentRetentionService.CleanupResult result = service.cleanup();
 
@@ -224,7 +231,13 @@ class ClipboardAttachmentRetentionServiceTest {
         Path root = Files.createDirectories(tempDir.resolve("attachments/clipboard"));
         Path orphan = generated(root, "截图-20260110-010000-GHJKLM.png", Duration.ofDays(2));
         ClipboardAttachmentRetentionService service = new ClipboardAttachmentRetentionService(
-                () -> null, new ObjectMapper(), root, CLOCK);
+                () -> null,
+                new ObjectMapper(),
+                root,
+                CLOCK,
+                new StartupRecoveryCoordinator(),
+                new AttachmentReservationRegistry(),
+                stableFileAttributes(root));
 
         ClipboardAttachmentRetentionService.CleanupResult result = service.cleanup();
 
@@ -257,20 +270,28 @@ class ClipboardAttachmentRetentionServiceTest {
     }
 
     @Test
-    void fileIdentityFallbackRequiresBothFileKeysToBeAbsent() {
+    void destructiveFileIdentityRequiresMatchingNonNullFileKeys() {
         BasicFileAttributes withoutKey = attributes(null);
         BasicFileAttributes withKey = attributes("file-key");
 
         assertThat(ClipboardAttachmentRetentionService.sameFileIdentity(withoutKey, withKey))
                 .isFalse();
         assertThat(ClipboardAttachmentRetentionService.sameFileIdentity(withoutKey, attributes(null)))
-                .isTrue();
+                .isFalse();
+        assertThat(ClipboardAttachmentRetentionService.sameFileIdentity(
+                withKey, attributes("file-key"))).isTrue();
     }
 
     @Test
     void syntheticLinkAndReparseAttributesAreAlwaysRejectedForRootsAndEntries() {
         BasicFileAttributes directory = mock(BasicFileAttributes.class);
         when(directory.isDirectory()).thenReturn(true);
+        when(directory.fileKey()).thenReturn("root-key");
+        BasicFileAttributes replacementDirectory = mock(BasicFileAttributes.class);
+        when(replacementDirectory.isDirectory()).thenReturn(true);
+        when(replacementDirectory.fileKey()).thenReturn("replacement-key");
+        BasicFileAttributes directoryWithoutKey = mock(BasicFileAttributes.class);
+        when(directoryWithoutKey.isDirectory()).thenReturn(true);
         BasicFileAttributes regular = mock(BasicFileAttributes.class);
         when(regular.isRegularFile()).thenReturn(true);
         BasicFileAttributes reparseDirectory = mock(BasicFileAttributes.class);
@@ -288,6 +309,45 @@ class ClipboardAttachmentRetentionServiceTest {
         assertThat(ClipboardAttachmentRetentionService.safeCandidateAttributes(true, regular)).isFalse();
         assertThat(ClipboardAttachmentRetentionService.safeCandidateAttributes(false, reparseFile))
                 .isFalse();
+        assertThat(ClipboardAttachmentRetentionService.sameRootIdentity(
+                "root-key", false, directory)).isTrue();
+        assertThat(ClipboardAttachmentRetentionService.sameRootIdentity(
+                "root-key", false, replacementDirectory)).isFalse();
+        assertThat(ClipboardAttachmentRetentionService.sameRootIdentity(
+                "root-key", false, directoryWithoutKey)).isFalse();
+    }
+
+    @Test
+    void rootIdentityReplacementBetweenScanAndDeleteFailsClosed() throws Exception {
+        Path root = Files.createDirectories(tempDir.resolve("root-replacement"));
+        Path orphan = generated(
+                root, "截图-20260116-000000-PQRSTU.png", Duration.ofDays(2));
+        Path canonicalRoot = root.toAbsolutePath().normalize();
+        AtomicInteger rootReads = new AtomicInteger();
+        ClipboardAttachmentRetentionService.FileAttributeReader replacingRoot = path -> {
+            BasicFileAttributes actual = Files.readAttributes(
+                    path,
+                    BasicFileAttributes.class,
+                    java.nio.file.LinkOption.NOFOLLOW_LINKS);
+            boolean isRoot = path.toAbsolutePath().normalize().equals(canonicalRoot);
+            Object fileKey = isRoot && rootReads.incrementAndGet() > 2
+                    ? "replacement-root-key"
+                    : isRoot ? "root-key" : "file-key:" + path.toAbsolutePath().normalize();
+            return attributesWithKey(actual, fileKey);
+        };
+        ClipboardAttachmentRetentionService service = new ClipboardAttachmentRetentionService(
+                () -> List.of(),
+                new ObjectMapper(),
+                root,
+                CLOCK,
+                new StartupRecoveryCoordinator(),
+                new AttachmentReservationRegistry(),
+                replacingRoot);
+
+        ClipboardAttachmentRetentionService.CleanupResult result = service.cleanup();
+
+        assertThat(orphan).exists();
+        assertThat(result.deletedFiles()).isZero();
     }
 
     @Test
@@ -297,7 +357,13 @@ class ClipboardAttachmentRetentionServiceTest {
         when(repository.findAll()).thenReturn(List.of());
         StartupRecoveryCoordinator coordinator = mock(StartupRecoveryCoordinator.class);
         ClipboardAttachmentRetentionService service = new ClipboardAttachmentRetentionService(
-                repository, new ObjectMapper(), root, CLOCK, coordinator);
+                repository,
+                new ObjectMapper(),
+                root,
+                CLOCK,
+                coordinator,
+                new AttachmentReservationRegistry(),
+                stableFileAttributes(root));
 
         when(coordinator.isRecoveryComplete()).thenReturn(false);
         service.scheduledCleanup();
@@ -316,7 +382,10 @@ class ClipboardAttachmentRetentionServiceTest {
                 () -> references,
                 new ObjectMapper(),
                 root,
-                CLOCK);
+                CLOCK,
+                new StartupRecoveryCoordinator(),
+                new AttachmentReservationRegistry(),
+                stableFileAttributes(root));
     }
 
     private AttachmentReferenceRecord reference(Path path, Instant archivedAt) throws Exception {
@@ -376,5 +445,37 @@ class ClipboardAttachmentRetentionServiceTest {
         when(attributes.lastModifiedTime()).thenReturn(FileTime.from(NOW));
         when(attributes.fileKey()).thenReturn(fileKey);
         return attributes;
+    }
+
+    private static ClipboardAttachmentRetentionService.FileAttributeReader stableFileAttributes(
+            Path root
+    ) {
+        Path canonicalRoot = root.toAbsolutePath().normalize();
+        return path -> {
+            BasicFileAttributes actual = Files.readAttributes(
+                    path,
+                    BasicFileAttributes.class,
+                    java.nio.file.LinkOption.NOFOLLOW_LINKS);
+            return attributesWithKey(
+                    actual,
+                    path.toAbsolutePath().normalize().equals(canonicalRoot)
+                            ? "root-key"
+                            : "file-key:" + path.toAbsolutePath().normalize());
+        };
+    }
+
+    private static BasicFileAttributes attributesWithKey(
+            BasicFileAttributes actual,
+            Object fileKey
+    ) {
+        BasicFileAttributes stable = mock(BasicFileAttributes.class);
+        when(stable.isRegularFile()).thenReturn(actual.isRegularFile());
+        when(stable.isDirectory()).thenReturn(actual.isDirectory());
+        when(stable.isSymbolicLink()).thenReturn(actual.isSymbolicLink());
+        when(stable.isOther()).thenReturn(actual.isOther());
+        when(stable.size()).thenReturn(actual.size());
+        when(stable.lastModifiedTime()).thenReturn(actual.lastModifiedTime());
+        when(stable.fileKey()).thenReturn(fileKey);
+        return stable;
     }
 }

@@ -14,6 +14,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -105,6 +106,74 @@ class AttachmentReservationRegistryTest {
                                 .isEqualTo(AttachmentErrorCode.ATTACHMENT_REFERENCE_AMBIGUOUS));
 
         reservation.close();
+    }
+
+    @Test
+    void publicationAndCleanupGuardsSerializeAfterBothWorkersHaveStarted() throws Exception {
+        AttachmentReservationRegistry registry = new AttachmentReservationRegistry();
+        CountDownLatch publicationEntered = new CountDownLatch(1);
+        CountDownLatch releasePublication = new CountDownLatch(1);
+        CountDownLatch cleanupTaskStarted = new CountDownLatch(1);
+        CountDownLatch cleanupEntered = new CountDownLatch(1);
+        ExecutorService workers = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> publication = workers.submit(() ->
+                    registry.withinPublicationGuard(() -> {
+                        publicationEntered.countDown();
+                        await(releasePublication);
+                        return null;
+                    }));
+            assertThat(publicationEntered.await(5, TimeUnit.SECONDS)).isTrue();
+            Future<?> cleanup = workers.submit(() -> {
+                cleanupTaskStarted.countDown();
+                return registry.withinCleanupGuard(() -> {
+                    cleanupEntered.countDown();
+                    return null;
+                });
+            });
+            assertThat(cleanupTaskStarted.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(cleanupEntered.await(200, TimeUnit.MILLISECONDS)).isFalse();
+
+            releasePublication.countDown();
+            publication.get(5, TimeUnit.SECONDS);
+            cleanup.get(5, TimeUnit.SECONDS);
+            assertThat(cleanupEntered.getCount()).isZero();
+        } finally {
+            releasePublication.countDown();
+            workers.shutdownNow();
+        }
+    }
+
+    @Test
+    void reservationProtectsCanonicalPathUntilItIsReleased() {
+        AttachmentReservationRegistry registry = new AttachmentReservationRegistry();
+        PreparedAttachment attachment = attachment();
+
+        AttachmentReservationRegistry.Reservation reservation = registry.reserve(
+                "thread-a", BusinessIdentityScope.UNSCOPED, List.of(attachment));
+
+        assertThat(registry.isPathProtected(attachment.canonicalPath())).isTrue();
+        reservation.close();
+        assertThat(registry.isPathProtected(attachment.canonicalPath())).isFalse();
+    }
+
+    @Test
+    void emptyAttachmentListCreatesNoActiveReservation() {
+        AttachmentReservationRegistry registry = new AttachmentReservationRegistry();
+
+        try (AttachmentReservationRegistry.Reservation reservation = registry.reserve(
+                "thread-a", BusinessIdentityScope.UNSCOPED, List.of())) {
+            assertThat(reservation.active()).isFalse();
+        }
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            latch.await();
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted", exception);
+        }
     }
 
     private static Attempt reserve(

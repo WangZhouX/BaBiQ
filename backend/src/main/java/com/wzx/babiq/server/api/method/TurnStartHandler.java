@@ -367,18 +367,14 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
             String workUnitIdToStart) {
         Thread thread = conversationService.findThread(threadId, requestScope)
                 .orElseThrow(() -> threadNotFound(threadId));
-        PreparedTurnInput prepared = prepareNewInput(inputRequest);
-        AttachmentReservationRegistry.Reservation reservation = null;
-        if (!createWorkUnit && attachmentReservationRegistry != null) {
-            reservation = attachmentReservationRegistry.reserve(
-                    threadId, requestScope, prepared.newAttachments());
-        }
+        PreparedPublication publication = publishPreparedInput(
+                threadId, requestScope, inputRequest, createWorkUnit);
+        AttachmentReservationRegistry.Reservation reservation = publication.reservation();
         try {
-            PreparedTurnInput input = resolveHistory(threadId, requestScope, prepared);
             return startPreparedTurn(
                     thread,
                     requestScope,
-                    input,
+                    publication.input(),
                     requestedProviderId,
                     provider,
                     runPolicy,
@@ -391,6 +387,34 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
             }
             throw failure;
         }
+    }
+
+    private PreparedPublication publishPreparedInput(
+            String threadId,
+            BusinessIdentityScope requestScope,
+            TurnInputRequest inputRequest,
+            boolean createWorkUnit
+    ) {
+        if (attachmentReservationRegistry == null) {
+            PreparedTurnInput prepared = prepareNewInput(inputRequest);
+            return new PreparedPublication(
+                    resolveHistory(threadId, requestScope, prepared),
+                    null);
+        }
+        return attachmentReservationRegistry.withinPublicationGuard(() -> {
+            PreparedTurnInput prepared = prepareNewInput(inputRequest);
+            if (!createWorkUnit) {
+                attachmentReservationRegistry.assertAvailable(
+                        threadId, requestScope, prepared.newAttachments());
+            }
+            PreparedTurnInput resolved =
+                    resolveHistory(threadId, requestScope, prepared);
+            AttachmentReservationRegistry.Reservation reservation = createWorkUnit
+                    ? null
+                    : attachmentReservationRegistry.reserve(
+                            threadId, requestScope, resolved.allAttachments());
+            return new PreparedPublication(resolved, reservation);
+        });
     }
 
     private StartedTurn startPreparedTurn(
@@ -508,6 +532,12 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
                 reservation.close();
             }
         }
+    }
+
+    private record PreparedPublication(
+            PreparedTurnInput input,
+            AttachmentReservationRegistry.Reservation reservation
+    ) {
     }
 
     private record ScopedStartResult(StartedTurn started, RuntimeException failure) {

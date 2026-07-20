@@ -17,6 +17,8 @@ import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.SecureDirectoryStream;
+import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Clock;
 import java.time.Duration;
@@ -37,29 +39,45 @@ public final class ClipboardAttachmentRetentionService {
     private static final Logger log =
             LoggerFactory.getLogger(ClipboardAttachmentRetentionService.class);
     private static final Pattern GENERATED_SCREENSHOT = Pattern.compile(
-            "^截图-\\d{8}-\\d{6}-[A-HJ-NP-Z2-9]{6}\\.png$");
+            "^\\x{622A}\\x{56FE}-\\d{8}-\\d{6}-[A-HJ-NP-Z2-9]{6}\\.png$");
     private static final Duration ORPHAN_RETENTION = Duration.ofHours(24);
     private static final Duration ARCHIVED_RETENTION = Duration.ofDays(30);
+    private static final FileAttributeReader SYSTEM_FILE_ATTRIBUTES =
+            new FileAttributeReader() {
+                @Override
+                public BasicFileAttributes read(Path path) throws IOException {
+                    return readBasicAttributes(path);
+                }
+
+                @Override
+                public boolean supportsSecureDirectoryIdentity() {
+                    return true;
+                }
+            };
 
     private final AttachmentReferenceRepository repository;
     private final ObjectMapper objectMapper;
     private final Path configuredRoot;
     private final Clock clock;
     private final StartupRecoveryCoordinator startupRecoveryCoordinator;
+    private final AttachmentReservationRegistry attachmentReservationRegistry;
+    private final FileAttributeReader fileAttributeReader;
 
     @Autowired
     public ClipboardAttachmentRetentionService(
             AttachmentReferenceRepository repository,
             ObjectMapper objectMapper,
             BusinessDesktopModeProperties properties,
-            StartupRecoveryCoordinator startupRecoveryCoordinator
+            StartupRecoveryCoordinator startupRecoveryCoordinator,
+            AttachmentReservationRegistry attachmentReservationRegistry
     ) {
         this(
                 repository,
                 objectMapper,
                 properties.attachmentClipboardRoot(),
                 Clock.systemUTC(),
-                startupRecoveryCoordinator);
+                startupRecoveryCoordinator,
+                attachmentReservationRegistry);
     }
 
     ClipboardAttachmentRetentionService(
@@ -73,7 +91,9 @@ public final class ClipboardAttachmentRetentionService {
                 objectMapper,
                 configuredRoot,
                 clock,
-                new StartupRecoveryCoordinator());
+                new StartupRecoveryCoordinator(),
+                new AttachmentReservationRegistry(),
+                SYSTEM_FILE_ATTRIBUTES);
     }
 
     ClipboardAttachmentRetentionService(
@@ -83,11 +103,51 @@ public final class ClipboardAttachmentRetentionService {
             Clock clock,
             StartupRecoveryCoordinator startupRecoveryCoordinator
     ) {
+        this(
+                repository,
+                objectMapper,
+                configuredRoot,
+                clock,
+                startupRecoveryCoordinator,
+                new AttachmentReservationRegistry(),
+                SYSTEM_FILE_ATTRIBUTES);
+    }
+
+    ClipboardAttachmentRetentionService(
+            AttachmentReferenceRepository repository,
+            ObjectMapper objectMapper,
+            Path configuredRoot,
+            Clock clock,
+            StartupRecoveryCoordinator startupRecoveryCoordinator,
+            AttachmentReservationRegistry attachmentReservationRegistry
+    ) {
+        this(
+                repository,
+                objectMapper,
+                configuredRoot,
+                clock,
+                startupRecoveryCoordinator,
+                attachmentReservationRegistry,
+                SYSTEM_FILE_ATTRIBUTES);
+    }
+
+    ClipboardAttachmentRetentionService(
+            AttachmentReferenceRepository repository,
+            ObjectMapper objectMapper,
+            Path configuredRoot,
+            Clock clock,
+            StartupRecoveryCoordinator startupRecoveryCoordinator,
+            AttachmentReservationRegistry attachmentReservationRegistry,
+            FileAttributeReader fileAttributeReader
+    ) {
         this.repository = repository;
         this.objectMapper = objectMapper;
         this.configuredRoot = configuredRoot.toAbsolutePath().normalize();
         this.clock = clock;
         this.startupRecoveryCoordinator = Objects.requireNonNull(startupRecoveryCoordinator);
+        this.attachmentReservationRegistry =
+                Objects.requireNonNull(attachmentReservationRegistry);
+        this.fileAttributeReader = Objects.requireNonNull(fileAttributeReader);
     }
 
     /**
@@ -96,12 +156,16 @@ public final class ClipboardAttachmentRetentionService {
      * @return aggregate path-free cleanup statistics
      */
     public CleanupResult cleanup() {
-        Path root = canonicalControlledRoot();
+        return attachmentReservationRegistry.withinCleanupGuard(this::cleanupWithinGuard);
+    }
+
+    private CleanupResult cleanupWithinGuard() {
+        ControlledRoot root = canonicalControlledRoot();
         if (root == null) {
             return new CleanupResult(0, 0, 0, 1);
         }
 
-        ReferenceIndex references = readReferences(root);
+        ReferenceIndex references = readReferences(root.path());
         if (!references.safeToDelete()) {
             if (references.invalidRecords() > 0) {
                 log.warn("Controlled clipboard retention failed closed: reasonType={}, count={}",
@@ -113,7 +177,11 @@ public final class ClipboardAttachmentRetentionService {
         int deleted = 0;
         int failures = 0;
         Instant orphanCutoff = clock.instant().minus(ORPHAN_RETENTION);
-        try (DirectoryStream<Path> entries = Files.newDirectoryStream(root)) {
+        try (DirectoryStream<Path> entries = Files.newDirectoryStream(root.path())) {
+            SecureDirectoryStream<Path> secureEntries =
+                    fileAttributeReader.supportsSecureDirectoryIdentity()
+                            ? secureDirectoryStream(entries)
+                            : null;
             for (Path entry : entries) {
                 String fileName = fileName(entry);
                 if (fileName == null || !GENERATED_SCREENSHOT.matcher(fileName).matches()) {
@@ -124,18 +192,17 @@ public final class ClipboardAttachmentRetentionService {
                     continue;
                 }
                 scanned++;
-                ReferenceRetention retention = references.byPath().get(entry.toAbsolutePath().normalize());
+                Path candidatePath = entry.toAbsolutePath().normalize();
+                ReferenceRetention retention = references.byPath().get(candidatePath);
                 boolean eligible = retention == ReferenceRetention.ARCHIVE_EXPIRED
                         || retention == null
                         && attributes.lastModifiedTime().toInstant().isBefore(orphanCutoff);
-                if (!eligible) {
+                if (!eligible || attachmentReservationRegistry.isPathProtected(candidatePath)) {
                     continue;
                 }
                 try {
-                    if (sameRegularFile(entry, attributes)) {
-                        if (Files.deleteIfExists(entry)) {
-                            deleted++;
-                        }
+                    if (deleteIfUnchanged(root, secureEntries, entry, attributes)) {
+                        deleted++;
                     }
                 } catch (IOException | SecurityException exception) {
                     failures++;
@@ -255,19 +322,27 @@ public final class ClipboardAttachmentRetentionService {
         }
     }
 
-    private Path canonicalControlledRoot() {
+    private ControlledRoot canonicalControlledRoot() {
         try {
             rejectLinkedSegments(configuredRoot);
-            BasicFileAttributes attributes = Files.readAttributes(
-                    configuredRoot, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
-            if (!safeRootAttributes(Files.isSymbolicLink(configuredRoot), attributes)) {
+            BasicFileAttributes attributes = fileAttributeReader.read(configuredRoot);
+            Object rootFileKey = attributes.fileKey();
+            if (!safeRootAttributes(Files.isSymbolicLink(configuredRoot), attributes)
+                    || rootFileKey == null) {
                 return null;
             }
             Path canonical = configuredRoot.toRealPath(LinkOption.NOFOLLOW_LINKS)
                     .toAbsolutePath()
                     .normalize();
             rejectLinkedSegments(canonical);
-            return canonical;
+            BasicFileAttributes canonicalAttributes = fileAttributeReader.read(canonical);
+            if (!sameRootIdentity(
+                    rootFileKey,
+                    Files.isSymbolicLink(canonical),
+                    canonicalAttributes)) {
+                return null;
+            }
+            return new ControlledRoot(canonical, rootFileKey);
         } catch (IOException | RuntimeException exception) {
             return null;
         }
@@ -293,10 +368,9 @@ public final class ClipboardAttachmentRetentionService {
         }
     }
 
-    private static BasicFileAttributes safeRegularFileAttributes(Path path) {
+    private BasicFileAttributes safeRegularFileAttributes(Path path) {
         try {
-            BasicFileAttributes attributes = Files.readAttributes(
-                    path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            BasicFileAttributes attributes = fileAttributeReader.read(path);
             if (!safeCandidateAttributes(Files.isSymbolicLink(path), attributes)) {
                 return null;
             }
@@ -306,21 +380,111 @@ public final class ClipboardAttachmentRetentionService {
         }
     }
 
-    private static boolean sameRegularFile(Path path, BasicFileAttributes expected) {
-        BasicFileAttributes current = safeRegularFileAttributes(path);
-        return current != null && sameFileIdentity(expected, current);
+    private boolean deleteIfUnchanged(
+            ControlledRoot root,
+            SecureDirectoryStream<Path> secureEntries,
+            Path entry,
+            BasicFileAttributes expected
+    ) throws IOException {
+        if (!sameControlledRoot(root)) {
+            return false;
+        }
+        Path relativeName = entry.getFileName();
+        if (relativeName == null) {
+            return false;
+        }
+        if (secureEntries != null) {
+            BasicFileAttributes first =
+                    secureRegularFileAttributes(secureEntries, relativeName);
+            if (!sameFileIdentity(expected, first) || !sameControlledRoot(root)) {
+                return false;
+            }
+            BasicFileAttributes current =
+                    secureRegularFileAttributes(secureEntries, relativeName);
+            if (!sameFileIdentity(expected, current)
+                    || !sameFileIdentity(first, current)) {
+                return false;
+            }
+            secureEntries.deleteFile(relativeName);
+            return true;
+        }
+
+        rejectLinkedSegments(entry);
+        BasicFileAttributes first = safeRegularFileAttributes(entry);
+        if (!sameFileIdentity(expected, first) || !sameControlledRoot(root)) {
+            return false;
+        }
+        rejectLinkedSegments(entry);
+        BasicFileAttributes current = safeRegularFileAttributes(entry);
+        if (!sameFileIdentity(expected, current)
+                || !sameFileIdentity(first, current)
+                || !sameControlledRoot(root)) {
+            return false;
+        }
+        rejectLinkedSegments(entry);
+        BasicFileAttributes finalCandidate = safeRegularFileAttributes(entry);
+        return sameFileIdentity(expected, finalCandidate)
+                && sameFileIdentity(current, finalCandidate)
+                && Files.deleteIfExists(entry);
+    }
+
+    private boolean sameControlledRoot(ControlledRoot root) {
+        try {
+            rejectLinkedSegments(root.path());
+            BasicFileAttributes current = fileAttributeReader.read(root.path());
+            return sameRootIdentity(
+                    root.fileKey(),
+                    Files.isSymbolicLink(root.path()),
+                    current);
+        } catch (IOException | SecurityException exception) {
+            return false;
+        }
+    }
+
+    private static BasicFileAttributes readBasicAttributes(Path path) throws IOException {
+        return Files.readAttributes(
+                path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+    }
+
+    private static BasicFileAttributes secureRegularFileAttributes(
+            SecureDirectoryStream<Path> entries,
+            Path relativeName
+    ) throws IOException {
+        BasicFileAttributeView view = entries.getFileAttributeView(
+                relativeName,
+                BasicFileAttributeView.class,
+                LinkOption.NOFOLLOW_LINKS);
+        if (view == null) {
+            return null;
+        }
+        BasicFileAttributes attributes = view.readAttributes();
+        return safeCandidateAttributes(attributes.isSymbolicLink(), attributes)
+                ? attributes
+                : null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static SecureDirectoryStream<Path> secureDirectoryStream(
+            DirectoryStream<Path> entries
+    ) {
+        return entries instanceof SecureDirectoryStream<?>
+                ? (SecureDirectoryStream<Path>) entries
+                : null;
     }
 
     static boolean sameFileIdentity(
             BasicFileAttributes expected,
             BasicFileAttributes current
     ) {
+        if (expected == null || current == null) {
+            return false;
+        }
         Object expectedKey = expected.fileKey();
         Object currentKey = current.fileKey();
         return expected.size() == current.size()
                 && expected.lastModifiedTime().equals(current.lastModifiedTime())
-                && (expectedKey == null && currentKey == null
-                || expectedKey != null && expectedKey.equals(currentKey));
+                && expectedKey != null
+                && expectedKey.equals(currentKey);
     }
 
     static boolean safeRootAttributes(
@@ -335,6 +499,17 @@ public final class ClipboardAttachmentRetentionService {
             BasicFileAttributes attributes
     ) {
         return !symbolicLink && attributes.isRegularFile() && !attributes.isOther();
+    }
+
+    static boolean sameRootIdentity(
+            Object expectedFileKey,
+            boolean symbolicLink,
+            BasicFileAttributes current
+    ) {
+        return expectedFileKey != null
+                && current != null
+                && safeRootAttributes(symbolicLink, current)
+                && expectedFileKey.equals(current.fileKey());
     }
 
     private static String fileName(Path path) {
@@ -360,6 +535,18 @@ public final class ClipboardAttachmentRetentionService {
             int invalidRecords,
             boolean safeToDelete
     ) {
+    }
+
+    private record ControlledRoot(Path path, Object fileKey) {
+    }
+
+    @FunctionalInterface
+    interface FileAttributeReader {
+        BasicFileAttributes read(Path path) throws IOException;
+
+        default boolean supportsSecureDirectoryIdentity() {
+            return false;
+        }
     }
 
     private static final class InvalidAttachmentReferenceException extends RuntimeException {
