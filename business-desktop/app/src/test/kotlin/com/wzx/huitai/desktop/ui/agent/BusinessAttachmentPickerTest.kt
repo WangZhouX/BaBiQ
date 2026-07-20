@@ -4,6 +4,7 @@ import com.wzx.huitai.agent.conversation.BusinessAttachmentDraft
 import com.wzx.huitai.desktop.runtime.BusinessAttachmentIdFactory
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.AccessDeniedException
 import java.util.UUID
 import javax.swing.JFileChooser
 import javax.swing.filechooser.FileNameExtensionFilter
@@ -144,6 +145,62 @@ class BusinessAttachmentPickerTest {
         assertTrue("pptx" in extensionFilter.extensions)
         assertTrue("png" in extensionFilter.extensions)
         assertTrue("kt" in extensionFilter.extensions)
+    }
+
+    @Test
+    fun `deleted selection returns a stable path free error`() {
+        val directory = Files.createTempDirectory("huitai-picker-deleted")
+        val deleted = directory.resolve("deleted-report.pdf")
+        Files.write(deleted, byteArrayOf(1))
+        Files.delete(deleted)
+
+        val failure = assertFailsWith<BusinessAttachmentSelectionException> {
+            picker(listOf(deleted)).choose()
+        }
+
+        assertEquals("ATTACHMENT_NOT_REGULAR_FILE", failure.code)
+        assertFalse(failure.toString().contains(deleted.toString()))
+    }
+
+    @Test
+    fun `unreadable selection normalizes inspector failures without leaking a path`() {
+        val directory = Files.createTempDirectory("huitai-picker-unreadable")
+        val selected = directory.resolve("private-report.pdf")
+        Files.write(selected, byteArrayOf(1))
+        val picker = BusinessAttachmentPicker(
+            chooser = BusinessAttachmentChooser { listOf(selected) },
+            idFactory = fixedIdFactory(),
+            fileInspector = BusinessAttachmentFileInspector {
+                throw AccessDeniedException(selected.toString())
+            },
+        )
+
+        val failure = assertFailsWith<BusinessAttachmentSelectionException> {
+            picker.choose()
+        }
+
+        assertEquals("ATTACHMENT_PATH_INVALID", failure.code)
+        assertFalse(failure.toString().contains(selected.toString()))
+        assertFalse(failure.toString().contains(directory.toString()))
+    }
+
+    @Test
+    fun `linked selection is rejected without leaking either path`() {
+        val directory = Files.createTempDirectory("huitai-picker-link")
+        val target = directory.resolve("private-target.pdf")
+        val linked = directory.resolve("selected-link.pdf")
+        Files.write(target, byteArrayOf(1))
+        val linkCreated = runCatching { Files.createSymbolicLink(linked, target) }.isSuccess
+        if (!linkCreated) return
+
+        val failure = assertFailsWith<BusinessAttachmentSelectionException> {
+            picker(listOf(linked)).choose()
+        }
+
+        assertEquals("ATTACHMENT_NOT_REGULAR_FILE", failure.code)
+        assertFalse(failure.toString().contains(linked.toString()))
+        assertFalse(failure.toString().contains(target.toString()))
+        assertEquals(1, Files.size(target))
     }
 
     private fun picker(paths: List<Path>): BusinessAttachmentPicker = BusinessAttachmentPicker(

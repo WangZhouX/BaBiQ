@@ -8,11 +8,10 @@ import java.awt.datatransfer.DataFlavor
 import java.awt.image.BufferedImage
 import java.nio.channels.Channels
 import java.nio.channels.FileChannel
-import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.PosixFilePermission
@@ -59,6 +58,56 @@ class BusinessLocalAttachmentException(
     message: String,
 ) : IllegalArgumentException(message)
 
+interface ClipboardControlledRootScanner {
+    fun displayIds(controlledRoot: Path): Set<String>
+
+    fun regularBytesExcluding(
+        controlledRoot: Path,
+        excluded: Path,
+    ): Long
+}
+
+object NioClipboardControlledRootScanner : ClipboardControlledRootScanner {
+    override fun displayIds(controlledRoot: Path): Set<String> =
+        Files.list(controlledRoot).use { paths ->
+            paths.iterator().asSequence()
+                .map { path ->
+                    path to Files.readAttributes(
+                        path,
+                        BasicFileAttributes::class.java,
+                        LinkOption.NOFOLLOW_LINKS,
+                    )
+                }
+                .filter { (_, attributes) -> attributes.isRegularFile }
+                .map { (path, _) -> path.fileName.toString() }
+                .mapNotNull { name ->
+                    CLIPBOARD_FINAL_NAME_PATTERN.matchEntire(name)?.groupValues?.get(1)
+                }
+                .map { "A-$it" }
+                .toSet()
+        }
+
+    override fun regularBytesExcluding(
+        controlledRoot: Path,
+        excluded: Path,
+    ): Long = Files.walk(controlledRoot).use { paths ->
+        paths.iterator().asSequence()
+            .filter { path -> path != excluded }
+            .map { path ->
+                Files.readAttributes(
+                    path,
+                    BasicFileAttributes::class.java,
+                    LinkOption.NOFOLLOW_LINKS,
+                )
+            }
+            .filter(BasicFileAttributes::isRegularFile)
+            .fold(0L) { total, attributes ->
+                val size = attributes.size()
+                if (size > Long.MAX_VALUE - total) Long.MAX_VALUE else total + size
+            }
+    }
+}
+
 /**
  * 把剪贴板图像写入 Agent 隔离根。WebSocket 只会收到返回草稿中的本机路径，不承载图片字节。
  */
@@ -68,6 +117,7 @@ class ClipboardImageAttachmentStore(
     private val clock: Clock = Clock.systemDefaultZone(),
     private val idFactory: BusinessAttachmentIdFactory = BusinessAttachmentIdFactory(),
     private val limits: ClipboardAttachmentLimits = ClipboardAttachmentLimits.DEFAULT,
+    private val rootScanner: ClipboardControlledRootScanner = NioClipboardControlledRootScanner,
 ) {
     val controlledRoot: Path = controlledRoot.toAbsolutePath().normalize()
 
@@ -92,8 +142,27 @@ class ClipboardImageAttachmentStore(
             )
         } ?: return null
 
-        val rootDisplayIds = controlledDisplayIds()
-        val identity = idFactory.create(existingIds, existingDisplayIds + rootDisplayIds)
+        validateImage(image)
+        val rejectedDisplayIds = mutableSetOf<String>()
+        repeat(PUBLICATION_ATTEMPTS) {
+            val rootDisplayIds = scanDisplayIds()
+            val identity = idFactory.create(
+                existingIds,
+                existingDisplayIds + rootDisplayIds + rejectedDisplayIds,
+            )
+            captureWithIdentity(image, identity)?.let { return it }
+            rejectedDisplayIds += identity.displayId
+        }
+        throw BusinessLocalAttachmentException(
+            "ATTACHMENT_CLIPBOARD_FAILED",
+            "附件名称发生冲突，请重试",
+        )
+    }
+
+    private fun captureWithIdentity(
+        image: BufferedImage,
+        identity: BusinessAttachmentIdentity,
+    ): BusinessAttachmentDraft? {
         val temporary = controlledRoot.resolve("attachment-${identity.id}.tmp")
         val suffix = identity.displayId.removePrefix("A-")
         val timestamp = FILE_TIMESTAMP.format(clock.instant().atZone(clock.zone))
@@ -102,16 +171,17 @@ class ClipboardImageAttachmentStore(
         var completed = false
         var temporaryOwned = false
         try {
-            val encoded = runCatching {
+            val encodedResult = runCatching {
                 FileChannel.open(
                     temporary,
                     StandardOpenOption.CREATE_NEW,
                     StandardOpenOption.WRITE,
                 ).use { channel ->
                     temporaryOwned = true
-                    Channels.newOutputStream(channel).use { output ->
-                        ImageIO.write(image, "png", output)
-                    }
+                    val output = Channels.newOutputStream(channel)
+                    val encoded = ImageIO.write(image, "png", output)
+                    output.flush()
+                    EncodedPng(encoded, channel.size())
                 }
             }
                 .getOrElse {
@@ -120,28 +190,31 @@ class ClipboardImageAttachmentStore(
                         "保存剪贴板图片失败，请重试",
                     )
                 }
-            if (!encoded) {
+            if (!encodedResult.encoded) {
                 throw BusinessLocalAttachmentException(
                     "ATTACHMENT_CLIPBOARD_FAILED",
                     "当前环境无法保存 PNG 图片",
                 )
             }
-            validateImage(image)
-            val encodedBytes = Files.size(temporary)
+            val encodedBytes = encodedResult.sizeBytes
             if (encodedBytes > limits.maxEncodedBytes) {
                 throw BusinessLocalAttachmentException(
                     "ATTACHMENT_FILE_TOO_LARGE",
                     "剪贴板图片超过 20 MiB 限制",
                 )
             }
-            val existingBytes = controlledBytesExcluding(temporary)
+            val existingBytes = scanControlledBytes(temporary)
             if (existingBytes > limits.maxControlledBytes - encodedBytes) {
                 throw BusinessLocalAttachmentException(
                     "ATTACHMENT_LIMIT_EXCEEDED",
                     "剪贴板附件目录容量已满，请清理过期附件后重试",
                 )
             }
-            publish(temporary, published)
+            try {
+                publishWithoutReplacement(temporary, published)
+            } catch (_: FileAlreadyExistsException) {
+                return null
+            }
             applyOwnerOnlyFilePermissions(published)
             completed = true
             return BusinessAttachmentDraft(
@@ -160,7 +233,7 @@ class ClipboardImageAttachmentStore(
                 "保存剪贴板图片失败，请重试",
             )
         } finally {
-            if (!completed && temporaryOwned) Files.deleteIfExists(temporary)
+            if (!completed && temporaryOwned) runCatching { Files.deleteIfExists(temporary) }
         }
     }
 
@@ -178,44 +251,37 @@ class ClipboardImageAttachmentStore(
         }
     }
 
-    private fun controlledBytesExcluding(excluded: Path): Long =
-        Files.walk(controlledRoot).use { paths ->
-            paths.iterator().asSequence()
-                .filter { path -> path != excluded }
-                .map { path ->
-                    Files.readAttributes(
-                        path,
-                        BasicFileAttributes::class.java,
-                        LinkOption.NOFOLLOW_LINKS,
-                    )
-                }
-                .filter(BasicFileAttributes::isRegularFile)
-                .fold(0L) { total, attributes ->
-                    val size = attributes.size()
-                    if (size > Long.MAX_VALUE - total) Long.MAX_VALUE else total + size
-                }
-        }
-
-    private fun controlledDisplayIds(): Set<String> =
-        Files.list(controlledRoot).use { paths ->
-            paths.iterator().asSequence()
-                .filter { Files.isRegularFile(it, LinkOption.NOFOLLOW_LINKS) }
-                .map { it.fileName.toString() }
-                .mapNotNull { name -> FINAL_NAME_PATTERN.matchEntire(name)?.groupValues?.get(1) }
-                .map { "A-$it" }
-                .toSet()
-        }
-
-    private fun publish(temporary: Path, published: Path) {
+    private fun scanDisplayIds(): Set<String> =
         try {
-            Files.move(
-                temporary,
-                published,
-                StandardCopyOption.ATOMIC_MOVE,
-                StandardCopyOption.REPLACE_EXISTING,
+            rootScanner.displayIds(controlledRoot)
+        } catch (_: Exception) {
+            throw BusinessLocalAttachmentException(
+                "ATTACHMENT_CLIPBOARD_FAILED",
+                "无法检查剪贴板附件目录，请重试",
             )
-        } catch (_: AtomicMoveNotSupportedException) {
-            Files.move(temporary, published, StandardCopyOption.REPLACE_EXISTING)
+        }
+
+    private fun scanControlledBytes(excluded: Path): Long =
+        try {
+            rootScanner.regularBytesExcluding(controlledRoot, excluded)
+        } catch (_: Exception) {
+            throw BusinessLocalAttachmentException(
+                "ATTACHMENT_CLIPBOARD_FAILED",
+                "无法检查剪贴板附件目录容量，请重试",
+            )
+        }
+
+    private fun publishWithoutReplacement(temporary: Path, published: Path) {
+        if (Files.exists(published, LinkOption.NOFOLLOW_LINKS)) {
+            throw FileAlreadyExistsException("clipboard attachment target already exists")
+        }
+        try {
+            // A sibling hard-link publishes the fully encoded inode atomically and CREATE_NEW-like:
+            // createLink fails when any file or link already owns the final name.
+            Files.createLink(published, temporary)
+            runCatching { Files.deleteIfExists(temporary) }
+        } catch (_: UnsupportedOperationException) {
+            Files.move(temporary, published)
         }
     }
 
@@ -230,9 +296,17 @@ class ClipboardImageAttachmentStore(
 
     private companion object {
         val FILE_TIMESTAMP: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
-        val FINAL_NAME_PATTERN = Regex("^截图-\\d{8}-\\d{6}-([A-HJ-NP-Z2-9]{6})\\.png$")
+        const val PUBLICATION_ATTEMPTS = 8
     }
+
+    private data class EncodedPng(
+        val encoded: Boolean,
+        val sizeBytes: Long,
+    )
 }
+
+private val CLIPBOARD_FINAL_NAME_PATTERN =
+    Regex("^截图-\\d{8}-\\d{6}-([A-HJ-NP-Z2-9]{6})\\.png$")
 
 private fun Image.toBufferedImage(): BufferedImage {
     if (this is BufferedImage) return this

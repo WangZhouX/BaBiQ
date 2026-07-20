@@ -1,6 +1,7 @@
 package com.wzx.huitai.desktop.runtime
 
 import java.awt.image.BufferedImage
+import java.nio.file.AccessDeniedException
 import java.nio.file.Files
 import java.time.Clock
 import java.time.Instant
@@ -171,12 +172,117 @@ class ClipboardImageAttachmentStoreTest {
         assertTrue(Files.isSymbolicLink(linked))
     }
 
+    @Test
+    fun `rejects invalid image dimensions before touching a colliding temporary path`() {
+        val root = Files.createTempDirectory("huitai-clipboard-dimension-before-temp")
+        val uuid = UUID.fromString("00000000-0000-0000-0000-000000000123")
+        val temporary = root.resolve("attachment-$uuid.tmp")
+        Files.writeString(temporary, "existing-owner-data")
+        val store = store(
+            root = root,
+            image = BufferedImage(2, 1, BufferedImage.TYPE_INT_ARGB),
+            uuid = uuid,
+            limits = ClipboardAttachmentLimits(maxWidth = 1),
+        )
+
+        val failure = assertFailsWith<BusinessLocalAttachmentException> { store.capture() }
+
+        assertEquals("ATTACHMENT_IMAGE_TOO_LARGE", failure.code)
+        assertEquals("existing-owner-data", Files.readString(temporary))
+    }
+
+    @Test
+    fun `final publication collision retries identity without replacing the existing reference`() {
+        val root = Files.createTempDirectory("huitai-clipboard-final-collision")
+        val outside = Files.createTempFile("huitai-clipboard-final-outside", ".txt")
+        Files.writeString(outside, "outside-owner-data")
+        val firstUuid = UUID.fromString("00000000-0000-0000-0000-000000000123")
+        val secondUuid = UUID.fromString("00000000-0000-0000-0000-000000000124")
+        val firstFinal = root.resolve("截图-20260720-123456-7K3M2Q.png")
+        val linkCreated = runCatching { Files.createSymbolicLink(firstFinal, outside) }.isSuccess
+        if (!linkCreated) return
+        val supplied = ArrayDeque(listOf(firstUuid, secondUuid))
+        val displayIds = mapOf(firstUuid to "A-7K3M2Q", secondUuid to "A-HJKLMN")
+        val store = ClipboardImageAttachmentStore(
+            controlledRoot = root,
+            imageSource = ClipboardImageSource {
+                BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB)
+            },
+            clock = Clock.fixed(Instant.parse("2026-07-20T04:34:56Z"), ZoneId.of("Asia/Shanghai")),
+            idFactory = BusinessAttachmentIdFactory(
+                uuidSource = { supplied.removeFirst() },
+                displayIdEncoder = displayIds::getValue,
+            ),
+        )
+
+        val draft = assertNotNull(store.capture())
+
+        assertEquals(secondUuid.toString(), draft.id)
+        assertEquals("A-HJKLMN", draft.displayId)
+        assertEquals("截图-20260720-123456-HJKLMN.png", draft.name)
+        assertTrue(Files.isSymbolicLink(firstFinal))
+        assertEquals("outside-owner-data", Files.readString(outside))
+        assertTrue(Files.exists(java.nio.file.Path.of(draft.localPath)))
+    }
+
+    @Test
+    fun `controlled display id scan failure is path free`() {
+        val root = Files.createTempDirectory("huitai-clipboard-display-scan")
+        val secret = root.resolve("private-display-entry.png")
+        val store = store(
+            root = root,
+            image = BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB),
+            rootScanner = object : ClipboardControlledRootScanner {
+                override fun displayIds(controlledRoot: java.nio.file.Path): Set<String> {
+                    throw AccessDeniedException(secret.toString())
+                }
+
+                override fun regularBytesExcluding(
+                    controlledRoot: java.nio.file.Path,
+                    excluded: java.nio.file.Path,
+                ): Long = 0
+            },
+        )
+
+        val failure = assertFailsWith<BusinessLocalAttachmentException> { store.capture() }
+
+        assertEquals("ATTACHMENT_CLIPBOARD_FAILED", failure.code)
+        assertFalse(failure.toString().contains(secret.toString()))
+    }
+
+    @Test
+    fun `controlled capacity scan failure is path free and cleans owned temporary file`() {
+        val root = Files.createTempDirectory("huitai-clipboard-capacity-scan")
+        val secret = root.resolve("private-capacity-entry.png")
+        val store = store(
+            root = root,
+            image = BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB),
+            rootScanner = object : ClipboardControlledRootScanner {
+                override fun displayIds(controlledRoot: java.nio.file.Path): Set<String> = emptySet()
+
+                override fun regularBytesExcluding(
+                    controlledRoot: java.nio.file.Path,
+                    excluded: java.nio.file.Path,
+                ): Long {
+                    throw AccessDeniedException(secret.toString())
+                }
+            },
+        )
+
+        val failure = assertFailsWith<BusinessLocalAttachmentException> { store.capture() }
+
+        assertEquals("ATTACHMENT_CLIPBOARD_FAILED", failure.code)
+        assertFalse(failure.toString().contains(secret.toString()))
+        assertEquals(0, Files.list(root).use { it.count() })
+    }
+
     private fun store(
         root: java.nio.file.Path,
         image: BufferedImage,
         uuid: UUID = UUID.fromString("00000000-0000-0000-0000-000000000123"),
         displayId: String = "A-7K3M2Q",
         limits: ClipboardAttachmentLimits = ClipboardAttachmentLimits.DEFAULT,
+        rootScanner: ClipboardControlledRootScanner = NioClipboardControlledRootScanner,
     ): ClipboardImageAttachmentStore = ClipboardImageAttachmentStore(
         controlledRoot = root,
         imageSource = ClipboardImageSource { image },
@@ -186,5 +292,6 @@ class ClipboardImageAttachmentStoreTest {
             displayIdEncoder = { displayId },
         ),
         limits = limits,
+        rootScanner = rootScanner,
     )
 }

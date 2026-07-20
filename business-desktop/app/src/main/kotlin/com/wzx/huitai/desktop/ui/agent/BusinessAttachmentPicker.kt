@@ -4,6 +4,7 @@ import com.wzx.huitai.agent.conversation.BusinessAttachmentDraft
 import com.wzx.huitai.desktop.runtime.BusinessAttachmentIdFactory
 import java.nio.file.Files
 import java.nio.file.LinkOption
+import java.nio.file.NoSuchFileException
 import java.nio.file.Path
 import java.nio.file.attribute.BasicFileAttributes
 import javax.swing.JFileChooser
@@ -46,6 +47,39 @@ class BusinessAttachmentSelectionException(
     message: String,
 ) : IllegalArgumentException(message)
 
+data class BusinessAttachmentFileMetadata(
+    val regularFile: Boolean,
+    val symbolicLink: Boolean,
+    val sizeBytes: Long,
+)
+
+fun interface BusinessAttachmentFileInspector {
+    fun inspect(path: Path): BusinessAttachmentFileMetadata
+}
+
+object NioBusinessAttachmentFileInspector : BusinessAttachmentFileInspector {
+    override fun inspect(path: Path): BusinessAttachmentFileMetadata =
+        try {
+            Files.readAttributes(
+                path,
+                BasicFileAttributes::class.java,
+                LinkOption.NOFOLLOW_LINKS,
+            ).let { attributes ->
+                BusinessAttachmentFileMetadata(
+                    regularFile = attributes.isRegularFile,
+                    symbolicLink = attributes.isSymbolicLink,
+                    sizeBytes = attributes.size(),
+                )
+            }
+        } catch (_: NoSuchFileException) {
+            BusinessAttachmentFileMetadata(
+                regularFile = false,
+                symbolicLink = false,
+                sizeBytes = 0,
+            )
+        }
+}
+
 /**
  * 文件选择仅做桌面端友好预检。文件内容、MIME 和指纹仍由本机 Agent 后端权威验证。
  */
@@ -53,22 +87,31 @@ class BusinessAttachmentPicker(
     private val chooser: BusinessAttachmentChooser = SwingBusinessAttachmentChooser(),
     private val idFactory: BusinessAttachmentIdFactory = BusinessAttachmentIdFactory(),
     private val limits: BusinessAttachmentPickerLimits = BusinessAttachmentPickerLimits(),
+    private val fileInspector: BusinessAttachmentFileInspector = NioBusinessAttachmentFileInspector,
 ) {
     fun choose(
         currentDrafts: List<BusinessAttachmentDraft> = emptyList(),
         existingIds: Set<String> = emptySet(),
         existingDisplayIds: Set<String> = emptySet(),
     ): List<BusinessAttachmentDraft> {
-        val selected = chooser.chooseFiles()
+        val selected = try {
+            chooser.chooseFiles()
+        } catch (_: Exception) {
+            throw pathInspectionFailure()
+        }
         if (selected.isEmpty()) return emptyList()
 
-        val currentPaths = currentDrafts.mapTo(hashSetOf()) {
-            Path.of(it.localPath).toAbsolutePath().normalize()
+        val normalized = try {
+            val currentPaths = currentDrafts.mapTo(hashSetOf()) {
+                Path.of(it.localPath).toAbsolutePath().normalize()
+            }
+            selected
+                .map { it.toAbsolutePath().normalize() }
+                .distinct()
+                .filterNot(currentPaths::contains)
+        } catch (_: Exception) {
+            throw pathInspectionFailure()
         }
-        val normalized = selected
-            .map { it.toAbsolutePath().normalize() }
-            .distinct()
-            .filterNot(currentPaths::contains)
         if (normalized.isEmpty()) return emptyList()
         if (currentDrafts.size + normalized.size > limits.maxAttachments) {
             throw BusinessAttachmentSelectionException(
@@ -105,7 +148,12 @@ class BusinessAttachmentPicker(
     }
 
     private fun readCandidate(path: Path): Candidate {
-        if (Files.isSymbolicLink(path) || !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+        val metadata = try {
+            fileInspector.inspect(path)
+        } catch (_: Exception) {
+            throw pathInspectionFailure()
+        }
+        if (metadata.symbolicLink || !metadata.regularFile) {
             throw BusinessAttachmentSelectionException(
                 "ATTACHMENT_NOT_REGULAR_FILE",
                 "只能选择普通文件，不能选择目录或链接",
@@ -117,19 +165,20 @@ class BusinessAttachmentPicker(
                 "ATTACHMENT_TYPE_UNSUPPORTED",
                 "该文件类型暂不支持",
             )
-        val attributes = Files.readAttributes(
-            path,
-            BasicFileAttributes::class.java,
-            LinkOption.NOFOLLOW_LINKS,
-        )
-        if (attributes.size() > limits.maxFileBytes) {
+        if (metadata.sizeBytes > limits.maxFileBytes) {
             throw BusinessAttachmentSelectionException(
                 "ATTACHMENT_FILE_TOO_LARGE",
                 "单个附件超过 20 MiB 限制",
             )
         }
-        return Candidate(path, attributes.size(), displayType)
+        return Candidate(path, metadata.sizeBytes, displayType)
     }
+
+    private fun pathInspectionFailure(): BusinessAttachmentSelectionException =
+        BusinessAttachmentSelectionException(
+            "ATTACHMENT_PATH_INVALID",
+            "无法读取所选文件，请确认文件仍存在且可访问",
+        )
 
     private fun safeAdd(left: Long, right: Long): Long =
         if (right > Long.MAX_VALUE - left) Long.MAX_VALUE else left + right
