@@ -91,6 +91,8 @@ class AgentLoopContextRuntimeTest {
 
         verify(strategy, never()).buildAgent(any(), any(), any(), any(), any());
         assertThat(turn.status()).isEqualTo(TurnStatus.FAILED);
-        assertThat(turn.failureReason()).contains("context window broken");
+        assertThat(turn.failureReason())
+                .isEqualTo(AgentLoopSupport.GENERIC_FAILURE_REASON)
+                .doesNotContain("context window broken");
     }
 }

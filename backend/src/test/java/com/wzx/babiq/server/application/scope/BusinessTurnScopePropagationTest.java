@@ -6,9 +6,12 @@ import com.wzx.babiq.server.agent.AgentLoop;
 import com.wzx.babiq.server.agent.ReActStrategy;
 import com.wzx.babiq.server.agent.PendingApprovals;
 import com.wzx.babiq.server.attachment.AttachmentHistoryResolver;
+import com.wzx.babiq.server.attachment.AttachmentContent;
+import com.wzx.babiq.server.attachment.AttachmentContentLoader;
 import com.wzx.babiq.server.attachment.AttachmentMetadata;
 import com.wzx.babiq.server.attachment.AttachmentPreparationService;
 import com.wzx.babiq.server.attachment.AttachmentSource;
+import com.wzx.babiq.server.attachment.AttachmentTextSegment;
 import com.wzx.babiq.server.attachment.PreparedAttachment;
 import com.wzx.babiq.server.attachment.PreparedTurnInput;
 import com.wzx.babiq.server.context.runtime.ContextWindowRuntime;
@@ -165,9 +168,10 @@ class BusinessTurnScopePropagationTest {
         ReactAgent agent = mock(ReactAgent.class);
         NodeOutput output = mock(NodeOutput.class);
         ContextWindowRuntime runtime = mock(ContextWindowRuntime.class);
+        AttachmentContentLoader attachmentLoader = mock(AttachmentContentLoader.class);
         TurnObservationRegistry observations = new TurnObservationRegistry();
         AgentLoop loop = new AgentLoop(strategy, new PendingApprovals(), mock(TurnSummaryEmitter.class),
-                observations, runtime);
+                observations, runtime, attachmentLoader);
         Turn turn = new Turn("turn-a", "thread-a", tenantA);
         turn.start();
         ItemEmitter emitter = mock(ItemEmitter.class);
@@ -198,6 +202,9 @@ class BusinessTurnScopePropagationTest {
                 "550e8400-e29b-41d4-a716-446655440002", "A-92CD4F");
         PreparedTurnInput preparedInput = new PreparedTurnInput(
                 "input", List.of(newlySelected), List.of(historicalReference));
+        when(attachmentLoader.load(preparedInput.allAttachments())).thenReturn(List.of(
+                AttachmentContent.document(newlySelected, textSegment(newlySelected)),
+                AttachmentContent.document(historicalReference, textSegment(historicalReference))));
 
         loop.invoke(turn, preparedInput, "provider", "E:/tenant-a", emitter, null, null);
 
@@ -397,5 +404,15 @@ class BusinessTurnScopePropagationTest {
                 Path.of(metadata.localPath()),
                 new PreparedAttachment.FileIdentity(
                         metadata.sizeBytes(), FileTime.from(Instant.EPOCH), "file-key-" + displayId));
+    }
+
+    private static AttachmentTextSegment textSegment(PreparedAttachment attachment) {
+        AttachmentMetadata metadata = attachment.metadata();
+        return new AttachmentTextSegment(
+                metadata.id(),
+                metadata.displayId(),
+                metadata.name(),
+                metadata.mediaType(),
+                "document text");
     }
 }

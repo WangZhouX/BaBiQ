@@ -42,10 +42,18 @@ final class AgentLoopDiagnostics {
                 turn.threadId(), turn.id(), output.isPresent(), JsonRpcLogSupport.elapsedMillis(startedNanos));
     }
 
-    static void failureClosing(Turn turn, TurnObservationContext context, Exception exception) {
-        log.warn("AgentLoop 进入失败收尾: threadId={}, turnId={}, providerId={}, model={}, reason={}",
+    static void failureClosing(
+            Turn turn,
+            TurnObservationContext context,
+            Exception exception,
+            String safeFailureReason
+    ) {
+        String reasonCode = safeFailureReason == null
+                ? "AGENT_EXECUTION_FAILED"
+                : safeFailureReason.split(":", 2)[0];
+        log.warn("AgentLoop 进入失败收尾: threadId={}, turnId={}, providerId={}, model={}, reasonCode={}, reasonType={}",
                 turn.threadId(), turn.id(), context.providerId(), context.model(),
-                JsonRpcLogSupport.preview(exception.getMessage()));
+                reasonCode, exception.getClass().getSimpleName());
     }
 
     static void waitingApproval(Turn turn, Object metadata) {

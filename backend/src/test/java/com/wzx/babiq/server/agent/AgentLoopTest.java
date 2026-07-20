@@ -123,12 +123,14 @@ class AgentLoopTest {
         loop.invoke(turn, "hello", null, ".", emitter);
 
         assertThat(turn.status()).isEqualTo(TurnStatus.FAILED);
-        assertThat(turn.failureReason()).contains("model down");
+        assertThat(turn.failureReason())
+                .isEqualTo(AgentLoopSupport.GENERIC_FAILURE_REASON)
+                .doesNotContain("model down");
         verify(summaryEmitter).emit(any(TurnObservationContext.class), eq(emitter), eq("failed"));
     }
 
     @Test
-    void failure_message_should_include_deepseek_response_body() {
+    void safe_failure_reason_should_not_include_deepseek_response_body() {
         WebClientResponseException deepSeek400 = WebClientResponseException.create(
                 400,
                 "Bad Request",
@@ -136,11 +138,12 @@ class AgentLoopTest {
                 "{\"error\":{\"message\":\"missing tool response\"}}".getBytes(StandardCharsets.UTF_8),
                 StandardCharsets.UTF_8);
 
-        String message = AgentLoopSupport.failureMessage(new RuntimeException("wrapped", deepSeek400));
+        String message = AgentLoopSupport.safeFailureReason(
+                new RuntimeException("wrapped", deepSeek400), false);
 
         assertThat(message)
-                .contains("400 Bad Request")
-                .contains("missing tool response");
+                .isEqualTo(AgentLoopSupport.GENERIC_FAILURE_REASON)
+                .doesNotContain("400 Bad Request", "missing tool response", "responseBody");
     }
 
     @Test
