@@ -33,6 +33,8 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -53,6 +55,8 @@ import java.util.UUID;
  */
 @Component
 public class ReActStrategy {
+
+    private static final Logger log = LoggerFactory.getLogger(ReActStrategy.class);
 
     /** 根据当前 Provider 选择并缓存 Spring AI ChatClient，ReActAgent 最终通过它调用模型。 */
     private final ChatClientFactory chatClientFactory;
@@ -351,6 +355,23 @@ public class ReActStrategy {
      */
     public RunnableConfig buildConfig(String threadId, TurnObservationContext context) {
         return buildConfig(threadId, null, null, context);
+    }
+
+    /**
+     * 释放指定 thread 的 SAA 内存 checkpoint，避免终态继续强引用多模态媒体字节。
+     *
+     * <p>释放失败只记录异常类型，不回显 checkpoint 内容或底层异常原文。</p>
+     */
+    void releaseThreadCheckpoint(String threadId) {
+        if (threadId == null || threadId.isBlank()) {
+            return;
+        }
+        try {
+            memorySaver.release(RunnableConfig.builder().threadId(threadId).build());
+        } catch (Exception exception) {
+            log.warn("释放 Agent checkpoint 失败: threadId={}, reasonType={}",
+                    threadId, exception.getClass().getSimpleName());
+        }
     }
 
     /**

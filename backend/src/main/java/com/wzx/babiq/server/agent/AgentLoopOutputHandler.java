@@ -49,6 +49,7 @@ final class AgentLoopOutputHandler {
     /** 失败收口时清理暂停现场，避免下一次审批误恢复到旧图。 */
     void forgetPaused(String threadId) {
         pausedAgents.forget(threadId);
+        strategy.releaseThreadCheckpoint(threadId);
     }
 
     /** 处理审批响应：找回暂停中的 Agent，并从 SAA HITL 暂停点继续执行。 */
@@ -61,6 +62,7 @@ final class AgentLoopOutputHandler {
             AgentLoopSupport.fail(log, turn, emitter,
                     new IllegalStateException("审批恢复失败：当前进程中不存在已暂停的 Agent 实例，请重新发起本轮任务"),
                     summaryEmitter, context, observationRegistry);
+            strategy.releaseThreadCheckpoint(turn.threadId());
             return;
         }
         if (turn.status() == TurnStatus.WAITING_APPROVAL) {
@@ -85,6 +87,7 @@ final class AgentLoopOutputHandler {
         turn.complete();
         emitter.emitTurnCompleted("completed");
         AgentLoopDiagnostics.completed(turn, context);
+        strategy.releaseThreadCheckpoint(turn.threadId());
     }
 
     /** 使用同一个被暂停的 ReactAgent 实例继续执行 HITL 恢复。 */
@@ -97,6 +100,7 @@ final class AgentLoopOutputHandler {
             handleOutput(turn, emitter, result, context, cwd, agent, runPolicy);
         } catch (Exception exception) {
             AgentLoopSupport.fail(log, turn, emitter, exception, summaryEmitter, context, observationRegistry);
+            strategy.releaseThreadCheckpoint(turn.threadId());
         }
     }
 
