@@ -77,7 +77,9 @@ public final class OoxmlArchiveGuard {
                 entryCount);
         List<LocalEntry> localEntries = bindLocalEntries(
                 archiveBytes, bytes, entries, Math.toIntExact(directoryOffset));
-        rejectOverlaps(localEntries);
+        requireExactLocalRecordCoverage(
+                localEntries,
+                Math.toIntExact(directoryOffset));
         verifyActualEntryData(archiveBytes, entries, localEntries);
     }
 
@@ -243,17 +245,23 @@ public final class OoxmlArchiveGuard {
         return cursor + 12;
     }
 
-    private static void rejectOverlaps(List<LocalEntry> localEntries) {
+    private static void requireExactLocalRecordCoverage(
+            List<LocalEntry> localEntries,
+            int directoryOffset
+    ) {
         List<LocalEntry> ordered = new ArrayList<>(localEntries);
         ordered.sort(Comparator.comparingInt(LocalEntry::recordOffset));
-        int previousEnd = -1;
+        int expectedOffset = 0;
         for (LocalEntry entry : ordered) {
-            if (entry.recordOffset() < previousEnd
+            if (entry.recordOffset() != expectedOffset
                     || entry.dataOffset() < entry.recordOffset()
                     || entry.recordEnd() < entry.dataOffset()) {
                 throw unsafe();
             }
-            previousEnd = entry.recordEnd();
+            expectedOffset = entry.recordEnd();
+        }
+        if (expectedOffset != directoryOffset) {
+            throw unsafe();
         }
     }
 

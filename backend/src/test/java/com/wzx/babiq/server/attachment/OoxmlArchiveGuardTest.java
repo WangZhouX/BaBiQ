@@ -216,6 +216,52 @@ class OoxmlArchiveGuardTest {
         }
     }
 
+    @Test
+    void rejectsUnreferencedLocalRecordBeforeTheFirstReferencedEntry() {
+        byte[] archive = zip(List.of(
+                new EntrySpec("word/document.xml", 128, index -> index & 0xff)));
+        byte[] hidden = localStoredRecord(
+                "hidden.xml",
+                "hidden-before".getBytes(StandardCharsets.UTF_8));
+
+        assertUnsafe(() -> guard.validate(insertUnreferencedLocalRecord(
+                archive,
+                0,
+                hidden)));
+    }
+
+    @Test
+    void rejectsUnreferencedDangerousLocalRecordBetweenReferencedEntries() {
+        byte[] archive = zip(List.of(
+                new EntrySpec("word/document.xml", 128, index -> index & 0xff),
+                new EntrySpec("word/styles.xml", 128, index -> (index + 1) & 0xff)));
+        int between = centralEntries(archive).get(1).localOffset();
+        byte[] hidden = localStoredRecord(
+                "../hidden.xml",
+                "hidden-between".getBytes(StandardCharsets.UTF_8));
+
+        assertUnsafe(() -> guard.validate(insertUnreferencedLocalRecord(
+                archive,
+                between,
+                hidden)));
+    }
+
+    @Test
+    void rejectsUnreferencedLocalRecordInTheTailBeforeCentralDirectory() {
+        byte[] archive = zip(List.of(
+                new EntrySpec("word/document.xml", 128, index -> index & 0xff)));
+        int eocd = findSignature(archive, EOCD_SIGNATURE, 0);
+        int directoryOffset = Math.toIntExact(unsignedInt(archive, eocd + 16));
+        byte[] hidden = localStoredRecord(
+                "tail.xml",
+                "hidden-tail".getBytes(StandardCharsets.UTF_8));
+
+        assertUnsafe(() -> guard.validate(insertUnreferencedLocalRecord(
+                archive,
+                directoryOffset,
+                hidden)));
+    }
+
     private static byte[] zip(List<EntrySpec> entries) {
         try {
             ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -260,6 +306,63 @@ class OoxmlArchiveGuardTest {
         } catch (Exception exception) {
             throw new IllegalStateException(exception);
         }
+    }
+
+    private static byte[] localStoredRecord(String name, byte[] data) {
+        byte[] encodedName = name.getBytes(StandardCharsets.UTF_8);
+        CRC32 crc = new CRC32();
+        crc.update(data);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeInt(output, LOCAL_SIGNATURE);
+        writeShort(output, 20);
+        writeShort(output, 1 << 11);
+        writeShort(output, ZipEntry.STORED);
+        writeShort(output, 0);
+        writeShort(output, 0);
+        writeInt(output, crc.getValue());
+        writeInt(output, data.length);
+        writeInt(output, data.length);
+        writeShort(output, encodedName.length);
+        writeShort(output, 0);
+        output.writeBytes(encodedName);
+        output.writeBytes(data);
+        return output.toByteArray();
+    }
+
+    private static byte[] insertUnreferencedLocalRecord(
+            byte[] archive,
+            int insertionOffset,
+            byte[] hidden
+    ) {
+        List<CentralEntry> originalEntries = centralEntries(archive);
+        int originalEocd = findSignature(archive, EOCD_SIGNATURE, 0);
+        int originalDirectoryOffset =
+                Math.toIntExact(unsignedInt(archive, originalEocd + 16));
+        assertThat(insertionOffset).isBetween(0, originalDirectoryOffset);
+
+        byte[] modified = new byte[archive.length + hidden.length];
+        System.arraycopy(archive, 0, modified, 0, insertionOffset);
+        System.arraycopy(hidden, 0, modified, insertionOffset, hidden.length);
+        System.arraycopy(
+                archive,
+                insertionOffset,
+                modified,
+                insertionOffset + hidden.length,
+                archive.length - insertionOffset);
+
+        for (CentralEntry entry : originalEntries) {
+            int newCentralOffset = entry.centralOffset() + hidden.length;
+            long newLocalOffset = entry.localOffset() >= insertionOffset
+                    ? entry.localOffset() + (long) hidden.length
+                    : entry.localOffset();
+            writeInt(modified, newCentralOffset + 42, newLocalOffset);
+        }
+        int newEocd = originalEocd + hidden.length;
+        writeInt(
+                modified,
+                newEocd + 16,
+                originalDirectoryOffset + (long) hidden.length);
+        return modified;
     }
 
     private static List<CentralEntry> centralEntries(byte[] zip) {
@@ -334,6 +437,18 @@ class OoxmlArchiveGuardTest {
         bytes[offset + 1] = (byte) (value >>> 8);
         bytes[offset + 2] = (byte) (value >>> 16);
         bytes[offset + 3] = (byte) (value >>> 24);
+    }
+
+    private static void writeShort(ByteArrayOutputStream output, long value) {
+        output.write((int) value & 0xff);
+        output.write((int) (value >>> 8) & 0xff);
+    }
+
+    private static void writeInt(ByteArrayOutputStream output, long value) {
+        output.write((int) value & 0xff);
+        output.write((int) (value >>> 8) & 0xff);
+        output.write((int) (value >>> 16) & 0xff);
+        output.write((int) (value >>> 24) & 0xff);
     }
 
     private static void assertUnsafe(ThrowingAction action) {
