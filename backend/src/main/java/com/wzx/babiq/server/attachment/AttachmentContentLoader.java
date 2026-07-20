@@ -160,14 +160,14 @@ public final class AttachmentContentLoader implements AutoCloseable {
     }
 
     private void cancel(ParseExecution execution, Future<?> future) {
-        Thread worker = execution.worker;
-        if (worker != null) {
-            extractor.cancel(worker);
-        }
+        execution.cancel();
         future.cancel(true);
     }
 
-    private AttachmentContent loadNow(PreparedAttachment attachment) {
+    private AttachmentContent loadNow(
+            PreparedAttachment attachment,
+            AttachmentDocumentExtractor.ExtractionCancellation cancellation
+    ) {
         rejectGenericArchive(attachment.metadata());
         byte[] bytes = reader.read(attachment);
         String mediaType = attachment.metadata().mediaType().toLowerCase(Locale.ROOT);
@@ -177,7 +177,7 @@ public final class AttachmentContentLoader implements AutoCloseable {
         if (OOXML_MEDIA_TYPES.contains(mediaType)) {
             archiveGuard.validate(bytes);
         }
-        AttachmentTextSegment segment = extractor.extract(attachment, bytes);
+        AttachmentTextSegment segment = extractor.extract(attachment, bytes, cancellation);
         return AttachmentContent.document(attachment, segment);
     }
 
@@ -421,7 +421,8 @@ public final class AttachmentContentLoader implements AutoCloseable {
     private final class ParseExecution implements java.util.concurrent.Callable<AttachmentContent> {
 
         private final PreparedAttachment attachment;
-        private volatile Thread worker;
+        private final AttachmentDocumentExtractor.ExtractionCancellation cancellation =
+                new AttachmentDocumentExtractor.ExtractionCancellation();
 
         private ParseExecution(PreparedAttachment attachment) {
             this.attachment = attachment;
@@ -429,12 +430,11 @@ public final class AttachmentContentLoader implements AutoCloseable {
 
         @Override
         public AttachmentContent call() {
-            worker = Thread.currentThread();
-            try {
-                return loadNow(attachment);
-            } finally {
-                worker = null;
-            }
+            return loadNow(attachment, cancellation);
+        }
+
+        private void cancel() {
+            cancellation.cancel();
         }
     }
 }

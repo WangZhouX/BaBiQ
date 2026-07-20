@@ -18,6 +18,7 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -53,7 +54,9 @@ class AttachmentContentLoaderTest {
         assertThat(contents.getFirst().isImage()).isTrue();
         assertThat(contents.getFirst().imageBytes()).containsExactly(image);
         assertThat(contents.getFirst().attachment().metadata().mediaType()).isEqualTo("image/png");
-        verify(extractor, never()).extract(any(), any(byte[].class));
+        verify(extractor, never()).extract(
+                any(), any(byte[].class),
+                any(AttachmentDocumentExtractor.ExtractionCancellation.class));
     }
 
     @Test
@@ -64,7 +67,10 @@ class AttachmentContentLoaderTest {
             attachments.add(validate(path));
         }
         AttachmentDocumentExtractor extractor = mock(AttachmentDocumentExtractor.class);
-        when(extractor.extract(any(), any(byte[].class))).thenAnswer(invocation -> {
+        when(extractor.extract(
+                any(), any(byte[].class),
+                any(AttachmentDocumentExtractor.ExtractionCancellation.class)))
+                .thenAnswer(invocation -> {
             PreparedAttachment attachment = invocation.getArgument(0);
             return new AttachmentTextSegment(
                     attachment.metadata().id(),
@@ -89,7 +95,10 @@ class AttachmentContentLoaderTest {
                 validate(Files.writeString(tempDir.resolve("two.txt"), "two")),
                 validate(Files.writeString(tempDir.resolve("three.txt"), "three")));
         AttachmentDocumentExtractor extractor = mock(AttachmentDocumentExtractor.class);
-        when(extractor.extract(any(), any(byte[].class))).thenAnswer(invocation -> {
+        when(extractor.extract(
+                any(), any(byte[].class),
+                any(AttachmentDocumentExtractor.ExtractionCancellation.class)))
+                .thenAnswer(invocation -> {
             PreparedAttachment attachment = invocation.getArgument(0);
             int index = attachment.metadata().name().startsWith("three") ? 50_000 : 100_000;
             return segment(attachment, "x".repeat(index));
@@ -119,7 +128,9 @@ class AttachmentContentLoaderTest {
                         assertThat(failure.code()).isEqualTo(AttachmentErrorCode.ATTACHMENT_CHANGED))
                 .hasMessageNotContaining(path.toString())
                 .hasMessageNotContaining(prepared.metadata().sha256());
-        verify(extractor, never()).extract(any(), any(byte[].class));
+        verify(extractor, never()).extract(
+                any(), any(byte[].class),
+                any(AttachmentDocumentExtractor.ExtractionCancellation.class));
     }
 
     @Test
@@ -134,27 +145,47 @@ class AttachmentContentLoaderTest {
                 .isInstanceOfSatisfying(AttachmentException.class, failure ->
                         assertThat(failure.code())
                                 .isEqualTo(AttachmentErrorCode.ATTACHMENT_TYPE_UNSUPPORTED));
-        verify(extractor, never()).extract(any(), any(byte[].class));
+        verify(extractor, never()).extract(
+                any(), any(byte[].class),
+                any(AttachmentDocumentExtractor.ExtractionCancellation.class));
     }
 
     @Test
-    void cancelsAFileAfterItsConfiguredTimeout() throws Exception {
-        Path path = Files.writeString(tempDir.resolve("slow.txt"), "slow");
-        PreparedAttachment prepared = validate(path);
-        AttachmentDocumentExtractor extractor = mock(AttachmentDocumentExtractor.class);
-        when(extractor.extract(any(), any(byte[].class))).thenAnswer(invocation -> {
-            Thread.sleep(10_000);
-            throw new AssertionError("must be interrupted");
-        });
-        AttachmentContentLoader loader = loader(
-                extractor, AttachmentContentLoader.secureReader(),
-                Duration.ofMillis(50), Duration.ofSeconds(5));
+    void timedOutWorkerExitsAndSingleThreadPoolCanRunTheNextParse() throws Exception {
+        Path slowPath = Files.writeString(tempDir.resolve("slow.txt"), "slow");
+        Path nextPath = Files.writeString(tempDir.resolve("next.txt"), "next");
+        PreparedAttachment slow = validate(slowPath);
+        PreparedAttachment next = validate(nextPath);
+        CountDownLatch firstEntered = new CountDownLatch(1);
+        CountDownLatch firstExited = new CountDownLatch(1);
+        AtomicInteger calls = new AtomicInteger();
+        ParserForLoader parser = new ParserForLoader(calls, firstEntered, firstExited);
+        AttachmentDocumentExtractor extractor = new AttachmentDocumentExtractor(parser);
+        ThreadPoolExecutor executor = new ThreadPoolExecutor(
+                1, 1, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(8),
+                new ThreadPoolExecutor.AbortPolicy());
+        AttachmentContentLoader loader = new AttachmentContentLoader(
+                extractor,
+                new OoxmlArchiveGuard(),
+                AttachmentContentLoader.secureReader(),
+                executor,
+                Duration.ofMillis(50),
+                Duration.ofSeconds(5),
+                false);
+        loaders.add(loader);
 
-        assertThatThrownBy(() -> loader.load(List.of(prepared)))
-                .isInstanceOfSatisfying(AttachmentException.class, failure ->
-                        assertThat(failure.code())
-                                .isEqualTo(AttachmentErrorCode.ATTACHMENT_PARSE_TIMEOUT));
-        verify(extractor).cancel(any(Thread.class));
+        try {
+            assertThatThrownBy(() -> loader.load(List.of(slow)))
+                    .isInstanceOfSatisfying(AttachmentException.class, failure ->
+                            assertThat(failure.code())
+                                    .isEqualTo(AttachmentErrorCode.ATTACHMENT_PARSE_TIMEOUT));
+            assertThat(firstEntered.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(firstExited.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(loader.load(List.of(next)).getFirst().textSegment().text())
+                    .isEqualTo("next-safe");
+        } finally {
+            executor.shutdownNow();
+        }
     }
 
     @Test
@@ -163,7 +194,10 @@ class AttachmentContentLoaderTest {
                 validate(Files.writeString(tempDir.resolve("one.txt"), "one")),
                 validate(Files.writeString(tempDir.resolve("two.txt"), "two")));
         AttachmentDocumentExtractor extractor = mock(AttachmentDocumentExtractor.class);
-        when(extractor.extract(any(), any(byte[].class))).thenAnswer(invocation -> {
+        when(extractor.extract(
+                any(), any(byte[].class),
+                any(AttachmentDocumentExtractor.ExtractionCancellation.class)))
+                .thenAnswer(invocation -> {
             Thread.sleep(70);
             PreparedAttachment attachment = invocation.getArgument(0);
             return segment(attachment, "body");
@@ -297,6 +331,66 @@ class AttachmentContentLoaderTest {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
         } catch (Exception exception) {
             throw new IllegalStateException(exception);
+        }
+    }
+
+    private static final class ParserForLoader implements org.apache.tika.parser.Parser {
+
+        private final AtomicInteger calls;
+        private final CountDownLatch firstEntered;
+        private final CountDownLatch firstExited;
+
+        private ParserForLoader(
+                AtomicInteger calls,
+                CountDownLatch firstEntered,
+                CountDownLatch firstExited
+        ) {
+            this.calls = calls;
+            this.firstEntered = firstEntered;
+            this.firstExited = firstExited;
+        }
+
+        @Override
+        public java.util.Set<org.apache.tika.mime.MediaType> getSupportedTypes(
+                org.apache.tika.parser.ParseContext context
+        ) {
+            return java.util.Set.of();
+        }
+
+        @Override
+        public void parse(
+                java.io.InputStream stream,
+                org.xml.sax.ContentHandler handler,
+                org.apache.tika.metadata.Metadata metadata,
+                org.apache.tika.parser.ParseContext context
+        ) throws java.io.IOException, org.xml.sax.SAXException {
+            if (calls.incrementAndGet() == 1) {
+                firstEntered.countDown();
+                try {
+                    Thread.sleep(10_000);
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    firstExited.countDown();
+                    throw new java.io.InterruptedIOException("cancelled");
+                }
+                throw new AssertionError("first parse was not interrupted");
+            }
+            handler.startDocument();
+            handler.startElement(
+                    "http://www.w3.org/1999/xhtml",
+                    "html",
+                    "html",
+                    new org.xml.sax.helpers.AttributesImpl());
+            handler.startElement(
+                    "http://www.w3.org/1999/xhtml",
+                    "body",
+                    "body",
+                    new org.xml.sax.helpers.AttributesImpl());
+            char[] text = "next-safe".toCharArray();
+            handler.characters(text, 0, text.length);
+            handler.endElement("http://www.w3.org/1999/xhtml", "body", "body");
+            handler.endElement("http://www.w3.org/1999/xhtml", "html", "html");
+            handler.endDocument();
         }
     }
 }

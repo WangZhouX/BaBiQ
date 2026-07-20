@@ -15,10 +15,12 @@ import org.apache.tika.sax.SecureContentHandler;
 import org.springframework.stereotype.Component;
 
 import java.io.ByteArrayInputStream;
+import java.io.FilterInputStream;
 import java.io.IOException;
-import java.util.Map;
+import java.io.InputStream;
 import java.util.Objects;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Synchronous Tika extraction. Timeouts and queue limits are owned by {@link AttachmentContentLoader}.
@@ -31,7 +33,6 @@ public class AttachmentDocumentExtractor {
     private static final long SECURE_MAXIMUM_COMPRESSION_RATIO = 100;
 
     private final Parser parser;
-    private final Map<Thread, TikaInputStream> activeStreams = new ConcurrentHashMap<>();
 
     public AttachmentDocumentExtractor() {
         this(new AutoDetectParser());
@@ -42,16 +43,30 @@ public class AttachmentDocumentExtractor {
     }
 
     public AttachmentTextSegment extract(PreparedAttachment attachment, byte[] bytes) {
+        return extract(attachment, bytes, new ExtractionCancellation());
+    }
+
+    AttachmentTextSegment extract(
+            PreparedAttachment attachment,
+            byte[] bytes,
+            ExtractionCancellation cancellation
+    ) {
         Objects.requireNonNull(attachment, "attachment");
         Objects.requireNonNull(bytes, "bytes");
+        Objects.requireNonNull(cancellation, "cancellation");
+        if (cancellation.isCancelled()) {
+            throw timeout();
+        }
         Metadata metadata = new Metadata();
         metadata.set(HttpHeaders.CONTENT_TYPE, attachment.metadata().mediaType());
         metadata.set(HttpHeaders.CONTENT_LENGTH, Long.toString(bytes.length));
         ParseContext context = parseContext();
-        Thread thread = Thread.currentThread();
 
-        try (TikaInputStream input = TikaInputStream.get(new ByteArrayInputStream(bytes))) {
-            activeStreams.put(thread, input);
+        try (TikaInputStream input = TikaInputStream.get(
+                new CancellationAwareInputStream(new ByteArrayInputStream(bytes)))) {
+            if (!cancellation.register(input)) {
+                throw timeout();
+            }
             BodyContentHandler body = new BodyContentHandler(MAX_EXTRACTED_CHARACTERS);
             SecureContentHandler secure = new SecureContentHandler(body, input);
             secure.setOutputThreshold(SECURE_OUTPUT_THRESHOLD);
@@ -70,6 +85,9 @@ public class AttachmentDocumentExtractor {
         } catch (AttachmentException exception) {
             throw exception;
         } catch (Exception exception) {
+            if (cancellation.isCancelled()) {
+                throw timeout();
+            }
             if (containsCause(exception, EncryptedDocumentException.class)) {
                 throw new AttachmentException(
                         AttachmentErrorCode.ATTACHMENT_ENCRYPTED,
@@ -79,30 +97,14 @@ public class AttachmentDocumentExtractor {
                 throw textLimit();
             }
             if (Thread.currentThread().isInterrupted()
-                    || containsCause(exception, java.nio.channels.ClosedByInterruptException.class)
-                    || containsCause(exception, IOException.class)
-                    && activeStreams.get(thread) == null) {
-                throw new AttachmentException(
-                        AttachmentErrorCode.ATTACHMENT_PARSE_TIMEOUT,
-                        "附件解析超时");
+                    || containsCause(exception, java.nio.channels.ClosedByInterruptException.class)) {
+                throw timeout();
             }
             throw new AttachmentException(
                     AttachmentErrorCode.ATTACHMENT_PARSE_FAILED,
                     "附件内容解析失败");
         } finally {
-            activeStreams.remove(thread);
-        }
-    }
-
-    void cancel(Thread thread) {
-        TikaInputStream stream = activeStreams.remove(thread);
-        if (stream == null) {
-            return;
-        }
-        try {
-            stream.close();
-        } catch (IOException ignored) {
-            // Cancellation deliberately exposes only the stable timeout code.
+            cancellation.unregister();
         }
     }
 
@@ -134,6 +136,12 @@ public class AttachmentDocumentExtractor {
                 "附件可提取文本超过 100,000 字符上限");
     }
 
+    private static AttachmentException timeout() {
+        return new AttachmentException(
+                AttachmentErrorCode.ATTACHMENT_PARSE_TIMEOUT,
+                "附件解析超时");
+    }
+
     private static boolean containsCause(Throwable failure, Class<? extends Throwable> type) {
         Throwable current = failure;
         while (current != null) {
@@ -143,5 +151,99 @@ public class AttachmentDocumentExtractor {
             current = current.getCause();
         }
         return false;
+    }
+
+    static final class ExtractionCancellation {
+
+        private final AtomicBoolean cancelled = new AtomicBoolean();
+        private final AtomicReference<TikaInputStream> activeStream = new AtomicReference<>();
+
+        boolean register(TikaInputStream stream) {
+            Objects.requireNonNull(stream, "stream");
+            if (cancelled.get()) {
+                close(stream);
+                return false;
+            }
+            if (!activeStream.compareAndSet(null, stream)) {
+                close(stream);
+                throw new IllegalStateException("an extraction stream is already registered");
+            }
+            if (cancelled.get()) {
+                TikaInputStream registered = activeStream.getAndSet(null);
+                close(registered);
+                return false;
+            }
+            return true;
+        }
+
+        void unregister() {
+            activeStream.set(null);
+        }
+
+        void cancel() {
+            cancelled.set(true);
+            close(activeStream.getAndSet(null));
+        }
+
+        boolean isCancelled() {
+            return cancelled.get();
+        }
+
+        private static void close(TikaInputStream stream) {
+            if (stream == null) {
+                return;
+            }
+            try {
+                stream.close();
+            } catch (IOException ignored) {
+                // Cancellation deliberately exposes only the stable timeout code.
+            }
+        }
+    }
+
+    private static final class CancellationAwareInputStream extends FilterInputStream {
+
+        private final AtomicBoolean closed = new AtomicBoolean();
+
+        private CancellationAwareInputStream(InputStream input) {
+            super(input);
+        }
+
+        @Override
+        public int read() throws IOException {
+            requireOpen();
+            return super.read();
+        }
+
+        @Override
+        public int read(byte[] bytes, int offset, int length) throws IOException {
+            requireOpen();
+            return super.read(bytes, offset, length);
+        }
+
+        @Override
+        public long skip(long count) throws IOException {
+            requireOpen();
+            return super.skip(count);
+        }
+
+        @Override
+        public int available() throws IOException {
+            requireOpen();
+            return super.available();
+        }
+
+        @Override
+        public void close() throws IOException {
+            if (closed.compareAndSet(false, true)) {
+                super.close();
+            }
+        }
+
+        private void requireOpen() throws IOException {
+            if (closed.get()) {
+                throw new IOException("attachment extraction stream is closed");
+            }
+        }
     }
 }
