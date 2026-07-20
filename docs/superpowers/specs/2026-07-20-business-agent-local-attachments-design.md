@@ -209,7 +209,7 @@
 
 异步执行前再次确认文件存在；读取后核对大小和 SHA-256。如果从提交到读取期间文件发生变化，本轮以 `ATTACHMENT_CHANGED` 失败，不静默处理变化后的内容。
 
-所有 JSON-RPC 参数摘要、协议诊断和业务审计在序列化前必须把 `input.attachments[*].localPath` 替换为 `<local-path-redacted>`。该规则接入公共 JSON-RPC 日志摘要和 `AuditRedactor`，不能只依赖 `TurnStartHandler` 自己不打印路径。
+所有 JSON-RPC 参数摘要和协议诊断在序列化前必须把 `input.attachments[*].localPath` 替换为 `<local-path-redacted>`。该规则接入公共 JSON-RPC 日志摘要，不能只依赖 `TurnStartHandler` 自己不打印路径。当前仓库的应用动作审计链不接收 `turn/start` 附件参数，因此没有附件承载型业务审计序列化入口；若以后新增此类入口，必须复用同一结构化附件诊断脱敏器后才能落审计。
 
 ## 10. 文档解析
 
@@ -226,7 +226,7 @@
 
 - 单文件解析超时 10 秒，单轮累计解析时间最多 30 秒；
 - 解析工作使用单独的有界 executor，最多同时执行 2 个解析任务，队列最多 8 个；
-- OOXML/旧 Office ZIP 容器在交给 Tika 前先检查 central directory：条目最多 1,000 个、声明解压总量最多 100 MiB、单条目最多 50 MiB、压缩比最多 100:1；
+- OOXML ZIP 容器在交给 Tika 前先检查 central directory：条目最多 1,000 个、声明解压总量最多 100 MiB、单条目最多 50 MiB、压缩比最多 100:1；
 - 拒绝通用 ZIP/RAR/7z 和任何不在允许 MIME 集合内的容器；
 - PDF 禁止内联图片和嵌入附件提取，遇到加密 payload 直接失败；
 - 输入流仍受 20 MiB 文件上限约束，输出受字符上限约束，超时任务关闭流并取消；
@@ -331,6 +331,7 @@ ATTACHMENT_CLIPBOARD_FAILED
 ATTACHMENT_PARSE_TIMEOUT
 ATTACHMENT_PARSE_OVERLOADED
 ATTACHMENT_ARCHIVE_UNSAFE
+ATTACHMENT_REFERENCE_AMBIGUOUS
 ```
 
 Turn 创建前发现的参数和文件问题返回 JSON-RPC `INVALID_PARAMS` 加稳定附件错误摘要。模型调用阶段的问题通过现有 Turn 失败事件进入 UI。
