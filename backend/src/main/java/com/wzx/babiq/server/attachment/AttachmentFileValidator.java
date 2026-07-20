@@ -83,6 +83,7 @@ public class AttachmentFileValidator {
     public PreparedAttachment validate(AttachmentRequest request) {
         requireRequestShape(request);
         Path requestedPath = parseAbsolutePath(request.localPath());
+        rejectLinkedPathSegments(requestedPath);
         BasicFileAttributes initialAttributes = readInitialAttributes(requestedPath);
         if (initialAttributes.size() > AttachmentLimits.MAX_FILE_BYTES) {
             throw failure(
@@ -91,6 +92,8 @@ public class AttachmentFileValidator {
         }
 
         Path canonicalPath = toCanonicalPath(requestedPath);
+        rejectLinkedPathSegments(requestedPath);
+        rejectLinkedPathSegments(canonicalPath);
         BasicFileAttributes canonicalAttributes = readFinalAttributes(canonicalPath);
         if (!sameIdentity(identity(initialAttributes), identity(canonicalAttributes))) {
             throw failure(AttachmentErrorCode.ATTACHMENT_CHANGED, "附件在读取期间发生变化，请重新选择");
@@ -102,7 +105,7 @@ public class AttachmentFileValidator {
             throw unsupported();
         }
 
-        String mediaType = detectMediaType(canonicalPath, actualName);
+        String mediaType = detectMediaType(canonicalPath);
         verifyContentMatchesExtension(canonicalPath, extension, mediaType);
         if (mediaType.startsWith("image/")) {
             validateImageDimensions(canonicalPath, mediaType);
@@ -209,9 +212,9 @@ public class AttachmentFileValidator {
         return value;
     }
 
-    private String detectMediaType(Path path, String actualName) {
+    private String detectMediaType(Path path) {
         try (TikaInputStream input = TikaInputStream.get(path)) {
-            String mediaType = tika.detect(input, actualName);
+            String mediaType = tika.detect(input);
             if (mediaType == null || mediaType.isBlank()) {
                 throw unsupported();
             }
@@ -245,7 +248,7 @@ public class AttachmentFileValidator {
             return;
         }
         if (LEGACY_OFFICE_EXTENSIONS.contains(extension)) {
-            if (!hasPrefix(path, OLE_SIGNATURE)) {
+            if (!hasPrefix(path, OLE_SIGNATURE) || !expected.equals(detectedMediaType)) {
                 throw unsupported();
             }
             return;
@@ -451,6 +454,49 @@ public class AttachmentFileValidator {
             throw failure(
                     AttachmentErrorCode.ATTACHMENT_CHANGED,
                     "附件在读取期间变得不可用",
+                    exception);
+        }
+    }
+
+    private static void rejectLinkedPathSegments(Path path) {
+        Path absolute = path.toAbsolutePath().normalize();
+        Path current = absolute.getRoot();
+        rejectLinkedSegment(current, false);
+        int index = 0;
+        int segmentCount = absolute.getNameCount();
+        for (Path segment : absolute) {
+            current = current == null ? segment : current.resolve(segment);
+            index++;
+            rejectLinkedSegment(current, index < segmentCount);
+        }
+    }
+
+    private static void rejectLinkedSegment(Path path, boolean mustBeDirectory) {
+        if (path == null) {
+            return;
+        }
+        try {
+            if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
+                throw failure(AttachmentErrorCode.ATTACHMENT_NOT_FOUND, "附件路径已不存在");
+            }
+            BasicFileAttributes attributes = Files.readAttributes(
+                    path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            if (Files.isSymbolicLink(path) || attributes.isOther()) {
+                throw failure(
+                        AttachmentErrorCode.ATTACHMENT_NOT_REGULAR_FILE,
+                        "附件路径不能包含符号链接");
+            }
+            if (mustBeDirectory && !attributes.isDirectory()) {
+                throw failure(
+                        AttachmentErrorCode.ATTACHMENT_NOT_REGULAR_FILE,
+                        "附件路径的上级必须是普通目录");
+            }
+        } catch (AttachmentException exception) {
+            throw exception;
+        } catch (IOException | SecurityException exception) {
+            throw failure(
+                    AttachmentErrorCode.ATTACHMENT_PATH_INVALID,
+                    "无法安全检查附件路径",
                     exception);
         }
     }

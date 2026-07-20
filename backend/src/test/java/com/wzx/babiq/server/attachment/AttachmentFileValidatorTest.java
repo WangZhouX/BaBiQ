@@ -2,9 +2,11 @@ package com.wzx.babiq.server.attachment;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.apache.poi.poifs.filesystem.POIFSFileSystem;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -39,19 +41,30 @@ class AttachmentFileValidatorTest {
                 write("sample.txt", "plain business text".getBytes(StandardCharsets.UTF_8)),
                 write("sample.java", "class Example {}".getBytes(StandardCharsets.UTF_8)),
                 write("sample.pdf", "%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF".getBytes(StandardCharsets.US_ASCII)),
-                writeOle("sample.doc"),
+                writeLegacyOffice("sample.doc", "WordDocument"),
                 writeOoxml("sample.docx",
                         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                         "word/document.xml"),
-                writeOle("sample.xls"),
+                writeLegacyOffice("sample.xls", "Workbook"),
                 writeOoxml("sample.xlsx",
                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         "xl/workbook.xml"),
-                writeOle("sample.ppt"),
+                writeLegacyOffice("sample.ppt", "PowerPoint Document"),
                 writeOoxml("sample.pptx",
                         "application/vnd.openxmlformats-officedocument.presentationml.presentation",
                         "ppt/presentation.xml")
         );
+        List<String> expectedMediaTypes = List.of(
+                "image/png",
+                "text/plain",
+                "text/plain",
+                "application/pdf",
+                "application/msword",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "application/vnd.ms-excel",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "application/vnd.ms-powerpoint",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation");
 
         for (int index = 0; index < files.size(); index++) {
             Path file = files.get(index);
@@ -59,10 +72,43 @@ class AttachmentFileValidatorTest {
 
             assertThat(prepared.canonicalPath()).isEqualTo(file.toRealPath());
             assertThat(prepared.metadata().name()).isEqualTo(file.getFileName().toString());
-            assertThat(prepared.metadata().mediaType()).isNotBlank();
+            assertThat(prepared.metadata().mediaType()).isEqualTo(expectedMediaTypes.get(index));
             assertThat(prepared.metadata().sizeBytes()).isEqualTo(Files.size(file));
             assertThat(prepared.metadata().source()).isEqualTo(AttachmentSource.SELECTED_FILE);
         }
+    }
+
+    @Test
+    void rejectsSymlinkInAnyAncestorDirectoryBeforeReadingTheTarget() throws Exception {
+        Path outside = Files.createDirectories(tempDir.resolveSibling("attachment-ancestor-target"));
+        Path target = Files.writeString(outside.resolve("confidential.txt"), "must not be read");
+        Path linkedParent = tempDir.resolve("linked-parent");
+        try {
+            Files.createSymbolicLink(linkedParent, outside);
+        } catch (IOException | UnsupportedOperationException | SecurityException exception) {
+            assumeTrue(false, "symbolic links are genuinely unavailable on this filesystem");
+        }
+
+        AttachmentRequest request = new AttachmentRequest(
+                UUID.randomUUID().toString(),
+                "A-23457M",
+                target.getFileName().toString(),
+                linkedParent.resolve(target.getFileName()).toString());
+
+        assertCode(request, AttachmentErrorCode.ATTACHMENT_NOT_REGULAR_FILE);
+    }
+
+    @Test
+    void rejectsAmbiguousOleContainersEvenWhenTheyUseLegacyOfficeExtensions() throws Exception {
+        for (String extension : List.of("doc", "xls", "ppt")) {
+            Path ambiguous = writeOleHeaderOnly("ambiguous." + extension);
+            assertCode(request(ambiguous, "A-23457N"), AttachmentErrorCode.ATTACHMENT_TYPE_UNSUPPORTED);
+        }
+
+        Path excelContentWithWordExtension = writeLegacyOffice("mismatched.doc", "Workbook");
+        assertCode(
+                request(excelContentWithWordExtension, "A-23457P"),
+                AttachmentErrorCode.ATTACHMENT_TYPE_UNSUPPORTED);
     }
 
     @Test
@@ -179,7 +225,7 @@ class AttachmentFileValidatorTest {
         return path;
     }
 
-    private Path writeOle(String name) throws IOException {
+    private Path writeOleHeaderOnly(String name) throws IOException {
         byte[] bytes = new byte[512];
         byte[] signature = {
                 (byte) 0xd0, (byte) 0xcf, 0x11, (byte) 0xe0,
@@ -187,6 +233,19 @@ class AttachmentFileValidatorTest {
         };
         System.arraycopy(signature, 0, bytes, 0, signature.length);
         return write(name, bytes);
+    }
+
+    private Path writeLegacyOffice(String name, String primaryStreamName) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (POIFSFileSystem filesystem = new POIFSFileSystem()) {
+            filesystem.createDocument(
+                    new ByteArrayInputStream(("minimal-" + primaryStreamName)
+                            .repeat(512)
+                            .getBytes(StandardCharsets.US_ASCII)),
+                    primaryStreamName);
+            filesystem.writeFilesystem(output);
+        }
+        return write(name, output.toByteArray());
     }
 
     private Path writeOoxml(String name, String contentType, String payloadName) throws IOException {
