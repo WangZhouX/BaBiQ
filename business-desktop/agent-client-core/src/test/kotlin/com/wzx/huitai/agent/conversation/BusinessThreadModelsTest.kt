@@ -51,6 +51,57 @@ class BusinessThreadModelsTest {
     }
 
     @Test
+    fun `decodes stable attachment metadata and accepts attachment only user messages`() {
+        val localPath = "C:\\private\\contracts\\contract.pdf"
+
+        val item = assertIs<BusinessThreadItem.UserMessage>(decode(
+            """
+                {
+                  "id":"user-attachment-1",
+                  "type":"userMessage",
+                  "text":"",
+                  "attachments":[{
+                    "id":"5e4d4e7a-7dd6-4c6e-bec4-bd6f92ec9123",
+                    "displayId":"A-7K3M2Q",
+                    "name":"contract.pdf",
+                    "mediaType":"application/pdf",
+                    "sizeBytes":1024,
+                    "sha256":"${"a".repeat(64)}",
+                    "source":"SELECTED_FILE",
+                    "localPath":"C:\\private\\contracts\\contract.pdf"
+                  }]
+                }
+            """.trimIndent(),
+        ))
+
+        assertEquals("", item.text)
+        assertEquals(
+            BusinessMessageAttachment(
+                id = "5e4d4e7a-7dd6-4c6e-bec4-bd6f92ec9123",
+                displayId = "A-7K3M2Q",
+                name = "contract.pdf",
+                mediaType = "application/pdf",
+                sizeBytes = 1_024,
+                sha256 = "a".repeat(64),
+                source = "SELECTED_FILE",
+                localPath = localPath,
+            ),
+            item.attachments.single(),
+        )
+        assertFalse(item.toString().contains(localPath))
+        assertFalse(item.attachments.single().toString().contains(localPath))
+    }
+
+    @Test
+    fun `historical user messages missing attachments normalize to empty list`() {
+        val item = assertIs<BusinessThreadItem.UserMessage>(
+            decode("""{"id":"user-legacy","type":"userMessage","text":"hello"}"""),
+        )
+
+        assertEquals(emptyList(), item.attachments)
+    }
+
+    @Test
     fun `unknown item is forward compatible without retaining raw secret payload`() {
         val unknown = assertIs<BusinessThreadItem.Unknown>(decode(
             """{"id":"future-1","type":"futureItem","apiKey":"secret","nested":{"token":"secret"}}""",

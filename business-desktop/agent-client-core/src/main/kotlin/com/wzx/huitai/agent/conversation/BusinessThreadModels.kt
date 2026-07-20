@@ -18,6 +18,7 @@ sealed interface BusinessThreadItem {
     data class UserMessage(
         override val id: String,
         val text: String,
+        val attachments: List<BusinessMessageAttachment> = emptyList(),
         override val type: String = "userMessage",
     ) : BusinessThreadItem
 
@@ -99,7 +100,24 @@ object BusinessThreadItemCodec {
         val type = raw.requiredText("type")
         val id = raw.optionalText("id")
         return when (type) {
-            "userMessage" -> BusinessThreadItem.UserMessage(requireNotNull(id) { "Missing required field: id" }, raw.requiredText("text"))
+            "userMessage" -> BusinessThreadItem.UserMessage(
+                id = requireNotNull(id) { "Missing required field: id" },
+                text = raw.optionalText("text").orEmpty(),
+                attachments = raw["attachments"]?.jsonArray?.map { attachment ->
+                    attachment.asObject("user message attachment").let {
+                        BusinessMessageAttachment(
+                            id = it.requiredText("id"),
+                            displayId = it.requiredText("displayId"),
+                            name = it.requiredText("name"),
+                            mediaType = it.requiredText("mediaType"),
+                            sizeBytes = it.requiredLong("sizeBytes"),
+                            sha256 = it.requiredText("sha256"),
+                            source = it.requiredText("source"),
+                            localPath = it.requiredText("localPath"),
+                        )
+                    }
+                }.orEmpty(),
+            )
             "agentMessage" -> BusinessThreadItem.AgentMessage(
                 id = requireNotNull(id) { "Missing required field: id" },
                 text = raw.optionalText("text"),
@@ -178,3 +196,6 @@ internal fun JsonObject.optionalInt(name: String): Int? =
 
 internal fun JsonObject.optionalLong(name: String): Long? =
     (get(name) as? JsonPrimitive)?.longOrNull
+
+internal fun JsonObject.requiredLong(name: String): Long = optionalLong(name)
+    ?: throw SerializationException("Missing required field: $name")

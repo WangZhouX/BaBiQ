@@ -7,6 +7,7 @@ import com.wzx.huitai.action.model.ActionError
 import com.wzx.huitai.action.model.ActionErrorCode
 import com.wzx.huitai.agent.client.AgentSupervisorState
 import com.wzx.huitai.agent.conversation.BusinessAgentEvent
+import com.wzx.huitai.agent.conversation.BusinessAttachmentDraft
 import com.wzx.huitai.agent.conversation.BusinessConversationGateway
 import com.wzx.huitai.agent.conversation.BusinessProvider
 import com.wzx.huitai.agent.conversation.BusinessProviderModel
@@ -451,6 +452,12 @@ class BusinessDesktopCoordinatorTest {
             startedWithProvider = providerId
             return BusinessTurn("turn-1", threadId)
         }
+        override suspend fun startTurn(
+            threadId: String,
+            text: String,
+            attachments: List<BusinessAttachmentDraft>,
+            providerId: String?,
+        ): BusinessTurn = startTurn(threadId, text, providerId)
         override suspend fun cancelTurn(turnId: String): Boolean {
             canceledTurnId = turnId
             return true

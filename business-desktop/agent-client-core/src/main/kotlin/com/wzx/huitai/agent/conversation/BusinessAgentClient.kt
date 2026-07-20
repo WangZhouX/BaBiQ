@@ -8,8 +8,10 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.put
 
 /**
@@ -34,6 +36,15 @@ interface BusinessConversationGateway : Closeable {
     suspend fun setActiveProvider(providerId: String, modelId: String? = null): BusinessProviderSelection
     suspend fun createThread(cwd: String): BusinessThread
     suspend fun startTurn(threadId: String, text: String, providerId: String? = null): BusinessTurn
+    suspend fun startTurn(
+        threadId: String,
+        text: String,
+        attachments: List<BusinessAttachmentDraft>,
+        providerId: String? = null,
+    ): BusinessTurn {
+        require(attachments.isEmpty()) { "This gateway does not support attachments" }
+        return startTurn(threadId, text, providerId)
+    }
     suspend fun cancelTurn(turnId: String): Boolean
 }
 
@@ -107,12 +118,33 @@ class BusinessAgentClient(
         threadId: String,
         text: String,
         providerId: String?,
+    ): BusinessTurn = startTurn(threadId, text, emptyList(), providerId)
+
+    override suspend fun startTurn(
+        threadId: String,
+        text: String,
+        attachments: List<BusinessAttachmentDraft>,
+        providerId: String?,
     ): BusinessTurn {
         require(threadId.isNotBlank()) { "threadId must not be blank" }
-        require(text.isNotBlank()) { "turn text must not be blank" }
+        require(text.isNotBlank() || attachments.isNotEmpty()) {
+            "turn text and attachments must not both be blank"
+        }
         val result = rpc.request("turn/start", buildJsonObject {
             put("threadId", threadId)
-            put("input", buildJsonObject { put("text", text) })
+            put("input", buildJsonObject {
+                put("text", text)
+                put("attachments", buildJsonArray {
+                    attachments.forEach { attachment ->
+                        add(buildJsonObject {
+                            put("id", attachment.id)
+                            put("displayId", attachment.displayId)
+                            put("name", attachment.name)
+                            put("localPath", attachment.localPath)
+                        })
+                    }
+                })
+            })
             providerId?.takeIf(String::isNotBlank)?.let { put("providerId", it) }
         })
         return BusinessTurn(result.requiredText("turnId"), threadId)

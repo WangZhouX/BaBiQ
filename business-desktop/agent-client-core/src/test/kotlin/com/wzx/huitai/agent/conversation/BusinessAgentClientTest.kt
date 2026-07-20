@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -65,6 +66,95 @@ class BusinessAgentClientTest {
         )
         client.close()
         rpc.close()
+    }
+
+    @Test
+    fun `attachment only turn sends metadata without desktop only fields or file content`() = runTest {
+        val connection = FakeConnection().apply {
+            responder = { request ->
+                assertEquals("turn/start", request.getValue("method").jsonPrimitive.content)
+                buildJsonObject { put("turnId", "turn-attachment-1") }
+            }
+        }
+        val rpc = AgentJsonRpcClient(connection, this)
+        val client = BusinessAgentClient(rpc, this)
+        val localPath = "C:\\private\\contracts\\contract.pdf"
+        val draft = BusinessAttachmentDraft(
+            id = "5e4d4e7a-7dd6-4c6e-bec4-bd6f92ec9123",
+            displayId = "A-7K3M2Q",
+            name = "contract.pdf",
+            localPath = localPath,
+            sizeBytes = 1_024,
+            displayType = "PDF",
+        )
+
+        val turn = client.startTurn(
+            threadId = "thread-1",
+            text = "",
+            attachments = listOf(draft),
+            providerId = "provider-1",
+        )
+
+        assertEquals(BusinessTurn("turn-attachment-1", "thread-1"), turn)
+        val input = connection.params().single().getValue("input").jsonObject
+        assertEquals("", input.getValue("text").jsonPrimitive.content)
+        val attachment = input.getValue("attachments").jsonArray.single().jsonObject
+        assertEquals(setOf("id", "displayId", "name", "localPath"), attachment.keys)
+        assertEquals(draft.id, attachment.getValue("id").jsonPrimitive.content)
+        assertEquals(draft.displayId, attachment.getValue("displayId").jsonPrimitive.content)
+        assertEquals(draft.name, attachment.getValue("name").jsonPrimitive.content)
+        assertEquals(localPath, attachment.getValue("localPath").jsonPrimitive.content)
+        val serializedRequest = connection.sentRequests().single().toString()
+        assertFalse(serializedRequest.contains("sizeBytes"))
+        assertFalse(serializedRequest.contains("displayType"))
+        assertFalse(serializedRequest.contains("base64", ignoreCase = true))
+        assertFalse(serializedRequest.contains("data:", ignoreCase = true))
+        client.close()
+        rpc.close()
+    }
+
+    @Test
+    fun `turn rejects blank text only when attachments are empty`() = runTest {
+        val connection = FakeConnection()
+        val rpc = AgentJsonRpcClient(connection, this)
+        val client: BusinessConversationGateway = BusinessAgentClient(rpc, this)
+
+        val failure = assertFailsWith<IllegalArgumentException> {
+            client.startTurn("thread-1", " \t", emptyList(), "provider-1")
+        }
+
+        assertEquals("turn text and attachments must not both be blank", failure.message)
+        assertTrue(connection.methods().isEmpty())
+        client.close()
+        rpc.close()
+    }
+
+    @Test
+    fun `attachment models redact local paths from string representations`() {
+        val localPath = "C:\\private\\contracts\\contract.pdf"
+        val draft = BusinessAttachmentDraft(
+            id = "5e4d4e7a-7dd6-4c6e-bec4-bd6f92ec9123",
+            displayId = "A-7K3M2Q",
+            name = "contract.pdf",
+            localPath = localPath,
+            sizeBytes = 1_024,
+            displayType = "PDF",
+        )
+        val message = BusinessMessageAttachment(
+            id = draft.id,
+            displayId = draft.displayId,
+            name = draft.name,
+            mediaType = "application/pdf",
+            sizeBytes = draft.sizeBytes,
+            sha256 = "a".repeat(64),
+            source = "SELECTED_FILE",
+            localPath = localPath,
+        )
+
+        assertFalse(draft.toString().contains(localPath))
+        assertFalse(message.toString().contains(localPath))
+        assertTrue(draft.toString().contains("[REDACTED]"))
+        assertTrue(message.toString().contains("[REDACTED]"))
     }
 
     @Test
@@ -347,6 +437,7 @@ class BusinessAgentClientTest {
         fun methods() = sent.map { it.getValue("method").jsonPrimitive.content }
         fun params() = sent.map { it.getValue("params").jsonObject }
         fun params(index: Int) = params()[index]
+        fun sentRequests() = sent.toList()
 
         override suspend fun close() { incomingChannel.close() }
     }
