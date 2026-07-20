@@ -14,7 +14,12 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.pressKey
+import androidx.compose.ui.input.key.Key
+import com.wzx.huitai.agent.conversation.BusinessAttachmentDraft
+import com.wzx.huitai.agent.conversation.BusinessMessageAttachment
 import com.wzx.huitai.agent.conversation.BusinessPlanStep
 import com.wzx.huitai.agent.conversation.BusinessProvider
 import com.wzx.huitai.agent.conversation.BusinessProviderModel
@@ -31,6 +36,7 @@ import com.wzx.huitai.presentation.form.FormPatch
 import com.wzx.huitai.presentation.form.SourceReference
 import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Rule
 import org.junit.Test
 
@@ -179,6 +185,104 @@ class BusinessAgentPanelTest {
         rule.onNodeWithTag("agent-composer-input").assertIsEnabled()
     }
 
+    @Test
+    fun `composer shows path free removable attachment chips and enables attachment only send`() {
+        val attachment = draftAttachment()
+        var chooseCount = 0
+        var removed: String? = null
+        var sent = false
+        rule.setContent {
+            BusinessAgentPanel(
+                state = composerState(
+                    BusinessAuthenticationStatus.AUTHENTICATED,
+                    identity = identity(),
+                ),
+                composerAttachments = listOf(attachment),
+                attachmentError = "ATTACHMENT_TOTAL_TOO_LARGE: 附件总大小超过 50 MiB 限制",
+                onChooseFiles = { chooseCount++ },
+                onRemoveAttachment = { removed = it },
+                onSend = { sent = true },
+            )
+        }
+
+        rule.onNodeWithTag("agent-composer-attach").performClick()
+        assertEquals(1, chooseCount)
+        rule.onNodeWithTag("agent-attachment-${attachment.displayId}").assertExists()
+        listOf(attachment.displayId, attachment.name, attachment.displayType, "2.0 KiB").forEach {
+            rule.onNodeWithText(it, substring = true).assertExists()
+        }
+        rule.onAllNodesWithText(attachment.localPath, substring = true).assertCountEquals(0)
+        rule.onNodeWithTag("agent-attachment-error").assertExists()
+        rule.onNodeWithText("ATTACHMENT_TOTAL_TOO_LARGE", substring = true).assertExists()
+        rule.onNodeWithTag("agent-composer-send").assertIsEnabled().performClick()
+        org.junit.Assert.assertTrue(sent)
+        rule.onNodeWithContentDescription("移除附件 ${attachment.displayId}").performClick()
+        assertEquals(attachment.id, removed)
+    }
+
+    @Test
+    fun `composer handles one key down ctrl v and delegates ordinary paste when clipboard has no image`() {
+        var calls = 0
+        var captured = true
+        rule.setContent {
+            BusinessAgentPanel(
+                state = composerState(
+                    BusinessAuthenticationStatus.AUTHENTICATED,
+                    identity = identity(),
+                ),
+                onPasteImage = {
+                    calls++
+                    captured
+                },
+            )
+        }
+
+        rule.onNodeWithTag("agent-composer-input").performClick().performKeyInput {
+            keyDown(Key.CtrlLeft)
+            pressKey(Key.V)
+            keyUp(Key.CtrlLeft)
+        }
+        assertEquals(1, calls)
+
+        captured = false
+        assertFalse(
+            handleComposerPasteKey(
+                isKeyDown = true,
+                isCtrlPressed = true,
+                isV = true,
+                onPasteImage = {
+                    calls++
+                    captured
+                },
+            ),
+        )
+        assertEquals(2, calls)
+    }
+
+    @Test
+    fun `persisted user message renders stable path free attachment metadata`() {
+        val attachment = messageAttachment()
+        rule.setContent {
+            BusinessAgentPanel(
+                state = BusinessDesktopState(
+                    messages = listOf(
+                        BusinessThreadItem.UserMessage(
+                            id = "user-with-file",
+                            text = "",
+                            attachments = listOf(attachment),
+                        ),
+                    ),
+                ),
+            )
+        }
+
+        rule.onNodeWithTag("agent-message-attachment-${attachment.displayId}").assertExists()
+        listOf(attachment.displayId, attachment.name, attachment.mediaType, "2.0 KiB").forEach {
+            rule.onNodeWithText(it, substring = true).assertExists()
+        }
+        rule.onAllNodesWithText(attachment.localPath, substring = true).assertCountEquals(0)
+    }
+
     private fun richState(): BusinessDesktopState = BusinessDesktopState(
         connectionStatus = BusinessConnectionStatus.DISCONNECTED,
         messages = listOf(
@@ -283,6 +387,26 @@ class BusinessAgentPanelTest {
     )
 
     private fun thread(): BusinessThread = BusinessThread("thread-1", "通用会话", "E:/workspace")
+
+    private fun draftAttachment(): BusinessAttachmentDraft = BusinessAttachmentDraft(
+        id = "00000000-0000-0000-0000-000000000301",
+        displayId = "A-BCDEFG",
+        name = "合同.pdf",
+        localPath = "C:/private/customer/合同.pdf",
+        sizeBytes = 2_048,
+        displayType = "PDF",
+    )
+
+    private fun messageAttachment(): BusinessMessageAttachment = BusinessMessageAttachment(
+        id = "00000000-0000-0000-0000-000000000302",
+        displayId = "A-HJKLMN",
+        name = "截图.png",
+        mediaType = "image/png",
+        sizeBytes = 2_048,
+        sha256 = "a".repeat(64),
+        source = "CLIPBOARD_IMAGE",
+        localPath = "C:/private/customer/截图.png",
+    )
 
     private fun patch(): FormPatch = FormPatch(
         pageId = DemoFormState.PAGE_ID,

@@ -1,6 +1,7 @@
 package com.wzx.huitai.desktop.controller
 
 import com.wzx.huitai.agent.conversation.BusinessConversationGateway
+import com.wzx.huitai.agent.conversation.BusinessAttachmentDraft
 import com.wzx.huitai.agent.conversation.BusinessProvider
 import com.wzx.huitai.agent.conversation.BusinessProviderSelection
 import com.wzx.huitai.agent.conversation.BusinessThread
@@ -48,10 +49,14 @@ class BusinessConversationController(
         gateway.createThread(cwd).also { store.dispatch(BusinessDesktopEvent.ThreadChanged(it)) }
     }
 
-    suspend fun startTurn(text: String, providerId: String? = state.value.activeProviderId): BusinessTurn =
+    suspend fun startTurn(
+        text: String,
+        attachments: List<BusinessAttachmentDraft> = emptyList(),
+        providerId: String? = state.value.activeProviderId,
+    ): BusinessTurn =
         guarded("TURN_START_FAILED") {
             val thread = requireNotNull(state.value.currentThread) { "No active business thread" }
-            gateway.startTurn(thread.id, text, providerId).also {
+            gateway.startTurn(thread.id, text, attachments.toList(), providerId).also {
                 store.dispatch(BusinessDesktopEvent.TurnRequested(it))
             }
         }

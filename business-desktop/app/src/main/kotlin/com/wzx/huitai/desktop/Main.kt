@@ -16,6 +16,12 @@ import com.wzx.huitai.desktop.app.BusinessDesktopProductionConfiguration
 import com.wzx.huitai.desktop.app.ProductionBusinessDesktopCompositionFactory
 import com.wzx.huitai.desktop.decision.ConfirmationDecisionDialogState
 import com.wzx.huitai.desktop.decision.HighRiskApprovalDialogState
+import com.wzx.huitai.desktop.controller.BusinessComposerDraftState
+import com.wzx.huitai.desktop.controller.BusinessComposerSendCoordinator
+import com.wzx.huitai.desktop.controller.mergeBusinessComposerAttachments
+import com.wzx.huitai.desktop.controller.safeComposerAttachmentError
+import com.wzx.huitai.desktop.runtime.BusinessLocalAttachmentException
+import com.wzx.huitai.desktop.ui.agent.BusinessAttachmentSelectionException
 import com.wzx.huitai.desktop.ui.action.ActionPreviewDialog
 import com.wzx.huitai.desktop.ui.action.HighRiskApprovalDialog
 import com.wzx.huitai.desktop.ui.shell.BusinessDesktopDestination
@@ -105,9 +111,21 @@ fun main() {
                 val decisionState by view.decisions.state.collectAsState()
                 val providerSettingsState by view.production.providerSettingsController.state.collectAsState()
                 var selectedDestination by remember { mutableStateOf(BusinessDesktopDestination.DATA_ENTRY) }
-                var composerText by remember { mutableStateOf("") }
+                var composerDraft by remember { mutableStateOf(BusinessComposerDraftState()) }
+                var composerAttachmentError by remember {
+                    mutableStateOf<com.wzx.huitai.desktop.controller.BusinessComposerAttachmentError?>(null)
+                }
                 var agentPanelExpanded by remember { mutableStateOf(true) }
                 val uiScope = rememberCoroutineScope()
+                val sendCoordinator = remember(view, storage) {
+                    BusinessComposerSendCoordinator { text, attachments ->
+                        val conversation = view.production.conversationController
+                        if (view.desktopState.value.currentThread == null) {
+                            conversation.createThread(storage.workspaceRoot.toString())
+                        }
+                        conversation.startTurn(text, attachments)
+                    }
+                }
 
                 LaunchedEffect(Unit) {
                     runCatching { view.production.conversationController.refreshProviders() }
@@ -119,7 +137,9 @@ fun main() {
                         formState = formState,
                         providerSettingsState = providerSettingsState,
                         selectedDestination = selectedDestination,
-                        composerText = composerText,
+                        composerText = composerDraft.text,
+                        composerAttachments = composerDraft.attachments,
+                        attachmentError = composerAttachmentError?.let { "${it.code}: ${it.message}" },
                         agentPanelExpanded = agentPanelExpanded,
                         onDestinationSelected = { selectedDestination = it },
                         onAgentPanelExpandedChange = { agentPanelExpanded = it },
@@ -186,17 +206,86 @@ fun main() {
                                 )
                             }
                         },
-                        onComposerTextChanged = { composerText = it },
+                        onComposerTextChanged = { composerDraft = composerDraft.copy(text = it) },
+                        onChooseFiles = {
+                            try {
+                                val historyAttachments = desktopState.messages
+                                    .filterIsInstance<com.wzx.huitai.agent.conversation.BusinessThreadItem.UserMessage>()
+                                    .flatMap { it.attachments }
+                                val additions = view.production.attachmentPicker.choose(
+                                    currentDrafts = composerDraft.attachments,
+                                    existingIds = historyAttachments.mapTo(hashSetOf()) { it.id },
+                                    existingDisplayIds = historyAttachments.mapTo(hashSetOf()) { it.displayId },
+                                )
+                                if (additions.isNotEmpty()) {
+                                    composerDraft = composerDraft.copy(
+                                        attachments = mergeBusinessComposerAttachments(
+                                            composerDraft.attachments,
+                                            additions,
+                                        ),
+                                    )
+                                }
+                                composerAttachmentError = null
+                            } catch (failure: BusinessAttachmentSelectionException) {
+                                composerAttachmentError = safeComposerAttachmentError(failure.code, failure.message)
+                            } catch (failure: Exception) {
+                                composerAttachmentError = safeComposerAttachmentError(failure)
+                            }
+                        },
+                        onPasteImage = {
+                            try {
+                                val historyAttachments = desktopState.messages
+                                    .filterIsInstance<com.wzx.huitai.agent.conversation.BusinessThreadItem.UserMessage>()
+                                    .flatMap { it.attachments }
+                                val existingIds = historyAttachments.mapTo(hashSetOf()) { it.id }.apply {
+                                    addAll(composerDraft.attachments.map { it.id })
+                                }
+                                val existingDisplayIds = historyAttachments.mapTo(hashSetOf()) { it.displayId }.apply {
+                                    addAll(composerDraft.attachments.map { it.displayId })
+                                }
+                                val captured = view.production.clipboardImageAttachmentStore.capture(
+                                    existingIds = existingIds,
+                                    existingDisplayIds = existingDisplayIds,
+                                )
+                                if (captured == null) {
+                                    false
+                                } else {
+                                    composerDraft = composerDraft.copy(
+                                        attachments = mergeBusinessComposerAttachments(
+                                            composerDraft.attachments,
+                                            listOf(captured),
+                                        ),
+                                    )
+                                    composerAttachmentError = null
+                                    true
+                                }
+                            } catch (failure: BusinessLocalAttachmentException) {
+                                composerAttachmentError = safeComposerAttachmentError(failure.code, failure.message)
+                                true
+                            } catch (failure: Exception) {
+                                composerAttachmentError = safeComposerAttachmentError(failure)
+                                true
+                            }
+                        },
+                        onRemoveAttachment = { attachmentId ->
+                            composerDraft = composerDraft.copy(
+                                attachments = composerDraft.attachments.filterNot { it.id == attachmentId },
+                            )
+                            composerAttachmentError = null
+                        },
                         onSend = {
-                            val text = composerText.trim()
-                            if (text.isNotEmpty()) {
-                                composerText = ""
+                            val captured = composerDraft
+                            if (captured.text.isNotBlank() || captured.attachments.isNotEmpty()) {
                                 uiScope.launch {
-                                    val conversation = view.production.conversationController
-                                    if (view.desktopState.value.currentThread == null) {
-                                        conversation.createThread(storage.workspaceRoot.toString())
+                                    val result = sendCoordinator.submit(captured)
+                                    composerDraft = sendCoordinator.reconcile(
+                                        current = composerDraft,
+                                        captured = captured,
+                                        result = result,
+                                    )
+                                    if (result.succeeded) {
+                                        composerAttachmentError = null
                                     }
-                                    conversation.startTurn(text)
                                 }
                             }
                         },

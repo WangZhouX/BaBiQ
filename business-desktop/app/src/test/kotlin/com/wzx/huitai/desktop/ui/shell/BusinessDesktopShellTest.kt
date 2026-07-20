@@ -19,9 +19,13 @@ import androidx.compose.ui.unit.dp
 import com.wzx.huitai.demo.model.DemoFormState
 import com.wzx.huitai.agent.conversation.BusinessProvider
 import com.wzx.huitai.agent.conversation.BusinessProviderModel
+import com.wzx.huitai.agent.conversation.BusinessAttachmentDraft
 import com.wzx.huitai.agent.conversation.BusinessThreadItem
 import com.wzx.huitai.desktop.controller.BusinessProviderSettingsState
+import com.wzx.huitai.desktop.state.BusinessAuthenticationStatus
+import com.wzx.huitai.desktop.state.BusinessConnectionStatus
 import com.wzx.huitai.desktop.state.BusinessDesktopState
+import com.wzx.huitai.desktop.state.BusinessIdentity
 import com.wzx.huitai.desktop.ui.theme.HuitaiBusinessTheme
 import kotlin.test.assertEquals
 import org.junit.Rule
@@ -321,6 +325,54 @@ class BusinessDesktopShellTest {
         org.junit.Assert.assertTrue(saved)
         org.junit.Assert.assertTrue(submitted)
     }
+
+    @Test
+    fun `shell forwards attachment draft actions through the persistent agent rail`() {
+        val attachment = BusinessAttachmentDraft(
+            id = "00000000-0000-0000-0000-000000000401",
+            displayId = "A-BCDEFG",
+            name = "evidence.pdf",
+            localPath = "C:/private/evidence.pdf",
+            sizeBytes = 1024,
+            displayType = "PDF",
+        )
+        var chooseCount = 0
+        var removed: String? = null
+        rule.setContent {
+            HuitaiBusinessTheme {
+                BusinessDesktopShell(
+                    state = authenticatedShellState(),
+                    formState = DemoFormState(),
+                    composerAttachments = listOf(attachment),
+                    onChooseFiles = { chooseCount++ },
+                    onRemoveAttachment = { removed = it },
+                    modifier = Modifier.widthForTest(1280.dp),
+                )
+            }
+        }
+
+        rule.onNodeWithTag("agent-composer-attach").performClick()
+        rule.onNodeWithContentDescription("移除附件 ${attachment.displayId}").performClick()
+
+        assertEquals(1, chooseCount)
+        assertEquals(attachment.id, removed)
+    }
 }
 
 private fun Modifier.widthForTest(width: Dp): Modifier = then(Modifier.requiredWidth(width))
+
+private fun authenticatedShellState(): BusinessDesktopState = BusinessDesktopState(
+    connectionStatus = BusinessConnectionStatus.CONNECTED,
+    authenticationStatus = BusinessAuthenticationStatus.AUTHENTICATED,
+    identity = BusinessIdentity(
+        desktopInstanceId = "desktop-1",
+        desktopSessionId = "session-1",
+        authSessionId = "auth-1",
+        identityEpoch = 1,
+        userId = "user-1",
+        tenantId = "tenant-1",
+        platformId = "platform-1",
+        roles = emptySet(),
+        permissions = emptySet(),
+    ),
+)

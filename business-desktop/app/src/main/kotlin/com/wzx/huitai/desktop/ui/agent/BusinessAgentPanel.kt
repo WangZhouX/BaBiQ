@@ -29,6 +29,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.wzx.huitai.agent.conversation.BusinessThreadItem
+import com.wzx.huitai.agent.conversation.BusinessAttachmentDraft
 import com.wzx.huitai.desktop.state.BusinessAuthenticationStatus
 import com.wzx.huitai.desktop.state.BusinessConnectionStatus
 import com.wzx.huitai.desktop.state.BusinessDesktopState
@@ -48,7 +49,12 @@ fun BusinessAgentPanel(
     formPatch: FormPatch? = null,
     selectedModelId: String? = null,
     composerText: String = "",
+    composerAttachments: List<BusinessAttachmentDraft> = emptyList(),
+    attachmentError: String? = null,
     onComposerTextChanged: (String) -> Unit = {},
+    onChooseFiles: () -> Unit = {},
+    onPasteImage: () -> Boolean = { false },
+    onRemoveAttachment: (String) -> Unit = {},
     onSend: () -> Unit = {},
     onReconnect: () -> Unit = {},
     onProviderSelected: (providerId: String, modelId: String) -> Unit = { _, _ -> },
@@ -96,7 +102,7 @@ fun BusinessAgentPanel(
             ) {
                 state.messages.forEach { item ->
                     when (item) {
-                        is BusinessThreadItem.UserMessage -> MessageCard(item.text, user = true)
+                        is BusinessThreadItem.UserMessage -> UserMessageCard(item)
                         is BusinessThreadItem.AgentMessage -> MessageCard(item.text.orEmpty() + item.textDelta.orEmpty(), user = false)
                         is BusinessThreadItem.Reasoning -> ReasoningCard(item)
                         else -> Unit
@@ -125,12 +131,32 @@ fun BusinessAgentPanel(
             HorizontalDivider()
             AgentComposer(
                 value = composerText,
+                attachments = composerAttachments,
+                attachmentError = attachmentError,
                 enabled = state.connectionStatus == BusinessConnectionStatus.CONNECTED &&
                     state.authenticationStatus == BusinessAuthenticationStatus.AUTHENTICATED &&
                     state.identity != null,
                 onValueChanged = onComposerTextChanged,
+                onChooseFiles = onChooseFiles,
+                onPasteImage = onPasteImage,
+                onRemoveAttachment = onRemoveAttachment,
                 onSend = onSend,
             )
+        }
+    }
+}
+
+@Composable
+private fun UserMessageCard(item: BusinessThreadItem.UserMessage) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.primaryContainer,
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("用户", style = MaterialTheme.typography.labelSmall)
+            if (item.text.isNotBlank()) Text(item.text)
+            item.attachments.forEach { attachment -> MessageAttachmentChip(attachment) }
         }
     }
 }
