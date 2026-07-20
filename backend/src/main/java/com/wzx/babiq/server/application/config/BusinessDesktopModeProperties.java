@@ -1,6 +1,7 @@
 package com.wzx.babiq.server.application.config;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 
 import java.net.InetAddress;
 import java.net.URI;
@@ -27,6 +28,7 @@ public record BusinessDesktopModeProperties(
         Path teamRoot,
         Path backendLockPath,
         Path sessionTokenFile,
+        Path attachmentClipboardRoot,
         boolean authenticationRequired,
         String serverAddress,
         String allowedOrigins,
@@ -42,6 +44,7 @@ public record BusinessDesktopModeProperties(
         Duration reconciliationGraceTimeout
 ) {
 
+    @ConstructorBinding
     public BusinessDesktopModeProperties {
         if (enabled) {
             runtimeDir = normalize(runtimeDir, "runtimeDir");
@@ -52,6 +55,7 @@ public record BusinessDesktopModeProperties(
             teamRoot = normalize(teamRoot, "teamRoot");
             backendLockPath = normalize(backendLockPath, "backendLockPath");
             sessionTokenFile = normalize(sessionTokenFile, "sessionTokenFile");
+            attachmentClipboardRoot = normalize(attachmentClipboardRoot, "attachmentClipboardRoot");
 
             requireInside(runtimeDir, databasePath, "databasePath");
             requireInside(runtimeDir, keyStorePath, "keyStorePath");
@@ -60,6 +64,11 @@ public record BusinessDesktopModeProperties(
             requireInside(runtimeDir, teamRoot, "teamRoot");
             requireInside(runtimeDir, backendLockPath, "backendLockPath");
             requireInside(runtimeDir, sessionTokenFile, "sessionTokenFile");
+            requireInside(runtimeDir, attachmentClipboardRoot, "attachmentClipboardRoot");
+            if (attachmentClipboardRoot.equals(runtimeDir)) {
+                throw new IllegalArgumentException(
+                        "attachmentClipboardRoot must resolve strictly below runtimeDir");
+            }
             if (!backendLockPath.equals(runtimeDir.resolve("instance.lock"))) {
                 throw new IllegalArgumentException("backendLockPath must be runtimeDir/instance.lock");
             }
@@ -86,6 +95,60 @@ public record BusinessDesktopModeProperties(
             requirePositive(executeTimeout, "executeTimeout");
             requirePositive(reconciliationGraceTimeout, "reconciliationGraceTimeout");
         }
+    }
+
+    /**
+     * Backward-compatible constructor for direct test and embedding call sites created before
+     * the controlled clipboard attachment root was introduced.
+     */
+    public BusinessDesktopModeProperties(
+            boolean enabled,
+            Path runtimeDir,
+            Path databasePath,
+            Path keyStorePath,
+            Path logPath,
+            Path memoryRoot,
+            Path teamRoot,
+            Path backendLockPath,
+            Path sessionTokenFile,
+            boolean authenticationRequired,
+            String serverAddress,
+            String allowedOrigins,
+            int maxEnvelopeBytes,
+            int maxCatalogPayloadBytes,
+            int maxContextPayloadBytes,
+            int maxActionInputBytes,
+            int maxActionResultBytes,
+            Duration acceptTimeout,
+            Duration previewTimeout,
+            Duration approvalTimeout,
+            Duration executeTimeout,
+            Duration reconciliationGraceTimeout
+    ) {
+        this(
+                enabled,
+                runtimeDir,
+                databasePath,
+                keyStorePath,
+                logPath,
+                memoryRoot,
+                teamRoot,
+                backendLockPath,
+                sessionTokenFile,
+                runtimeDir == null ? null : runtimeDir.resolve("attachments").resolve("clipboard"),
+                authenticationRequired,
+                serverAddress,
+                allowedOrigins,
+                maxEnvelopeBytes,
+                maxCatalogPayloadBytes,
+                maxContextPayloadBytes,
+                maxActionInputBytes,
+                maxActionResultBytes,
+                acceptTimeout,
+                previewTimeout,
+                approvalTimeout,
+                executeTimeout,
+                reconciliationGraceTimeout);
     }
 
     private static Path normalize(Path path, String propertyName) {

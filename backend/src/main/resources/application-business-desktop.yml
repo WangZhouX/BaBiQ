@@ -17,6 +17,7 @@ babiq:
     team-root: ${babiq.team.root-dir}
     backend-lock-path: ${babiq.business.runtime-dir}/instance.lock
     session-token-file: ${babiq.business.runtime-dir}/session-token
+    attachment-clipboard-root: ${babiq.business.runtime-dir}/attachments/clipboard
     authentication-required: true
     server-address: ${server.address}
     allowed-origins: ${babiq.ws.allowed-origins}

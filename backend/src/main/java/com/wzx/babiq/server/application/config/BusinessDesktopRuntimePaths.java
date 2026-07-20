@@ -61,6 +61,10 @@ public final class BusinessDesktopRuntimePaths implements AutoCloseable {
         return properties.runtimeDir();
     }
 
+    public Path attachmentClipboardRoot() {
+        return properties.attachmentClipboardRoot();
+    }
+
     private void createRequiredDirectories() {
         Set<Path> directories = new LinkedHashSet<>();
         directories.add(properties.runtimeDir());
@@ -69,6 +73,7 @@ public final class BusinessDesktopRuntimePaths implements AutoCloseable {
         addParent(directories, properties.logPath());
         directories.add(properties.memoryRoot());
         directories.add(properties.teamRoot());
+        directories.add(properties.attachmentClipboardRoot());
         addParent(directories, properties.backendLockPath());
         addParent(directories, properties.sessionTokenFile());
 
@@ -136,6 +141,7 @@ public final class BusinessDesktopRuntimePaths implements AutoCloseable {
                 properties.logPath(),
                 properties.memoryRoot(),
                 properties.teamRoot(),
+                properties.attachmentClipboardRoot(),
                 properties.backendLockPath(),
                 properties.sessionTokenFile());
     }

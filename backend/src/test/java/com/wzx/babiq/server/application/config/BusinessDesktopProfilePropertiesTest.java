@@ -11,6 +11,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
 
 import java.nio.file.Path;
+import java.nio.file.Files;
 import java.time.Duration;
 import java.util.List;
 
@@ -48,7 +49,8 @@ class BusinessDesktopProfilePropertiesTest {
                     path(environment, "babiq.memory.long-term.root-dir"),
                     path(environment, "babiq.team.root-dir"),
                     properties.backendLockPath(),
-                    properties.sessionTokenFile()
+                    properties.sessionTokenFile(),
+                    properties.attachmentClipboardRoot()
             );
             assertThat(configuredPaths)
                     .allSatisfy(path -> assertThat(path.toAbsolutePath().normalize().startsWith(runtime)).isTrue());
@@ -60,7 +62,24 @@ class BusinessDesktopProfilePropertiesTest {
             assertThat(properties.logPath()).isEqualTo(configuredPaths.get(2));
             assertThat(properties.memoryRoot()).isEqualTo(configuredPaths.get(3));
             assertThat(properties.teamRoot()).isEqualTo(configuredPaths.get(4));
+            assertThat(properties.attachmentClipboardRoot())
+                    .isEqualTo(runtime.resolve("attachments").resolve("clipboard"));
             assertThat(properties.authenticationRequired()).isTrue();
+        });
+    }
+
+    @Test
+    void runtimePathsCreateAndExposeTheControlledClipboardDirectory() {
+        runWithRuntime().run(context -> {
+            assertThat(context).hasNotFailed();
+            BusinessDesktopModeProperties properties = context.getBean(BusinessDesktopModeProperties.class);
+
+            try (BusinessDesktopRuntimePaths paths = new BusinessDesktopRuntimePaths(properties)) {
+                assertThat(paths.attachmentClipboardRoot()).isEqualTo(properties.attachmentClipboardRoot());
+                assertThat(Files.isDirectory(paths.attachmentClipboardRoot())).isTrue();
+                assertThat(paths.attachmentClipboardRoot().startsWith(paths.runtimeDir())).isTrue();
+                assertThat(paths.attachmentClipboardRoot()).isNotEqualTo(paths.runtimeDir());
+            }
         });
     }
 
@@ -134,7 +153,8 @@ class BusinessDesktopProfilePropertiesTest {
             "babiq.memory.long-term.root-dir",
             "babiq.team.root-dir",
             "babiq.business.backend-lock-path",
-            "babiq.business.session-token-file"
+            "babiq.business.session-token-file",
+            "babiq.business.attachment-clipboard-root"
     })
     void enabledModeRejectsEveryResolvedPathOutsideItsRuntime(String propertyName) {
         Path escapedPath = runtimeDir.resolveSibling("escaped").resolve(propertyName.replace('.', '-') + ".data");
