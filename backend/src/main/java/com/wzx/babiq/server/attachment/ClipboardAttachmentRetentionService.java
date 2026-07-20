@@ -25,6 +25,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.regex.Pattern;
@@ -62,6 +63,7 @@ public final class ClipboardAttachmentRetentionService {
     private final StartupRecoveryCoordinator startupRecoveryCoordinator;
     private final AttachmentReservationRegistry attachmentReservationRegistry;
     private final FileAttributeReader fileAttributeReader;
+    private final WindowsSafeAttachmentDeletionStrategy windowsDeletionStrategy;
 
     @Autowired
     public ClipboardAttachmentRetentionService(
@@ -77,7 +79,9 @@ public final class ClipboardAttachmentRetentionService {
                 properties.attachmentClipboardRoot(),
                 Clock.systemUTC(),
                 startupRecoveryCoordinator,
-                attachmentReservationRegistry);
+                attachmentReservationRegistry,
+                SYSTEM_FILE_ATTRIBUTES,
+                systemWindowsDeletionStrategy());
     }
 
     ClipboardAttachmentRetentionService(
@@ -93,7 +97,8 @@ public final class ClipboardAttachmentRetentionService {
                 clock,
                 new StartupRecoveryCoordinator(),
                 new AttachmentReservationRegistry(),
-                SYSTEM_FILE_ATTRIBUTES);
+                SYSTEM_FILE_ATTRIBUTES,
+                null);
     }
 
     ClipboardAttachmentRetentionService(
@@ -110,7 +115,8 @@ public final class ClipboardAttachmentRetentionService {
                 clock,
                 startupRecoveryCoordinator,
                 new AttachmentReservationRegistry(),
-                SYSTEM_FILE_ATTRIBUTES);
+                SYSTEM_FILE_ATTRIBUTES,
+                null);
     }
 
     ClipboardAttachmentRetentionService(
@@ -128,7 +134,8 @@ public final class ClipboardAttachmentRetentionService {
                 clock,
                 startupRecoveryCoordinator,
                 attachmentReservationRegistry,
-                SYSTEM_FILE_ATTRIBUTES);
+                SYSTEM_FILE_ATTRIBUTES,
+                systemWindowsDeletionStrategy());
     }
 
     ClipboardAttachmentRetentionService(
@@ -140,6 +147,27 @@ public final class ClipboardAttachmentRetentionService {
             AttachmentReservationRegistry attachmentReservationRegistry,
             FileAttributeReader fileAttributeReader
     ) {
+        this(
+                repository,
+                objectMapper,
+                configuredRoot,
+                clock,
+                startupRecoveryCoordinator,
+                attachmentReservationRegistry,
+                fileAttributeReader,
+                null);
+    }
+
+    private ClipboardAttachmentRetentionService(
+            AttachmentReferenceRepository repository,
+            ObjectMapper objectMapper,
+            Path configuredRoot,
+            Clock clock,
+            StartupRecoveryCoordinator startupRecoveryCoordinator,
+            AttachmentReservationRegistry attachmentReservationRegistry,
+            FileAttributeReader fileAttributeReader,
+            WindowsSafeAttachmentDeletionStrategy windowsDeletionStrategy
+    ) {
         this.repository = repository;
         this.objectMapper = objectMapper;
         this.configuredRoot = configuredRoot.toAbsolutePath().normalize();
@@ -148,6 +176,7 @@ public final class ClipboardAttachmentRetentionService {
         this.attachmentReservationRegistry =
                 Objects.requireNonNull(attachmentReservationRegistry);
         this.fileAttributeReader = Objects.requireNonNull(fileAttributeReader);
+        this.windowsDeletionStrategy = windowsDeletionStrategy;
     }
 
     /**
@@ -160,6 +189,9 @@ public final class ClipboardAttachmentRetentionService {
     }
 
     private CleanupResult cleanupWithinGuard() {
+        if (windowsDeletionStrategy != null) {
+            return cleanupWindows();
+        }
         ControlledRoot root = canonicalControlledRoot();
         if (root == null) {
             return new CleanupResult(0, 0, 0, 1);
@@ -221,6 +253,68 @@ public final class ClipboardAttachmentRetentionService {
                     + "reasonType={}, count={}", "FILESYSTEM_OPERATION_FAILED", failures);
         }
         return new CleanupResult(scanned, deleted, references.invalidRecords(), failures);
+    }
+
+    private CleanupResult cleanupWindows() {
+        int scanned = 0;
+        int deleted = 0;
+        int failures = 0;
+        Instant orphanCutoff = clock.instant().minus(ORPHAN_RETENTION);
+        try (WindowsSafeAttachmentDeletionStrategy.RootLease root =
+                     windowsDeletionStrategy.openRoot(configuredRoot)) {
+            ReferenceIndex references = readReferences(root.path());
+            if (!references.safeToDelete()) {
+                if (references.invalidRecords() > 0) {
+                    log.warn(
+                            "Controlled clipboard retention failed closed: reasonType={}, count={}",
+                            "INVALID_ATTACHMENT_REFERENCE",
+                            references.invalidRecords());
+                }
+                return new CleanupResult(0, 0, references.invalidRecords(), 0);
+            }
+            for (Path entry : root.entries()) {
+                String fileName = fileName(entry);
+                if (fileName == null || !GENERATED_SCREENSHOT.matcher(fileName).matches()) {
+                    continue;
+                }
+                try (WindowsSafeAttachmentDeletionStrategy.CandidateLease candidate =
+                             root.openCandidate(entry)) {
+                    BasicFileAttributes attributes = candidate.attributes();
+                    scanned++;
+                    Path candidatePath = entry.toAbsolutePath().normalize();
+                    ReferenceRetention retention = references.byPath().get(candidatePath);
+                    boolean eligible = retention == ReferenceRetention.ARCHIVE_EXPIRED
+                            || retention == null
+                            && attributes.lastModifiedTime().toInstant().isBefore(orphanCutoff);
+                    if (!eligible
+                            || attachmentReservationRegistry.isPathProtected(candidatePath)) {
+                        continue;
+                    }
+                    if (candidate.deleteIfUnchanged()) {
+                        deleted++;
+                    }
+                } catch (IOException | SecurityException exception) {
+                    failures++;
+                }
+            }
+            if (references.invalidRecords() > 0) {
+                log.warn(
+                        "Controlled clipboard retention ignored invalid references: "
+                                + "reasonType={}, count={}",
+                        "INVALID_ATTACHMENT_REFERENCE",
+                        references.invalidRecords());
+            }
+        } catch (IOException | RuntimeException | LinkageError exception) {
+            failures++;
+        }
+        if (failures > 0) {
+            log.warn(
+                    "Controlled clipboard retention encountered filesystem failures: "
+                            + "reasonType={}, count={}",
+                    "FILESYSTEM_OPERATION_FAILED",
+                    failures);
+        }
+        return new CleanupResult(scanned, deleted, 0, failures);
     }
 
     /**
@@ -444,6 +538,14 @@ public final class ClipboardAttachmentRetentionService {
     private static BasicFileAttributes readBasicAttributes(Path path) throws IOException {
         return Files.readAttributes(
                 path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+    }
+
+    private static WindowsSafeAttachmentDeletionStrategy systemWindowsDeletionStrategy() {
+        return System.getProperty("os.name", "")
+                .toLowerCase(Locale.ROOT)
+                .startsWith("windows")
+                ? new WindowsSafeAttachmentDeletionStrategy()
+                : null;
     }
 
     private static BasicFileAttributes secureRegularFileAttributes(

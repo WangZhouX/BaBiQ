@@ -63,9 +63,25 @@ public final class AttachmentReservationRegistry {
             BusinessIdentityScope scope,
             List<PreparedAttachment> attachments
     ) {
+        return reserve(threadId, scope, attachments, attachments);
+    }
+
+    /**
+     * Atomically reserves only newly supplied identities while protecting every resolved path.
+     *
+     * <p>Persisted history references are intentionally shareable across concurrent turns, but
+     * every turn keeps its own path reference until its lifecycle releases the reservation.</p>
+     */
+    public synchronized Reservation reserve(
+            String threadId,
+            BusinessIdentityScope scope,
+            List<PreparedAttachment> identityAttachments,
+            List<PreparedAttachment> protectedPathAttachments
+    ) {
         Objects.requireNonNull(threadId, "threadId");
-        Objects.requireNonNull(attachments, "attachments");
-        if (attachments.isEmpty()) {
+        Objects.requireNonNull(identityAttachments, "identityAttachments");
+        Objects.requireNonNull(protectedPathAttachments, "protectedPathAttachments");
+        if (identityAttachments.isEmpty() && protectedPathAttachments.isEmpty()) {
             return Reservation.inactive(this);
         }
 
@@ -74,25 +90,40 @@ public final class AttachmentReservationRegistry {
                 scope == null ? BusinessIdentityScope.UNSCOPED : scope);
         Set<String> identities = new LinkedHashSet<>();
         Set<Path> protectedPaths = new LinkedHashSet<>();
-        for (PreparedAttachment attachment : attachments) {
+        for (PreparedAttachment attachment : identityAttachments) {
             AttachmentMetadata metadata = Objects.requireNonNull(attachment, "attachment").metadata();
             identities.add("id:" + canonicalUuid(metadata.id()));
             identities.add("display:" + canonicalDisplayId(metadata.displayId()));
+        }
+        for (PreparedAttachment attachment : protectedPathAttachments) {
+            Objects.requireNonNull(attachment, "attachment");
             protectedPaths.add(attachment.canonicalPath().toAbsolutePath().normalize());
         }
 
-        Map<String, String> owners = ownersByIdentity.computeIfAbsent(key, ignored -> new HashMap<>());
-        rejectOwnedIdentities(owners, identities);
+        Map<String, String> existingOwners = ownersByIdentity.get(key);
+        if (existingOwners != null) {
+            rejectOwnedIdentities(existingOwners, identities);
+        }
+        Map<Path, Integer> nextPathReferences = new HashMap<>();
+        for (Path path : protectedPaths) {
+            int references = activePathReferences.getOrDefault(path, 0);
+            nextPathReferences.put(path, Math.addExact(references, 1));
+        }
 
         String token = UUID.randomUUID().toString();
-        identities.forEach(identity -> owners.put(identity, token));
-        protectedPaths.forEach(path ->
-                activePathReferences.merge(path, 1, Math::addExact));
-        statesByToken.put(token, new ReservationState(
+        ReservationState state = new ReservationState(
                 key,
                 Set.copyOf(identities),
                 Set.copyOf(protectedPaths),
-                clock.instant()));
+                clock.instant());
+        Map<String, String> owners = identities.isEmpty()
+                ? null
+                : ownersByIdentity.computeIfAbsent(key, ignored -> new HashMap<>());
+        if (owners != null) {
+            identities.forEach(identity -> owners.put(identity, token));
+        }
+        activePathReferences.putAll(nextPathReferences);
+        statesByToken.put(token, state);
         return new Reservation(this, token);
     }
 
@@ -100,7 +131,7 @@ public final class AttachmentReservationRegistry {
      * Rejects already-pending new identities before the more expensive history scan.
      *
      * <p>Callers that depend on this check must keep the surrounding publication guard until
-     * {@link #reserve(String, BusinessIdentityScope, List)} completes.</p>
+     * {@link #reserve(String, BusinessIdentityScope, List, List)} completes.</p>
      */
     public synchronized void assertAvailable(
             String threadId,

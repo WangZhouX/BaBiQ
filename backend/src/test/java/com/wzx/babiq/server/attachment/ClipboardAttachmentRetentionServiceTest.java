@@ -5,6 +5,8 @@ import com.wzx.babiq.server.conversation.items.UserMessageItem;
 import com.wzx.babiq.server.recovery.StartupRecoveryCoordinator;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -16,9 +18,15 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -49,6 +57,65 @@ class ClipboardAttachmentRetentionServiceTest {
         assertThat(unrelated).exists();
         assertThat(wrongAlphabet).exists();
         assertThat(result.deletedFiles()).isEqualTo(1);
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void productionWindowsCleanupUsesNativeIdentityWhenNioFileKeyIsUnavailable() throws Exception {
+        Path root = Files.createDirectories(tempDir.resolve("windows-native-identity"));
+        Path expired = generated(root, "截图-20260718-120000-23457Q.png", Duration.ofHours(25));
+        BasicFileAttributes nioAttributes = Files.readAttributes(
+                root,
+                BasicFileAttributes.class,
+                java.nio.file.LinkOption.NOFOLLOW_LINKS);
+        assumeTrue(nioAttributes.fileKey() == null, "this Windows provider exposes a NIO fileKey");
+        ClipboardAttachmentRetentionService service = new ClipboardAttachmentRetentionService(
+                () -> List.of(),
+                new ObjectMapper(),
+                root,
+                CLOCK,
+                new StartupRecoveryCoordinator(),
+                new AttachmentReservationRegistry());
+
+        ClipboardAttachmentRetentionService.CleanupResult result = service.cleanup();
+
+        assertThat(expired).doesNotExist();
+        assertThat(result.deletedFiles()).isEqualTo(1);
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void productionWindowsCleanupAnchorsRootUntilReferenceScanCompletes() throws Exception {
+        Path root = Files.createDirectories(tempDir.resolve("windows-root-anchor"));
+        generated(root, "截图-20260718-120000-34567R.png", Duration.ofHours(25));
+        CountDownLatch repositoryEntered = new CountDownLatch(1);
+        CountDownLatch allowRepository = new CountDownLatch(1);
+        AttachmentReferenceRepository repository = () -> {
+            repositoryEntered.countDown();
+            await(allowRepository);
+            return List.of();
+        };
+        ClipboardAttachmentRetentionService service = new ClipboardAttachmentRetentionService(
+                repository,
+                new ObjectMapper(),
+                root,
+                CLOCK,
+                new StartupRecoveryCoordinator(),
+                new AttachmentReservationRegistry());
+        ExecutorService worker = Executors.newSingleThreadExecutor();
+        Future<ClipboardAttachmentRetentionService.CleanupResult> cleanup =
+                worker.submit(service::cleanup);
+        try {
+            assertThat(repositoryEntered.await(5, TimeUnit.SECONDS)).isTrue();
+
+            assertThatThrownBy(() -> Files.move(root, tempDir.resolve("replaced-root")))
+                    .isInstanceOf(IOException.class);
+        } finally {
+            allowRepository.countDown();
+            cleanup.get(5, TimeUnit.SECONDS);
+            worker.shutdownNow();
+        }
+        assertThat(Files.move(root, tempDir.resolve("released-root"))).exists();
     }
 
     @Test
@@ -477,5 +544,14 @@ class ClipboardAttachmentRetentionServiceTest {
         when(stable.lastModifiedTime()).thenReturn(actual.lastModifiedTime());
         when(stable.fileKey()).thenReturn(fileKey);
         return stable;
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            latch.await();
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted", exception);
+        }
     }
 }

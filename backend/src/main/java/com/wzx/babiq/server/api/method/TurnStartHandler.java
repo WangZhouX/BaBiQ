@@ -412,7 +412,10 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
             AttachmentReservationRegistry.Reservation reservation = createWorkUnit
                     ? null
                     : attachmentReservationRegistry.reserve(
-                            threadId, requestScope, resolved.allAttachments());
+                            threadId,
+                            requestScope,
+                            prepared.newAttachments(),
+                            resolved.allAttachments());
             return new PreparedPublication(resolved, reservation);
         });
     }

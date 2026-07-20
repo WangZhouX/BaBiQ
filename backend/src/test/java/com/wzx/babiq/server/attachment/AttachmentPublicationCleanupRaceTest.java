@@ -205,6 +205,61 @@ class AttachmentPublicationCleanupRaceTest {
         assertThat(registry.isPathProtected(candidate)).isFalse();
     }
 
+    @Test
+    void concurrentHistoryReferencesSharePathProtectionWithoutOwningPersistedIdentity()
+            throws Exception {
+        Path candidate = Files.write(tempDir.resolve("shared-history.png"), new byte[]{1, 2, 3});
+        PreparedAttachment attachment = clipboardAttachment(candidate);
+        AttachmentReservationRegistry registry = new AttachmentReservationRegistry();
+        AttachmentPreparationService preparation = mock(AttachmentPreparationService.class);
+        AttachmentHistoryResolver history = mock(AttachmentHistoryResolver.class);
+        PreparedTurnInput prepared = new PreparedTurnInput(
+                "reuse " + attachment.metadata().displayId(), List.of(), List.of());
+        PreparedTurnInput resolved = new PreparedTurnInput(
+                prepared.text(), List.of(), List.of(attachment));
+        when(preparation.prepareNew(prepared.text(), List.of())).thenReturn(prepared);
+        when(history.resolve(any(), any(), any())).thenReturn(resolved);
+        ConversationService conversations = new ConversationService();
+        String threadId = conversations.createThread(tempDir.toString()).id();
+        TurnStartHandler handler = handler(
+                conversations, mock(TurnExecutor.class), preparation, history, registry);
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService workers = Executors.newFixedThreadPool(2);
+        Future<Object> first = workers.submit(() -> {
+            ready.countDown();
+            start.await();
+            return handler.handle(request(threadId, attachment, false), session());
+        });
+        Future<Object> second = workers.submit(() -> {
+            ready.countDown();
+            start.await();
+            return handler.handle(request(threadId, attachment, false), session());
+        });
+        String firstTurnId = null;
+        String secondTurnId = null;
+        try {
+            assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            firstTurnId = String.valueOf(((Map<?, ?>) first.get(5, TimeUnit.SECONDS)).get("turnId"));
+            secondTurnId =
+                    String.valueOf(((Map<?, ?>) second.get(5, TimeUnit.SECONDS)).get("turnId"));
+
+            assertThat(registry.isPathProtected(candidate)).isTrue();
+            registry.releaseTurn(firstTurnId);
+            assertThat(registry.isPathProtected(candidate)).isTrue();
+            registry.releaseTurn(secondTurnId);
+            assertThat(registry.isPathProtected(candidate)).isFalse();
+        } finally {
+            start.countDown();
+            registry.releaseTurn(firstTurnId);
+            registry.releaseTurn(secondTurnId);
+            first.cancel(true);
+            second.cancel(true);
+            workers.shutdownNow();
+        }
+    }
+
     private ClipboardAttachmentRetentionService retention(
             Path root,
             AttachmentReferenceRepository repository,

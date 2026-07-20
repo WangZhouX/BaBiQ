@@ -36,6 +36,7 @@
         <sqlite-jdbc.version>3.53.1.0</sqlite-jdbc.version>
         <flyway.version>12.6.2</flyway.version>
         <tika.version>3.2.3</tika.version>
+        <jna.version>5.18.1</jna.version>
     </properties>
     <dependencyManagement>
         <dependencies>
@@ -161,6 +162,11 @@
             <groupId>org.apache.tika</groupId>
             <artifactId>tika-parsers-standard-package</artifactId>
             <version>${tika.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>net.java.dev.jna</groupId>
+            <artifactId>jna-platform</artifactId>
+            <version>${jna.version}</version>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>

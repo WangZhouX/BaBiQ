@@ -158,6 +158,55 @@ class AttachmentReservationRegistryTest {
     }
 
     @Test
+    void concurrentHistoryReservationsShareAPathUntilBothRelease() {
+        AttachmentReservationRegistry registry = new AttachmentReservationRegistry();
+        PreparedAttachment history = attachment();
+        AttachmentReservationRegistry.Reservation first = registry.reserve(
+                "thread-a",
+                BusinessIdentityScope.UNSCOPED,
+                List.of(),
+                List.of(history));
+        AttachmentReservationRegistry.Reservation second = registry.reserve(
+                "thread-a",
+                BusinessIdentityScope.UNSCOPED,
+                List.of(),
+                List.of(history));
+
+        assertThat(first.active()).isTrue();
+        assertThat(second.active()).isTrue();
+        assertThat(registry.isPathProtected(history.canonicalPath())).isTrue();
+        first.close();
+        assertThat(registry.isPathProtected(history.canonicalPath())).isTrue();
+        second.close();
+        assertThat(registry.isPathProtected(history.canonicalPath())).isFalse();
+    }
+
+    @Test
+    void rejectedNewIdentityDoesNotPartiallyProtectItsResolvedPath() {
+        AttachmentReservationRegistry registry = new AttachmentReservationRegistry();
+        PreparedAttachment accepted = attachment();
+        PreparedAttachment rejected = attachment(Path.of("C:\\business\\replacement.pdf"));
+        AttachmentReservationRegistry.Reservation reservation = registry.reserve(
+                "thread-a",
+                BusinessIdentityScope.UNSCOPED,
+                List.of(accepted),
+                List.of(accepted));
+
+        assertThatThrownBy(() -> registry.reserve(
+                "thread-a",
+                BusinessIdentityScope.UNSCOPED,
+                List.of(rejected),
+                List.of(rejected)))
+                .isInstanceOfSatisfying(AttachmentException.class, failure ->
+                        assertThat(failure.code())
+                                .isEqualTo(AttachmentErrorCode.ATTACHMENT_REFERENCE_AMBIGUOUS));
+        assertThat(registry.isPathProtected(rejected.canonicalPath())).isFalse();
+        assertThat(registry.isPathProtected(accepted.canonicalPath())).isTrue();
+
+        reservation.close();
+    }
+
+    @Test
     void emptyAttachmentListCreatesNoActiveReservation() {
         AttachmentReservationRegistry registry = new AttachmentReservationRegistry();
 
@@ -195,18 +244,22 @@ class AttachmentReservationRegistryTest {
     }
 
     private static PreparedAttachment attachment() {
+        return attachment(Path.of("C:\\business\\contract.pdf"));
+    }
+
+    private static PreparedAttachment attachment(Path path) {
         AttachmentMetadata metadata = new AttachmentMetadata(
                 "00000000-0000-0000-0000-000000000001",
                 "A-234562",
-                "contract.pdf",
-                "C:\\business\\contract.pdf",
+                path.getFileName().toString(),
+                path.toString(),
                 "application/pdf",
                 42,
                 "a".repeat(64),
                 AttachmentSource.SELECTED_FILE);
         return new PreparedAttachment(
                 metadata,
-                Path.of(metadata.localPath()),
+                path,
                 new PreparedAttachment.FileIdentity(
                         metadata.sizeBytes(), FileTime.from(Instant.EPOCH), "file-key"));
     }
