@@ -6,11 +6,15 @@ import java.awt.Image
 import java.awt.Toolkit
 import java.awt.datatransfer.DataFlavor
 import java.awt.image.BufferedImage
+import java.nio.channels.Channels
+import java.nio.channels.FileChannel
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
+import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.PosixFilePermission
 import java.time.Clock
 import java.time.format.DateTimeFormatter
@@ -96,8 +100,20 @@ class ClipboardImageAttachmentStore(
         val filename = "截图-$timestamp-$suffix.png"
         val published = controlledRoot.resolve(filename)
         var completed = false
+        var temporaryOwned = false
         try {
-            val encoded = runCatching { ImageIO.write(image, "png", temporary.toFile()) }
+            val encoded = runCatching {
+                FileChannel.open(
+                    temporary,
+                    StandardOpenOption.CREATE_NEW,
+                    StandardOpenOption.WRITE,
+                ).use { channel ->
+                    temporaryOwned = true
+                    Channels.newOutputStream(channel).use { output ->
+                        ImageIO.write(image, "png", output)
+                    }
+                }
+            }
                 .getOrElse {
                     throw BusinessLocalAttachmentException(
                         "ATTACHMENT_CLIPBOARD_FAILED",
@@ -144,7 +160,7 @@ class ClipboardImageAttachmentStore(
                 "保存剪贴板图片失败，请重试",
             )
         } finally {
-            if (!completed) Files.deleteIfExists(temporary)
+            if (!completed && temporaryOwned) Files.deleteIfExists(temporary)
         }
     }
 
@@ -164,12 +180,20 @@ class ClipboardImageAttachmentStore(
 
     private fun controlledBytesExcluding(excluded: Path): Long =
         Files.walk(controlledRoot).use { paths ->
-            paths
-                .filter { path ->
-                    path != excluded && Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)
+            paths.iterator().asSequence()
+                .filter { path -> path != excluded }
+                .map { path ->
+                    Files.readAttributes(
+                        path,
+                        BasicFileAttributes::class.java,
+                        LinkOption.NOFOLLOW_LINKS,
+                    )
                 }
-                .mapToLong(Files::size)
-                .sum()
+                .filter(BasicFileAttributes::isRegularFile)
+                .fold(0L) { total, attributes ->
+                    val size = attributes.size()
+                    if (size > Long.MAX_VALUE - total) Long.MAX_VALUE else total + size
+                }
         }
 
     private fun controlledDisplayIds(): Set<String> =

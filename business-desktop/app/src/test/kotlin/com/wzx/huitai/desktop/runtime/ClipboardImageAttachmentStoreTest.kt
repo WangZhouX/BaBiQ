@@ -106,6 +106,71 @@ class ClipboardImageAttachmentStoreTest {
         assertEquals(1024L * 1024 * 1024, ClipboardAttachmentLimits.DEFAULT.maxControlledBytes)
     }
 
+    @Test
+    fun `pre existing temporary file collision is neither overwritten nor deleted`() {
+        val root = Files.createTempDirectory("huitai-clipboard-temp-collision")
+        val uuid = UUID.fromString("00000000-0000-0000-0000-000000000123")
+        val temporary = root.resolve("attachment-$uuid.tmp")
+        Files.writeString(temporary, "existing-owner-data")
+        val store = store(
+            root = root,
+            image = BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB),
+            uuid = uuid,
+        )
+
+        val failure = assertFailsWith<BusinessLocalAttachmentException> { store.capture() }
+
+        assertEquals("ATTACHMENT_CLIPBOARD_FAILED", failure.code)
+        assertTrue(Files.exists(temporary))
+        assertEquals("existing-owner-data", Files.readString(temporary))
+        assertEquals(listOf(temporary.fileName.toString()), Files.list(root).use { paths ->
+            paths.map { it.fileName.toString() }.toList()
+        })
+    }
+
+    @Test
+    fun `pre existing temporary symlink is not followed or deleted`() {
+        val root = Files.createTempDirectory("huitai-clipboard-temp-link")
+        val outside = Files.createTempFile("huitai-clipboard-outside", ".txt")
+        Files.writeString(outside, "outside-owner-data")
+        val uuid = UUID.fromString("00000000-0000-0000-0000-000000000123")
+        val temporary = root.resolve("attachment-$uuid.tmp")
+        val linkCreated = runCatching { Files.createSymbolicLink(temporary, outside) }.isSuccess
+        if (!linkCreated) return
+        val store = store(
+            root = root,
+            image = BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB),
+            uuid = uuid,
+        )
+
+        val failure = assertFailsWith<BusinessLocalAttachmentException> { store.capture() }
+
+        assertEquals("ATTACHMENT_CLIPBOARD_FAILED", failure.code)
+        assertTrue(Files.isSymbolicLink(temporary))
+        assertEquals("outside-owner-data", Files.readString(outside))
+    }
+
+    @Test
+    fun `capacity scan never follows symbolic links to outside files`() {
+        val root = Files.createTempDirectory("huitai-clipboard-capacity-link")
+        val outside = Files.createTempFile("huitai-clipboard-capacity-outside", ".bin")
+        Files.write(outside, ByteArray(4 * 1024) { 7 })
+        val linked = root.resolve("outside.png")
+        val linkCreated = runCatching { Files.createSymbolicLink(linked, outside) }.isSuccess
+        if (!linkCreated) return
+        val store = store(
+            root = root,
+            image = BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB),
+            limits = ClipboardAttachmentLimits(maxControlledBytes = 1024),
+        )
+
+        val draft = assertNotNull(store.capture())
+
+        assertTrue(Files.exists(java.nio.file.Path.of(draft.localPath)))
+        assertEquals(4L * 1024, Files.size(outside))
+        assertTrue(Files.isSymbolicLink(linked))
+    }
+
     private fun store(
         root: java.nio.file.Path,
         image: BufferedImage,
