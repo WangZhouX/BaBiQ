@@ -29,6 +29,7 @@ import com.wzx.huitai.action.port.ScopedActionExecutionQuery
 import com.wzx.huitai.agent.client.AgentConnection
 import com.wzx.huitai.agent.client.AgentConnectionState
 import com.wzx.huitai.agent.client.AgentJsonRpcClient
+import com.wzx.huitai.agent.client.AgentJsonRpcException
 import com.wzx.huitai.agent.protocol.ActionEnvelope
 import com.wzx.huitai.agent.protocol.ApplicationMethod
 import com.wzx.huitai.agent.protocol.ApplicationProtocol
@@ -39,10 +40,12 @@ import java.time.Instant
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -60,6 +63,71 @@ import kotlinx.serialization.json.put
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ApplicationActionRequestHandlerTest {
+    @Test
+    fun `turn start attachment responses and errors never enter application action audit routing`() = runTest {
+        val fixture = Fixture(backgroundScope)
+        val privatePath = "C:\\Users\\secret\\customer-contract.pdf"
+        fun attachmentParams(threadId: String) = buildJsonObject {
+            put("threadId", threadId)
+            put("input", buildJsonObject {
+                put("text", "review")
+                put("attachments", kotlinx.serialization.json.buildJsonArray {
+                    add(buildJsonObject {
+                        put("id", "550e8400-e29b-41d4-a716-446655440000")
+                        put("displayId", "A-7K3M2Q")
+                        put("name", "customer-contract.pdf")
+                        put("localPath", privatePath)
+                    })
+                })
+            })
+        }
+
+        val pending = async {
+            fixture.rpc.request("turn/start", attachmentParams("thread-1"))
+        }
+        runCurrent()
+        val outbound = fixture.connection.sent.map { it.json() }.single {
+            it["method"]?.jsonPrimitive?.content == "turn/start"
+        }
+        val requestId = outbound.getValue("id").jsonPrimitive.content.toLong()
+        fixture.connection.serverSend(buildJsonObject {
+            put("jsonrpc", "2.0")
+            put("id", requestId)
+            put("result", buildJsonObject { put("turnId", "turn-1") })
+        }.toString())
+
+        assertEquals("turn-1", pending.await().getValue("turnId").jsonPrimitive.content)
+        val rejected = async {
+            runCatching {
+                fixture.rpc.request("turn/start", attachmentParams("thread-2"))
+            }
+        }
+        runCurrent()
+        val rejectedOutbound = fixture.connection.sent.map { it.json() }.last {
+            it["method"]?.jsonPrimitive?.content == "turn/start"
+        }
+        val rejectedRequestId = rejectedOutbound.getValue("id").jsonPrimitive.content.toLong()
+        fixture.connection.serverSend(buildJsonObject {
+            put("jsonrpc", "2.0")
+            put("id", rejectedRequestId)
+            put("error", buildJsonObject {
+                put("code", -32602)
+                put("message", "attachment rejected")
+                put("data", buildJsonObject {
+                    put("attachmentCode", "ATTACHMENT_NOT_FOUND")
+                })
+            })
+        }.toString())
+        val rejection = rejected.await().exceptionOrNull()
+        assertEquals("ATTACHMENT_NOT_FOUND", assertIs<AgentJsonRpcException>(rejection).attachmentCode)
+        runCurrent()
+        assertEquals(0, fixture.executor.calls)
+        assertEquals(0, fixture.store.scopedFindCalls)
+        assertEquals(0, fixture.store.unscopedFindCalls)
+        assertEquals(0, fixture.store.auditDraftCalls)
+        fixture.close()
+    }
+
     @Test
     fun `status publication cache is bounded access ordered and permits evicted replay`() = runTest {
         val connection = RecordingConnection()
@@ -965,6 +1033,8 @@ class ApplicationActionRequestHandlerTest {
         @Volatile var failScopedFind = false
         @Volatile var failUnscopedFind = false
         var unscopedFindCalls = 0
+        var scopedFindCalls = 0
+        var auditDraftCalls = 0
         override suspend fun find(executionId: String): ActionExecutionRecord? {
             unscopedFindCalls += 1
             if (failUnscopedFind) error("unscoped find is forbidden")
@@ -973,6 +1043,7 @@ class ApplicationActionRequestHandlerTest {
             return current?.takeIf { it.command.executionId == executionId }
         }
         override suspend fun find(executionId: String, identityScope: ActionIdentityScope): ActionExecutionRecord? {
+            scopedFindCalls += 1
             if (failScopedFind) error("scoped store unavailable")
             return current?.takeIf {
                 it.command.executionId == executionId &&
@@ -982,7 +1053,13 @@ class ApplicationActionRequestHandlerTest {
         }
         override suspend fun listNonTerminal(identityScope: ActionIdentityScope): List<ActionExecutionRecord> =
             listOfNotNull(current?.takeIf { !it.isTerminal && it.command.identityScope == identityScope })
-        override suspend fun compareAndCreate(record: ActionExecutionRecord, audit: ActionAuditDraft): ExecutionCreateResult = error("unused")
+        override suspend fun compareAndCreate(
+            record: ActionExecutionRecord,
+            audit: ActionAuditDraft,
+        ): ExecutionCreateResult {
+            auditDraftCalls += 1
+            error("unused")
+        }
         override suspend fun transition(update: ExecutionTransition): ExecutionTransitionResult = error("unused")
         override suspend fun updateReconciliation(update: ReconciliationExecutionUpdate): ReconciliationUpdateResult = error("unused")
         override suspend fun claimReconciliation(request: ReconciliationClaimRequest): ReconciliationClaimResult = error("unused")

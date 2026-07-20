@@ -134,8 +134,8 @@ public class TurnExecutor implements AutoCloseable {
     public void submit(Turn turn, PreparedTurnInput input, String providerId, String cwd,
                        ItemEmitter emitter, AgentRunPolicy runPolicy, String workUnitGoalId) {
         PreparedTurnInput safeInput = java.util.Objects.requireNonNull(input, "input");
-        log.info("TurnExecutor 提交普通 turn: threadId={}, turnId={}, providerId={}, cwd={}, attachments={}",
-                turn.threadId(), turn.id(), providerId == null ? "<active-provider>" : providerId, cwd,
+        log.info("TurnExecutor 提交普通 turn: threadId={}, turnId={}, providerId={}, attachments={}",
+                turn.threadId(), turn.id(), providerId == null ? "<active-provider>" : providerId,
                 safeInput.allAttachments().size());
         Future<?> future = executor.submit(() -> run(turn.id(),
                 () -> agentLoop.invoke(
