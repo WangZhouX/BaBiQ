@@ -2,6 +2,7 @@ package com.wzx.babiq.server.recovery;
 
 import com.wzx.babiq.server.context.compaction.ContextCompactionRecoveryService;
 import com.wzx.babiq.server.application.action.ApplicationActionRecoveryService;
+import com.wzx.babiq.server.attachment.ClipboardAttachmentRetentionService;
 import com.wzx.babiq.server.workunit.WorkUnitService;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
@@ -23,6 +24,7 @@ public class RecoveryStartupRunner implements ApplicationRunner {
     private final ObjectProvider<ContextCompactionRecoveryService> compactionRecoveryService;
     private final ObjectProvider<WorkUnitService> workUnitService;
     private final ObjectProvider<ApplicationActionRecoveryService> actionRecoveryService;
+    private final ObjectProvider<ClipboardAttachmentRetentionService> attachmentRetentionService;
     /** 启动恢复闸门，恢复完成后才允许长期记忆等后台调度器写库。 */
     private final StartupRecoveryCoordinator startupRecoveryCoordinator;
 
@@ -37,11 +39,13 @@ public class RecoveryStartupRunner implements ApplicationRunner {
                                  ObjectProvider<ContextCompactionRecoveryService> compactionRecoveryService,
                                  ObjectProvider<WorkUnitService> workUnitService,
                                  ObjectProvider<ApplicationActionRecoveryService> actionRecoveryService,
+                                 ObjectProvider<ClipboardAttachmentRetentionService> attachmentRetentionService,
                                  StartupRecoveryCoordinator startupRecoveryCoordinator) {
         this.recoveryService = recoveryService;
         this.compactionRecoveryService = compactionRecoveryService;
         this.workUnitService = workUnitService;
         this.actionRecoveryService = actionRecoveryService;
+        this.attachmentRetentionService = attachmentRetentionService;
         this.startupRecoveryCoordinator = startupRecoveryCoordinator;
     }
 
@@ -56,6 +60,7 @@ public class RecoveryStartupRunner implements ApplicationRunner {
         actionRecoveryService.ifAvailable(ApplicationActionRecoveryService::recoverAbandonedActions);
         compactionRecoveryService.ifAvailable(ContextCompactionRecoveryService::scan);
         workUnitService.ifAvailable(WorkUnitService::recoverAbandonedRunning);
+        attachmentRetentionService.ifAvailable(ClipboardAttachmentRetentionService::cleanup);
         startupRecoveryCoordinator.markRecoveryComplete();
     }
 }

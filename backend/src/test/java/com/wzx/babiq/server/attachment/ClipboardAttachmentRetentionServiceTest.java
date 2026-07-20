@@ -1,0 +1,258 @@
+package com.wzx.babiq.server.attachment;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wzx.babiq.server.conversation.items.UserMessageItem;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+class ClipboardAttachmentRetentionServiceTest {
+
+    private static final Instant NOW = Instant.parse("2026-07-21T04:00:00Z");
+    private static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
+
+    @TempDir
+    Path tempDir;
+
+    @Test
+    void cleanupDeletesOnlyExpiredOrphanGeneratedFiles() throws Exception {
+        Path root = Files.createDirectories(tempDir.resolve("attachments/clipboard"));
+        Path expired = generated(root, "截图-20260718-120000-23457Q.png", Duration.ofHours(25));
+        Path recent = generated(root, "截图-20260720-120000-34567R.png", Duration.ofHours(23));
+        Path unrelated = oldFile(root.resolve("notes.png"), Duration.ofDays(10));
+        Path wrongAlphabet = oldFile(root.resolve("截图-20260718-120000-10OILQ.png"), Duration.ofDays(10));
+
+        ClipboardAttachmentRetentionService.CleanupResult result =
+                service(root, List.of()).cleanup();
+
+        assertThat(expired).doesNotExist();
+        assertThat(recent).exists();
+        assertThat(unrelated).exists();
+        assertThat(wrongAlphabet).exists();
+        assertThat(result.deletedFiles()).isEqualTo(1);
+    }
+
+    @Test
+    void activeThreadReferenceAlwaysRetainsGeneratedFile() throws Exception {
+        Path root = Files.createDirectories(tempDir.resolve("attachments/clipboard"));
+        Path active = generated(root, "截图-20260101-000000-45678S.png", Duration.ofDays(200));
+
+        ClipboardAttachmentRetentionService.CleanupResult result = service(
+                root,
+                List.of(reference(active, null))).cleanup();
+
+        assertThat(active).exists();
+        assertThat(result.deletedFiles()).isZero();
+    }
+
+    @Test
+    void archivedReferencesExpireOnlyAfterThirtyDaysAndStrongestReferenceWins() throws Exception {
+        Path root = Files.createDirectories(tempDir.resolve("attachments/clipboard"));
+        Path expired = generated(root, "截图-20260101-000000-56789T.png", Duration.ofDays(200));
+        Path recentArchive = generated(root, "截图-20260102-000000-6789AU.png", Duration.ofDays(200));
+        Path multiple = generated(root, "截图-20260103-000000-789ABV.png", Duration.ofDays(200));
+
+        service(root, List.of(
+                reference(expired, NOW.minus(Duration.ofDays(31))),
+                reference(recentArchive, NOW.minus(Duration.ofDays(29))),
+                reference(multiple, NOW.minus(Duration.ofDays(90))),
+                reference(multiple, null))).cleanup();
+
+        assertThat(expired).doesNotExist();
+        assertThat(recentArchive).exists();
+        assertThat(multiple).exists();
+    }
+
+    @Test
+    void cleanupRemovesEligibleFilesButNeverActiveReferencesForCapacityRelief() throws Exception {
+        Path root = Files.createDirectories(tempDir.resolve("attachments/clipboard"));
+        Path orphan = generated(root, "截图-20260104-000000-89ABCW.png", Duration.ofDays(2));
+        Path archived = generated(root, "截图-20260105-000000-9ABCDX.png", Duration.ofDays(90));
+        Path active = generated(root, "截图-20260106-000000-ABCDEFG.png", Duration.ofDays(90));
+
+        service(root, List.of(
+                reference(archived, NOW.minus(Duration.ofDays(31))),
+                reference(active, null))).cleanup();
+
+        assertThat(orphan).doesNotExist();
+        assertThat(archived).doesNotExist();
+        assertThat(active).exists();
+    }
+
+    @Test
+    void cleanupIgnoresOutsidePathsAndNeverDeletesUserSelectedFiles() throws Exception {
+        Path root = Files.createDirectories(tempDir.resolve("attachments/clipboard"));
+        Path selected = oldFile(root.resolve("合同.png"), Duration.ofDays(90));
+        Path outside = oldFile(
+                tempDir.resolve("截图-20260107-000000-BCDEFH.png"),
+                Duration.ofDays(90));
+
+        service(root, List.of(reference(outside, NOW.minus(Duration.ofDays(90))))).cleanup();
+
+        assertThat(selected).exists();
+        assertThat(outside).exists();
+    }
+
+    @Test
+    void cleanupDoesNotFollowSymbolicLinks() throws Exception {
+        Path root = Files.createDirectories(tempDir.resolve("attachments/clipboard"));
+        Path outside = oldFile(tempDir.resolve("outside.png"), Duration.ofDays(90));
+        Path link = root.resolve("截图-20260108-000000-CDEFHJ.png");
+        try {
+            Files.createSymbolicLink(link, outside);
+        } catch (IOException | UnsupportedOperationException | SecurityException exception) {
+            assumeTrue(false, "symbolic links unavailable: " + exception.getClass().getSimpleName());
+        }
+
+        service(root, List.of()).cleanup();
+
+        assertThat(Files.isSymbolicLink(link)).isTrue();
+        assertThat(outside).exists();
+    }
+
+    @Test
+    void malformedPersistedPayloadFailsClosedWithoutDeletingAnyCandidate() throws Exception {
+        Path root = Files.createDirectories(tempDir.resolve("attachments/clipboard"));
+        Path orphan = generated(root, "截图-20260109-000000-DEFHJK.png", Duration.ofDays(2));
+
+        ClipboardAttachmentRetentionService.CleanupResult result = service(
+                root,
+                List.of(new AttachmentReferenceRecord("{not-json", null))).cleanup();
+
+        assertThat(orphan).exists();
+        assertThat(result.invalidReferenceRecords()).isEqualTo(1);
+    }
+
+    @Test
+    void referenceQueryFailureFailsClosedWithoutDeletingAnyCandidate() throws Exception {
+        Path root = Files.createDirectories(tempDir.resolve("attachments/clipboard"));
+        Path orphan = generated(root, "截图-20260110-000000-EFHJKL.png", Duration.ofDays(2));
+        AttachmentReferenceRepository failingRepository = () -> {
+            throw new IllegalStateException("private database detail");
+        };
+        ClipboardAttachmentRetentionService service = new ClipboardAttachmentRetentionService(
+                failingRepository, new ObjectMapper(), root, CLOCK);
+
+        ClipboardAttachmentRetentionService.CleanupResult result = service.cleanup();
+
+        assertThat(orphan).exists();
+        assertThat(result.invalidReferenceRecords()).isEqualTo(1);
+    }
+
+    @Test
+    void nullReferenceQueryResultFailsClosedWithoutDeletingAnyCandidate() throws Exception {
+        Path root = Files.createDirectories(tempDir.resolve("attachments/clipboard"));
+        Path orphan = generated(root, "截图-20260110-010000-GHJKLM.png", Duration.ofDays(2));
+        ClipboardAttachmentRetentionService service = new ClipboardAttachmentRetentionService(
+                () -> null, new ObjectMapper(), root, CLOCK);
+
+        ClipboardAttachmentRetentionService.CleanupResult result = service.cleanup();
+
+        assertThat(orphan).exists();
+        assertThat(result.invalidReferenceRecords()).isEqualTo(1);
+    }
+
+    @Test
+    void selectedFileReferenceIsNeverDeletedEvenWithGeneratedNameAndExpiredArchive() throws Exception {
+        Path root = Files.createDirectories(tempDir.resolve("attachments/clipboard"));
+        Path selected = generated(root, "截图-20260111-000000-FHJKLM.png", Duration.ofDays(90));
+
+        service(root, List.of(reference(
+                selected,
+                NOW.minus(Duration.ofDays(90)),
+                AttachmentSource.SELECTED_FILE))).cleanup();
+
+        assertThat(selected).exists();
+    }
+
+    @Test
+    void referenceRecordToStringRedactsPersistedPayload() {
+        AttachmentReferenceRecord record = new AttachmentReferenceRecord(
+                "{\"localPath\":\"C:\\\\private\\\\secret.png\"}",
+                "2026-01-01T00:00:00Z");
+
+        assertThat(record.toString())
+                .contains("payloadJson=<redacted>")
+                .doesNotContain("private", "secret.png");
+    }
+
+    @Test
+    void fileIdentityFallbackRequiresBothFileKeysToBeAbsent() {
+        BasicFileAttributes withoutKey = attributes(null);
+        BasicFileAttributes withKey = attributes("file-key");
+
+        assertThat(ClipboardAttachmentRetentionService.sameFileIdentity(withoutKey, withKey))
+                .isFalse();
+        assertThat(ClipboardAttachmentRetentionService.sameFileIdentity(withoutKey, attributes(null)))
+                .isTrue();
+    }
+
+    private ClipboardAttachmentRetentionService service(
+            Path root,
+            List<AttachmentReferenceRecord> references
+    ) {
+        return new ClipboardAttachmentRetentionService(
+                () -> references,
+                new ObjectMapper(),
+                root,
+                CLOCK);
+    }
+
+    private AttachmentReferenceRecord reference(Path path, Instant archivedAt) throws Exception {
+        return reference(path, archivedAt, AttachmentSource.CLIPBOARD_IMAGE);
+    }
+
+    private AttachmentReferenceRecord reference(
+            Path path,
+            Instant archivedAt,
+            AttachmentSource source
+    ) throws Exception {
+        AttachmentMetadata metadata = new AttachmentMetadata(
+                "550e8400-e29b-41d4-a716-446655440000",
+                "A-23457Q",
+                path.getFileName().toString(),
+                path.toRealPath().toString(),
+                "image/png",
+                Files.size(path),
+                "a".repeat(64),
+                source);
+        String payload = new ObjectMapper().writeValueAsString(
+                UserMessageItem.of("item-1", "attachment", List.of(metadata)));
+        return new AttachmentReferenceRecord(
+                payload,
+                archivedAt == null ? null : archivedAt.toString());
+    }
+
+    private Path generated(Path root, String name, Duration age) throws IOException {
+        return oldFile(root.resolve(name), age);
+    }
+
+    private Path oldFile(Path path, Duration age) throws IOException {
+        Files.write(path, new byte[]{1, 2, 3});
+        Files.setLastModifiedTime(path, FileTime.from(NOW.minus(age)));
+        return path;
+    }
+
+    private static BasicFileAttributes attributes(Object fileKey) {
+        BasicFileAttributes attributes = mock(BasicFileAttributes.class);
+        when(attributes.size()).thenReturn(3L);
+        when(attributes.lastModifiedTime()).thenReturn(FileTime.from(NOW));
+        when(attributes.fileKey()).thenReturn(fileKey);
+        return attributes;
+    }
+}

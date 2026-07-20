@@ -1,6 +1,7 @@
 package com.wzx.babiq.server.persistence.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.wzx.babiq.server.attachment.AttachmentReferenceRecord;
 import com.wzx.babiq.server.persistence.entity.ItemEntity;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -13,6 +14,16 @@ import java.util.List;
  * <p>item 是聊天历史恢复的主要数据源；Mapper 保持轻量，排序和幂等写入由 repository 处理。</p>
  */
 public interface ItemMapper extends BaseMapper<ItemEntity> {
+
+    @Select("""
+            SELECT i.payload_json AS payloadJson,
+                   t.archived_at AS archivedAt
+            FROM bq_items i
+            JOIN bq_threads t ON t.thread_id = i.thread_id
+            WHERE i.type = 'userMessage'
+              AND i.status <> 'removed'
+            """)
+    List<AttachmentReferenceRecord> selectAttachmentReferenceRecords();
 
     @Select("""
             SELECT i.*
