@@ -276,6 +276,29 @@ class ClipboardImageAttachmentStoreTest {
         assertEquals(0, Files.list(root).use { it.count() })
     }
 
+    @Test
+    fun `temporary cleanup failure rolls back published link and returns a path free error`() {
+        val root = Files.createTempDirectory("huitai-clipboard-cleanup-failure")
+        val uuid = UUID.fromString("00000000-0000-0000-0000-000000000123")
+        val temporary = root.resolve("attachment-$uuid.tmp")
+        val published = root.resolve("截图-20260720-123456-7K3M2Q.png")
+        val store = store(
+            root = root,
+            image = BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB),
+            uuid = uuid,
+            temporaryFileCleaner = ClipboardTemporaryFileCleaner { path ->
+                throw AccessDeniedException(path.toString())
+            },
+        )
+
+        val failure = assertFailsWith<BusinessLocalAttachmentException> { store.capture() }
+
+        assertEquals("ATTACHMENT_CLIPBOARD_FAILED", failure.code)
+        assertFalse(failure.toString().contains(root.toString()))
+        assertFalse(Files.exists(published, java.nio.file.LinkOption.NOFOLLOW_LINKS))
+        assertTrue(Files.exists(temporary, java.nio.file.LinkOption.NOFOLLOW_LINKS))
+    }
+
     private fun store(
         root: java.nio.file.Path,
         image: BufferedImage,
@@ -283,6 +306,7 @@ class ClipboardImageAttachmentStoreTest {
         displayId: String = "A-7K3M2Q",
         limits: ClipboardAttachmentLimits = ClipboardAttachmentLimits.DEFAULT,
         rootScanner: ClipboardControlledRootScanner = NioClipboardControlledRootScanner,
+        temporaryFileCleaner: ClipboardTemporaryFileCleaner = NioClipboardTemporaryFileCleaner,
     ): ClipboardImageAttachmentStore = ClipboardImageAttachmentStore(
         controlledRoot = root,
         imageSource = ClipboardImageSource { image },
@@ -293,5 +317,6 @@ class ClipboardImageAttachmentStoreTest {
         ),
         limits = limits,
         rootScanner = rootScanner,
+        temporaryFileCleaner = temporaryFileCleaner,
     )
 }

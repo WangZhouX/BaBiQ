@@ -108,6 +108,14 @@ object NioClipboardControlledRootScanner : ClipboardControlledRootScanner {
     }
 }
 
+fun interface ClipboardTemporaryFileCleaner {
+    fun delete(path: Path): Boolean
+}
+
+object NioClipboardTemporaryFileCleaner : ClipboardTemporaryFileCleaner {
+    override fun delete(path: Path): Boolean = Files.deleteIfExists(path)
+}
+
 /**
  * 把剪贴板图像写入 Agent 隔离根。WebSocket 只会收到返回草稿中的本机路径，不承载图片字节。
  */
@@ -118,6 +126,7 @@ class ClipboardImageAttachmentStore(
     private val idFactory: BusinessAttachmentIdFactory = BusinessAttachmentIdFactory(),
     private val limits: ClipboardAttachmentLimits = ClipboardAttachmentLimits.DEFAULT,
     private val rootScanner: ClipboardControlledRootScanner = NioClipboardControlledRootScanner,
+    private val temporaryFileCleaner: ClipboardTemporaryFileCleaner = NioClipboardTemporaryFileCleaner,
 ) {
     val controlledRoot: Path = controlledRoot.toAbsolutePath().normalize()
 
@@ -233,7 +242,7 @@ class ClipboardImageAttachmentStore(
                 "保存剪贴板图片失败，请重试",
             )
         } finally {
-            if (!completed && temporaryOwned) runCatching { Files.deleteIfExists(temporary) }
+            if (!completed && temporaryOwned) runCatching { temporaryFileCleaner.delete(temporary) }
         }
     }
 
@@ -279,7 +288,17 @@ class ClipboardImageAttachmentStore(
             // A sibling hard-link publishes the fully encoded inode atomically and CREATE_NEW-like:
             // createLink fails when any file or link already owns the final name.
             Files.createLink(published, temporary)
-            runCatching { Files.deleteIfExists(temporary) }
+            try {
+                check(temporaryFileCleaner.delete(temporary)) {
+                    "temporary clipboard attachment was not removed"
+                }
+            } catch (_: Exception) {
+                runCatching { Files.deleteIfExists(published) }
+                throw BusinessLocalAttachmentException(
+                    "ATTACHMENT_CLIPBOARD_FAILED",
+                    "剪贴板附件发布清理失败，请重试",
+                )
+            }
         } catch (_: UnsupportedOperationException) {
             Files.move(temporary, published)
         }
