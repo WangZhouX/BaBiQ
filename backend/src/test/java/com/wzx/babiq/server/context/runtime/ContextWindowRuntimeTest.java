@@ -20,6 +20,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -92,6 +93,16 @@ class ContextWindowRuntimeTest {
                     assertThat(item.includedCharacterCount()).isEqualTo(bodyMarker.length());
                     assertThat(item.truncatedCharacterCount()).isZero();
                 });
+        String baseModelInput = new ContextualPromptRenderer().render(result.assemblyResult());
+        String attachmentSuffix = result.modelInputText().substring(baseModelInput.length());
+        int attachmentSnapshotTokens = result.assemblyResult().snapshot().items().stream()
+                .filter(item -> item.sourceType()
+                        == com.wzx.babiq.server.context.model.ContextSourceType.ATTACHMENT)
+                .mapToInt(com.wzx.babiq.server.context.model.ContextSnapshotItem::tokenEstimate)
+                .sum();
+        assertThat(attachmentSuffix).startsWith("\n\n");
+        assertThat(attachmentSuffix.getBytes(StandardCharsets.UTF_8).length)
+                .isEqualTo(attachmentSnapshotTokens);
 
         ArgumentCaptor<ContextSnapshotRecord> snapshot = ArgumentCaptor.forClass(ContextSnapshotRecord.class);
         verify(snapshotRepository).save(snapshot.capture());
@@ -100,6 +111,28 @@ class ContextWindowRuntimeTest {
                 .contains("A-7K3M2Q", "合同.txt", "text/plain")
                 .doesNotContain(bodyMarker, forbiddenPath);
         assertThat(snapshot.getValue().inputPreview()).doesNotContain(bodyMarker, forbiddenPath);
+    }
+
+    @Test
+    void runtime_result_to_string_should_redact_content_bearing_fields_and_nested_result() {
+        String sentinel = "ATTACHMENT_SECRET_SENTINEL";
+        String forbiddenPath = "C:\\Users\\secret\\合同.txt";
+        var nestedResult = new com.wzx.babiq.server.context.model.ContextAssemblyResult(
+                null,
+                null,
+                List.of(new org.springframework.ai.chat.messages.UserMessage(sentinel + forbiddenPath)));
+        ContextWindowRuntimeResult result = new ContextWindowRuntimeResult(
+                "ctxsnap_safe",
+                sentinel + "-raw",
+                sentinel + forbiddenPath,
+                nestedResult);
+
+        assertThat(result.toString())
+                .contains(
+                        "rawUserText=<redacted>",
+                        "modelInputText=<redacted>",
+                        "assemblyResult=<redacted>")
+                .doesNotContain(sentinel, forbiddenPath);
     }
 
     @Test

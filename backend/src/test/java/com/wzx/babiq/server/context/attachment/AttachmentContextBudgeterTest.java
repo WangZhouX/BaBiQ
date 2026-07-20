@@ -7,6 +7,7 @@ import com.wzx.babiq.server.context.model.ContextPriority;
 import com.wzx.babiq.server.context.model.ContextSourceType;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -21,12 +22,12 @@ class AttachmentContextBudgeterTest {
 
     @Test
     void budget_should_use_minimum_of_window_share_and_remaining_input_budget() {
-        ContextBudget budget = new ContextBudget(1_000, 1_000, 0, 0, 120, 90);
+        ContextBudget budget = new ContextBudget(1_000, 1_000, 0, 0, 220, 165);
         AttachmentTextSegment segment = segment("A-7K3M2Q", "合同.txt", "x".repeat(1_000));
 
         AttachmentContextBudgeter.Result result = budgeter.budget(List.of(segment), budget, 60);
 
-        assertThat(result.tokenEstimate()).isPositive().isLessThanOrEqualTo(60);
+        assertThat(result.tokenEstimate()).isPositive().isLessThanOrEqualTo(160);
         assertThat(result.snapshotItems()).singleElement().satisfies(item -> {
             assertThat(item.sourceType()).isEqualTo(ContextSourceType.ATTACHMENT);
             assertThat(item.originalCharacterCount()).isEqualTo(1_000);
@@ -44,6 +45,47 @@ class AttachmentContextBudgeterTest {
         AttachmentContextBudgeter.Result result = budgeter.budget(List.of(segment), budget, 0);
 
         assertThat(result.tokenEstimate()).isLessThanOrEqualTo(35);
+    }
+
+    @Test
+    void budget_should_use_utf8_upper_bound_for_large_chinese_at_exact_allowance() {
+        AttachmentTextSegment segment =
+                segment("A-7K3M2Q", "中文合同.txt", "甲乙双方合同正文。".repeat(80));
+        String fullSection = renderer.render(segment, segment.text(), false);
+        int exactAllowance = utf8Length(fullSection);
+        ContextBudget budget = new ContextBudget(
+                exactAllowance * 4,
+                exactAllowance * 4,
+                0,
+                0,
+                exactAllowance,
+                exactAllowance);
+
+        AttachmentContextBudgeter.Result result = budgeter.budget(List.of(segment), budget, 0);
+
+        assertThat(result.renderedText()).isEqualTo(fullSection);
+        assertThat(result.tokenEstimate()).isEqualTo(exactAllowance);
+        assertThat(result.snapshotItems()).singleElement()
+                .satisfies(item -> assertThat(item.tokenEstimate()).isEqualTo(exactAllowance));
+    }
+
+    @Test
+    void budget_should_keep_large_emoji_within_exact_window_share_without_splitting_surrogates() {
+        ContextBudget budget = new ContextBudget(1_000, 1_000, 0, 0, 1_000, 750);
+        AttachmentTextSegment segment =
+                segment("A-7K3M2Q", "表情.txt", "😀".repeat(500));
+
+        AttachmentContextBudgeter.Result result = budgeter.budget(List.of(segment), budget, 0);
+
+        assertThat(result.tokenEstimate()).isPositive().isLessThanOrEqualTo(350);
+        assertThat(result.tokenEstimate()).isEqualTo(utf8Length(result.renderedText()));
+        assertThat(result.snapshotItems()).singleElement().satisfies(item -> {
+            assertThat(item.tokenEstimate()).isEqualTo(result.tokenEstimate());
+            assertThat(item.includedCharacterCount()).isEven();
+        });
+        assertThat(result.renderedText().codePoints())
+                .allMatch(codePoint -> codePoint < Character.MIN_SURROGATE
+                        || codePoint > Character.MAX_SURROGATE);
     }
 
     @Test
@@ -78,7 +120,7 @@ class AttachmentContextBudgeterTest {
         ContextBudget budget = new ContextBudget(1_000, 1_000, 0, 0, 100, 75);
 
         AttachmentContextBudgeter.Result result =
-                budgeter.budget(List.of(segment("A-7K3M2Q", "合同.txt", "body")), budget, 100);
+                budgeter.budget(List.of(segment("A-7K3M2Q", "合同.txt", "body")), budget, 100, true);
 
         assertThat(result.renderedText()).isEmpty();
         assertThat(result.tokenEstimate()).isZero();
@@ -86,6 +128,63 @@ class AttachmentContextBudgeterTest {
             assertThat(item.included()).isFalse();
             assertThat(item.reason()).isEqualTo("TOKEN_BUDGET");
         });
+    }
+
+    @Test
+    void budget_should_count_base_attachment_delimiter_at_the_exact_allowance_boundary() {
+        AttachmentTextSegment segment =
+                segment("A-7K3M2Q", "合同.txt", "boundary body");
+        String fullSuffix = "\n\n" + renderer.render(segment, segment.text(), false);
+        int exactAllowance = utf8Length(fullSuffix);
+        ContextBudget exactBudget = new ContextBudget(
+                exactAllowance * 4,
+                exactAllowance * 4,
+                0,
+                0,
+                exactAllowance,
+                exactAllowance);
+
+        AttachmentContextBudgeter.Result exact =
+                budgeter.budget(List.of(segment), exactBudget, 0, true);
+
+        assertThat(exact.renderedText()).isEqualTo(fullSuffix);
+        assertThat(exact.tokenEstimate()).isEqualTo(exactAllowance);
+        assertThat(exact.snapshotItems()).singleElement()
+                .satisfies(item -> assertThat(item.tokenEstimate()).isEqualTo(exactAllowance));
+
+        ContextBudget oneTokenShort = new ContextBudget(
+                exactAllowance * 4,
+                exactAllowance * 4,
+                0,
+                0,
+                exactAllowance - 1,
+                exactAllowance - 1);
+        AttachmentContextBudgeter.Result shortResult =
+                budgeter.budget(List.of(segment), oneTokenShort, 0, true);
+
+        assertThat(shortResult.renderedText()).isNotEqualTo(fullSuffix);
+        assertThat(shortResult.tokenEstimate()).isLessThanOrEqualTo(exactAllowance - 1);
+    }
+
+    @Test
+    void budget_should_not_prefix_delimiter_when_base_model_input_is_blank() {
+        AttachmentTextSegment segment =
+                segment("A-7K3M2Q", "合同.txt", "body");
+        String fullSection = renderer.render(segment, segment.text(), false);
+        int allowance = utf8Length(fullSection);
+        ContextBudget budget = new ContextBudget(
+                allowance * 4,
+                allowance * 4,
+                0,
+                0,
+                allowance,
+                allowance);
+
+        AttachmentContextBudgeter.Result result =
+                budgeter.budget(List.of(segment), budget, 0, false);
+
+        assertThat(result.renderedText()).isEqualTo(fullSection).doesNotStartWith("\n");
+        assertThat(result.tokenEstimate()).isEqualTo(allowance);
     }
 
     @Test
@@ -105,6 +204,18 @@ class AttachmentContextBudgeterTest {
         assertThat(occurrences(rendered, "</attachment>")).isEqualTo(1);
     }
 
+    @Test
+    void result_to_string_should_redact_rendered_attachment_text() {
+        String sentinel = "ATTACHMENT_SECRET_SENTINEL";
+        String forbiddenPath = "C:\\Users\\secret\\合同.txt";
+        AttachmentContextBudgeter.Result result =
+                new AttachmentContextBudgeter.Result(sentinel + forbiddenPath, 17, List.of());
+
+        assertThat(result.toString())
+                .contains("renderedText=<redacted>")
+                .doesNotContain(sentinel, forbiddenPath);
+    }
+
     private static AttachmentTextSegment segment(String displayId, String name, String text) {
         return new AttachmentTextSegment(
                 "018fb799-2b03-7e7b-8f4c-4df90bc8c289",
@@ -116,5 +227,9 @@ class AttachmentContextBudgeterTest {
 
     private static int occurrences(String value, String needle) {
         return (value.length() - value.replace(needle, "").length()) / needle.length();
+    }
+
+    private static int utf8Length(String value) {
+        return value.getBytes(StandardCharsets.UTF_8).length;
     }
 }

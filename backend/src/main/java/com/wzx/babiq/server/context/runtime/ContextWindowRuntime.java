@@ -227,13 +227,16 @@ public class ContextWindowRuntime {
             assemblyResult = assemble(input, historyItems, activeSummary, capabilityCatalog,
                     memoryReadResult.references());
         }
+        String baseModelInput = promptRenderer.render(assemblyResult);
         AttachmentContextBudgeter.Result attachmentContext = attachmentContextBudgeter.budget(
-                input.attachmentTextSegments(), budget, assemblyResult.snapshot().estimatedTokens());
+                input.attachmentTextSegments(),
+                budget,
+                assemblyResult.snapshot().estimatedTokens(),
+                !baseModelInput.isBlank());
         assemblyResult = withAttachmentSnapshot(assemblyResult, attachmentContext);
         ContextSnapshotRecord snapshot = snapshotRecord(input, assemblyResult, capabilityCatalog,
                 snapshotId, windowOrdinal, modelWindow, threshold, memoryReadResult, now);
-        String modelInputText = appendAttachmentContext(
-                promptRenderer.render(assemblyResult), attachmentContext.renderedText());
+        String modelInputText = baseModelInput + attachmentContext.renderedText();
         try {
             snapshotRepository.save(snapshot);
             if (longTermMemoryReadService != null) {
@@ -436,18 +439,6 @@ public class ContextWindowRuntime {
                 Math.addExact(base.estimatedTokens(), attachmentContext.tokenEstimate()),
                 items);
         return assemblyResult.withSnapshot(augmented);
-    }
-
-    private static String appendAttachmentContext(String baseModelInput, String attachmentText) {
-        String base = baseModelInput == null ? "" : baseModelInput;
-        String attachments = attachmentText == null ? "" : attachmentText;
-        if (attachments.isBlank()) {
-            return base;
-        }
-        if (base.isBlank()) {
-            return attachments;
-        }
-        return base + "\n\n" + attachments;
     }
 
     private List<String> workspaceFacts(ContextWindowRuntimeInput input) {

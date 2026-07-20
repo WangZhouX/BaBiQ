@@ -27,4 +27,15 @@ public record ContextWindowRuntimeResult(
     public static ContextWindowRuntimeResult prepared(String snapshotId, String rawUserText, String modelInputText) {
         return new ContextWindowRuntimeResult(snapshotId, rawUserText, modelInputText, null);
     }
+
+    /**
+     * Runtime results contain the complete transient prompt and nested
+     * content-bearing context objects. Never expand them into logs.
+     */
+    @Override
+    public String toString() {
+        return "ContextWindowRuntimeResult[snapshotId=%s, rawUserText=<redacted>, "
+                .formatted(snapshotId)
+                + "modelInputText=<redacted>, assemblyResult=<redacted>]";
+    }
 }

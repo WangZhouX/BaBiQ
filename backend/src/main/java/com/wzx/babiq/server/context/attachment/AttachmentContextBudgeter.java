@@ -9,6 +9,7 @@ import com.wzx.babiq.server.context.model.ContextSnapshotItem;
 import com.wzx.babiq.server.context.model.ContextSourceType;
 import org.springframework.stereotype.Component;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -43,6 +44,18 @@ public class AttachmentContextBudgeter {
     public Result budget(List<AttachmentTextSegment> segments,
                          ContextBudget budget,
                          int baseEstimatedTokens) {
+        return budget(segments, budget, baseEstimatedTokens, false);
+    }
+
+    /**
+     * Allocate attachment text and return the exact suffix to append to the
+     * already-rendered base prompt. When the base is non-blank, the leading
+     * separator is part of both the suffix and its token estimate.
+     */
+    public Result budget(List<AttachmentTextSegment> segments,
+                         ContextBudget budget,
+                         int baseEstimatedTokens,
+                         boolean baseModelInputNonBlank) {
         List<AttachmentTextSegment> ordered =
                 segments == null ? List.of() : List.copyOf(segments);
         Objects.requireNonNull(budget, "budget");
@@ -61,7 +74,7 @@ public class AttachmentContextBudgeter {
         for (AttachmentTextSegment segment : ordered) {
             Objects.requireNonNull(segment, "attachmentTextSegment");
             String fullSection = renderer.render(segment, segment.text(), false);
-            int originalTokens = tokenEstimator.estimate(fullSection);
+            int originalTokens = estimateAttachmentTokens(fullSection);
             if (exhausted) {
                 snapshotItems.add(snapshotItem(segment, false, ContextExclusionReason.TOKEN_BUDGET.name(),
                         originalTokens, 0));
@@ -69,7 +82,10 @@ public class AttachmentContextBudgeter {
             }
 
             String fullCandidate = appendSection(renderedText, fullSection);
-            int fullCandidateTokens = tokenEstimator.estimate(fullCandidate);
+            if (renderedText.isEmpty() && baseModelInputNonBlank) {
+                fullCandidate = "\n\n" + fullCandidate;
+            }
+            int fullCandidateTokens = estimateAttachmentTokens(fullCandidate);
             if (fullCandidateTokens <= allowance) {
                 int contribution = Math.max(0, fullCandidateTokens - renderedTokens);
                 renderedText = fullCandidate;
@@ -80,12 +96,16 @@ public class AttachmentContextBudgeter {
                 continue;
             }
 
-            int includedCharacters = largestPrefixWithinBudget(segment, renderedText, allowance);
+            int includedCharacters = largestPrefixWithinBudget(
+                    segment, renderedText, allowance, baseModelInputNonBlank);
             if (includedCharacters > 0) {
                 String truncatedSection =
                         renderer.render(segment, segment.text().substring(0, includedCharacters), true);
                 String truncatedCandidate = appendSection(renderedText, truncatedSection);
-                int truncatedCandidateTokens = tokenEstimator.estimate(truncatedCandidate);
+                if (renderedText.isEmpty() && baseModelInputNonBlank) {
+                    truncatedCandidate = "\n\n" + truncatedCandidate;
+                }
+                int truncatedCandidateTokens = estimateAttachmentTokens(truncatedCandidate);
                 int contribution = Math.max(0, truncatedCandidateTokens - renderedTokens);
                 renderedText = truncatedCandidate;
                 renderedTokens = truncatedCandidateTokens;
@@ -104,7 +124,8 @@ public class AttachmentContextBudgeter {
 
     private int largestPrefixWithinBudget(AttachmentTextSegment segment,
                                           String alreadyRendered,
-                                          int allowance) {
+                                          int allowance,
+                                          boolean baseModelInputNonBlank) {
         int low = 0;
         int high = segment.text().length();
         int best = 0;
@@ -113,7 +134,11 @@ public class AttachmentContextBudgeter {
             int safeMiddle = avoidSplitSurrogate(segment.text(), middle);
             String candidateSection =
                     renderer.render(segment, segment.text().substring(0, safeMiddle), true);
-            int candidateTokens = tokenEstimator.estimate(appendSection(alreadyRendered, candidateSection));
+            String candidate = appendSection(alreadyRendered, candidateSection);
+            if (alreadyRendered.isEmpty() && baseModelInputNonBlank) {
+                candidate = "\n\n" + candidate;
+            }
+            int candidateTokens = estimateAttachmentTokens(candidate);
             if (candidateTokens <= allowance) {
                 best = Math.max(best, safeMiddle);
                 low = middle + 1;
@@ -122,6 +147,20 @@ public class AttachmentContextBudgeter {
             }
         }
         return best;
+    }
+
+    /**
+     * Attachment text is untrusted external data and needs a conservative
+     * budget independent of the language mix. UTF-8 byte length is used as
+     * an upper-bound proxy (one token per byte), while retaining any larger
+     * estimate supplied by the configured context estimator.
+     */
+    private int estimateAttachmentTokens(String renderedText) {
+        int configuredEstimate = Math.max(0, tokenEstimator.estimate(renderedText));
+        int utf8UpperBound = renderedText == null
+                ? 0
+                : renderedText.getBytes(StandardCharsets.UTF_8).length;
+        return Math.max(configuredEstimate, utf8UpperBound);
     }
 
     private static int avoidSplitSurrogate(String text, int index) {
@@ -174,6 +213,12 @@ public class AttachmentContextBudgeter {
 
         public static Result empty() {
             return new Result("", 0, List.of());
+        }
+
+        @Override
+        public String toString() {
+            return "Result[renderedText=<redacted>, tokenEstimate=%d, snapshotItemCount=%d]"
+                    .formatted(tokenEstimate, snapshotItems.size());
         }
     }
 }
