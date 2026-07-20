@@ -16,10 +16,12 @@ import com.wzx.huitai.desktop.app.BusinessDesktopProductionConfiguration
 import com.wzx.huitai.desktop.app.ProductionBusinessDesktopCompositionFactory
 import com.wzx.huitai.desktop.decision.ConfirmationDecisionDialogState
 import com.wzx.huitai.desktop.decision.HighRiskApprovalDialogState
-import com.wzx.huitai.desktop.controller.BusinessComposerDraftState
+import com.wzx.huitai.desktop.controller.BusinessComposerSessionState
 import com.wzx.huitai.desktop.controller.BusinessComposerSendCoordinator
+import com.wzx.huitai.desktop.controller.BusinessClipboardPasteCoordinator
 import com.wzx.huitai.desktop.controller.mergeBusinessComposerAttachments
 import com.wzx.huitai.desktop.controller.safeComposerAttachmentError
+import com.wzx.huitai.desktop.controller.toComposerIdentityScope
 import com.wzx.huitai.desktop.runtime.BusinessLocalAttachmentException
 import com.wzx.huitai.desktop.ui.agent.BusinessAttachmentSelectionException
 import com.wzx.huitai.desktop.ui.action.ActionPreviewDialog
@@ -37,6 +39,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
@@ -111,10 +114,14 @@ fun main() {
                 val decisionState by view.decisions.state.collectAsState()
                 val providerSettingsState by view.production.providerSettingsController.state.collectAsState()
                 var selectedDestination by remember { mutableStateOf(BusinessDesktopDestination.DATA_ENTRY) }
-                var composerDraft by remember { mutableStateOf(BusinessComposerDraftState()) }
-                var composerAttachmentError by remember {
-                    mutableStateOf<com.wzx.huitai.desktop.controller.BusinessComposerAttachmentError?>(null)
+                val composerIdentityScope = desktopState.identity?.toComposerIdentityScope()
+                var composerSession by remember(composerIdentityScope) {
+                    mutableStateOf(BusinessComposerSessionState(composerIdentityScope))
                 }
+                var composerSubmitting by remember { mutableStateOf(false) }
+                val activeComposerSession = composerSession
+                val composerDraft = activeComposerSession.draft
+                val composerAttachmentError = activeComposerSession.attachmentError
                 var agentPanelExpanded by remember { mutableStateOf(true) }
                 val uiScope = rememberCoroutineScope()
                 val sendCoordinator = remember(view, storage) {
@@ -125,6 +132,9 @@ fun main() {
                         }
                         conversation.startTurn(text, attachments)
                     }
+                }
+                val clipboardPasteCoordinator = remember(view.production.clipboardImageAttachmentStore) {
+                    BusinessClipboardPasteCoordinator(view.production.clipboardImageAttachmentStore::hasImage)
                 }
 
                 LaunchedEffect(Unit) {
@@ -140,6 +150,7 @@ fun main() {
                         composerText = composerDraft.text,
                         composerAttachments = composerDraft.attachments,
                         attachmentError = composerAttachmentError?.let { "${it.code}: ${it.message}" },
+                        composerSubmitting = composerSubmitting,
                         agentPanelExpanded = agentPanelExpanded,
                         onDestinationSelected = { selectedDestination = it },
                         onAgentPanelExpandedChange = { agentPanelExpanded = it },
@@ -206,7 +217,11 @@ fun main() {
                                 )
                             }
                         },
-                        onComposerTextChanged = { composerDraft = composerDraft.copy(text = it) },
+                        onComposerTextChanged = {
+                            composerSession = activeComposerSession.copy(
+                                draft = composerDraft.copy(text = it),
+                            )
+                        },
                         onChooseFiles = {
                             try {
                                 val historyAttachments = desktopState.messages
@@ -217,23 +232,28 @@ fun main() {
                                     existingIds = historyAttachments.mapTo(hashSetOf()) { it.id },
                                     existingDisplayIds = historyAttachments.mapTo(hashSetOf()) { it.displayId },
                                 )
-                                if (additions.isNotEmpty()) {
-                                    composerDraft = composerDraft.copy(
-                                        attachments = mergeBusinessComposerAttachments(
-                                            composerDraft.attachments,
-                                            additions,
-                                        ),
-                                    )
+                                val mergedAttachments = if (additions.isEmpty()) {
+                                    composerDraft.attachments
+                                } else {
+                                    mergeBusinessComposerAttachments(composerDraft.attachments, additions)
                                 }
-                                composerAttachmentError = null
+                                composerSession = activeComposerSession.copy(
+                                    draft = composerDraft.copy(attachments = mergedAttachments),
+                                    attachmentError = null,
+                                )
                             } catch (failure: BusinessAttachmentSelectionException) {
-                                composerAttachmentError = safeComposerAttachmentError(failure.code, failure.message)
+                                composerSession = activeComposerSession.copy(
+                                    attachmentError = safeComposerAttachmentError(failure.code, failure.message),
+                                )
                             } catch (failure: Exception) {
-                                composerAttachmentError = safeComposerAttachmentError(failure)
+                                composerSession = activeComposerSession.copy(
+                                    attachmentError = safeComposerAttachmentError(failure),
+                                )
                             }
                         },
                         onPasteImage = {
-                            try {
+                            clipboardPasteCoordinator.request { captureComplete ->
+                                val requestedIdentityScope = composerIdentityScope
                                 val historyAttachments = desktopState.messages
                                     .filterIsInstance<com.wzx.huitai.agent.conversation.BusinessThreadItem.UserMessage>()
                                     .flatMap { it.attachments }
@@ -243,48 +263,92 @@ fun main() {
                                 val existingDisplayIds = historyAttachments.mapTo(hashSetOf()) { it.displayId }.apply {
                                     addAll(composerDraft.attachments.map { it.displayId })
                                 }
-                                val captured = view.production.clipboardImageAttachmentStore.capture(
-                                    existingIds = existingIds,
-                                    existingDisplayIds = existingDisplayIds,
-                                )
-                                if (captured == null) {
-                                    false
-                                } else {
-                                    composerDraft = composerDraft.copy(
-                                        attachments = mergeBusinessComposerAttachments(
-                                            composerDraft.attachments,
-                                            listOf(captured),
-                                        ),
-                                    )
-                                    composerAttachmentError = null
-                                    true
+                                uiScope.launch {
+                                    try {
+                                        val captured = withContext(Dispatchers.IO) {
+                                            view.production.clipboardImageAttachmentStore.capture(
+                                                existingIds = existingIds,
+                                                existingDisplayIds = existingDisplayIds,
+                                            )
+                                        }
+                                        val latestIdentityScope =
+                                            view.desktopState.value.identity?.toComposerIdentityScope()
+                                        if (captured != null && latestIdentityScope == requestedIdentityScope) {
+                                            val currentSession = composerSession.forIdentity(latestIdentityScope)
+                                            composerSession = currentSession.copy(
+                                                draft = currentSession.draft.copy(
+                                                    attachments = mergeBusinessComposerAttachments(
+                                                        currentSession.draft.attachments,
+                                                        listOf(captured),
+                                                    ),
+                                                ),
+                                                attachmentError = null,
+                                            )
+                                        }
+                                    } catch (failure: BusinessLocalAttachmentException) {
+                                        val latestIdentityScope =
+                                            view.desktopState.value.identity?.toComposerIdentityScope()
+                                        if (latestIdentityScope == requestedIdentityScope) {
+                                            composerSession = composerSession
+                                                .forIdentity(latestIdentityScope)
+                                                .copy(
+                                                    attachmentError = safeComposerAttachmentError(
+                                                        failure.code,
+                                                        failure.message,
+                                                    ),
+                                                )
+                                        }
+                                    } catch (failure: Exception) {
+                                        val latestIdentityScope =
+                                            view.desktopState.value.identity?.toComposerIdentityScope()
+                                        if (latestIdentityScope == requestedIdentityScope) {
+                                            composerSession = composerSession
+                                                .forIdentity(latestIdentityScope)
+                                                .copy(attachmentError = safeComposerAttachmentError(failure))
+                                        }
+                                    } finally {
+                                        captureComplete()
+                                    }
                                 }
-                            } catch (failure: BusinessLocalAttachmentException) {
-                                composerAttachmentError = safeComposerAttachmentError(failure.code, failure.message)
-                                true
-                            } catch (failure: Exception) {
-                                composerAttachmentError = safeComposerAttachmentError(failure)
-                                true
                             }
                         },
                         onRemoveAttachment = { attachmentId ->
-                            composerDraft = composerDraft.copy(
-                                attachments = composerDraft.attachments.filterNot { it.id == attachmentId },
+                            composerSession = activeComposerSession.copy(
+                                draft = composerDraft.copy(
+                                    attachments = composerDraft.attachments.filterNot { it.id == attachmentId },
+                                ),
+                                attachmentError = null,
                             )
-                            composerAttachmentError = null
                         },
                         onSend = {
                             val captured = composerDraft
-                            if (captured.text.isNotBlank() || captured.attachments.isNotEmpty()) {
+                            val capturedIdentityScope = composerIdentityScope
+                            if (!composerSubmitting &&
+                                (captured.text.isNotBlank() || captured.attachments.isNotEmpty())
+                            ) {
+                                composerSubmitting = true
                                 uiScope.launch {
-                                    val result = sendCoordinator.submit(captured)
-                                    composerDraft = sendCoordinator.reconcile(
-                                        current = composerDraft,
-                                        captured = captured,
-                                        result = result,
-                                    )
-                                    if (result.succeeded) {
-                                        composerAttachmentError = null
+                                    try {
+                                        val result = sendCoordinator.submit(captured)
+                                        val latestIdentityScope =
+                                            view.desktopState.value.identity?.toComposerIdentityScope()
+                                        if (result.accepted && latestIdentityScope == capturedIdentityScope) {
+                                            val currentSession = composerSession.forIdentity(latestIdentityScope)
+                                            composerSession = currentSession.copy(
+                                                draft = sendCoordinator.reconcile(
+                                                    current = currentSession.draft,
+                                                    captured = captured,
+                                                    result = result,
+                                                ),
+                                                attachmentError = if (result.succeeded) {
+                                                    null
+                                                } else {
+                                                    currentSession.attachmentError
+                                                },
+                                            )
+                                        }
+                                    } finally {
+                                        composerSubmitting = false
                                     }
                                 }
                             }

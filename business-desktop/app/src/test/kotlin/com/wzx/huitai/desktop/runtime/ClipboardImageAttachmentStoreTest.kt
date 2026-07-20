@@ -19,6 +19,26 @@ import kotlin.test.assertTrue
 
 class ClipboardImageAttachmentStoreTest {
     @Test
+    fun `image availability check never reads or encodes clipboard pixels`() {
+        var imageReads = 0
+        val source = object : ClipboardImageSource {
+            override fun hasImage(): Boolean = true
+            override fun readImage(): BufferedImage? {
+                imageReads++
+                return BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB)
+            }
+        }
+        val store = ClipboardImageAttachmentStore(
+            controlledRoot = Files.createTempDirectory("huitai-clipboard-availability"),
+            imageSource = source,
+        )
+
+        assertTrue(store.hasImage())
+        assertEquals(0, imageReads)
+        assertTrue(Files.list(store.controlledRoot).use { it.findAny().isEmpty })
+    }
+
+    @Test
     fun `materializes clipboard image through a temporary sibling and publishes the named PNG`() {
         val root = Files.createTempDirectory("huitai-clipboard-image")
         val uuid = UUID.fromString("00000000-0000-0000-0000-000000000123")

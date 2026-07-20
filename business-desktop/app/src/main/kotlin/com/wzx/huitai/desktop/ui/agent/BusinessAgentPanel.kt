@@ -51,6 +51,7 @@ fun BusinessAgentPanel(
     composerText: String = "",
     composerAttachments: List<BusinessAttachmentDraft> = emptyList(),
     attachmentError: String? = null,
+    composerSubmitting: Boolean = false,
     onComposerTextChanged: (String) -> Unit = {},
     onChooseFiles: () -> Unit = {},
     onPasteImage: () -> Boolean = { false },
@@ -133,6 +134,7 @@ fun BusinessAgentPanel(
                 value = composerText,
                 attachments = composerAttachments,
                 attachmentError = attachmentError,
+                submitting = composerSubmitting,
                 enabled = state.connectionStatus == BusinessConnectionStatus.CONNECTED &&
                     state.authenticationStatus == BusinessAuthenticationStatus.AUTHENTICATED &&
                     state.identity != null,

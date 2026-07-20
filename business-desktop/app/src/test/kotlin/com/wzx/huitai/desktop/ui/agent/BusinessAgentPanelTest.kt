@@ -221,6 +221,29 @@ class BusinessAgentPanelTest {
     }
 
     @Test
+    fun `submitting disables send and long filenames keep a full accessible description`() {
+        val longName = "a".repeat(251) + ".pdf"
+        val attachment = draftAttachment().copy(name = longName)
+        rule.setContent {
+            BusinessAgentPanel(
+                state = composerState(
+                    BusinessAuthenticationStatus.AUTHENTICATED,
+                    identity = identity(),
+                ),
+                composerText = "send once",
+                composerAttachments = listOf(attachment),
+                composerSubmitting = true,
+            )
+        }
+
+        rule.onNodeWithTag("agent-composer-send").assertIsNotEnabled()
+        rule.onNodeWithTag("agent-attachment-${attachment.displayId}")
+            .assertContentDescriptionEquals(
+                "附件 ${attachment.displayId}，$longName，${attachment.displayType}，2.0 KiB",
+            )
+    }
+
+    @Test
     fun `composer handles one key down ctrl v and delegates ordinary paste when clipboard has no image`() {
         var calls = 0
         var captured = true

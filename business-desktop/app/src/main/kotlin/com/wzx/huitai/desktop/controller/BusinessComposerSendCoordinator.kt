@@ -1,7 +1,9 @@
 package com.wzx.huitai.desktop.controller
 
 import com.wzx.huitai.agent.conversation.BusinessAttachmentDraft
+import com.wzx.huitai.desktop.state.BusinessIdentity
 import java.nio.file.Path
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
 
 data class BusinessComposerDraftState(
@@ -10,9 +12,43 @@ data class BusinessComposerDraftState(
 )
 
 data class BusinessComposerSendResult(
+    val accepted: Boolean,
     val succeeded: Boolean,
     val resultingDraft: BusinessComposerDraftState,
 )
+
+data class BusinessComposerIdentityScope(
+    val desktopInstanceId: String,
+    val desktopSessionId: String,
+    val authSessionId: String,
+    val identityEpoch: Long,
+    val userId: String,
+    val tenantId: String,
+    val platformId: String,
+) {
+    override fun toString(): String =
+        "BusinessComposerIdentityScope(identityEpoch=$identityEpoch, values=[REDACTED])"
+}
+
+data class BusinessComposerSessionState(
+    val identityScope: BusinessComposerIdentityScope? = null,
+    val draft: BusinessComposerDraftState = BusinessComposerDraftState(),
+    val attachmentError: BusinessComposerAttachmentError? = null,
+) {
+    fun forIdentity(nextIdentityScope: BusinessComposerIdentityScope?): BusinessComposerSessionState =
+        if (identityScope == nextIdentityScope) this else BusinessComposerSessionState(nextIdentityScope)
+}
+
+fun BusinessIdentity.toComposerIdentityScope(): BusinessComposerIdentityScope =
+    BusinessComposerIdentityScope(
+        desktopInstanceId = desktopInstanceId,
+        desktopSessionId = desktopSessionId,
+        authSessionId = authSessionId,
+        identityEpoch = identityEpoch,
+        userId = userId,
+        tenantId = tenantId,
+        platformId = platformId,
+    )
 
 fun interface BusinessComposerTurnStarter {
     suspend fun startTurn(text: String, attachments: List<BusinessAttachmentDraft>)
@@ -25,13 +61,23 @@ fun interface BusinessComposerTurnStarter {
 class BusinessComposerSendCoordinator(
     private val turnStarter: BusinessComposerTurnStarter,
 ) {
+    private val submissionInFlight = AtomicBoolean(false)
+
     suspend fun submit(captured: BusinessComposerDraftState): BusinessComposerSendResult {
         require(captured.text.isNotBlank() || captured.attachments.isNotEmpty()) {
             "composer text and attachments must not both be blank"
         }
+        if (!submissionInFlight.compareAndSet(false, true)) {
+            return BusinessComposerSendResult(
+                accepted = false,
+                succeeded = false,
+                resultingDraft = captured,
+            )
+        }
         return try {
             turnStarter.startTurn(captured.text.trim(), captured.attachments.toList())
             BusinessComposerSendResult(
+                accepted = true,
                 succeeded = true,
                 resultingDraft = BusinessComposerDraftState(),
             )
@@ -39,9 +85,12 @@ class BusinessComposerSendCoordinator(
             throw cancelled
         } catch (_: Exception) {
             BusinessComposerSendResult(
+                accepted = true,
                 succeeded = false,
                 resultingDraft = captured,
             )
+        } finally {
+            submissionInFlight.set(false)
         }
     }
 
@@ -56,6 +105,36 @@ class BusinessComposerSendCoordinator(
             text = if (current.text == captured.text) "" else current.text,
             attachments = current.attachments.filterNot { it.id in submittedAttachmentIds },
         )
+    }
+}
+
+/**
+ * The Compose key event calls only this cheap availability gate. At most one scheduled capture may
+ * encode/publish an image; callers invoke the supplied completion after their IO work finishes.
+ */
+class BusinessClipboardPasteCoordinator(
+    private val hasImage: () -> Boolean,
+) {
+    private val captureInFlight = AtomicBoolean(false)
+
+    fun request(scheduleCapture: ((() -> Unit) -> Unit)): Boolean {
+        if (captureInFlight.get()) return true
+        if (!runCatching(hasImage).getOrDefault(false)) return false
+        if (!captureInFlight.compareAndSet(false, true)) return true
+
+        val completionCalled = AtomicBoolean(false)
+        val complete = {
+            if (completionCalled.compareAndSet(false, true)) {
+                captureInFlight.set(false)
+            }
+        }
+        return try {
+            scheduleCapture(complete)
+            true
+        } catch (_: Exception) {
+            complete()
+            true
+        }
     }
 }
 

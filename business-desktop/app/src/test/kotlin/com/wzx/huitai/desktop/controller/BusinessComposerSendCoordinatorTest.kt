@@ -52,6 +52,87 @@ class BusinessComposerSendCoordinatorTest {
     }
 
     @Test
+    fun `real in flight guard accepts only one concurrent submission`() = runTest {
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        var starts = 0
+        val coordinator = BusinessComposerSendCoordinator { _, _ ->
+            starts++
+            entered.complete(Unit)
+            release.await()
+        }
+        val captured = BusinessComposerDraftState("one", emptyList())
+
+        val first = async { coordinator.submit(captured) }
+        entered.await()
+        val second = async { coordinator.submit(captured) }
+        val duplicate = second.await()
+        release.complete(Unit)
+        val accepted = first.await()
+
+        assertTrue(accepted.accepted)
+        assertFalse(duplicate.accepted)
+        assertEquals(1, starts)
+    }
+
+    @Test
+    fun `identity scope changes clear draft and local attachment error atomically`() {
+        val first = BusinessComposerIdentityScope(
+            desktopInstanceId = "desktop-1",
+            desktopSessionId = "session-1",
+            authSessionId = "auth-1",
+            identityEpoch = 1,
+            userId = "user-1",
+            tenantId = "tenant-1",
+            platformId = "platform-1",
+        )
+        val second = first.copy(authSessionId = "auth-2", identityEpoch = 2, userId = "user-2")
+        val session = BusinessComposerSessionState(
+            identityScope = first,
+            draft = BusinessComposerDraftState("private", listOf(attachment(1))),
+            attachmentError = BusinessComposerAttachmentError("ATTACHMENT_DUPLICATE", "同一文件不能重复添加"),
+        )
+
+        assertEquals(session, session.forIdentity(first))
+        assertEquals(
+            BusinessComposerSessionState(identityScope = second),
+            session.forIdentity(second),
+        )
+        assertEquals(
+            BusinessComposerSessionState(identityScope = null),
+            session.forIdentity(null),
+        )
+    }
+
+    @Test
+    fun `clipboard paste scheduling is single flight and ordinary text is not consumed`() {
+        var imageAvailable = false
+        var availabilityChecks = 0
+        var schedules = 0
+        var completion: (() -> Unit)? = null
+        val coordinator = BusinessClipboardPasteCoordinator {
+            availabilityChecks++
+            imageAvailable
+        }
+        val schedule: ((() -> Unit) -> Unit) = {
+            schedules++
+            completion = it
+        }
+
+        assertFalse(coordinator.request(schedule))
+        assertEquals(0, schedules)
+        imageAvailable = true
+        assertTrue(coordinator.request(schedule))
+        assertTrue(coordinator.request(schedule))
+        assertEquals(1, schedules)
+        assertEquals(2, availabilityChecks)
+
+        requireNotNull(completion).invoke()
+        assertTrue(coordinator.request(schedule))
+        assertEquals(2, schedules)
+    }
+
+    @Test
     fun `merged attachment policy rejects duplicate count and total size with path free errors`() {
         val existing = attachment(1, path = "C:/private/customer.pdf", sizeBytes = 1)
         val duplicate = attachment(2, path = "C:/private/./customer.pdf", sizeBytes = 1)

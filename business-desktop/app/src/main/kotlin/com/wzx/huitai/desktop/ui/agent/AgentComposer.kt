@@ -26,6 +26,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.wzx.huitai.agent.conversation.BusinessAttachmentDraft
 import com.wzx.huitai.agent.conversation.BusinessMessageAttachment
@@ -37,6 +38,7 @@ import java.util.Locale
 fun AgentComposer(
     value: String,
     enabled: Boolean,
+    submitting: Boolean = false,
     attachments: List<BusinessAttachmentDraft> = emptyList(),
     attachmentError: String? = null,
     onValueChanged: (String) -> Unit,
@@ -104,7 +106,7 @@ fun AgentComposer(
             )
             Button(
                 onClick = onSend,
-                enabled = enabled && (value.isNotBlank() || attachments.isNotEmpty()),
+                enabled = enabled && !submitting && (value.isNotBlank() || attachments.isNotEmpty()),
                 modifier = Modifier.testTag("agent-composer-send"),
             ) {
                 Text("发送")
@@ -118,19 +120,30 @@ private fun DraftAttachmentChip(
     attachment: BusinessAttachmentDraft,
     onRemoveAttachment: (String) -> Unit,
 ) {
+    val formattedSize = formatAttachmentSize(attachment.sizeBytes)
     Surface(
         shape = RoundedCornerShape(8.dp),
         color = MaterialTheme.colorScheme.surfaceVariant,
-        modifier = Modifier.testTag("agent-attachment-${attachment.displayId}"),
+        modifier = Modifier
+            .testTag("agent-attachment-${attachment.displayId}")
+            .semantics {
+                contentDescription =
+                    "附件 ${attachment.displayId}，${attachment.name}，${attachment.displayType}，$formattedSize"
+            },
     ) {
         Row(
             modifier = Modifier.padding(start = 8.dp, top = 4.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column {
-                Text("${attachment.displayId} · ${attachment.name}", style = MaterialTheme.typography.labelMedium)
                 Text(
-                    "${attachment.displayType} · ${formatAttachmentSize(attachment.sizeBytes)}",
+                    "${attachment.displayId} · ${attachment.name}",
+                    style = MaterialTheme.typography.labelMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    "${attachment.displayType} · $formattedSize",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -149,15 +162,26 @@ private fun DraftAttachmentChip(
 
 @Composable
 fun MessageAttachmentChip(attachment: BusinessMessageAttachment) {
+    val formattedSize = formatAttachmentSize(attachment.sizeBytes)
     Surface(
         shape = RoundedCornerShape(8.dp),
         color = MaterialTheme.colorScheme.surface,
-        modifier = Modifier.testTag("agent-message-attachment-${attachment.displayId}"),
+        modifier = Modifier
+            .testTag("agent-message-attachment-${attachment.displayId}")
+            .semantics {
+                contentDescription =
+                    "附件 ${attachment.displayId}，${attachment.name}，${attachment.mediaType}，$formattedSize"
+            },
     ) {
         Column(Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
-            Text("${attachment.displayId} · ${attachment.name}", style = MaterialTheme.typography.labelMedium)
             Text(
-                "${attachment.mediaType} · ${formatAttachmentSize(attachment.sizeBytes)}",
+                "${attachment.displayId} · ${attachment.name}",
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                "${attachment.mediaType} · $formattedSize",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

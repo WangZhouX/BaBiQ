@@ -22,13 +22,19 @@ import javax.imageio.ImageIO
 fun interface ClipboardImageSource {
     fun readImage(): BufferedImage?
 
+    fun hasImage(): Boolean = readImage() != null
+
     companion object {
-        val SYSTEM = ClipboardImageSource {
-            val clipboard = Toolkit.getDefaultToolkit().systemClipboard
-            if (!clipboard.isDataFlavorAvailable(DataFlavor.imageFlavor)) {
-                null
-            } else {
-                (clipboard.getData(DataFlavor.imageFlavor) as? Image)?.toBufferedImage()
+        val SYSTEM = object : ClipboardImageSource {
+            override fun hasImage(): Boolean =
+                Toolkit.getDefaultToolkit().systemClipboard.isDataFlavorAvailable(DataFlavor.imageFlavor)
+
+            override fun readImage(): BufferedImage? {
+                val clipboard = Toolkit.getDefaultToolkit().systemClipboard
+                if (!clipboard.isDataFlavorAvailable(DataFlavor.imageFlavor)) {
+                    return null
+                }
+                return (clipboard.getData(DataFlavor.imageFlavor) as? Image)?.toBufferedImage()
             }
         }
     }
@@ -136,6 +142,13 @@ class ClipboardImageAttachmentStore(
             "clipboard attachment root must not be a symbolic link"
         }
         this.controlledRoot.toRealPath()
+    }
+
+    /** Cheap flavor probe used from the Compose key handler; it never reads or encodes image pixels. */
+    fun hasImage(): Boolean = try {
+        imageSource.hasImage()
+    } catch (_: Exception) {
+        false
     }
 
     fun capture(
