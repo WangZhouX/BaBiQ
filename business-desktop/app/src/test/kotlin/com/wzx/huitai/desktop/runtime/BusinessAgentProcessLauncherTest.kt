@@ -99,6 +99,11 @@ class BusinessAgentProcessLauncherTest {
         assertTrue(command.contains("--babiq.team.root-dir=${fixture.paths.agentTeamRoot}"))
         assertTrue(command.contains("--babiq.business.backend-lock-path=${fixture.paths.agentInstanceLock}"))
         assertTrue(command.contains("--babiq.business.session-token-file=${fixture.paths.agentSessionToken}"))
+        assertTrue(
+            command.contains(
+                "--babiq.business.attachment-clipboard-root=${fixture.paths.agentClipboardAttachmentRoot}",
+            ),
+        )
         assertFalse(command.joinToString(" ").contains(BACKEND_PASSWORD))
         assertEquals(BACKEND_PASSWORD, fixture.request.environment()["BABIQ_SECRETS_KEYSTORE_PASSWORD"])
         assertFalse(fixture.request.toString().contains(BACKEND_PASSWORD))

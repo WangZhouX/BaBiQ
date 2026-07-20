@@ -38,10 +38,12 @@ import com.wzx.huitai.desktop.decision.ComposeApprovalPort
 import com.wzx.huitai.desktop.decision.ComposeConfirmationPort
 import com.wzx.huitai.desktop.logging.DesktopLoggingBootstrap
 import com.wzx.huitai.desktop.runtime.AuthenticatedWebSocketProbe
+import com.wzx.huitai.desktop.runtime.BusinessAttachmentIdFactory
 import com.wzx.huitai.desktop.runtime.BusinessAgentProcessLauncher
 import com.wzx.huitai.desktop.runtime.BusinessAgentReadinessProbe
 import com.wzx.huitai.desktop.runtime.BusinessAgentRuntimeSession
 import com.wzx.huitai.desktop.runtime.BusinessDesktopRuntimePaths
+import com.wzx.huitai.desktop.runtime.ClipboardImageAttachmentStore
 import com.wzx.huitai.desktop.runtime.DesktopInstallationIdentityStore
 import com.wzx.huitai.desktop.runtime.BusinessAgentLaunchRequest
 import com.wzx.huitai.desktop.runtime.ManagedBusinessAgentConnection
@@ -52,6 +54,7 @@ import com.wzx.huitai.desktop.state.BusinessDesktopState
 import com.wzx.huitai.desktop.state.BusinessDesktopStore
 import com.wzx.huitai.desktop.state.BusinessFieldSuggestion
 import com.wzx.huitai.desktop.state.BusinessIdentity
+import com.wzx.huitai.desktop.ui.agent.BusinessAttachmentPicker
 import com.wzx.huitai.demo.action.DemoActionCatalog
 import com.wzx.huitai.demo.gateway.FakeHuitaiGateway
 import com.wzx.huitai.demo.model.DemoFormState
@@ -371,6 +374,9 @@ class ProductionUiComponents internal constructor(
     val desktopCoordinator: BusinessDesktopCoordinator,
     val actionRequestHandler: ApplicationActionRequestHandler,
     val businessAgentClient: BusinessAgentClient,
+    val agentClipboardAttachmentRoot: Path,
+    val clipboardImageAttachmentStore: ClipboardImageAttachmentStore,
+    val attachmentPicker: BusinessAttachmentPicker,
 )
 
 /**
@@ -703,6 +709,7 @@ class ProductionBusinessDesktopCompositionFactory(
                 }
             }
         }
+        val attachmentIdFactory = BusinessAttachmentIdFactory()
         val uiComponents = ProductionUiComponents(
             conversationController = conversation,
             providerSettingsController = providerSettings,
@@ -710,6 +717,12 @@ class ProductionBusinessDesktopCompositionFactory(
             desktopCoordinator = desktopCoordinator,
             actionRequestHandler = actionHandler,
             businessAgentClient = businessAgentClient,
+            agentClipboardAttachmentRoot = paths.agentClipboardAttachmentRoot,
+            clipboardImageAttachmentStore = ClipboardImageAttachmentStore(
+                controlledRoot = paths.agentClipboardAttachmentRoot,
+                idFactory = attachmentIdFactory,
+            ),
+            attachmentPicker = BusinessAttachmentPicker(idFactory = attachmentIdFactory),
         )
         val view = BusinessDesktopRuntimeView(
             desktopState = this.storage.desktopStore.state,

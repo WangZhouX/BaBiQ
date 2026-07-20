@@ -4,6 +4,7 @@ import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.attribute.BasicFileAttributes
+import java.nio.file.attribute.PosixFilePermission
 
 /**
  * 业务桌面父进程与内置 Agent 子进程共享的隔离路径清单。
@@ -21,6 +22,8 @@ class BusinessDesktopRuntimePaths private constructor(
     val agentTeamRoot: Path,
     val agentInstanceLock: Path,
     val agentSessionToken: Path,
+    val agentAttachmentRoot: Path,
+    val agentClipboardAttachmentRoot: Path,
     val desktopRoot: Path,
     val desktopDatabase: Path,
     val desktopKeyStore: Path,
@@ -51,6 +54,8 @@ class BusinessDesktopRuntimePaths private constructor(
                 agentTeamRoot = agent.resolve("teams"),
                 agentInstanceLock = agent.resolve("instance.lock"),
                 agentSessionToken = agent.resolve("session-token"),
+                agentAttachmentRoot = agent.resolve("attachments"),
+                agentClipboardAttachmentRoot = agent.resolve("attachments/clipboard"),
                 desktopRoot = desktop,
                 desktopDatabase = desktop.resolve("data/business-desktop.db"),
                 desktopKeyStore = desktop.resolve("secrets/business-desktop.jceks"),
@@ -86,6 +91,8 @@ class BusinessDesktopRuntimePaths private constructor(
             agentLog.parent,
             agentMemoryRoot,
             agentTeamRoot,
+            agentAttachmentRoot,
+            agentClipboardAttachmentRoot,
             desktopRoot,
             desktopDatabase.parent,
             desktopKeyStore.parent,
@@ -110,6 +117,28 @@ class BusinessDesktopRuntimePaths private constructor(
             require(directory.toRealPath().startsWith(realRoot)) {
                 "business desktop runtime path escaped isolated root"
             }
+        }
+        val realAgentRoot = agentRoot.toRealPath()
+        require(agentAttachmentRoot.toRealPath().startsWith(realAgentRoot)) {
+            "business attachment root escaped isolated Agent root"
+        }
+        require(agentClipboardAttachmentRoot.toRealPath().startsWith(realAgentRoot)) {
+            "business clipboard attachment root escaped isolated Agent root"
+        }
+        applyOwnerOnlyDirectoryPermissions(agentAttachmentRoot)
+        applyOwnerOnlyDirectoryPermissions(agentClipboardAttachmentRoot)
+    }
+
+    private fun applyOwnerOnlyDirectoryPermissions(path: Path) {
+        runCatching {
+            Files.setPosixFilePermissions(
+                path,
+                setOf(
+                    PosixFilePermission.OWNER_READ,
+                    PosixFilePermission.OWNER_WRITE,
+                    PosixFilePermission.OWNER_EXECUTE,
+                ),
+            )
         }
     }
 

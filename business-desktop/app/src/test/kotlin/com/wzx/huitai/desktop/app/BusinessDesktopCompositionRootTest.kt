@@ -187,6 +187,15 @@ class BusinessDesktopCompositionRootTest {
         assertTrue(
             view.production.providerSettingsController::class.simpleName == "BusinessProviderSettingsController",
         )
+        assertEquals(
+            runtimeRoot.resolve("agent/attachments/clipboard"),
+            view.production.agentClipboardAttachmentRoot,
+        )
+        assertEquals(
+            view.production.agentClipboardAttachmentRoot,
+            view.production.clipboardImageAttachmentStore.controlledRoot,
+        )
+        assertTrue(view.production.attachmentPicker::class.simpleName == "BusinessAttachmentPicker")
         assertTrue(view.desktopState.value.identity != null)
         assertTrue(Files.exists(databasePath))
         assertTrue(Files.exists(keyStorePath))

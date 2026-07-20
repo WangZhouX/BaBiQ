@@ -1,6 +1,7 @@
 package com.wzx.huitai.desktop.runtime
 
 import java.nio.file.Files
+import java.nio.file.attribute.PosixFilePermission
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.UUID
@@ -27,6 +28,8 @@ class BusinessDesktopRuntimePathsTest {
         assertEquals(root.resolve("agent/teams"), paths.agentTeamRoot)
         assertEquals(root.resolve("agent/instance.lock"), paths.agentInstanceLock)
         assertEquals(root.resolve("agent/session-token"), paths.agentSessionToken)
+        assertEquals(root.resolve("agent/attachments"), paths.agentAttachmentRoot)
+        assertEquals(root.resolve("agent/attachments/clipboard"), paths.agentClipboardAttachmentRoot)
         assertEquals(root.resolve("desktop"), paths.desktopRoot)
         assertEquals(root.resolve("desktop/data/business-desktop.db"), paths.desktopDatabase)
         assertEquals(root.resolve("desktop/secrets/business-desktop.jceks"), paths.desktopKeyStore)
@@ -36,6 +39,10 @@ class BusinessDesktopRuntimePathsTest {
 
         assertTrue(paths.agentMemoryRoot.exists())
         assertTrue(paths.agentTeamRoot.exists())
+        assertTrue(paths.agentAttachmentRoot.exists())
+        assertTrue(paths.agentClipboardAttachmentRoot.exists())
+        assertTrue(paths.agentAttachmentRoot.toRealPath().startsWith(paths.agentRoot.toRealPath()))
+        assertTrue(paths.agentClipboardAttachmentRoot.toRealPath().startsWith(paths.agentRoot.toRealPath()))
         assertTrue(paths.desktopDatabase.parent.exists())
         assertFalse(paths.agentSessionToken.exists(), "runtime setup must never pre-create the one-shot token")
         assertFalse(paths.desktopInstallationId.exists(), "runtime setup must not invent installation identity")
@@ -86,6 +93,36 @@ class BusinessDesktopRuntimePathsTest {
             BusinessDesktopRuntimePaths.create(home)
         }
         assertEquals("outside-value", Files.readString(outside))
+    }
+
+    @Test
+    fun `rejects attachment root link traversal without touching its target`() {
+        val home = Files.createTempDirectory("huitai-linked-attachment-home")
+        val outside = Files.createTempDirectory("huitai-outside-attachments")
+        val agent = home.resolve(".huitai-agent-desktop/agent")
+        Files.createDirectories(agent)
+        val linkedAttachments = agent.resolve("attachments")
+        val linkCreated = runCatching { Files.createSymbolicLink(linkedAttachments, outside) }.isSuccess
+        if (!linkCreated) return
+
+        assertFailsWith<IllegalArgumentException> {
+            BusinessDesktopRuntimePaths.create(home)
+        }
+        assertEquals(0, Files.list(outside).use { it.count() })
+    }
+
+    @Test
+    fun `attachment directories use owner only POSIX permissions when supported`() {
+        val paths = BusinessDesktopRuntimePaths.create(Files.createTempDirectory("huitai-attachment-permissions"))
+        if (!Files.getFileStore(paths.agentAttachmentRoot).supportsFileAttributeView("posix")) return
+
+        val expected = setOf(
+            PosixFilePermission.OWNER_READ,
+            PosixFilePermission.OWNER_WRITE,
+            PosixFilePermission.OWNER_EXECUTE,
+        )
+        assertEquals(expected, Files.getPosixFilePermissions(paths.agentAttachmentRoot))
+        assertEquals(expected, Files.getPosixFilePermissions(paths.agentClipboardAttachmentRoot))
     }
 
     @Test

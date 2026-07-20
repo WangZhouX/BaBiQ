@@ -71,6 +71,7 @@ class BusinessAgentLaunchRequest private constructor(
         "--babiq.team.root-dir=${paths.agentTeamRoot}",
         "--babiq.business.backend-lock-path=${paths.agentInstanceLock}",
         "--babiq.business.session-token-file=${paths.agentSessionToken}",
+        "--babiq.business.attachment-clipboard-root=${paths.agentClipboardAttachmentRoot}",
     )
 
     /** 只在实际启动前短暂产生环境字符串；调用方不得记录返回值。 */
