@@ -27,6 +27,7 @@ public final class AttachmentPreparationService {
     private final Path configuredClipboardRoot;
     private final ClipboardRootCanonicalizer clipboardRootCanonicalizer;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public AttachmentPreparationService(
             AttachmentFileValidator validator,
             BusinessDesktopModeProperties properties

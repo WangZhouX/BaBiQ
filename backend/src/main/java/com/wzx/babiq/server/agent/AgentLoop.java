@@ -1,7 +1,7 @@
 package com.wzx.babiq.server.agent;
-
 import com.alibaba.cloud.ai.graph.action.InterruptionMetadata;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
+import com.wzx.babiq.server.attachment.PreparedTurnInput;
 import com.wzx.babiq.server.capability.CapabilityExposurePlan;
 import com.wzx.babiq.server.context.runtime.ContextWindowRuntime;
 import com.wzx.babiq.server.context.runtime.ContextWindowRuntimeInput;
@@ -16,7 +16,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
-
 /** Agent Loop 主流程，负责编排 user item、P3 上下文窗口、ReactAgent 调用和 HITL 收口。 */
 @Component
 public class AgentLoop {
@@ -30,7 +29,6 @@ public class AgentLoop {
                      TurnObservationRegistry observationRegistry) {
         this(strategy, pendingApprovals, summaryEmitter, observationRegistry, null);
     }
-
     /** 生产构造器额外接入 ContextWindowRuntime；测试旧入口可以继续传 null 保持兼容。 */
     @Autowired
     public AgentLoop(ReActStrategy strategy, PendingApprovals pendingApprovals, TurnSummaryEmitter summaryEmitter,
@@ -46,7 +44,9 @@ public class AgentLoop {
     /** 执行普通用户输入：原文进入聊天历史，临时上下文窗口文本进入模型调用。 */
     public void invoke(Turn turn, String userText, String providerId, String cwd, ItemEmitter emitter, AgentRunPolicy runPolicy) { invoke(turn, userText, providerId, cwd, emitter, runPolicy, null); }
     /** 执行普通用户输入，并可选把本轮工具运行绑定到工作容器目标。 */
-    public void invoke(Turn turn, String userText, String providerId, String cwd, ItemEmitter emitter, AgentRunPolicy runPolicy, String workUnitGoalId) {
+    public void invoke(Turn turn, String userText, String providerId, String cwd, ItemEmitter emitter, AgentRunPolicy runPolicy, String workUnitGoalId, Object... compatibilityMarker) { invoke(turn, new PreparedTurnInput(userText, java.util.List.of(), java.util.List.of()), providerId, cwd, emitter, runPolicy, workUnitGoalId); }
+    public void invoke(Turn turn, PreparedTurnInput input, String providerId, String cwd, ItemEmitter emitter, AgentRunPolicy runPolicy, String workUnitGoalId) {
+        String userText = java.util.Objects.requireNonNull(input, "input").text();
         TurnObservationContext context = observationRegistry.start(turn.threadId(), turn.id(), providerId,
                 strategy.resolveModelName(providerId), turn.businessIdentityScope());
         if (workUnitGoalId != null && !workUnitGoalId.isBlank()) context.rememberWorkUnitGoalId(workUnitGoalId);
@@ -55,7 +55,7 @@ public class AgentLoop {
         CapabilityExposurePlan exposurePlan = null;
         AgentLoopDiagnostics.started(turn, context, cwd, userText);
         try {
-            emitter.emitItemAdded(UserMessageItem.of(AgentLoopSupport.newItemId(), userText));
+            emitter.emitItemAdded(UserMessageItem.of(AgentLoopSupport.newItemId(), userText, input.newAttachments().stream().map(item -> item.metadata()).toList()));
             AgentLoopDiagnostics.userItemEmitted(turn);
             exposurePlan = strategy.planCapabilities(turn.threadId(), turn.id());
             contextInput = prepareContextInput(turn, userText, providerId, cwd, runPolicy, emitter, exposurePlan);

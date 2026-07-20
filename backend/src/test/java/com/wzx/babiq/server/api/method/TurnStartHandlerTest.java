@@ -4,6 +4,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wzx.babiq.server.agent.AgentRunPolicy;
 import com.wzx.babiq.server.agent.TurnExecutor;
 import com.wzx.babiq.server.approval.ApprovalPolicy;
+import com.wzx.babiq.server.attachment.AttachmentErrorCode;
+import com.wzx.babiq.server.attachment.AttachmentException;
+import com.wzx.babiq.server.attachment.AttachmentHistoryResolver;
+import com.wzx.babiq.server.attachment.AttachmentMetadata;
+import com.wzx.babiq.server.attachment.AttachmentPreparationService;
+import com.wzx.babiq.server.attachment.AttachmentSource;
+import com.wzx.babiq.server.attachment.PreparedAttachment;
+import com.wzx.babiq.server.attachment.PreparedTurnInput;
 import com.wzx.babiq.server.conversation.ConversationService;
 import com.wzx.babiq.server.conversation.Thread;
 import com.wzx.babiq.server.conversation.items.WorkUnitItem;
@@ -21,6 +29,9 @@ import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
 import java.lang.reflect.Proxy;
+import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -71,7 +82,11 @@ class TurnStartHandlerTest {
         assertThat(responseMap.get("turnId")).asString().startsWith("turn_");
         assertThat(payloads).hasSize(1);
         assertThat(payloads.get(0)).contains("\"method\":\"turn/started\"");
-        verify(executor).submit(any(), eq("ping"), eq("dashscope-default"), eq("F:/wwwxxxx/BaBiQ"),
+        verify(executor).submit(
+                any(),
+                org.mockito.ArgumentMatchers.argThat((PreparedTurnInput input) ->
+                        "ping".equals(input.text()) && input.allAttachments().isEmpty()),
+                eq("dashscope-default"), eq("F:/wwwxxxx/BaBiQ"),
                 any(), any(), eq((String) null));
     }
 
@@ -100,7 +115,11 @@ class TurnStartHandlerTest {
                         "input", Map.of("type", "text", "text", "create file"))),
                 session);
 
-        verify(executor).submit(any(), eq("create file"), eq(null), eq("H:/aaa"), any(),
+        verify(executor).submit(
+                any(),
+                org.mockito.ArgumentMatchers.argThat((PreparedTurnInput input) ->
+                        "create file".equals(input.text()) && input.allAttachments().isEmpty()),
+                eq(null), eq("H:/aaa"), any(),
                 eq(AgentRunPolicy.of(SandboxMode.READ_ONLY, ApprovalPolicy.NEVER)), eq((String) null));
     }
 
@@ -154,7 +173,9 @@ class TurnStartHandlerTest {
                 any(),
                 eq("H:/aaa"),
                 any());
-        verify(executor, never()).submit(any(), any(), any(), any(), any(), any(), any());
+        verify(executor, never()).submit(
+                any(), org.mockito.ArgumentMatchers.any(String.class),
+                any(), any(), any(), any(), any());
         assertThat(payloads).anyMatch(payload -> payload.contains("\"method\":\"item/added\"")
                 && payload.contains("\"type\":\"workUnit\""));
         assertThat(payloads).anyMatch(payload -> payload.contains("\"method\":\"turn/completed\""));
@@ -202,7 +223,114 @@ class TurnStartHandlerTest {
                 session);
 
         verify(workUnitService).selectPendingGoalForTurn(thread.id(), "wu_1");
-        verify(executor).submit(any(), eq("start html-test"), eq(null), eq("H:/aaa"), any(), any(), eq("goal_1"));
+        verify(executor).submit(
+                any(),
+                org.mockito.ArgumentMatchers.argThat((PreparedTurnInput input) ->
+                        "start html-test".equals(input.text()) && input.allAttachments().isEmpty()),
+                eq(null), eq("H:/aaa"), any(), any(), eq("goal_1"));
+    }
+
+    @Test
+    void handle_should_allow_attachment_only_input_and_submit_one_immutable_prepared_input() {
+        ConversationService conversationService = new ConversationService();
+        Thread thread = conversationService.createThread("C:/business");
+        TurnExecutor executor = mock(TurnExecutor.class);
+        AttachmentPreparationService preparationService = mock(AttachmentPreparationService.class);
+        AttachmentHistoryResolver historyResolver = mock(AttachmentHistoryResolver.class);
+        PreparedAttachment attachment = preparedAttachment(
+                "550e8400-e29b-41d4-a716-446655440000", "A-7K3M2Q");
+        PreparedTurnInput prepared = new PreparedTurnInput("", List.of(attachment), List.of());
+        when(preparationService.prepareNew(eq(""), any())).thenReturn(prepared);
+        when(historyResolver.resolve(
+                eq(thread.id()), eq(BusinessIdentityScope.UNSCOPED), eq(prepared)))
+                .thenReturn(prepared);
+        List<String> payloads = new ArrayList<>();
+        TurnStartHandler handler = new TurnStartHandler(
+                conversationService, objectMapper, executor,
+                null, null, null, null, null, null,
+                preparationService, historyResolver);
+
+        handler.handle(
+                objectMapper.valueToTree(Map.of(
+                        "threadId", thread.id(),
+                        "input", Map.of(
+                                "type", "text",
+                                "text", "",
+                                "attachments", List.of(Map.of(
+                                        "id", attachment.metadata().id(),
+                                        "displayId", attachment.metadata().displayId(),
+                                        "name", attachment.metadata().name(),
+                                        "localPath", attachment.metadata().localPath()))))),
+                recordingSession(payloads));
+
+        assertThat(payloads).singleElement().asString().contains("\"method\":\"turn/started\"");
+        ArgumentCaptor<PreparedTurnInput> submitted = ArgumentCaptor.forClass(PreparedTurnInput.class);
+        verify(executor).submit(
+                any(), submitted.capture(), eq(null), eq("C:/business"), any(), any(), eq((String) null));
+        assertThat(submitted.getValue()).isSameAs(prepared);
+        assertThat(submitted.getValue().newAttachments()).containsExactly(attachment);
+    }
+
+    @Test
+    void handle_should_reject_empty_text_and_empty_attachments_before_creating_a_turn() {
+        ConversationService conversationService = spy(new ConversationService());
+        Thread thread = conversationService.createThread("C:/business");
+        TurnExecutor executor = mock(TurnExecutor.class);
+        List<String> payloads = new ArrayList<>();
+        TurnStartHandler handler = new TurnStartHandler(conversationService, objectMapper, executor);
+
+        assertThatThrownBy(() -> handler.handle(
+                objectMapper.valueToTree(Map.of(
+                        "threadId", thread.id(),
+                        "input", Map.of("type", "text", "text", "", "attachments", List.of()))),
+                recordingSession(payloads)))
+                .isInstanceOf(JsonRpcException.class);
+
+        assertThat(payloads).isEmpty();
+        verify(conversationService, never()).startTurn(any());
+        verify(conversationService, never()).startTurn(any(), any());
+        verifyNoInteractions(executor);
+    }
+
+    @Test
+    void invalid_attachment_fails_before_turn_started_persistence_or_executor_submission() {
+        ConversationService conversationService = spy(new ConversationService());
+        Thread thread = conversationService.createThread("C:/business");
+        TurnExecutor executor = mock(TurnExecutor.class);
+        AttachmentPreparationService preparationService = mock(AttachmentPreparationService.class);
+        AttachmentHistoryResolver historyResolver = mock(AttachmentHistoryResolver.class);
+        when(preparationService.prepareNew(eq("review"), any()))
+                .thenThrow(new AttachmentException(
+                        AttachmentErrorCode.ATTACHMENT_NOT_FOUND,
+                        "附件已不存在"));
+        List<String> payloads = new ArrayList<>();
+        TurnStartHandler handler = new TurnStartHandler(
+                conversationService, objectMapper, executor,
+                null, null, null, null, null, null,
+                preparationService, historyResolver);
+
+        assertThatThrownBy(() -> handler.handle(
+                objectMapper.valueToTree(Map.of(
+                        "threadId", thread.id(),
+                        "input", Map.of(
+                                "type", "text",
+                                "text", "review",
+                                "attachments", List.of(Map.of(
+                                        "id", "550e8400-e29b-41d4-a716-446655440000",
+                                        "displayId", "A-7K3M2Q",
+                                        "name", "missing.pdf",
+                                        "localPath", "C:\\missing.pdf"))))),
+                recordingSession(payloads)))
+                .isInstanceOfSatisfying(AttachmentException.class, failure ->
+                        assertThat(failure.code()).isEqualTo(AttachmentErrorCode.ATTACHMENT_NOT_FOUND));
+
+        assertThat(payloads).isEmpty();
+        verify(conversationService, never()).startTurn(any());
+        verify(conversationService, never()).startTurn(any(), any());
+        verify(conversationService, never()).persistTurnStarted(
+                any(), any(), any(), any(), any(), any(), any());
+        verifyNoInteractions(executor);
+        verifyNoInteractions(historyResolver);
     }
 
     @Test
@@ -262,7 +390,9 @@ class TurnStartHandlerTest {
         Thread thread = conversationService.createThread("C:/business");
         TurnExecutor executor = mock(TurnExecutor.class);
         doThrow(new RejectedExecutionException("secret executor payload"))
-                .when(executor).submit(any(), any(), any(), any(), any(), any(), any());
+                .when(executor).submit(
+                        any(), org.mockito.ArgumentMatchers.any(PreparedTurnInput.class),
+                        any(), any(), any(), any(), any());
         TurnStartHandler handler = new TurnStartHandler(conversationService, objectMapper, executor);
 
         assertThatThrownBy(() -> handler.handle(objectMapper.valueToTree(Map.of(
@@ -273,8 +403,11 @@ class TurnStartHandlerTest {
 
         ArgumentCaptor<com.wzx.babiq.server.conversation.Turn> turnCaptor =
                 ArgumentCaptor.forClass(com.wzx.babiq.server.conversation.Turn.class);
-        verify(executor).submit(turnCaptor.capture(), eq("ping"), eq(null), eq("C:/business"),
-                any(), any(), eq((String) null));
+        verify(executor).submit(
+                turnCaptor.capture(),
+                org.mockito.ArgumentMatchers.argThat((PreparedTurnInput input) ->
+                        "ping".equals(input.text()) && input.allAttachments().isEmpty()),
+                eq(null), eq("C:/business"), any(), any(), eq((String) null));
         assertThat(turnCaptor.getValue().status()).isEqualTo(com.wzx.babiq.server.conversation.TurnStatus.FAILED);
         assertThat(turnCaptor.getValue().failureReason()).isEqualTo("turn_start_submission_failed");
         assertThat(conversationService.hasActiveTurn(thread.id())).isFalse();
@@ -443,5 +576,22 @@ class TurnStartHandlerTest {
             return '\0';
         }
         return 0;
+    }
+
+    private static PreparedAttachment preparedAttachment(String id, String displayId) {
+        AttachmentMetadata metadata = new AttachmentMetadata(
+                id,
+                displayId,
+                "contract.pdf",
+                "C:\\business\\contract.pdf",
+                "application/pdf",
+                42,
+                "a".repeat(64),
+                AttachmentSource.SELECTED_FILE);
+        return new PreparedAttachment(
+                metadata,
+                Path.of(metadata.localPath()),
+                new PreparedAttachment.FileIdentity(
+                        metadata.sizeBytes(), FileTime.from(Instant.EPOCH), "file-key"));
     }
 }

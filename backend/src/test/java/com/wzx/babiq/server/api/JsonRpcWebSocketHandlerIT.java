@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wzx.babiq.server.agent.ReActStrategy;
 import com.wzx.babiq.server.agent.TurnExecutor;
+import com.wzx.babiq.server.attachment.PreparedTurnInput;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -91,7 +92,11 @@ class JsonRpcWebSocketHandlerIT {
                 .contains("\"turnId\":\"turn_")
                 .contains("\"method\":\"turn/started\"")
                 .doesNotContain("hello from babiq");
-        verify(turnExecutor).submit(any(), eq("ping"), eq(null), eq("."), any(), any(), eq(null));
+        verify(turnExecutor).submit(
+                any(),
+                org.mockito.ArgumentMatchers.argThat((PreparedTurnInput input) ->
+                        "ping".equals(input.text()) && input.allAttachments().isEmpty()),
+                eq(null), eq("."), any(), any(), eq(null));
     }
 
     @Test

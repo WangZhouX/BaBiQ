@@ -5,6 +5,12 @@ import com.wzx.babiq.server.agent.TurnExecutor;
 import com.wzx.babiq.server.agent.AgentLoop;
 import com.wzx.babiq.server.agent.ReActStrategy;
 import com.wzx.babiq.server.agent.PendingApprovals;
+import com.wzx.babiq.server.attachment.AttachmentHistoryResolver;
+import com.wzx.babiq.server.attachment.AttachmentMetadata;
+import com.wzx.babiq.server.attachment.AttachmentPreparationService;
+import com.wzx.babiq.server.attachment.AttachmentSource;
+import com.wzx.babiq.server.attachment.PreparedAttachment;
+import com.wzx.babiq.server.attachment.PreparedTurnInput;
 import com.wzx.babiq.server.context.runtime.ContextWindowRuntime;
 import com.wzx.babiq.server.context.runtime.ContextWindowRuntimeResult;
 import com.wzx.babiq.server.api.error.JsonRpcException;
@@ -13,6 +19,7 @@ import com.wzx.babiq.server.context.runtime.ContextWindowRuntimeInput;
 import com.wzx.babiq.server.conversation.ConversationService;
 import com.wzx.babiq.server.conversation.Thread;
 import com.wzx.babiq.server.conversation.Turn;
+import com.wzx.babiq.server.conversation.items.UserMessageItem;
 import com.wzx.babiq.server.observability.TurnObservationContext;
 import com.wzx.babiq.server.observability.TurnObservationRegistry;
 import com.wzx.babiq.server.observability.TurnSummaryEmitter;
@@ -25,6 +32,10 @@ import org.springframework.web.socket.WebSocketSession;
 import reactor.core.publisher.Flux;
 
 import java.util.Map;
+import java.util.List;
+import java.util.Optional;
+import java.util.function.Function;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import org.mockito.ArgumentCaptor;
 
@@ -36,6 +47,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.timeout;
 import java.lang.reflect.Constructor;
+import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
+import java.time.Instant;
 import org.springframework.beans.factory.annotation.Autowired;
 
 /** 验证业务身份在创建后只沿显式对象链传播，不再读取可变的当前登录态。 */
@@ -138,7 +152,14 @@ class BusinessTurnScopePropagationTest {
         when(strategy.extractAssistantMessage(output))
                 .thenReturn(new org.springframework.ai.chat.messages.AssistantMessage("done"));
 
-        loop.invoke(turn, "input", "provider", "E:/tenant-a", emitter);
+        PreparedAttachment newlySelected = attachment(
+                "550e8400-e29b-41d4-a716-446655440001", "A-7K3M2Q");
+        PreparedAttachment historicalReference = attachment(
+                "550e8400-e29b-41d4-a716-446655440002", "A-92CD4F");
+        PreparedTurnInput preparedInput = new PreparedTurnInput(
+                "input", List.of(newlySelected), List.of(historicalReference));
+
+        loop.invoke(turn, preparedInput, "provider", "E:/tenant-a", emitter, null, null);
 
         ArgumentCaptor<TurnObservationContext> observation = ArgumentCaptor.forClass(TurnObservationContext.class);
         verify(strategy).buildAgent(
@@ -149,6 +170,20 @@ class BusinessTurnScopePropagationTest {
         ArgumentCaptor<ContextWindowRuntimeInput> runtimeInput = ArgumentCaptor.forClass(ContextWindowRuntimeInput.class);
         verify(runtime).prepare(runtimeInput.capture());
         assertThat(runtimeInput.getValue().businessIdentityScope()).isEqualTo(tenantA);
+        assertThat(runtimeInput.getValue().userText()).isEqualTo("input");
+        ArgumentCaptor<com.wzx.babiq.server.conversation.items.ThreadItem> userItem =
+                ArgumentCaptor.forClass(com.wzx.babiq.server.conversation.items.ThreadItem.class);
+        verify(emitter, org.mockito.Mockito.atLeastOnce()).emitItemAdded(userItem.capture());
+        UserMessageItem emittedUserMessage = userItem.getAllValues().stream()
+                .filter(UserMessageItem.class::isInstance)
+                .map(UserMessageItem.class::cast)
+                .findFirst()
+                .orElseThrow();
+        assertThat(emittedUserMessage).satisfies(item -> {
+            assertThat(item.text()).isEqualTo("input");
+            assertThat(item.attachments()).containsExactly(newlySelected.metadata());
+            assertThat(item.attachments()).doesNotContain(historicalReference.metadata());
+        });
     }
 
     @Test
@@ -167,20 +202,107 @@ class BusinessTurnScopePropagationTest {
         AgentLoop loop = mock(AgentLoop.class);
         Turn tenantATurn = new Turn("turn-worker-a", "thread-worker-a", tenantA);
         ItemEmitter emitter = mock(ItemEmitter.class);
+        PreparedTurnInput preparedInput = new PreparedTurnInput("input", List.of(), List.of());
 
         try (TurnExecutor executor = new TurnExecutor(loop)) {
-            executor.submit(tenantATurn, "input", "provider", "E:/tenant-a", emitter, null, null);
+            executor.submit(tenantATurn, preparedInput, "provider", "E:/tenant-a", emitter, null, null);
 
             verify(loop, timeout(2_000)).invoke(
                     org.mockito.ArgumentMatchers.argThat(turn ->
                             turn.businessIdentityScope().equals(tenantA)),
-                    org.mockito.ArgumentMatchers.eq("input"),
+                    org.mockito.ArgumentMatchers.same(preparedInput),
                     org.mockito.ArgumentMatchers.eq("provider"),
                     org.mockito.ArgumentMatchers.eq("E:/tenant-a"),
                     org.mockito.ArgumentMatchers.eq(emitter),
                     org.mockito.ArgumentMatchers.isNull(),
                     org.mockito.ArgumentMatchers.isNull());
         }
+    }
+
+    @Test
+    void business_attachment_lookup_history_validation_and_turn_start_stay_inside_connection_lock() {
+        ConversationService conversations = mock(ConversationService.class);
+        TurnExecutor executor = mock(TurnExecutor.class);
+        BusinessIdentityScopeService scopes = mock(BusinessIdentityScopeService.class);
+        AttachmentPreparationService preparationService = mock(AttachmentPreparationService.class);
+        AttachmentHistoryResolver historyResolver = mock(AttachmentHistoryResolver.class);
+        WebSocketSession session = mock(WebSocketSession.class);
+        Thread thread = new Thread("thread-a", "E:/tenant-a", Instant.EPOCH, tenantA);
+        Turn turn = new Turn("turn-a", thread.id(), tenantA);
+        PreparedTurnInput prepared = new PreparedTurnInput("read A-7K3M2Q", List.of(), List.of());
+        AtomicBoolean insideCriticalSection = new AtomicBoolean(false);
+        when(scopes.resolve(session)).thenReturn(tenantA);
+        when(scopes.withActiveConnectionScope(
+                org.mockito.ArgumentMatchers.eq(tenantA),
+                org.mockito.ArgumentMatchers.any())).thenAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            Function<BusinessIdentityScopeService.ActiveBusinessIdentity, Object> operation =
+                    invocation.getArgument(1);
+            insideCriticalSection.set(true);
+            try {
+                return Optional.ofNullable(operation.apply(
+                        new BusinessIdentityScopeService.ActiveBusinessIdentity(
+                                mock(com.wzx.babiq.server.application.auth.TrustedDesktopConnection.class),
+                                mock(com.wzx.babiq.server.application.auth.TrustedBusinessIdentity.class))));
+            } finally {
+                insideCriticalSection.set(false);
+            }
+        });
+        when(conversations.findThread(thread.id(), tenantA)).thenAnswer(invocation -> {
+            assertThat(insideCriticalSection).isTrue();
+            return Optional.of(thread);
+        });
+        when(preparationService.prepareNew(
+                org.mockito.ArgumentMatchers.eq("read A-7K3M2Q"),
+                org.mockito.ArgumentMatchers.anyList())).thenAnswer(invocation -> {
+            assertThat(insideCriticalSection).isTrue();
+            return prepared;
+        });
+        when(historyResolver.resolve(thread.id(), tenantA, prepared)).thenAnswer(invocation -> {
+            assertThat(insideCriticalSection).isTrue();
+            return prepared;
+        });
+        when(conversations.startTurn(thread.id(), tenantA)).thenAnswer(invocation -> {
+            assertThat(insideCriticalSection).isTrue();
+            return turn;
+        });
+        org.mockito.Mockito.doAnswer(invocation -> {
+            assertThat(insideCriticalSection).isTrue();
+            assertThat(invocation.getArgument(1, String.class)).isEqualTo("read A-7K3M2Q");
+            return null;
+        }).when(conversations).persistTurnStarted(
+                org.mockito.ArgumentMatchers.eq(turn),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.eq(thread.cwd()),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any());
+        when(conversations.transitionPreExecutionToRunning(turn, com.wzx.babiq.server.conversation.TurnStatus.CREATED))
+                .thenAnswer(invocation -> {
+                    assertThat(insideCriticalSection).isTrue();
+                    turn.start();
+                    return true;
+                });
+        TurnStartHandler handler = new TurnStartHandler(
+                conversations, new ObjectMapper(), executor,
+                null, null, null, null, null, scopes,
+                preparationService, historyResolver);
+
+        handler.handle(
+                new ObjectMapper().valueToTree(Map.of(
+                        "threadId", thread.id(),
+                        "input", Map.of("type", "text", "text", "read A-7K3M2Q"))),
+                session);
+
+        verify(executor).submit(
+                org.mockito.ArgumentMatchers.eq(turn),
+                org.mockito.ArgumentMatchers.same(prepared),
+                org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.eq(thread.cwd()),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.isNull());
     }
 
     private JsonRpcException catchStartFailure(
@@ -195,5 +317,22 @@ class BusinessTurnScopePropagationTest {
 
     private static String normalizeThreadId(String message, String threadId) {
         return message.replace(threadId, "<threadId>");
+    }
+
+    private static PreparedAttachment attachment(String id, String displayId) {
+        AttachmentMetadata metadata = new AttachmentMetadata(
+                id,
+                displayId,
+                displayId + ".pdf",
+                "C:\\business\\" + displayId + ".pdf",
+                "application/pdf",
+                42,
+                "a".repeat(64),
+                AttachmentSource.SELECTED_FILE);
+        return new PreparedAttachment(
+                metadata,
+                Path.of(metadata.localPath()),
+                new PreparedAttachment.FileIdentity(
+                        metadata.sizeBytes(), FileTime.from(Instant.EPOCH), "file-key-" + displayId));
     }
 }

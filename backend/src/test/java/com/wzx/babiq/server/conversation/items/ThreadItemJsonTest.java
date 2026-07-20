@@ -1,9 +1,14 @@
 package com.wzx.babiq.server.conversation.items;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wzx.babiq.server.attachment.AttachmentMetadata;
+import com.wzx.babiq.server.attachment.AttachmentSource;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ThreadItemJsonTest {
 
@@ -40,6 +45,58 @@ class ThreadItemJsonTest {
 
         assertThat(item).isInstanceOf(UserMessageItem.class);
         assertThat(((UserMessageItem) item).text()).isEqualTo("hi");
+        assertThat(((UserMessageItem) item).attachments()).isEmpty();
+    }
+
+    @Test
+    void user_message_should_round_trip_attachment_metadata_without_file_content() throws Exception {
+        AttachmentMetadata attachment = new AttachmentMetadata(
+                "550e8400-e29b-41d4-a716-446655440000",
+                "A-7K3M2Q",
+                "合同.pdf",
+                "C:\\business\\合同.pdf",
+                "application/pdf",
+                4096,
+                "a".repeat(64),
+                AttachmentSource.SELECTED_FILE);
+        ThreadItem item = new UserMessageItem(
+                "it_attachment",
+                "userMessage",
+                "审阅合同",
+                List.of(attachment));
+
+        String json = objectMapper.writeValueAsString(item);
+        ThreadItem restored = objectMapper.readValue(json, ThreadItem.class);
+
+        assertThat(json)
+                .contains("\"attachments\"")
+                .contains("\"displayId\":\"A-7K3M2Q\"")
+                .contains("\"localPath\":\"C:\\\\business\\\\合同.pdf\"")
+                .doesNotContain("base64", "contentBytes", "extractedText");
+        assertThat(restored).isInstanceOf(UserMessageItem.class);
+        UserMessageItem userMessage = (UserMessageItem) restored;
+        assertThat(userMessage.attachments()).containsExactly(attachment);
+        assertThatThrownBy(() -> userMessage.attachments().add(attachment))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void user_message_should_normalize_explicit_null_attachments_to_immutable_empty_list() throws Exception {
+        UserMessageItem restored = objectMapper.readValue(
+                "{\"id\":\"it_null\",\"type\":\"userMessage\",\"text\":\"hi\",\"attachments\":null}",
+                UserMessageItem.class);
+
+        assertThat(restored.attachments()).isEmpty();
+        assertThatThrownBy(() -> restored.attachments().add(new AttachmentMetadata(
+                "550e8400-e29b-41d4-a716-446655440000",
+                "A-7K3M2Q",
+                "合同.pdf",
+                "C:\\business\\合同.pdf",
+                "application/pdf",
+                1,
+                "a".repeat(64),
+                AttachmentSource.SELECTED_FILE)))
+                .isInstanceOf(UnsupportedOperationException.class);
     }
 
     @Test

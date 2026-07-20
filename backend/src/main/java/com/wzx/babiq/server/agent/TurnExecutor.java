@@ -1,6 +1,7 @@
 package com.wzx.babiq.server.agent;
 
 import com.alibaba.cloud.ai.graph.action.InterruptionMetadata;
+import com.wzx.babiq.server.attachment.PreparedTurnInput;
 import com.wzx.babiq.server.conversation.ItemEmitter;
 import com.wzx.babiq.server.conversation.Turn;
 import org.slf4j.Logger;
@@ -70,7 +71,7 @@ public class TurnExecutor implements AutoCloseable {
      * @param emitter 当前 WebSocket 发射器
      */
     public void submit(Turn turn, String userText, String providerId, String cwd, ItemEmitter emitter) {
-        submit(turn, userText, providerId, cwd, emitter, null);
+        submit(turn, plainInput(userText), providerId, cwd, emitter, null, null);
     }
 
     /**
@@ -85,7 +86,7 @@ public class TurnExecutor implements AutoCloseable {
      */
     public void submit(Turn turn, String userText, String providerId, String cwd,
                        ItemEmitter emitter, AgentRunPolicy runPolicy) {
-        submit(turn, userText, providerId, cwd, emitter, runPolicy, null);
+        submit(turn, plainInput(userText), providerId, cwd, emitter, runPolicy, null);
     }
 
     /**
@@ -100,11 +101,23 @@ public class TurnExecutor implements AutoCloseable {
      * @param workUnitGoalId 本轮要回写的工作容器目标 id，可为 null
      */
     public void submit(Turn turn, String userText, String providerId, String cwd,
+                       ItemEmitter emitter, AgentRunPolicy runPolicy, String workUnitGoalId,
+                       Object... compatibilityMarker) {
+        submit(turn, plainInput(userText), providerId, cwd, emitter, runPolicy, workUnitGoalId);
+    }
+
+    /**
+     * 异步提交已经完成路径校验和历史引用解析的不可变输入。
+     */
+    public void submit(Turn turn, PreparedTurnInput input, String providerId, String cwd,
                        ItemEmitter emitter, AgentRunPolicy runPolicy, String workUnitGoalId) {
-        log.info("TurnExecutor 提交普通 turn: threadId={}, turnId={}, providerId={}, cwd={}",
-                turn.threadId(), turn.id(), providerId == null ? "<active-provider>" : providerId, cwd);
+        PreparedTurnInput safeInput = java.util.Objects.requireNonNull(input, "input");
+        log.info("TurnExecutor 提交普通 turn: threadId={}, turnId={}, providerId={}, cwd={}, attachments={}",
+                turn.threadId(), turn.id(), providerId == null ? "<active-provider>" : providerId, cwd,
+                safeInput.allAttachments().size());
         Future<?> future = executor.submit(() -> run(turn.id(),
-                () -> agentLoop.invoke(turn, userText, providerId, cwd, emitter, runPolicy, workUnitGoalId)));
+                () -> agentLoop.invoke(
+                        turn, safeInput, providerId, cwd, emitter, runPolicy, workUnitGoalId)));
         // submit 之后再放入 running，interrupt 才能通过 turnId 找到后台任务。
         running.put(turn.id(), future);
         if (future.isDone()) {
@@ -187,5 +200,9 @@ public class TurnExecutor implements AutoCloseable {
             running.remove(turnId);
             log.info("TurnExecutor worker 结束: turnId={}", turnId);
         }
+    }
+
+    private static PreparedTurnInput plainInput(String userText) {
+        return new PreparedTurnInput(userText, java.util.List.of(), java.util.List.of());
     }
 }
