@@ -8,6 +8,7 @@ import com.wzx.babiq.server.application.scope.BusinessIdentityScopeService;
 import com.wzx.babiq.server.attachment.AttachmentHistoryResolver;
 import com.wzx.babiq.server.attachment.AttachmentPreparationService;
 import com.wzx.babiq.server.attachment.AttachmentRequest;
+import com.wzx.babiq.server.attachment.AttachmentReservationRegistry;
 import com.wzx.babiq.server.attachment.PreparedTurnInput;
 import com.wzx.babiq.server.api.JsonRpcLogSupport;
 import com.wzx.babiq.server.api.JsonRpcMethodHandler;
@@ -72,6 +73,7 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
     private final AttachmentPreparationService attachmentPreparationService;
     /** 只从当前 thread/scope 的完整历史解析明确的附件短标识。 */
     private final AttachmentHistoryResolver attachmentHistoryResolver;
+    private final AttachmentReservationRegistry attachmentReservationRegistry;
 
     /**
      * 创建 turn/start handler。
@@ -84,7 +86,7 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
             ConversationService conversationService,
             ObjectMapper objectMapper,
             TurnExecutor turnExecutor) {
-        this(conversationService, objectMapper, turnExecutor, null, null, null, null, null, null, null, null);
+        this(conversationService, objectMapper, turnExecutor, null, null, null, null, null, null, null, null, null);
     }
 
     /**
@@ -107,7 +109,7 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
             ConversationEventRecorder eventRecorder,
             AppSettingsService appSettingsService) {
         this(conversationService, objectMapper, turnExecutor, providerRegistry, agentLoopProperties,
-                eventRecorder, appSettingsService, null, null, null, null);
+                eventRecorder, appSettingsService, null, null, null, null, null);
     }
 
     public TurnStartHandler(
@@ -120,7 +122,7 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
             AppSettingsService appSettingsService,
             WorkUnitService workUnitService) {
         this(conversationService, objectMapper, turnExecutor, providerRegistry, agentLoopProperties,
-                eventRecorder, appSettingsService, workUnitService, null, null, null);
+                eventRecorder, appSettingsService, workUnitService, null, null, null, null);
     }
 
     /** 兼容显式注入业务身份服务的旧测试和宿主。 */
@@ -135,7 +137,24 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
             WorkUnitService workUnitService,
             BusinessIdentityScopeService businessIdentityScopeService) {
         this(conversationService, objectMapper, turnExecutor, providerRegistry, agentLoopProperties,
-                eventRecorder, appSettingsService, workUnitService, businessIdentityScopeService, null, null);
+                eventRecorder, appSettingsService, workUnitService, businessIdentityScopeService, null, null, null);
+    }
+
+    public TurnStartHandler(
+            ConversationService conversationService,
+            ObjectMapper objectMapper,
+            TurnExecutor turnExecutor,
+            ModelProviderRegistry providerRegistry,
+            AgentLoopProperties agentLoopProperties,
+            ConversationEventRecorder eventRecorder,
+            AppSettingsService appSettingsService,
+            WorkUnitService workUnitService,
+            BusinessIdentityScopeService businessIdentityScopeService,
+            AttachmentPreparationService attachmentPreparationService,
+            AttachmentHistoryResolver attachmentHistoryResolver) {
+        this(conversationService, objectMapper, turnExecutor, providerRegistry, agentLoopProperties,
+                eventRecorder, appSettingsService, workUnitService, businessIdentityScopeService,
+                attachmentPreparationService, attachmentHistoryResolver, null);
     }
 
     @Autowired
@@ -150,7 +169,8 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
             WorkUnitService workUnitService,
             BusinessIdentityScopeService businessIdentityScopeService,
             AttachmentPreparationService attachmentPreparationService,
-            AttachmentHistoryResolver attachmentHistoryResolver) {
+            AttachmentHistoryResolver attachmentHistoryResolver,
+            AttachmentReservationRegistry attachmentReservationRegistry) {
         this.conversationService = conversationService;
         this.objectMapper = objectMapper;
         this.turnExecutor = turnExecutor;
@@ -162,6 +182,7 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
         this.businessIdentityScopeService = businessIdentityScopeService;
         this.attachmentPreparationService = attachmentPreparationService;
         this.attachmentHistoryResolver = attachmentHistoryResolver;
+        this.attachmentReservationRegistry = attachmentReservationRegistry;
     }
 
     /**
@@ -191,7 +212,7 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
         if (workUnitRequest != null && workUnitService == null) {
             throw new JsonRpcException(JsonRpcErrorCode.INTERNAL_ERROR, "工作容器服务未初始化");
         }
-        String workUnitGoalId = workUnitRequest == null ? parseWorkUnitStartGoalId(params, threadId) : null;
+        String workUnitIdToStart = workUnitRequest == null ? parseWorkUnitStartId(params) : null;
         log.info("turn/start 收到请求: threadId={}, providerId={}, inputChars={}, attachments={}, inputPreview={}",
                 threadId,
                 providerId == null ? "<active-provider>" : providerId,
@@ -209,10 +230,10 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
         StartedTurn started = requestScope.scoped()
                 ? createScopedTurn(
                         threadId, requestScope, input, providerId, provider, runPolicy,
-                        workUnitRequest != null)
+                        workUnitRequest != null, workUnitIdToStart)
                 : createAndStartTurn(
                         threadId, requestScope, input, providerId, provider, runPolicy,
-                        workUnitRequest != null);
+                        workUnitRequest != null, workUnitIdToStart);
         Thread thread = started.thread();
         Turn turn = started.turn();
         log.info("turn/start 已创建 Turn: threadId={}, turnId={}, cwd={}, providerId={}",
@@ -226,6 +247,7 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
             emitter.emitTurnStarted();
         } catch (Exception exception) {
             failStartedTurn(turn, "turn/started", exception);
+            started.releaseReservation();
             throw new JsonRpcException(JsonRpcErrorCode.INTERNAL_ERROR, "Turn 启动事件发送失败");
         }
         if (workUnitRequest != null) {
@@ -238,6 +260,7 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
                 }
             } catch (Exception exception) {
                 failStartedTurn(turn, "work_unit", exception);
+                started.releaseReservation();
                 throw new JsonRpcException(JsonRpcErrorCode.INTERNAL_ERROR, "工作容器创建事件发送失败");
             }
             try {
@@ -251,13 +274,16 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
                     turn.id(),
                     workUnitRequest.kind(),
                     workUnitRequest.name());
+            started.releaseReservation();
             return Map.of("turnId", turn.id());
         }
         try {
             turnExecutor.submit(
-                    turn, started.input(), providerId, thread.cwd(), emitter, runPolicy, workUnitGoalId);
+                    turn, started.input(), providerId, thread.cwd(), emitter, runPolicy,
+                    started.workUnitGoalId());
         } catch (RuntimeException exception) {
             failStartedTurn(turn, "executor_submit", exception);
+            started.releaseReservation();
             throw new JsonRpcException(JsonRpcErrorCode.INTERNAL_ERROR, "Turn 提交失败");
         }
         log.info("turn/start 已提交 AgentLoop: threadId={}, turnId={}, providerId={}",
@@ -281,16 +307,57 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
             String requestedProviderId,
             ModelProviderConfig provider,
             AgentRunPolicy runPolicy,
-            boolean createWorkUnit) {
+            boolean createWorkUnit,
+            String workUnitIdToStart) {
         Thread thread = conversationService.findThread(threadId, requestScope)
                 .orElseThrow(() -> threadNotFound(threadId));
-        PreparedTurnInput input = prepareInput(threadId, requestScope, inputRequest);
+        PreparedTurnInput prepared = prepareNewInput(inputRequest);
+        AttachmentReservationRegistry.Reservation reservation = null;
+        if (!createWorkUnit && attachmentReservationRegistry != null) {
+            reservation = attachmentReservationRegistry.reserve(
+                    threadId, requestScope, prepared.newAttachments());
+        }
+        try {
+            PreparedTurnInput input = resolveHistory(threadId, requestScope, prepared);
+            return startPreparedTurn(
+                    thread,
+                    requestScope,
+                    input,
+                    requestedProviderId,
+                    provider,
+                    runPolicy,
+                    createWorkUnit,
+                    workUnitIdToStart,
+                    reservation);
+        } catch (RuntimeException failure) {
+            if (reservation != null) {
+                reservation.close();
+            }
+            throw failure;
+        }
+    }
+
+    private StartedTurn startPreparedTurn(
+            Thread thread,
+            BusinessIdentityScope requestScope,
+            PreparedTurnInput input,
+            String requestedProviderId,
+            ModelProviderConfig provider,
+            AgentRunPolicy runPolicy,
+            boolean createWorkUnit,
+            String workUnitIdToStart,
+            AttachmentReservationRegistry.Reservation reservation
+    ) {
         if (createWorkUnit && !input.allAttachments().isEmpty()) {
             throw new JsonRpcException(
                     JsonRpcErrorCode.INVALID_PARAMS,
                     "创建工作容器暂不支持附件");
         }
-        Turn turn = conversationService.startTurn(threadId, requestScope);
+        String workUnitGoalId = selectWorkUnitGoal(thread.id(), workUnitIdToStart);
+        Turn turn = conversationService.startTurn(thread.id(), requestScope);
+        if (reservation != null) {
+            reservation.bindToTurn(turn.id());
+        }
         if (!requestScope.scoped()) {
             turn.start();
             conversationService.persistTurnStarted(
@@ -298,7 +365,7 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
                     provider == null ? requestedProviderId : provider.id(),
                     provider == null ? null : provider.model(),
                     thread.cwd(), runPolicy.sandboxMode().name(), runPolicy.approvalPolicy().name());
-            return new StartedTurn(thread, turn, input);
+            return new StartedTurn(thread, turn, input, workUnitGoalId, reservation);
         }
         conversationService.persistTurnStarted(
                 turn, input.text(),
@@ -306,9 +373,9 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
                 provider == null ? null : provider.model(),
                 thread.cwd(), runPolicy.sandboxMode().name(), runPolicy.approvalPolicy().name());
         if (!conversationService.transitionPreExecutionToRunning(turn, TurnStatus.CREATED)) {
-            throw threadNotFound(threadId);
+            throw threadNotFound(thread.id());
         }
-        return new StartedTurn(thread, turn, input);
+        return new StartedTurn(thread, turn, input, workUnitGoalId, reservation);
     }
 
     private StartedTurn createScopedTurn(
@@ -318,7 +385,8 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
             String requestedProviderId,
             ModelProviderConfig provider,
             AgentRunPolicy runPolicy,
-            boolean createWorkUnit
+            boolean createWorkUnit,
+            String workUnitIdToStart
     ) {
         ScopedStartResult result = businessIdentityScopeService.withActiveConnectionScope(
                         requestScope,
@@ -329,7 +397,8 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
                                 requestedProviderId,
                                 provider,
                                 runPolicy,
-                                createWorkUnit)))
+                                createWorkUnit,
+                                workUnitIdToStart)))
                 .orElseThrow(() -> threadNotFound(threadId));
         if (result.failure() != null) {
             throw result.failure();
@@ -345,11 +414,7 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
         }
     }
 
-    private PreparedTurnInput prepareInput(
-            String threadId,
-            BusinessIdentityScope requestScope,
-            TurnInputRequest input
-    ) {
+    private PreparedTurnInput prepareNewInput(TurnInputRequest input) {
         PreparedTurnInput prepared;
         if (attachmentPreparationService == null) {
             if (!input.attachments().isEmpty()) {
@@ -361,12 +426,32 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
         } else {
             prepared = attachmentPreparationService.prepareNew(input.text(), input.attachments());
         }
+        return prepared;
+    }
+
+    private PreparedTurnInput resolveHistory(
+            String threadId,
+            BusinessIdentityScope requestScope,
+            PreparedTurnInput prepared
+    ) {
         return attachmentHistoryResolver == null
                 ? prepared
                 : attachmentHistoryResolver.resolve(threadId, requestScope, prepared);
     }
 
-    private record StartedTurn(Thread thread, Turn turn, PreparedTurnInput input) {
+    private record StartedTurn(
+            Thread thread,
+            Turn turn,
+            PreparedTurnInput input,
+            String workUnitGoalId,
+            AttachmentReservationRegistry.Reservation reservation
+    ) {
+
+        private void releaseReservation() {
+            if (reservation != null) {
+                reservation.close();
+            }
+        }
     }
 
     private record ScopedStartResult(StartedTurn started, RuntimeException failure) {
@@ -446,7 +531,7 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
         return new WorkUnitCreateRequest(kind, name, goal, goalId);
     }
 
-    private String parseWorkUnitStartGoalId(JsonNode params, String threadId) {
+    private String parseWorkUnitStartId(JsonNode params) {
         JsonNode intent = params == null ? null : params.path("executionIntent");
         if (intent == null || intent.isMissingNode() || intent.isNull()) {
             return null;
@@ -458,7 +543,13 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
         if (workUnitService == null) {
             throw new JsonRpcException(JsonRpcErrorCode.INTERNAL_ERROR, "工作容器服务未初始化");
         }
-        String workUnitId = requiredIntentText(intent, "workUnitId");
+        return requiredIntentText(intent, "workUnitId");
+    }
+
+    private String selectWorkUnitGoal(String threadId, String workUnitId) {
+        if (workUnitId == null) {
+            return null;
+        }
         try {
             WorkUnitGoal goal = workUnitService.selectPendingGoalForTurn(threadId, workUnitId);
             return goal.goalId();

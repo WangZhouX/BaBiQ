@@ -22,6 +22,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -205,6 +206,9 @@ class AttachmentHistoryResolverTest {
                         "thread-a", SCOPE,
                         new PreparedTurnInput(referenceText(history), List.of(), List.of())),
                 AttachmentErrorCode.ATTACHMENT_LIMIT_EXCEEDED);
+        verify(validator, times(AttachmentLimits.MAX_ATTACHMENTS)).validate(any());
+        verify(validator, never()).validate(org.mockito.ArgumentMatchers.argThat(request ->
+                history.get(AttachmentLimits.MAX_ATTACHMENTS).displayId().equals(request.displayId())));
     }
 
     @Test
@@ -227,7 +231,8 @@ class AttachmentHistoryResolverTest {
     }
 
     @Test
-    void rejects_combined_new_and_referenced_bytes_and_saturates_on_long_overflow() throws Exception {
+    void rejects_combined_new_and_referenced_bytes_before_revalidating_the_over_budget_reference()
+            throws Exception {
         ConversationRepository repository = mock(ConversationRepository.class);
         AttachmentFileValidator validator = mock(AttachmentFileValidator.class);
         AttachmentMetadata historical = metadata(0, 21L * 1024 * 1024);
@@ -244,18 +249,28 @@ class AttachmentHistoryResolverTest {
                         new PreparedTurnInput(
                                 historical.displayId(), List.of(selected), List.of())),
                 AttachmentErrorCode.ATTACHMENT_TOTAL_TOO_LARGE);
+        verify(validator, never()).validate(any());
+    }
 
+    @Test
+    void saturates_persisted_reference_bytes_on_long_overflow_before_revalidation() throws Exception {
+        ConversationRepository repository = mock(ConversationRepository.class);
+        AttachmentFileValidator validator = mock(AttachmentFileValidator.class);
         AttachmentMetadata huge = metadata(1, Long.MAX_VALUE);
         AttachmentMetadata extra = metadata(2, 1);
         when(repository.listItems("thread-b", 200, null, SCOPE))
                 .thenReturn(List.of(userRecord("thread-b", 2, huge, extra)));
         stubRevalidation(validator, List.of(huge, extra));
+        AttachmentHistoryResolver resolver = new AttachmentHistoryResolver(
+                repository, objectMapper, validator);
+
         assertCode(
                 () -> resolver.resolve(
                         "thread-b", SCOPE,
                         new PreparedTurnInput(
                                 huge.displayId() + " " + extra.displayId(), List.of(), List.of())),
                 AttachmentErrorCode.ATTACHMENT_TOTAL_TOO_LARGE);
+        verify(validator, never()).validate(any());
     }
 
     @Test
@@ -278,6 +293,42 @@ class AttachmentHistoryResolverTest {
 
         assertThat(resolved.referencedAttachments()).containsExactly(alreadyReferenced);
         assertThat(resolved.allAttachments()).containsExactly(alreadyReferenced);
+    }
+
+    @Test
+    void rejects_history_when_payload_id_does_not_match_the_item_record_envelope() throws Exception {
+        ConversationRepository repository = mock(ConversationRepository.class);
+        AttachmentFileValidator validator = mock(AttachmentFileValidator.class);
+        UserMessageItem payload = new UserMessageItem(
+                "payload-id", "userMessage", "old", List.of(metadata(0, 42)));
+        ItemRecord mismatched = ItemRecord.of(
+                "record-id", "thread-a", "turn-1", "userMessage", 1,
+                objectMapper.writeValueAsString(payload), "completed", Instant.EPOCH);
+        when(repository.listItems("thread-a", 200, null, SCOPE)).thenReturn(List.of(mismatched));
+        AttachmentHistoryResolver resolver = new AttachmentHistoryResolver(
+                repository, objectMapper, validator);
+
+        assertAmbiguous(() -> resolver.resolve(
+                "thread-a", SCOPE, new PreparedTurnInput("A-234562", List.of(), List.of())));
+        verify(validator, never()).validate(any());
+    }
+
+    @Test
+    void rejects_history_when_payload_type_does_not_match_the_item_record_envelope() throws Exception {
+        ConversationRepository repository = mock(ConversationRepository.class);
+        AttachmentFileValidator validator = mock(AttachmentFileValidator.class);
+        UserMessageItem payload = new UserMessageItem(
+                "record-id", "tamperedType", "old", List.of(metadata(0, 42)));
+        ItemRecord mismatched = ItemRecord.of(
+                "record-id", "thread-a", "turn-1", "userMessage", 1,
+                objectMapper.writeValueAsString(payload), "completed", Instant.EPOCH);
+        when(repository.listItems("thread-a", 200, null, SCOPE)).thenReturn(List.of(mismatched));
+        AttachmentHistoryResolver resolver = new AttachmentHistoryResolver(
+                repository, objectMapper, validator);
+
+        assertAmbiguous(() -> resolver.resolve(
+                "thread-a", SCOPE, new PreparedTurnInput("A-234562", List.of(), List.of())));
+        verify(validator, never()).validate(any());
     }
 
     private List<ItemRecord> fullPage(String threadId, int size) {

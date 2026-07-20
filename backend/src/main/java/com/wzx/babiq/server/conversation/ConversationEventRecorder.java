@@ -2,6 +2,8 @@ package com.wzx.babiq.server.conversation;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wzx.babiq.server.attachment.AttachmentReservationRegistry;
+import com.wzx.babiq.server.conversation.items.UserMessageItem;
 import com.wzx.babiq.server.conversation.items.ThreadItem;
 import com.wzx.babiq.server.conversation.items.TurnSummaryItem;
 import com.wzx.babiq.server.conversation.repository.ConversationRepository;
@@ -31,6 +33,7 @@ public class ConversationEventRecorder {
     private final ApprovalPersistenceService approvalPersistenceService;
     /** 和 WebSocket 协议共用的 JSON 序列化器，保证 payload_json 字段保持协议原文。 */
     private final ObjectMapper objectMapper;
+    private final AttachmentReservationRegistry attachmentReservationRegistry;
 
     /**
      * 创建运行事件记录器。
@@ -43,7 +46,7 @@ public class ConversationEventRecorder {
             ConversationRepository repository,
             TurnPersistenceService turnPersistenceService,
             ObjectMapper objectMapper) {
-        this(repository, turnPersistenceService, null, objectMapper);
+        this(repository, turnPersistenceService, null, objectMapper, null);
     }
 
     /**
@@ -54,16 +57,26 @@ public class ConversationEventRecorder {
      * @param approvalPersistenceService 审批表持久化服务；测试旧构造器可为空
      * @param objectMapper JSON 序列化器
      */
-    @org.springframework.beans.factory.annotation.Autowired
     public ConversationEventRecorder(
             ConversationRepository repository,
             TurnPersistenceService turnPersistenceService,
             ApprovalPersistenceService approvalPersistenceService,
             ObjectMapper objectMapper) {
+        this(repository, turnPersistenceService, approvalPersistenceService, objectMapper, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public ConversationEventRecorder(
+            ConversationRepository repository,
+            TurnPersistenceService turnPersistenceService,
+            ApprovalPersistenceService approvalPersistenceService,
+            ObjectMapper objectMapper,
+            AttachmentReservationRegistry attachmentReservationRegistry) {
         this.repository = repository;
         this.turnPersistenceService = turnPersistenceService;
         this.approvalPersistenceService = approvalPersistenceService;
         this.objectMapper = objectMapper;
+        this.attachmentReservationRegistry = attachmentReservationRegistry;
     }
 
     /**
@@ -158,6 +171,9 @@ public class ConversationEventRecorder {
                 toPayloadJson(item),
                 status,
                 now));
+        if (attachmentReservationRegistry != null && item instanceof UserMessageItem) {
+            attachmentReservationRegistry.releaseTurn(turnId);
+        }
     }
 
     private String toPayloadJson(ThreadItem item) {

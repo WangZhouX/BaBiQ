@@ -20,6 +20,8 @@ import com.wzx.babiq.server.conversation.ConversationService;
 import com.wzx.babiq.server.conversation.Thread;
 import com.wzx.babiq.server.conversation.Turn;
 import com.wzx.babiq.server.conversation.items.UserMessageItem;
+import com.wzx.babiq.server.workunit.WorkUnitGoal;
+import com.wzx.babiq.server.workunit.WorkUnitService;
 import com.wzx.babiq.server.observability.TurnObservationContext;
 import com.wzx.babiq.server.observability.TurnObservationRegistry;
 import com.wzx.babiq.server.observability.TurnSummaryEmitter;
@@ -112,6 +114,43 @@ class BusinessTurnScopePropagationTest {
         assertThat(normalizeThreadId(mismatch.getMessage(), tenantAThread.id()))
                 .isEqualTo(normalizeThreadId(missing.getMessage(), "thr_missing"));
         assertThat(conversations.hasActiveTurn(tenantAThread.id())).isFalse();
+        verify(executor, never()).submit(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(PreparedTurnInput.class),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void foreign_scope_cannot_select_or_mutate_a_start_work_unit_goal() {
+        ConversationService conversations = new ConversationService();
+        Thread tenantAThread = conversations.createThread("E:/tenant-a", tenantA);
+        TurnExecutor executor = mock(TurnExecutor.class);
+        WorkUnitService workUnits = mock(WorkUnitService.class);
+        BusinessIdentityScopeService scopes = mock(BusinessIdentityScopeService.class);
+        WebSocketSession session = mock(WebSocketSession.class);
+        when(scopes.resolve(session)).thenReturn(tenantB);
+        when(workUnits.selectPendingGoalForTurn(tenantAThread.id(), "wu-foreign"))
+                .thenReturn(new WorkUnitGoal(
+                        "goal-foreign", "wu-foreign", tenantAThread.id(), "run", "pending",
+                        null, null, null, null, Instant.EPOCH, null, null));
+        TurnStartHandler handler = new TurnStartHandler(
+                conversations, new ObjectMapper(), executor,
+                null, null, null, null, workUnits, scopes);
+
+        assertThatThrownBy(() -> handler.handle(
+                new ObjectMapper().valueToTree(Map.of(
+                        "threadId", tenantAThread.id(),
+                        "input", Map.of("type", "text", "text", "start"),
+                        "executionIntent", Map.of(
+                                "type", "start_work_unit",
+                                "workUnitId", "wu-foreign"))),
+                session))
+                .isInstanceOf(JsonRpcException.class);
+
+        verify(workUnits, never()).selectPendingGoalForTurn(
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
         verify(executor, never()).submit(
                 org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any(PreparedTurnInput.class),

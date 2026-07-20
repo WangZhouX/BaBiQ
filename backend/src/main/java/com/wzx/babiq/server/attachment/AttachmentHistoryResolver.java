@@ -66,10 +66,14 @@ public final class AttachmentHistoryResolver {
         for (PreparedAttachment attachment : preparedNew.referencedAttachments()) {
             referencedById.putIfAbsent(attachment.metadata().id(), attachment);
         }
+        AttachmentBudget persistedBudget = AttachmentBudget.from(preparedNew.allAttachments());
         for (String displayId : referencedDisplayIds(preparedNew.text())) {
             AttachmentMetadata persisted = history.byDisplayId().get(displayId);
             if (persisted == null) {
                 continue;
+            }
+            if (!referencedById.containsKey(persisted.id())) {
+                persistedBudget.include(persisted);
             }
             PreparedAttachment referenced = revalidate(persisted);
             referencedById.putIfAbsent(referenced.metadata().id(), referenced);
@@ -117,7 +121,14 @@ public final class AttachmentHistoryResolver {
 
     private UserMessageItem decodeUserMessage(ItemRecord record) {
         try {
-            return objectMapper.readValue(record.payloadJson(), UserMessageItem.class);
+            UserMessageItem item = objectMapper.readValue(record.payloadJson(), UserMessageItem.class);
+            if (!Objects.equals(record.itemId(), item.id())
+                    || !Objects.equals(record.type(), item.type())) {
+                throw ambiguous("Attachment history envelope does not match its payload");
+            }
+            return item;
+        } catch (AttachmentException exception) {
+            throw exception;
         } catch (JsonProcessingException | RuntimeException exception) {
             throw ambiguous("附件历史元数据损坏，无法安全解析引用");
         }
@@ -236,5 +247,50 @@ public final class AttachmentHistoryResolver {
             Map<String, AttachmentMetadata> byUuid,
             Map<String, AttachmentMetadata> byDisplayId
     ) {
+    }
+
+    /**
+     * Applies cheap persisted-metadata limits before any file-system read or hashing.
+     * The authoritative limit check still runs after revalidation.
+     */
+    private static final class AttachmentBudget {
+
+        private final Set<String> attachmentIds = new HashSet<>();
+        private int count;
+        private long totalBytes;
+
+        static AttachmentBudget from(List<PreparedAttachment> attachments) {
+            AttachmentBudget budget = new AttachmentBudget();
+            for (PreparedAttachment attachment : attachments) {
+                budget.include(attachment.metadata());
+            }
+            return budget;
+        }
+
+        void include(AttachmentMetadata metadata) {
+            String attachmentId = canonicalUuid(metadata.id());
+            if (!attachmentIds.add(attachmentId)) {
+                return;
+            }
+            count++;
+            if (count > AttachmentLimits.MAX_ATTACHMENTS) {
+                throw new AttachmentException(
+                        AttachmentErrorCode.ATTACHMENT_LIMIT_EXCEEDED,
+                        "A turn can use at most 8 attachments");
+            }
+            totalBytes = saturatedAdd(totalBytes, metadata.sizeBytes());
+            if (totalBytes > AttachmentLimits.MAX_TOTAL_BYTES) {
+                throw new AttachmentException(
+                        AttachmentErrorCode.ATTACHMENT_TOTAL_TOO_LARGE,
+                        "The combined attachment size exceeds the 50 MiB limit");
+            }
+        }
+
+        private static long saturatedAdd(long current, long increment) {
+            if (increment < 0 || current > Long.MAX_VALUE - increment) {
+                return Long.MAX_VALUE;
+            }
+            return current + increment;
+        }
     }
 }

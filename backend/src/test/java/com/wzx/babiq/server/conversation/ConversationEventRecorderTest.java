@@ -1,6 +1,11 @@
 package com.wzx.babiq.server.conversation;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
+import com.wzx.babiq.server.attachment.AttachmentMetadata;
+import com.wzx.babiq.server.attachment.AttachmentReservationRegistry;
+import com.wzx.babiq.server.attachment.AttachmentSource;
+import com.wzx.babiq.server.attachment.PreparedAttachment;
 import com.wzx.babiq.server.conversation.items.TurnSummaryItem;
 import com.wzx.babiq.server.conversation.items.UserMessageItem;
 import com.wzx.babiq.server.conversation.repository.ConversationRepository;
@@ -10,7 +15,15 @@ import com.wzx.babiq.server.persistence.service.TurnPersistenceService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
+import java.time.Instant;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
@@ -81,5 +94,77 @@ class ConversationEventRecorderTest {
         recorder.recordTurnFinished("turn_1", "COMPLETED", null);
 
         verify(turnPersistenceService).updateTurnStatus("turn_1", "COMPLETED", null);
+    }
+
+    @Test
+    void persisted_user_message_releases_the_turn_attachment_reservation() {
+        ConversationRepository repository = mock(ConversationRepository.class);
+        AttachmentReservationRegistry registry = new AttachmentReservationRegistry();
+        PreparedAttachment attachment = attachment();
+        AttachmentReservationRegistry.Reservation reservation = registry.reserve(
+                "thread-a", BusinessIdentityScope.UNSCOPED, List.of(attachment));
+        reservation.bindToTurn("turn-a");
+        ConversationEventRecorder recorder = new ConversationEventRecorder(
+                repository,
+                mock(TurnPersistenceService.class),
+                null,
+                objectMapper,
+                registry);
+
+        recorder.recordItemAdded(
+                "thread-a",
+                "turn-a",
+                UserMessageItem.of("it_user", "review", List.of(attachment.metadata())));
+
+        try (AttachmentReservationRegistry.Reservation next = registry.reserve(
+                "thread-a", BusinessIdentityScope.UNSCOPED, List.of(attachment))) {
+            assertThat(next.active()).isTrue();
+        }
+    }
+
+    @Test
+    void failed_user_message_persistence_keeps_the_reservation_until_executor_cleanup() {
+        ConversationRepository repository = mock(ConversationRepository.class);
+        doThrow(new IllegalStateException("database unavailable"))
+                .when(repository).saveItem(any(ItemRecord.class));
+        AttachmentReservationRegistry registry = new AttachmentReservationRegistry();
+        PreparedAttachment attachment = attachment();
+        AttachmentReservationRegistry.Reservation reservation = registry.reserve(
+                "thread-a", BusinessIdentityScope.UNSCOPED, List.of(attachment));
+        reservation.bindToTurn("turn-a");
+        ConversationEventRecorder recorder = new ConversationEventRecorder(
+                repository,
+                mock(TurnPersistenceService.class),
+                null,
+                objectMapper,
+                registry);
+
+        assertThatThrownBy(() -> recorder.recordItemAdded(
+                "thread-a",
+                "turn-a",
+                UserMessageItem.of("it_user", "review", List.of(attachment.metadata()))))
+                .isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> registry.reserve(
+                "thread-a", BusinessIdentityScope.UNSCOPED, List.of(attachment)))
+                .isInstanceOf(com.wzx.babiq.server.attachment.AttachmentException.class);
+
+        registry.releaseTurn("turn-a");
+    }
+
+    private static PreparedAttachment attachment() {
+        AttachmentMetadata metadata = new AttachmentMetadata(
+                "00000000-0000-0000-0000-000000000001",
+                "A-234562",
+                "contract.pdf",
+                "C:\\business\\contract.pdf",
+                "application/pdf",
+                42,
+                "a".repeat(64),
+                AttachmentSource.SELECTED_FILE);
+        return new PreparedAttachment(
+                metadata,
+                Path.of(metadata.localPath()),
+                new PreparedAttachment.FileIdentity(
+                        metadata.sizeBytes(), FileTime.from(Instant.EPOCH), "file-key"));
     }
 }

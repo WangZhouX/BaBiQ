@@ -9,6 +9,7 @@ import com.wzx.babiq.server.attachment.AttachmentException;
 import com.wzx.babiq.server.attachment.AttachmentHistoryResolver;
 import com.wzx.babiq.server.attachment.AttachmentMetadata;
 import com.wzx.babiq.server.attachment.AttachmentPreparationService;
+import com.wzx.babiq.server.attachment.AttachmentReservationRegistry;
 import com.wzx.babiq.server.attachment.AttachmentSource;
 import com.wzx.babiq.server.attachment.PreparedAttachment;
 import com.wzx.babiq.server.attachment.PreparedTurnInput;
@@ -49,6 +50,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -309,6 +311,49 @@ class TurnStartHandlerTest {
     }
 
     @Test
+    void invalid_attachment_prevents_start_work_unit_goal_selection_and_all_turn_mutation() {
+        ConversationService conversationService = spy(new ConversationService());
+        Thread thread = conversationService.createThread("C:/business");
+        TurnExecutor executor = mock(TurnExecutor.class);
+        WorkUnitService workUnitService = mock(WorkUnitService.class);
+        AttachmentPreparationService preparationService = mock(AttachmentPreparationService.class);
+        AttachmentHistoryResolver historyResolver = mock(AttachmentHistoryResolver.class);
+        when(preparationService.prepareNew(eq("start attached work unit"), any()))
+                .thenThrow(new AttachmentException(
+                        AttachmentErrorCode.ATTACHMENT_NOT_FOUND,
+                        "附件已不存在"));
+        when(workUnitService.selectPendingGoalForTurn(thread.id(), "wu_1"))
+                .thenReturn(workUnitGoal(thread.id()));
+        List<String> payloads = new ArrayList<>();
+        TurnStartHandler handler = new TurnStartHandler(
+                conversationService, objectMapper, executor,
+                null, null, null, null, workUnitService, null,
+                preparationService, historyResolver);
+
+        assertThatThrownBy(() -> handler.handle(
+                objectMapper.valueToTree(Map.of(
+                        "threadId", thread.id(),
+                        "input", Map.of(
+                                "type", "text",
+                                "text", "start attached work unit",
+                                "attachments", List.of(Map.of(
+                                        "id", "550e8400-e29b-41d4-a716-446655440000",
+                                        "displayId", "A-7K3M2Q",
+                                        "name", "missing.pdf",
+                                        "localPath", "C:\\missing.pdf"))),
+                        "executionIntent", Map.of(
+                                "type", "start_work_unit",
+                                "workUnitId", "wu_1"))),
+                recordingSession(payloads)))
+                .isInstanceOfSatisfying(AttachmentException.class, failure ->
+                        assertThat(failure.code()).isEqualTo(AttachmentErrorCode.ATTACHMENT_NOT_FOUND));
+
+        verify(workUnitService, never()).selectPendingGoalForTurn(any(), any());
+        assertNoTurnOrWorkUnitMutation(
+                conversationService, executor, workUnitService, payloads, thread.id());
+    }
+
+    @Test
     void handle_should_allow_attachment_only_input_and_submit_one_immutable_prepared_input() {
         ConversationService conversationService = new ConversationService();
         Thread thread = conversationService.createThread("C:/business");
@@ -347,6 +392,93 @@ class TurnStartHandlerTest {
                 any(), submitted.capture(), eq(null), eq("C:/business"), any(), any(), eq((String) null));
         assertThat(submitted.getValue()).isSameAs(prepared);
         assertThat(submitted.getValue().newAttachments()).containsExactly(attachment);
+    }
+
+    @Test
+    void pending_attachment_identity_is_reserved_before_a_second_history_scan_or_turn() {
+        ConversationService conversationService = spy(new ConversationService());
+        Thread thread = conversationService.createThread("C:/business");
+        TurnExecutor executor = mock(TurnExecutor.class);
+        AttachmentPreparationService preparationService = mock(AttachmentPreparationService.class);
+        AttachmentHistoryResolver historyResolver = mock(AttachmentHistoryResolver.class);
+        AttachmentReservationRegistry registry = new AttachmentReservationRegistry();
+        PreparedAttachment attachment = preparedAttachment(
+                "550e8400-e29b-41d4-a716-446655440000", "A-7K3M2Q");
+        PreparedTurnInput prepared = new PreparedTurnInput(
+                "review", List.of(attachment), List.of());
+        when(preparationService.prepareNew(eq("review"), any())).thenReturn(prepared);
+        when(historyResolver.resolve(thread.id(), BusinessIdentityScope.UNSCOPED, prepared))
+                .thenReturn(prepared);
+        TurnStartHandler handler = new TurnStartHandler(
+                conversationService, objectMapper, executor,
+                null, null, null, null, null, null,
+                preparationService, historyResolver, registry);
+        var params = objectMapper.valueToTree(Map.of(
+                "threadId", thread.id(),
+                "input", Map.of(
+                        "type", "text",
+                        "text", "review",
+                        "attachments", List.of(Map.of(
+                                "id", attachment.metadata().id(),
+                                "displayId", attachment.metadata().displayId(),
+                                "name", attachment.metadata().name(),
+                                "localPath", attachment.metadata().localPath())))));
+
+        Map<?, ?> first = (Map<?, ?>) handler.handle(params, recordingSession(new ArrayList<>()));
+        assertThatThrownBy(() -> handler.handle(params, recordingSession(new ArrayList<>())))
+                .isInstanceOfSatisfying(AttachmentException.class, failure ->
+                        assertThat(failure.code())
+                                .isEqualTo(AttachmentErrorCode.ATTACHMENT_REFERENCE_AMBIGUOUS));
+
+        verify(historyResolver, times(1))
+                .resolve(thread.id(), BusinessIdentityScope.UNSCOPED, prepared);
+        verify(conversationService, times(1))
+                .startTurn(thread.id(), BusinessIdentityScope.UNSCOPED);
+        verify(executor, times(1)).submit(
+                any(), any(PreparedTurnInput.class), any(), any(), any(), any(), any());
+        registry.releaseTurn(String.valueOf(first.get("turnId")));
+    }
+
+    @Test
+    void synchronous_executor_rejection_releases_the_pending_attachment_identity() {
+        ConversationService conversationService = new ConversationService();
+        Thread thread = conversationService.createThread("C:/business");
+        TurnExecutor executor = mock(TurnExecutor.class);
+        doThrow(new RejectedExecutionException("unavailable"))
+                .when(executor).submit(
+                        any(), any(PreparedTurnInput.class), any(), any(), any(), any(), any());
+        AttachmentPreparationService preparationService = mock(AttachmentPreparationService.class);
+        AttachmentHistoryResolver historyResolver = mock(AttachmentHistoryResolver.class);
+        AttachmentReservationRegistry registry = new AttachmentReservationRegistry();
+        PreparedAttachment attachment = preparedAttachment(
+                "550e8400-e29b-41d4-a716-446655440000", "A-7K3M2Q");
+        PreparedTurnInput prepared = new PreparedTurnInput(
+                "review", List.of(attachment), List.of());
+        when(preparationService.prepareNew(eq("review"), any())).thenReturn(prepared);
+        when(historyResolver.resolve(thread.id(), BusinessIdentityScope.UNSCOPED, prepared))
+                .thenReturn(prepared);
+        TurnStartHandler handler = new TurnStartHandler(
+                conversationService, objectMapper, executor,
+                null, null, null, null, null, null,
+                preparationService, historyResolver, registry);
+        var params = objectMapper.valueToTree(Map.of(
+                "threadId", thread.id(),
+                "input", Map.of(
+                        "type", "text",
+                        "text", "review",
+                        "attachments", List.of(Map.of(
+                                "id", attachment.metadata().id(),
+                                "displayId", attachment.metadata().displayId(),
+                                "name", attachment.metadata().name(),
+                                "localPath", attachment.metadata().localPath())))));
+
+        assertThatThrownBy(() -> handler.handle(params, recordingSession(new ArrayList<>())))
+                .isInstanceOf(JsonRpcException.class);
+
+        try (AttachmentReservationRegistry.Reservation next = registry.reserve(
+                thread.id(), BusinessIdentityScope.UNSCOPED, List.of(attachment))) {
+            assertThat(next.active()).isTrue();
+        }
     }
 
     @Test
@@ -679,6 +811,12 @@ class TurnStartHandlerTest {
                 "kind", "orchestration",
                 "name", "合同审阅",
                 "goal", "审阅合同");
+    }
+
+    private static WorkUnitGoal workUnitGoal(String threadId) {
+        return new WorkUnitGoal(
+                "goal_1", "wu_1", threadId, "run", "pending",
+                null, null, null, null, Instant.EPOCH, null, null);
     }
 
     private static void assertNoTurnOrWorkUnitMutation(

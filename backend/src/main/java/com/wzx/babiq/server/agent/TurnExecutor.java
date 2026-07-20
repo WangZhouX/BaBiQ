@@ -1,6 +1,7 @@
 package com.wzx.babiq.server.agent;
 
 import com.alibaba.cloud.ai.graph.action.InterruptionMetadata;
+import com.wzx.babiq.server.attachment.AttachmentReservationRegistry;
 import com.wzx.babiq.server.attachment.PreparedTurnInput;
 import com.wzx.babiq.server.conversation.ItemEmitter;
 import com.wzx.babiq.server.conversation.Turn;
@@ -36,6 +37,7 @@ public class TurnExecutor implements AutoCloseable {
     private final ExecutorService executor;
     /** true 表示线程池由本组件创建，关闭组件时才负责 shutdown。 */
     private final boolean ownedExecutor;
+    private final AttachmentReservationRegistry attachmentReservationRegistry;
 
     /** turnId -> Future，用于 turn/interrupt 找到正在运行的 worker。 */
     private final Map<String, Future<?>> running = new ConcurrentHashMap<>();
@@ -45,20 +47,41 @@ public class TurnExecutor implements AutoCloseable {
      *
      * @param agentLoop Agent 主流程
      */
-    @Autowired
     public TurnExecutor(AgentLoop agentLoop) {
-        this(agentLoop, Executors.newCachedThreadPool(), true);
+        this(agentLoop, Executors.newCachedThreadPool(), true, null);
+    }
+
+    @Autowired
+    public TurnExecutor(
+            AgentLoop agentLoop,
+            AttachmentReservationRegistry attachmentReservationRegistry
+    ) {
+        this(agentLoop, Executors.newCachedThreadPool(), true, attachmentReservationRegistry);
     }
 
     /** 测试和宿主可注入外部线程池；组件只取消自身任务，不取得线程池所有权。 */
     public TurnExecutor(AgentLoop agentLoop, ExecutorService executor) {
-        this(agentLoop, executor, false);
+        this(agentLoop, executor, false, null);
     }
 
-    private TurnExecutor(AgentLoop agentLoop, ExecutorService executor, boolean ownedExecutor) {
+    public TurnExecutor(
+            AgentLoop agentLoop,
+            ExecutorService executor,
+            AttachmentReservationRegistry attachmentReservationRegistry
+    ) {
+        this(agentLoop, executor, false, attachmentReservationRegistry);
+    }
+
+    private TurnExecutor(
+            AgentLoop agentLoop,
+            ExecutorService executor,
+            boolean ownedExecutor,
+            AttachmentReservationRegistry attachmentReservationRegistry
+    ) {
         this.agentLoop = agentLoop;
         this.executor = java.util.Objects.requireNonNull(executor, "executor");
         this.ownedExecutor = ownedExecutor;
+        this.attachmentReservationRegistry = attachmentReservationRegistry;
     }
 
     /**
@@ -172,6 +195,7 @@ public class TurnExecutor implements AutoCloseable {
         }
         boolean canceled = future.cancel(true);
         running.remove(turnId, future);
+        releaseAttachmentReservation(turnId);
         log.info("turn/interrupt 已请求取消: turnId={}, canceled={}", turnId, canceled);
         return canceled;
     }
@@ -180,8 +204,10 @@ public class TurnExecutor implements AutoCloseable {
     @Override
     @PreDestroy
     public void close() {
+        java.util.Set<String> turnIds = java.util.Set.copyOf(running.keySet());
         running.values().forEach(future -> future.cancel(true));
         running.clear();
+        turnIds.forEach(this::releaseAttachmentReservation);
         if (ownedExecutor) {
             executor.shutdownNow();
         }
@@ -197,7 +223,14 @@ public class TurnExecutor implements AutoCloseable {
         } finally {
             // finally 中清理，确保 AgentLoop 成功、失败或被取消后 running 都不会残留。
             running.remove(turnId);
+            releaseAttachmentReservation(turnId);
             log.info("TurnExecutor worker 结束: turnId={}", turnId);
+        }
+    }
+
+    private void releaseAttachmentReservation(String turnId) {
+        if (attachmentReservationRegistry != null) {
+            attachmentReservationRegistry.releaseTurn(turnId);
         }
     }
 
