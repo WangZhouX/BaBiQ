@@ -2,6 +2,7 @@ package com.wzx.babiq.server.attachment;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.charset.StandardCharsets;
@@ -15,6 +16,8 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -259,6 +262,124 @@ class AttachmentContentLoaderTest {
         assertThat(loader.turnTimeout()).isEqualTo(Duration.ofSeconds(30));
     }
 
+    @Test
+    void revalidatesBatchCountFileAndTotalMetadataBeforeReaderOrExecutor() {
+        AtomicInteger reads = new AtomicInteger();
+        ThreadPoolExecutor executor = new ThreadPoolExecutor(
+                1, 1, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(8),
+                new ThreadPoolExecutor.AbortPolicy());
+        AttachmentContentLoader loader = new AttachmentContentLoader(
+                mock(AttachmentDocumentExtractor.class),
+                new OoxmlArchiveGuard(),
+                attachment -> {
+                    reads.incrementAndGet();
+                    return new byte[0];
+                },
+                executor,
+                Duration.ofSeconds(5),
+                Duration.ofSeconds(5),
+                true);
+        loaders.add(loader);
+
+        assertBoundaryFailure(
+                () -> loader.load(java.util.Collections.nCopies(
+                        AttachmentLimits.MAX_ATTACHMENTS + 1,
+                        metadataOnly(0))),
+                AttachmentErrorCode.ATTACHMENT_LIMIT_EXCEEDED);
+        assertBoundaryFailure(
+                () -> loader.load(List.of(metadataOnly(AttachmentLimits.MAX_FILE_BYTES + 1))),
+                AttachmentErrorCode.ATTACHMENT_FILE_TOO_LARGE);
+        assertBoundaryFailure(
+                () -> loader.load(List.of(
+                        metadataOnly(AttachmentLimits.MAX_FILE_BYTES),
+                        metadataOnly(AttachmentLimits.MAX_FILE_BYTES),
+                        metadataOnly(AttachmentLimits.MAX_FILE_BYTES))),
+                AttachmentErrorCode.ATTACHMENT_TOTAL_TOO_LARGE);
+        assertBoundaryFailure(
+                () -> loader.load(List.of(metadataOnly(Long.MAX_VALUE))),
+                AttachmentErrorCode.ATTACHMENT_FILE_TOO_LARGE);
+
+        assertThat(reads).hasValue(0);
+        assertThat(executor.getTaskCount()).isZero();
+    }
+
+    @Test
+    @Timeout(5)
+    void closeCancelsActiveAndQueuedExecutionsAndTerminatesOwnedPool() throws Exception {
+        Path activePath = Files.writeString(tempDir.resolve("active.txt"), "active");
+        Path queuedPath = Files.writeString(tempDir.resolve("queued.txt"), "queued");
+        CountDownLatch parserEntered = new CountDownLatch(1);
+        AttachmentDocumentExtractor extractor =
+                new AttachmentDocumentExtractor(new InterruptIgnoringStreamParser(parserEntered));
+        ThreadPoolExecutor executor = new ThreadPoolExecutor(
+                1, 1, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(8),
+                new ThreadPoolExecutor.AbortPolicy());
+        AttachmentContentLoader loader = new AttachmentContentLoader(
+                extractor,
+                new OoxmlArchiveGuard(),
+                AttachmentContentLoader.secureReader(),
+                executor,
+                Duration.ofSeconds(30),
+                Duration.ofSeconds(30),
+                true);
+        loaders.add(loader);
+
+        CompletableFuture<List<AttachmentContent>> active =
+                CompletableFuture.supplyAsync(() -> loader.load(List.of(validate(activePath))));
+        assertThat(parserEntered.await(2, TimeUnit.SECONDS)).isTrue();
+        CompletableFuture<List<AttachmentContent>> queued =
+                CompletableFuture.supplyAsync(() -> loader.load(List.of(validate(queuedPath))));
+        awaitQueueSize(executor, 1);
+
+        loader.close();
+
+        assertLoadFailedWith(active, AttachmentErrorCode.ATTACHMENT_PARSE_TIMEOUT);
+        assertLoadFailedWith(queued, AttachmentErrorCode.ATTACHMENT_PARSE_TIMEOUT);
+        assertThat(executor.awaitTermination(1, TimeUnit.SECONDS)).isTrue();
+        assertThat(executor.isTerminated()).isTrue();
+    }
+
+    @Test
+    @Timeout(5)
+    void submitAndCloseRaceNeverLeavesAnUntrackedRequest() throws Exception {
+        Path path = Files.writeString(tempDir.resolve("race.txt"), "race");
+        CountDownLatch readerEntered = new CountDownLatch(1);
+        CountDownLatch readerContinue = new CountDownLatch(1);
+        ThreadPoolExecutor executor = new ThreadPoolExecutor(
+                1, 1, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(8),
+                new ThreadPoolExecutor.AbortPolicy());
+        AttachmentContentLoader loader = new AttachmentContentLoader(
+                mock(AttachmentDocumentExtractor.class),
+                new OoxmlArchiveGuard(),
+                attachment -> {
+                    readerEntered.countDown();
+                    try {
+                        readerContinue.await();
+                    } catch (InterruptedException exception) {
+                        Thread.currentThread().interrupt();
+                        throw new AttachmentException(
+                                AttachmentErrorCode.ATTACHMENT_PARSE_TIMEOUT,
+                                "cancelled");
+                    }
+                    return "race".getBytes(StandardCharsets.UTF_8);
+                },
+                executor,
+                Duration.ofSeconds(30),
+                Duration.ofSeconds(30),
+                true);
+        loaders.add(loader);
+
+        CompletableFuture<List<AttachmentContent>> request =
+                CompletableFuture.supplyAsync(() -> loader.load(List.of(validate(path))));
+        assertThat(readerEntered.await(2, TimeUnit.SECONDS)).isTrue();
+
+        loader.close();
+        readerContinue.countDown();
+
+        assertLoadFailedWith(request, AttachmentErrorCode.ATTACHMENT_PARSE_TIMEOUT);
+        assertThat(executor.awaitTermination(1, TimeUnit.SECONDS)).isTrue();
+    }
+
     private AttachmentContentLoader loader(AttachmentDocumentExtractor extractor) {
         return loader(
                 extractor,
@@ -310,6 +431,59 @@ class AttachmentContentLoaderTest {
                         attributes.size(),
                         attributes.lastModifiedTime(),
                         attributes.fileKey() == null ? null : attributes.fileKey().toString()));
+    }
+
+    private PreparedAttachment metadataOnly(long size) {
+        Path path = tempDir.resolve("metadata-only-" + size + ".txt").toAbsolutePath();
+        return new PreparedAttachment(
+                new AttachmentMetadata(
+                        UUID.randomUUID().toString(),
+                        "A-234567",
+                        "metadata.txt",
+                        "<redacted>",
+                        "text/plain",
+                        size,
+                        "0".repeat(64),
+                        AttachmentSource.SELECTED_FILE),
+                path,
+                new PreparedAttachment.FileIdentity(
+                        size,
+                        java.nio.file.attribute.FileTime.fromMillis(1),
+                        "metadata"));
+    }
+
+    private static void assertBoundaryFailure(
+            org.assertj.core.api.ThrowableAssert.ThrowingCallable call,
+            AttachmentErrorCode code
+    ) {
+        assertThatThrownBy(call)
+                .isInstanceOfSatisfying(AttachmentException.class, failure ->
+                        assertThat(failure.code()).isEqualTo(code))
+                .hasMessageNotContaining("\\")
+                .hasMessageNotContaining("/");
+    }
+
+    private static void awaitQueueSize(ThreadPoolExecutor executor, int expected)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (executor.getQueue().size() != expected && System.nanoTime() < deadline) {
+            Thread.sleep(5);
+        }
+        assertThat(executor.getQueue()).hasSize(expected);
+    }
+
+    private static void assertLoadFailedWith(
+            CompletableFuture<List<AttachmentContent>> future,
+            AttachmentErrorCode code
+    ) {
+        assertThatThrownBy(future::join)
+                .isInstanceOfSatisfying(CompletionException.class, failure ->
+                        assertThat(failure.getCause())
+                                .isInstanceOfSatisfying(
+                                        AttachmentException.class,
+                                        attachmentFailure ->
+                                                assertThat(attachmentFailure.code())
+                                                        .isEqualTo(code)));
     }
 
     private static AttachmentTextSegment segment(PreparedAttachment attachment, String text) {
@@ -391,6 +565,41 @@ class AttachmentContentLoaderTest {
             handler.endElement("http://www.w3.org/1999/xhtml", "body", "body");
             handler.endElement("http://www.w3.org/1999/xhtml", "html", "html");
             handler.endDocument();
+        }
+    }
+
+    private static final class InterruptIgnoringStreamParser
+            implements org.apache.tika.parser.Parser {
+
+        private final CountDownLatch entered;
+
+        private InterruptIgnoringStreamParser(CountDownLatch entered) {
+            this.entered = entered;
+        }
+
+        @Override
+        public java.util.Set<org.apache.tika.mime.MediaType> getSupportedTypes(
+                org.apache.tika.parser.ParseContext context
+        ) {
+            return java.util.Set.of();
+        }
+
+        @Override
+        public void parse(
+                java.io.InputStream stream,
+                org.xml.sax.ContentHandler handler,
+                org.apache.tika.metadata.Metadata metadata,
+                org.apache.tika.parser.ParseContext context
+        ) throws java.io.IOException {
+            entered.countDown();
+            while (true) {
+                try {
+                    Thread.sleep(5);
+                } catch (InterruptedException ignored) {
+                    // The parser deliberately ignores interruption; stream closure must stop it.
+                }
+                stream.read();
+            }
         }
     }
 }

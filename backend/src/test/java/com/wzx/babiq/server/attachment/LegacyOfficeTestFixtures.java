@@ -5,10 +5,11 @@ import java.util.Base64;
 /**
  * Legacy Office fixtures that Apache POI cannot generate from scratch.
  *
- * <p>{@code WORD6_DOC_BASE64} is Apache Tika's
- * {@code tika-parser-microsoft-module/src/test/resources/test-documents/testWORD6.doc},
- * distributed under the Apache License 2.0:
- * https://github.com/apache/tika/blob/main/LICENSE.txt
+ * <p>{@code WORD6_DOC_BASE64} is Apache Tika's {@code testWORD6.doc}, pinned at
+ * commit {@code 0f71fa114cf82bc0f9236fc58841496f581e298a}. Direct source:
+ * https://raw.githubusercontent.com/apache/tika/0f71fa114cf82bc0f9236fc58841496f581e298a/tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testWORD6.doc
+ * It is distributed under Apache-2.0 and has SHA-256
+ * {@code 58ea3347378e85e7c8d19ad64e74ad533b2f51b30f047594b434f380712f8b50}.
  */
 final class LegacyOfficeTestFixtures {
 

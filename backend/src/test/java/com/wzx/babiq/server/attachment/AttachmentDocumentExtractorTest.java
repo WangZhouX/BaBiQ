@@ -167,6 +167,25 @@ class AttachmentDocumentExtractorTest {
         PDFParserConfig pdf = observed.get().get(PDFParserConfig.class);
         assertThat(pdf.isThrowOnEncryptedPayload()).isTrue();
         assertThat(pdf.isExtractInlineImages()).isFalse();
+        assertThat(pdf.getMaxMainMemoryBytes()).isEqualTo(32L * 1024 * 1024);
+    }
+
+    @Test
+    void parsesHighlyCompressedPdfPageStreamWithoutUnboundedMainMemory() throws Exception {
+        byte[] fixture = highExpansionPdf(33L * 1024 * 1024);
+        assertThat(fixture.length).isLessThan(100_000);
+
+        AttachmentTextSegment segment = extractor.extract(
+                prepared("expanded.pdf", "application/pdf", fixture),
+                fixture);
+
+        assertThat(segment.text()).doesNotContain("stream");
+    }
+
+    @Test
+    void legacyWordFixtureMatchesPinnedUpstreamSha256() {
+        assertThat(sha256(LegacyOfficeTestFixtures.word6Document()))
+                .isEqualTo("58ea3347378e85e7c8d19ad64e74ad533b2f51b30f047594b434f380712f8b50");
     }
 
     @Test
@@ -305,6 +324,47 @@ class AttachmentDocumentExtractorTest {
             document.save(output);
             return output.toByteArray();
         }
+    }
+
+    private static byte[] highExpansionPdf(long expandedBytes) throws Exception {
+        ByteArrayOutputStream compressed = new ByteArrayOutputStream();
+        byte[] spaces = new byte[64 * 1024];
+        java.util.Arrays.fill(spaces, (byte) ' ');
+        try (java.util.zip.DeflaterOutputStream deflater =
+                     new java.util.zip.DeflaterOutputStream(compressed)) {
+            long remaining = expandedBytes;
+            while (remaining > 0) {
+                int chunk = (int) Math.min(spaces.length, remaining);
+                deflater.write(spaces, 0, chunk);
+                remaining -= chunk;
+            }
+        }
+
+        ByteArrayOutputStream pdf = new ByteArrayOutputStream();
+        List<Integer> offsets = new java.util.ArrayList<>();
+        writeAscii(pdf, "%PDF-1.7\n");
+        offsets.add(pdf.size());
+        writeAscii(pdf, "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n");
+        offsets.add(pdf.size());
+        writeAscii(pdf, "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n");
+        offsets.add(pdf.size());
+        writeAscii(pdf, "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 10 10]/Contents 4 0 R>>endobj\n");
+        offsets.add(pdf.size());
+        writeAscii(pdf, "4 0 obj<</Length " + compressed.size()
+                + "/Filter/FlateDecode>>stream\n");
+        pdf.write(compressed.toByteArray());
+        writeAscii(pdf, "\nendstream\nendobj\n");
+        int xref = pdf.size();
+        writeAscii(pdf, "xref\n0 5\n0000000000 65535 f \n");
+        for (int offset : offsets) {
+            writeAscii(pdf, "%010d 00000 n \n".formatted(offset));
+        }
+        writeAscii(pdf, "trailer<</Size 5/Root 1 0 R>>\nstartxref\n" + xref + "\n%%EOF\n");
+        return pdf.toByteArray();
+    }
+
+    private static void writeAscii(ByteArrayOutputStream output, String value) {
+        output.writeBytes(value.getBytes(StandardCharsets.US_ASCII));
     }
 
     private static byte[] docx(String marker) throws Exception {

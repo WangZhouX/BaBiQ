@@ -29,6 +29,7 @@ import java.util.concurrent.atomic.AtomicReference;
 public class AttachmentDocumentExtractor {
 
     public static final int MAX_EXTRACTED_CHARACTERS = 100_000;
+    static final long PDF_MAX_MAIN_MEMORY_BYTES = 32L * 1024 * 1024;
     private static final long SECURE_OUTPUT_THRESHOLD = 10_000;
     private static final long SECURE_MAXIMUM_COMPRESSION_RATIO = 100;
 
@@ -117,6 +118,7 @@ public class AttachmentDocumentExtractor {
         pdf.setExtractInlineImageMetadataOnly(false);
         pdf.setExtractActions(false);
         pdf.setOcrStrategy(PDFParserConfig.OCR_STRATEGY.NO_OCR);
+        pdf.setMaxMainMemoryBytes(PDF_MAX_MAIN_MEMORY_BYTES);
         context.set(PDFParserConfig.class, pdf);
         return context;
     }

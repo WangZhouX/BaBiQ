@@ -17,12 +17,14 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
@@ -43,6 +45,7 @@ public final class AttachmentContentLoader implements AutoCloseable {
     private static final int EXECUTOR_QUEUE_CAPACITY = 8;
     private static final Duration DEFAULT_FILE_TIMEOUT = Duration.ofSeconds(10);
     private static final Duration DEFAULT_TURN_TIMEOUT = Duration.ofSeconds(30);
+    private static final Duration CLOSE_AWAIT_TIMEOUT = Duration.ofSeconds(2);
     private static final Set<String> ARCHIVE_EXTENSIONS = Set.of("zip", "rar", "7z", "tar", "gz");
     private static final Set<String> ARCHIVE_MEDIA_TYPES = Set.of(
             "application/zip",
@@ -63,6 +66,9 @@ public final class AttachmentContentLoader implements AutoCloseable {
     private final Duration fileTimeout;
     private final Duration turnTimeout;
     private final boolean ownsExecutor;
+    private final Object lifecycleMonitor = new Object();
+    private final Set<ParseExecution> executions = new HashSet<>();
+    private boolean closed;
 
     public AttachmentContentLoader(
             AttachmentDocumentExtractor extractor,
@@ -98,6 +104,7 @@ public final class AttachmentContentLoader implements AutoCloseable {
 
     public List<AttachmentContent> load(List<PreparedAttachment> attachments) {
         List<PreparedAttachment> ordered = attachments == null ? List.of() : List.copyOf(attachments);
+        validateBatchMetadata(ordered);
         if (ordered.isEmpty()) {
             return List.of();
         }
@@ -125,28 +132,24 @@ public final class AttachmentContentLoader implements AutoCloseable {
 
     private AttachmentContent loadOne(PreparedAttachment attachment, long deadline) {
         ParseExecution execution = new ParseExecution(attachment);
-        Future<AttachmentContent> future;
-        try {
-            future = executor.submit(execution);
-        } catch (RejectedExecutionException exception) {
-            throw new AttachmentException(
-                    AttachmentErrorCode.ATTACHMENT_PARSE_OVERLOADED,
-                    "附件解析任务过多，请稍后重试");
-        }
+        Future<AttachmentContent> future = submit(execution);
 
         long waitNanos = Math.min(fileTimeout.toNanos(), remainingNanos(deadline));
         if (waitNanos <= 0) {
-            cancel(execution, future);
+            cancel(execution);
             throw timeout();
         }
         try {
             return future.get(waitNanos, TimeUnit.NANOSECONDS);
         } catch (TimeoutException exception) {
-            cancel(execution, future);
+            cancel(execution);
             throw timeout();
         } catch (InterruptedException exception) {
-            cancel(execution, future);
+            cancel(execution);
             Thread.currentThread().interrupt();
+            throw timeout();
+        } catch (CancellationException exception) {
+            cancel(execution);
             throw timeout();
         } catch (ExecutionException exception) {
             Throwable cause = exception.getCause();
@@ -159,9 +162,38 @@ public final class AttachmentContentLoader implements AutoCloseable {
         }
     }
 
-    private void cancel(ParseExecution execution, Future<?> future) {
+    private Future<AttachmentContent> submit(ParseExecution execution) {
+        synchronized (lifecycleMonitor) {
+            if (closed) {
+                throw timeout();
+            }
+            executions.add(execution);
+            try {
+                Future<AttachmentContent> future = executor.submit(execution);
+                execution.future = future;
+                return future;
+            } catch (RejectedExecutionException exception) {
+                executions.remove(execution);
+                throw new AttachmentException(
+                        AttachmentErrorCode.ATTACHMENT_PARSE_OVERLOADED,
+                        "附件解析任务过多，请稍后重试");
+            }
+        }
+    }
+
+    private void cancel(ParseExecution execution) {
         execution.cancel();
-        future.cancel(true);
+        Future<?> future = execution.future;
+        if (future != null) {
+            future.cancel(true);
+        }
+        untrack(execution);
+    }
+
+    private void untrack(ParseExecution execution) {
+        synchronized (lifecycleMonitor) {
+            executions.remove(execution);
+        }
     }
 
     private AttachmentContent loadNow(
@@ -188,6 +220,32 @@ public final class AttachmentContentLoader implements AutoCloseable {
             throw new AttachmentException(
                     AttachmentErrorCode.ATTACHMENT_TYPE_UNSUPPORTED,
                     "不支持压缩包附件");
+        }
+    }
+
+    private static void validateBatchMetadata(List<PreparedAttachment> attachments) {
+        if (attachments.size() > AttachmentLimits.MAX_ATTACHMENTS) {
+            throw new AttachmentException(
+                    AttachmentErrorCode.ATTACHMENT_LIMIT_EXCEEDED,
+                    "每轮最多支持 8 个附件");
+        }
+        long total = 0;
+        for (PreparedAttachment attachment : attachments) {
+            PreparedAttachment required = Objects.requireNonNull(attachment, "attachment");
+            long size = required.metadata().sizeBytes();
+            if (size > AttachmentLimits.MAX_FILE_BYTES) {
+                throw new AttachmentException(
+                        AttachmentErrorCode.ATTACHMENT_FILE_TOO_LARGE,
+                        "单个附件超过 20 MiB 上限");
+            }
+            try {
+                total = Math.addExact(total, size);
+            } catch (ArithmeticException exception) {
+                throw totalTooLarge();
+            }
+            if (total > AttachmentLimits.MAX_TOTAL_BYTES) {
+                throw totalTooLarge();
+            }
         }
     }
 
@@ -357,6 +415,12 @@ public final class AttachmentContentLoader implements AutoCloseable {
                 "本轮附件可提取文本超过 250,000 字符上限");
     }
 
+    private static AttachmentException totalTooLarge() {
+        return new AttachmentException(
+                AttachmentErrorCode.ATTACHMENT_TOTAL_TOO_LARGE,
+                "本轮附件总大小超过 50 MiB 上限");
+    }
+
     private static Duration positive(Duration value, String name) {
         Objects.requireNonNull(value, name);
         if (value.isZero() || value.isNegative()) {
@@ -408,8 +472,26 @@ public final class AttachmentContentLoader implements AutoCloseable {
     @Override
     @PreDestroy
     public void close() {
+        List<ParseExecution> pending;
+        synchronized (lifecycleMonitor) {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            pending = List.copyOf(executions);
+        }
+        for (ParseExecution execution : pending) {
+            cancel(execution);
+        }
         if (ownsExecutor) {
             executor.shutdownNow();
+            try {
+                executor.awaitTermination(
+                        CLOSE_AWAIT_TIMEOUT.toNanos(),
+                        TimeUnit.NANOSECONDS);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
@@ -423,6 +505,7 @@ public final class AttachmentContentLoader implements AutoCloseable {
         private final PreparedAttachment attachment;
         private final AttachmentDocumentExtractor.ExtractionCancellation cancellation =
                 new AttachmentDocumentExtractor.ExtractionCancellation();
+        private volatile Future<AttachmentContent> future;
 
         private ParseExecution(PreparedAttachment attachment) {
             this.attachment = attachment;
@@ -430,7 +513,14 @@ public final class AttachmentContentLoader implements AutoCloseable {
 
         @Override
         public AttachmentContent call() {
-            return loadNow(attachment, cancellation);
+            try {
+                if (cancellation.isCancelled()) {
+                    throw timeout();
+                }
+                return loadNow(attachment, cancellation);
+            } finally {
+                untrack(this);
+            }
         }
 
         private void cancel() {
