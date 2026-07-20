@@ -244,6 +244,29 @@ class BusinessAgentPanelTest {
     }
 
     @Test
+    fun `long attachment filenames keep remove action measurable and clickable`() {
+        val attachment = draftAttachment().copy(name = "a".repeat(251) + ".pdf")
+        var removed: String? = null
+        rule.setContent {
+            BusinessAgentPanel(
+                state = composerState(
+                    BusinessAuthenticationStatus.AUTHENTICATED,
+                    identity = identity(),
+                ),
+                composerAttachments = listOf(attachment),
+                onRemoveAttachment = { removed = it },
+            )
+        }
+
+        val removeAction =
+            rule.onNodeWithContentDescription("移除附件 ${attachment.displayId}")
+        val bounds = removeAction.fetchSemanticsNode().boundsInRoot
+        org.junit.Assert.assertTrue("remove action must retain positive bounds", bounds.width > 0f && bounds.height > 0f)
+        removeAction.performClick()
+        assertEquals(attachment.id, removed)
+    }
+
+    @Test
     fun `composer handles one key down ctrl v and delegates ordinary paste when clipboard has no image`() {
         var calls = 0
         var captured = true

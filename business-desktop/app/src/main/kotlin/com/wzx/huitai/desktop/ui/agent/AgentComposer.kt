@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
@@ -135,7 +136,7 @@ private fun DraftAttachmentChip(
             modifier = Modifier.padding(start = 8.dp, top = 4.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column {
+            Column(Modifier.widthIn(max = 240.dp)) {
                 Text(
                     "${attachment.displayId} · ${attachment.name}",
                     style = MaterialTheme.typography.labelMedium,
