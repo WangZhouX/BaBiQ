@@ -34,7 +34,7 @@ class BusinessAttachmentPickerTest {
     }
 
     @Test
-    fun `deduplicates normalized paths and respects current draft count`() {
+    fun `rejects duplicate normalized paths within selection or against current drafts without leaking paths`() {
         val directory = Files.createTempDirectory("huitai-picker-deduplicate")
         val selected = directory.resolve("notes.txt")
         Files.writeString(selected, "hello")
@@ -43,11 +43,18 @@ class BusinessAttachmentPickerTest {
             displayId = "A-BCDEFG",
             path = selected,
         )
-        val picker = picker(listOf(selected, directory.resolve("./notes.txt")))
+        val withinSelection = assertFailsWith<BusinessAttachmentSelectionException> {
+            picker(listOf(selected, directory.resolve("./notes.txt"))).choose()
+        }
+        val againstCurrent = assertFailsWith<BusinessAttachmentSelectionException> {
+            picker(listOf(selected)).choose(currentDrafts = listOf(existing))
+        }
 
-        val drafts = picker.choose(currentDrafts = listOf(existing))
-
-        assertTrue(drafts.isEmpty())
+        listOf(withinSelection, againstCurrent).forEach { failure ->
+            assertEquals("ATTACHMENT_DUPLICATE", failure.code)
+            assertFalse(failure.toString().contains(selected.toString()))
+            assertFalse(failure.toString().contains(directory.toString()))
+        }
     }
 
     @Test

@@ -1,6 +1,7 @@
 package com.wzx.huitai.desktop.controller
 
 import com.wzx.huitai.agent.conversation.BusinessAttachmentDraft
+import com.wzx.huitai.desktop.ui.agent.BusinessAttachmentSelectionException
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -93,6 +94,18 @@ class BusinessComposerSendCoordinatorTest {
         assertEquals("ATTACHMENT_PATH_INVALID", knownCodeError.code)
         assertFalse(knownCodeError.message.contains(privatePath))
         assertFalse(knownCodeError.toString().contains(privatePath))
+    }
+
+    @Test
+    fun `picker duplicate failure maps through the Main boundary to a visible path free error`() {
+        val privatePath = "C:/private/customer/contracts/hidden.pdf"
+        val pickerFailure = BusinessAttachmentSelectionException("ATTACHMENT_DUPLICATE", privatePath)
+
+        val visible = safeComposerAttachmentError(pickerFailure.code, pickerFailure.message)
+
+        assertEquals("ATTACHMENT_DUPLICATE", visible.code)
+        assertEquals("同一文件不能重复添加", visible.message)
+        assertFalse(visible.toString().contains(privatePath))
     }
 
     private fun attachment(

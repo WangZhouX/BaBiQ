@@ -105,14 +105,23 @@ class BusinessAttachmentPicker(
             val currentPaths = currentDrafts.mapTo(hashSetOf()) {
                 Path.of(it.localPath).toAbsolutePath().normalize()
             }
-            selected
-                .map { it.toAbsolutePath().normalize() }
-                .distinct()
-                .filterNot(currentPaths::contains)
+            val selectedPaths = hashSetOf<Path>()
+            selected.map { it.toAbsolutePath().normalize() }.also { paths ->
+                if (paths.any { path ->
+                        !selectedPaths.add(path) || path in currentPaths
+                    }
+                ) {
+                    throw BusinessAttachmentSelectionException(
+                        "ATTACHMENT_DUPLICATE",
+                        "同一文件不能重复添加",
+                    )
+                }
+            }
+        } catch (failure: BusinessAttachmentSelectionException) {
+            throw failure
         } catch (_: Exception) {
             throw pathInspectionFailure()
         }
-        if (normalized.isEmpty()) return emptyList()
         if (currentDrafts.size + normalized.size > limits.maxAttachments) {
             throw BusinessAttachmentSelectionException(
                 "ATTACHMENT_LIMIT_EXCEEDED",
