@@ -89,6 +89,24 @@ class AttachmentReservationRegistryTest {
         registry.releaseTurn("turn-a");
     }
 
+    @Test
+    void an_unbound_reservation_does_not_expire_before_explicit_release() {
+        MutableClock clock = new MutableClock(Instant.EPOCH);
+        AttachmentReservationRegistry registry = new AttachmentReservationRegistry(clock);
+        PreparedAttachment attachment = attachment();
+        AttachmentReservationRegistry.Reservation reservation = registry.reserve(
+                "thread-a", BusinessIdentityScope.UNSCOPED, List.of(attachment));
+        clock.advance(Duration.ofMinutes(6));
+
+        assertThatThrownBy(() -> registry.reserve(
+                "thread-a", BusinessIdentityScope.UNSCOPED, List.of(attachment)))
+                .isInstanceOfSatisfying(AttachmentException.class, failure ->
+                        assertThat(failure.code())
+                                .isEqualTo(AttachmentErrorCode.ATTACHMENT_REFERENCE_AMBIGUOUS));
+
+        reservation.close();
+    }
+
     private static Attempt reserve(
             AttachmentReservationRegistry registry,
             PreparedAttachment attachment,

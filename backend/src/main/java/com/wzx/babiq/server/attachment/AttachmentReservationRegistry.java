@@ -4,7 +4,6 @@ import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
 import org.springframework.stereotype.Component;
 
 import java.time.Clock;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
@@ -22,7 +21,6 @@ import java.util.regex.Pattern;
 @Component
 public final class AttachmentReservationRegistry {
 
-    private static final Duration MAX_RESERVATION_AGE = Duration.ofMinutes(5);
     private static final Pattern DISPLAY_ID_PATTERN = Pattern.compile("A-[A-HJ-NP-Z2-9]{6}");
 
     private final Clock clock;
@@ -48,7 +46,6 @@ public final class AttachmentReservationRegistry {
     ) {
         Objects.requireNonNull(threadId, "threadId");
         Objects.requireNonNull(attachments, "attachments");
-        pruneExpired();
         if (attachments.isEmpty()) {
             return Reservation.inactive(this);
         }
@@ -81,7 +78,6 @@ public final class AttachmentReservationRegistry {
      */
     private synchronized void bind(String token, String turnId) {
         Objects.requireNonNull(turnId, "turnId");
-        pruneExpired();
         ReservationState state = statesByToken.get(token);
         if (state == null) {
             throw new IllegalStateException("attachment reservation is no longer active");
@@ -108,7 +104,6 @@ public final class AttachmentReservationRegistry {
     }
 
     private synchronized boolean isActive(String token) {
-        pruneExpired();
         return token != null && statesByToken.containsKey(token);
     }
 
@@ -133,16 +128,6 @@ public final class AttachmentReservationRegistry {
         if (owners.isEmpty()) {
             ownersByIdentity.remove(state.key());
         }
-    }
-
-    private void pruneExpired() {
-        Instant cutoff = clock.instant().minus(MAX_RESERVATION_AGE);
-        List<String> expired = statesByToken.entrySet().stream()
-                .filter(entry -> entry.getValue().turnId() == null)
-                .filter(entry -> entry.getValue().createdAt().isBefore(cutoff))
-                .map(Map.Entry::getKey)
-                .toList();
-        expired.forEach(this::releaseToken);
     }
 
     private static String canonicalUuid(String value) {

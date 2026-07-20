@@ -482,6 +482,46 @@ class TurnStartHandlerTest {
     }
 
     @Test
+    void history_resolution_failure_releases_the_unbound_attachment_identity() {
+        ConversationService conversationService = new ConversationService();
+        Thread thread = conversationService.createThread("C:/business");
+        AttachmentPreparationService preparationService = mock(AttachmentPreparationService.class);
+        AttachmentHistoryResolver historyResolver = mock(AttachmentHistoryResolver.class);
+        AttachmentReservationRegistry registry = new AttachmentReservationRegistry();
+        PreparedAttachment attachment = preparedAttachment(
+                "550e8400-e29b-41d4-a716-446655440000", "A-7K3M2Q");
+        PreparedTurnInput prepared = new PreparedTurnInput(
+                "review", List.of(attachment), List.of());
+        when(preparationService.prepareNew(eq("review"), any())).thenReturn(prepared);
+        when(historyResolver.resolve(thread.id(), BusinessIdentityScope.UNSCOPED, prepared))
+                .thenThrow(new AttachmentException(
+                        AttachmentErrorCode.ATTACHMENT_REFERENCE_AMBIGUOUS,
+                        "history conflict"));
+        TurnStartHandler handler = new TurnStartHandler(
+                conversationService, objectMapper, mock(TurnExecutor.class),
+                null, null, null, null, null, null,
+                preparationService, historyResolver, registry);
+        var params = objectMapper.valueToTree(Map.of(
+                "threadId", thread.id(),
+                "input", Map.of(
+                        "type", "text",
+                        "text", "review",
+                        "attachments", List.of(Map.of(
+                                "id", attachment.metadata().id(),
+                                "displayId", attachment.metadata().displayId(),
+                                "name", attachment.metadata().name(),
+                                "localPath", attachment.metadata().localPath())))));
+
+        assertThatThrownBy(() -> handler.handle(params, recordingSession(new ArrayList<>())))
+                .isInstanceOf(AttachmentException.class);
+
+        try (AttachmentReservationRegistry.Reservation next = registry.reserve(
+                thread.id(), BusinessIdentityScope.UNSCOPED, List.of(attachment))) {
+            assertThat(next.active()).isTrue();
+        }
+    }
+
+    @Test
     void handle_should_reject_empty_text_and_empty_attachments_before_creating_a_turn() {
         ConversationService conversationService = spy(new ConversationService());
         Thread thread = conversationService.createThread("C:/business");
