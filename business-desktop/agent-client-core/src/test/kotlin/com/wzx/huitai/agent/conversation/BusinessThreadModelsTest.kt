@@ -53,6 +53,7 @@ class BusinessThreadModelsTest {
     @Test
     fun `decodes stable attachment metadata and accepts attachment only user messages`() {
         val localPath = "C:\\private\\contracts\\contract.pdf"
+        val sha256 = "a".repeat(64)
 
         val item = assertIs<BusinessThreadItem.UserMessage>(decode(
             """
@@ -66,7 +67,7 @@ class BusinessThreadModelsTest {
                     "name":"contract.pdf",
                     "mediaType":"application/pdf",
                     "sizeBytes":1024,
-                    "sha256":"${"a".repeat(64)}",
+                    "sha256":"$sha256",
                     "source":"SELECTED_FILE",
                     "localPath":"C:\\private\\contracts\\contract.pdf"
                   }]
@@ -82,7 +83,7 @@ class BusinessThreadModelsTest {
                 name = "contract.pdf",
                 mediaType = "application/pdf",
                 sizeBytes = 1_024,
-                sha256 = "a".repeat(64),
+                sha256 = sha256,
                 source = "SELECTED_FILE",
                 localPath = localPath,
             ),
@@ -90,6 +91,8 @@ class BusinessThreadModelsTest {
         )
         assertFalse(item.toString().contains(localPath))
         assertFalse(item.attachments.single().toString().contains(localPath))
+        assertFalse(item.toString().contains(sha256))
+        assertFalse(item.attachments.single().toString().contains(sha256))
     }
 
     @Test
@@ -99,6 +102,33 @@ class BusinessThreadModelsTest {
         )
 
         assertEquals(emptyList(), item.attachments)
+    }
+
+    @Test
+    fun `user messages require textual text and allow blank only with attachments`() {
+        val attachment = """
+            [{
+              "id":"5e4d4e7a-7dd6-4c6e-bec4-bd6f92ec9123",
+              "displayId":"A-7K3M2Q",
+              "name":"contract.pdf",
+              "mediaType":"application/pdf",
+              "sizeBytes":1024,
+              "sha256":"${"a".repeat(64)}",
+              "source":"SELECTED_FILE",
+              "localPath":"C:\\private\\contracts\\contract.pdf"
+            }]
+        """.trimIndent()
+        val invalid = listOf(
+            """{"id":"user-missing","type":"userMessage","attachments":$attachment}""",
+            """{"id":"user-numeric","type":"userMessage","text":123,"attachments":$attachment}""",
+            """{"id":"user-empty","type":"userMessage","text":"","attachments":[]}""",
+        )
+
+        invalid.forEach { payload ->
+            assertFailsWith<SerializationException>("payload=$payload") {
+                decode(payload)
+            }
+        }
     }
 
     @Test

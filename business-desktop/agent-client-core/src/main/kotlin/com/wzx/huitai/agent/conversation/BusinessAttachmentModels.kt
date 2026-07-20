@@ -52,12 +52,15 @@ data class BusinessMessageAttachment(
 
     override fun toString(): String =
         "BusinessMessageAttachment(id=$id, displayId=$displayId, name=$name, " +
-            "mediaType=$mediaType, sizeBytes=$sizeBytes, sha256=$sha256, source=$source, " +
+            "mediaType=$mediaType, sizeBytes=$sizeBytes, sha256=[REDACTED], source=$source, " +
             "localPath=[REDACTED])"
 }
 
 private fun requireUuid(id: String) {
-    require(runCatching { UUID.fromString(id) }.isSuccess) { "id must be a UUID" }
+    val parsed = runCatching { UUID.fromString(id) }.getOrNull()
+    require(id.length == 36 && parsed?.toString()?.equals(id, ignoreCase = true) == true) {
+        "id must be a canonical UUID"
+    }
 }
 
 private fun requireDisplayId(displayId: String) {

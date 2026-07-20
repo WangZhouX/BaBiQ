@@ -153,8 +153,25 @@ class BusinessAgentClientTest {
 
         assertFalse(draft.toString().contains(localPath))
         assertFalse(message.toString().contains(localPath))
+        assertFalse(message.toString().contains(message.sha256))
         assertTrue(draft.toString().contains("[REDACTED]"))
         assertTrue(message.toString().contains("[REDACTED]"))
+    }
+
+    @Test
+    fun `attachment models reject non canonical shortened UUID forms`() {
+        val failure = assertFailsWith<IllegalArgumentException> {
+            BusinessAttachmentDraft(
+                id = "1-1-1-1-1",
+                displayId = "A-7K3M2Q",
+                name = "contract.pdf",
+                localPath = "C:\\private\\contracts\\contract.pdf",
+                sizeBytes = 1_024,
+                displayType = "PDF",
+            )
+        }
+
+        assertEquals("id must be a canonical UUID", failure.message)
     }
 
     @Test

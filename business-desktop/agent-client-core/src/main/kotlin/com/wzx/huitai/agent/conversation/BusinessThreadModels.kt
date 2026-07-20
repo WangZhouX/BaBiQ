@@ -100,10 +100,8 @@ object BusinessThreadItemCodec {
         val type = raw.requiredText("type")
         val id = raw.optionalText("id")
         return when (type) {
-            "userMessage" -> BusinessThreadItem.UserMessage(
-                id = requireNotNull(id) { "Missing required field: id" },
-                text = raw.optionalText("text").orEmpty(),
-                attachments = raw["attachments"]?.jsonArray?.map { attachment ->
+            "userMessage" -> {
+                val attachments = raw["attachments"]?.jsonArray?.map { attachment ->
                     attachment.asObject("user message attachment").let {
                         BusinessMessageAttachment(
                             id = it.requiredText("id"),
@@ -116,8 +114,17 @@ object BusinessThreadItemCodec {
                             localPath = it.requiredText("localPath"),
                         )
                     }
-                }.orEmpty(),
-            )
+                }.orEmpty()
+                val text = raw.requiredString("text")
+                if (text.isBlank() && attachments.isEmpty()) {
+                    throw SerializationException("User message text and attachments must not both be blank")
+                }
+                BusinessThreadItem.UserMessage(
+                    id = requireNotNull(id) { "Missing required field: id" },
+                    text = text,
+                    attachments = attachments,
+                )
+            }
             "agentMessage" -> BusinessThreadItem.AgentMessage(
                 id = requireNotNull(id) { "Missing required field: id" },
                 text = raw.optionalText("text"),
@@ -175,6 +182,14 @@ internal fun JsonObject.requiredText(name: String): String = optionalText(name)
 
 internal fun JsonObject.optionalText(name: String): String? =
     (get(name) as? JsonPrimitive)?.contentOrNull
+
+internal fun JsonObject.requiredString(name: String): String {
+    val value = get(name) as? JsonPrimitive
+    if (value == null || !value.isString) {
+        throw SerializationException("Missing or invalid string field: $name")
+    }
+    return value.content
+}
 
 internal fun JsonObject.requiredInt(name: String): Int = optionalInt(name)
     ?: throw SerializationException("Missing required field: $name")
