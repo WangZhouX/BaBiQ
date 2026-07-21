@@ -23,6 +23,14 @@ object BusinessDesktopLayoutPolicy {
     val expandThreshold: Dp = minimumBusinessWidth + dividerWidth + minimumAssistantWidth
 
     /**
+     * 策略支持的最大归一化宽度：2^20 dp，远大于现实多屏桌面范围。
+     *
+     * 在该量级 Float 的 ULP 仍可表达 8dp 分隔条和 360..720dp 助手；更大的有限输入
+     * 会失去真实布局分辨率，因此统一钳制到此上限。
+     */
+    val maximumSupportedWidth: Dp = 1_048_576.dp
+
+    /**
      * 计算不重叠的业务区与助手停靠区宽度。
      *
      * 窗口不足 [expandThreshold] 时，即使请求展开，也会安全回退为收起状态。
@@ -88,7 +96,7 @@ object BusinessDesktopLayoutPolicy {
     }
 
     private fun Dp.normalizedAvailableWidth(): Dp =
-        if (value.isFinite() && this >= 0.dp) this else 0.dp
+        if (value.isFinite() && this >= 0.dp) coerceAtMost(maximumSupportedWidth) else 0.dp
 
     private fun Dp.normalizedRequestedAssistantWidth(): Dp =
         if (value.isFinite()) coerceAtLeast(0.dp) else defaultAssistantWidth

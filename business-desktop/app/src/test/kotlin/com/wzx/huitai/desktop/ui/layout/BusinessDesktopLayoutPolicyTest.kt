@@ -16,6 +16,7 @@ class BusinessDesktopLayoutPolicyTest {
         assertEquals(8.dp, BusinessDesktopLayoutPolicy.dividerWidth)
         assertEquals(460.dp, BusinessDesktopLayoutPolicy.defaultAssistantWidth)
         assertEquals(1008.dp, BusinessDesktopLayoutPolicy.expandThreshold)
+        assertEquals(1_048_576.dp, BusinessDesktopLayoutPolicy.maximumSupportedWidth)
     }
 
     @Test
@@ -137,7 +138,8 @@ class BusinessDesktopLayoutPolicyTest {
         val random = Random(20260721)
 
         repeat(512) {
-            val availableWidth = (1008f + random.nextFloat() * 3992f).dp
+            val supportedRange = BusinessDesktopLayoutPolicy.maximumSupportedWidth.value - 1008f
+            val availableWidth = (1008f + random.nextFloat() * supportedRange).dp
             val currentWidth = (360f + random.nextFloat() * 360f).dp
             val dragDelta = (-48f + random.nextFloat() * 96f).dp
             val resized = BusinessDesktopLayoutPolicy.resizeAssistantWidth(
@@ -163,21 +165,40 @@ class BusinessDesktopLayoutPolicyTest {
     }
 
     @Test
-    fun `largest finite available width keeps a bounded assistant and exact conservation`() {
+    fun `oversized finite widths normalize before producing a real expanded split`() {
+        listOf(134_217_744f.dp, Float.MAX_VALUE.dp).forEach { oversizedWidth ->
+            val layout = BusinessDesktopLayoutPolicy.resolveDocked(
+                availableWidth = oversizedWidth,
+                assistantExpanded = true,
+                requestedAssistantWidth = 720.dp,
+            )
+
+            assertEquals(BusinessDesktopLayoutPolicy.maximumSupportedWidth, layout.availableWidth)
+            assertTrue(layout.canExpand)
+            assertTrue(layout.assistantExpanded)
+            assertTrue(layout.businessWidth.value.isFinite())
+            assertTrue(layout.businessWidth >= 640.dp)
+            assertEquals(720.dp, layout.assistantWidth)
+            assertEquals(
+                layout.availableWidth,
+                (layout.businessWidth + layout.dividerWidth) + layout.assistantWidth,
+            )
+        }
+    }
+
+    @Test
+    fun `collapsed oversized finite width occupies the normalized supported width`() {
         val layout = BusinessDesktopLayoutPolicy.resolveDocked(
             availableWidth = Float.MAX_VALUE.dp,
-            assistantExpanded = true,
-            requestedAssistantWidth = 460.25f.dp,
+            assistantExpanded = false,
         )
 
-        assertTrue(layout.businessWidth.value.isFinite())
-        assertTrue(layout.assistantWidth.value.isFinite())
-        assertTrue(layout.businessWidth >= 640.dp)
-        assertTrue(layout.assistantWidth in 360.dp..720.dp)
-        assertEquals(
-            layout.availableWidth,
-            (layout.businessWidth + layout.dividerWidth) + layout.assistantWidth,
-        )
+        assertEquals(BusinessDesktopLayoutPolicy.maximumSupportedWidth, layout.availableWidth)
+        assertEquals(BusinessDesktopLayoutPolicy.maximumSupportedWidth, layout.businessWidth)
+        assertEquals(0.dp, layout.dividerWidth)
+        assertEquals(0.dp, layout.assistantWidth)
+        assertTrue(layout.canExpand)
+        assertFalse(layout.assistantExpanded)
     }
 
     @Test
@@ -302,5 +323,27 @@ class BusinessDesktopLayoutPolicyTest {
                 availableWidth = Float.NaN.dp,
             ),
         )
+    }
+
+    @Test
+    fun `resize treats oversized finite width exactly like the supported maximum`() {
+        val atMaximum = BusinessDesktopLayoutPolicy.resizeAssistantWidth(
+            current = 641.375f.dp,
+            dragDeltaX = (-18.625f).dp,
+            availableWidth = BusinessDesktopLayoutPolicy.maximumSupportedWidth,
+        )
+
+        listOf(134_217_744f.dp, Float.MAX_VALUE.dp).forEach { oversizedWidth ->
+            assertEquals(
+                atMaximum,
+                BusinessDesktopLayoutPolicy.resizeAssistantWidth(
+                    current = 641.375f.dp,
+                    dragDeltaX = (-18.625f).dp,
+                    availableWidth = oversizedWidth,
+                ),
+            )
+        }
+        assertTrue(atMaximum.value.isFinite())
+        assertTrue(atMaximum in 360.dp..720.dp)
     }
 }
