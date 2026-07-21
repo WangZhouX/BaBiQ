@@ -5,6 +5,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.random.Random
 
 class BusinessDesktopLayoutPolicyTest {
     @Test
@@ -80,6 +81,103 @@ class BusinessDesktopLayoutPolicyTest {
                 layout.businessWidth + layout.dividerWidth + layout.assistantWidth,
             )
         }
+    }
+
+    @Test
+    fun `fractional dock widths conserve the exact available width in row order`() {
+        val layout = BusinessDesktopLayoutPolicy.resolveDocked(
+            availableWidth = 1656.85046f.dp,
+            assistantExpanded = true,
+            requestedAssistantWidth = 599.58734f.dp,
+        )
+
+        assertEquals(
+            layout.availableWidth,
+            (layout.businessWidth + layout.dividerWidth) + layout.assistantWidth,
+        )
+        assertTrue(layout.businessWidth >= 640.dp)
+        assertTrue(layout.assistantWidth in 360.dp..720.dp)
+    }
+
+    @Test
+    fun `fractional drag and representative widths preserve exact row conservation`() {
+        val cases = listOf(
+            1008.125f.dp to 360.0625f.dp,
+            1100.33337f.dp to 451.81253f.dp,
+            1368.875f.dp to 719.9375f.dp,
+            1537.21875f.dp to 487.40625f.dp,
+            2048.9375f.dp to 641.34375f.dp,
+        )
+
+        cases.forEach { (availableWidth, currentWidth) ->
+            val resized = BusinessDesktopLayoutPolicy.resizeAssistantWidth(
+                current = currentWidth,
+                dragDeltaX = (-0.59375f).dp,
+                availableWidth = availableWidth,
+            )
+            val layout = BusinessDesktopLayoutPolicy.resolveDocked(
+                availableWidth = availableWidth,
+                assistantExpanded = true,
+                requestedAssistantWidth = resized,
+            )
+
+            assertTrue(resized.value.isFinite())
+            assertEquals(
+                layout.availableWidth,
+                (layout.businessWidth + layout.dividerWidth) + layout.assistantWidth,
+                "宽度 $availableWidth、请求 $resized 必须严格守恒",
+            )
+            assertTrue(layout.businessWidth >= 640.dp)
+            assertTrue(layout.assistantWidth in 360.dp..720.dp)
+        }
+    }
+
+    @Test
+    fun `seeded fractional drag samples stay finite bounded and exactly conserved`() {
+        val random = Random(20260721)
+
+        repeat(512) {
+            val availableWidth = (1008f + random.nextFloat() * 3992f).dp
+            val currentWidth = (360f + random.nextFloat() * 360f).dp
+            val dragDelta = (-48f + random.nextFloat() * 96f).dp
+            val resized = BusinessDesktopLayoutPolicy.resizeAssistantWidth(
+                current = currentWidth,
+                dragDeltaX = dragDelta,
+                availableWidth = availableWidth,
+            )
+            val layout = BusinessDesktopLayoutPolicy.resolveDocked(
+                availableWidth = availableWidth,
+                assistantExpanded = true,
+                requestedAssistantWidth = resized,
+            )
+
+            assertTrue(resized.value.isFinite())
+            assertTrue(layout.businessWidth >= 640.dp)
+            assertTrue(layout.assistantWidth in 360.dp..720.dp)
+            assertEquals(
+                layout.availableWidth,
+                (layout.businessWidth + layout.dividerWidth) + layout.assistantWidth,
+                "样本 $it：宽度 $availableWidth、拖动 $dragDelta、请求 $resized 必须严格守恒",
+            )
+        }
+    }
+
+    @Test
+    fun `largest finite available width keeps a bounded assistant and exact conservation`() {
+        val layout = BusinessDesktopLayoutPolicy.resolveDocked(
+            availableWidth = Float.MAX_VALUE.dp,
+            assistantExpanded = true,
+            requestedAssistantWidth = 460.25f.dp,
+        )
+
+        assertTrue(layout.businessWidth.value.isFinite())
+        assertTrue(layout.assistantWidth.value.isFinite())
+        assertTrue(layout.businessWidth >= 640.dp)
+        assertTrue(layout.assistantWidth in 360.dp..720.dp)
+        assertEquals(
+            layout.availableWidth,
+            (layout.businessWidth + layout.dividerWidth) + layout.assistantWidth,
+        )
     }
 
     @Test

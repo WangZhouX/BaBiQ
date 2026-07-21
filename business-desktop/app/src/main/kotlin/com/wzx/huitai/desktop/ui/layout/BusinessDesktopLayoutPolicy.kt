@@ -35,27 +35,28 @@ object BusinessDesktopLayoutPolicy {
         val width = availableWidth.normalizedAvailableWidth()
         val canExpand = width >= expandThreshold
         if (!assistantExpanded || !canExpand) {
-            return BusinessDesktopDockLayout(
-                availableWidth = width,
-                businessWidth = width,
-                dividerWidth = 0.dp,
-                assistantWidth = 0.dp,
-                canExpand = canExpand,
-                assistantExpanded = false,
-            )
+            return collapsedLayout(width, canExpand)
         }
 
         val dynamicMaximum = minOf(
             maximumAssistantWidth,
             width - minimumBusinessWidth - dividerWidth,
         )
-        val assistantWidth = requestedAssistantWidth
+        val requestedWidth = requestedAssistantWidth
             .normalizedRequestedAssistantWidth()
             .coerceIn(minimumAssistantWidth, dynamicMaximum)
+        val businessWidth = width - dividerWidth - requestedWidth
+        val rowPrefix = businessWidth + dividerWidth
+        val assistantWidth = exactAssistantWidth(
+            availableWidth = width,
+            rowPrefix = rowPrefix,
+            requestedWidth = requestedWidth,
+            dynamicMaximum = dynamicMaximum,
+        ) ?: return collapsedLayout(width, canExpand = true)
 
         return BusinessDesktopDockLayout(
             availableWidth = width,
-            businessWidth = width - dividerWidth - assistantWidth,
+            businessWidth = businessWidth,
             dividerWidth = dividerWidth,
             assistantWidth = assistantWidth,
             canExpand = true,
@@ -91,6 +92,39 @@ object BusinessDesktopLayoutPolicy {
 
     private fun Dp.normalizedRequestedAssistantWidth(): Dp =
         if (value.isFinite()) coerceAtLeast(0.dp) else defaultAssistantWidth
+
+    private fun collapsedLayout(
+        availableWidth: Dp,
+        canExpand: Boolean,
+    ): BusinessDesktopDockLayout = BusinessDesktopDockLayout(
+        availableWidth = availableWidth,
+        businessWidth = availableWidth,
+        dividerWidth = 0.dp,
+        assistantWidth = 0.dp,
+        canExpand = canExpand,
+        assistantExpanded = false,
+    )
+
+    /** 只检查固定数量的相邻 Float 候选，不做不受控的 ULP 搜索。 */
+    private fun exactAssistantWidth(
+        availableWidth: Dp,
+        rowPrefix: Dp,
+        requestedWidth: Dp,
+        dynamicMaximum: Dp,
+    ): Dp? {
+        val residualWidth = availableWidth - rowPrefix
+        val candidates = listOf(
+            requestedWidth,
+            residualWidth,
+            Math.nextDown(residualWidth.value).dp,
+            Math.nextUp(residualWidth.value).dp,
+        )
+        return candidates.firstOrNull { candidate ->
+            candidate.value.isFinite() &&
+                candidate in minimumAssistantWidth..dynamicMaximum &&
+                rowPrefix + candidate == availableWidth
+        }
+    }
 
     // Task 6 重写 BusinessDesktopShell 后删除以下旧三栏布局兼容桥。
     @Deprecated("仅供旧 BusinessDesktopShell 过渡；请使用 resolveDocked")
