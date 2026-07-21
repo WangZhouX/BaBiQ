@@ -9,6 +9,7 @@ import java.nio.file.Path
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -31,9 +32,61 @@ data class PackagedSmokeEvidence(
     val authenticatedConnection: Boolean,
     val signedOutIdentityBound: Boolean,
     val childPid: Long,
+    val uiReadiness: PackagedSmokeUiReadiness = PackagedSmokeUiReadiness.notReady(),
 ) {
     companion object {
         const val PROFILE = "business-desktop"
+    }
+}
+
+/** Non-sensitive evidence that the real packaged Compose window reached its first committed frame. */
+data class PackagedSmokeUiReadiness(
+    val windowComposed: Boolean,
+    val brandLogoDecoded: Boolean,
+    val mascotDecoded: Boolean,
+    val topNavigationComposed: Boolean,
+    val assistantInitiallyCollapsed: Boolean,
+    val productName: String,
+) {
+    companion object {
+        const val PRODUCT_NAME: String = "翔鸟律智桌面端"
+
+        fun ready(): PackagedSmokeUiReadiness = PackagedSmokeUiReadiness(
+            windowComposed = true,
+            brandLogoDecoded = true,
+            mascotDecoded = true,
+            topNavigationComposed = true,
+            assistantInitiallyCollapsed = true,
+            productName = PRODUCT_NAME,
+        )
+
+        fun notReady(): PackagedSmokeUiReadiness = PackagedSmokeUiReadiness(
+            windowComposed = false,
+            brandLogoDecoded = false,
+            mascotDecoded = false,
+            topNavigationComposed = false,
+            assistantInitiallyCollapsed = false,
+            productName = "",
+        )
+    }
+}
+
+/** Publishes packaged smoke evidence at most once, and only from the committed Window composition effect. */
+class PackagedSmokeCompositionCoordinator(
+    private val probe: PackagedSmokeProbe,
+    private val evidenceProvider: suspend () -> PackagedSmokeEvidence,
+) {
+    private val compositionCommitted = AtomicBoolean(false)
+
+    suspend fun onWindowCompositionCommitted(readiness: PackagedSmokeUiReadiness): Boolean {
+        if (!compositionCommitted.compareAndSet(false, true)) return false
+        return try {
+            probe.write(evidenceProvider().copy(uiReadiness = readiness))
+            true
+        } catch (failure: Exception) {
+            compositionCommitted.set(false)
+            throw failure
+        }
     }
 }
 
@@ -86,6 +139,15 @@ class PackagedSmokeProbe(reportPath: Path) {
         require(source.unauthorizedHandshakeRejected) { "unauthorized handshake must be rejected" }
         require(source.authenticatedConnection) { "authenticated Agent connection is required" }
         require(source.signedOutIdentityBound) { "framework signed-out identity must be bound" }
+        val ui = source.uiReadiness
+        require(ui.windowComposed) { "packaged smoke requires a committed Compose window" }
+        require(ui.brandLogoDecoded) { "packaged smoke requires the packaged brand logo" }
+        require(ui.mascotDecoded) { "packaged smoke requires the packaged assistant mascot" }
+        require(ui.topNavigationComposed) { "packaged smoke requires the top navigation" }
+        require(ui.assistantInitiallyCollapsed) { "packaged smoke requires the assistant to start collapsed" }
+        require(ui.productName == PackagedSmokeUiReadiness.PRODUCT_NAME) {
+            "packaged smoke requires the Xiangniao product name"
+        }
 
         val runtimeRoot = source.runtimeRoot.normalized()
         val desktopRoot = source.desktopRoot.normalized()
@@ -129,6 +191,12 @@ class PackagedSmokeProbe(reportPath: Path) {
             authenticatedConnection = true,
             signedOutIdentityBound = true,
             childPid = source.childPid,
+            windowComposed = ui.windowComposed,
+            brandLogoDecoded = ui.brandLogoDecoded,
+            mascotDecoded = ui.mascotDecoded,
+            topNavigationComposed = ui.topNavigationComposed,
+            assistantInitiallyCollapsed = ui.assistantInitiallyCollapsed,
+            productName = ui.productName,
         )
     }
 
@@ -166,6 +234,12 @@ private data class PackagedSmokeReport(
     val authenticatedConnection: Boolean,
     val signedOutIdentityBound: Boolean,
     val childPid: Long,
+    val windowComposed: Boolean,
+    val brandLogoDecoded: Boolean,
+    val mascotDecoded: Boolean,
+    val topNavigationComposed: Boolean,
+    val assistantInitiallyCollapsed: Boolean,
+    val productName: String,
 )
 
 private fun Path.normalized(): Path = toAbsolutePath().normalize()

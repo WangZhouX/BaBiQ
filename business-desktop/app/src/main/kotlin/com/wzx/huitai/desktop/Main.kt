@@ -31,6 +31,8 @@ import com.wzx.huitai.desktop.ui.theme.HuitaiBusinessTheme
 import com.wzx.huitai.desktop.ui.layout.BusinessDesktopLayoutPolicy
 import com.wzx.huitai.desktop.ui.window.BusinessDesktopWindowSpec
 import com.wzx.huitai.desktop.smoke.PackagedSmokeProbe
+import com.wzx.huitai.desktop.smoke.PackagedSmokeCompositionCoordinator
+import com.wzx.huitai.desktop.smoke.PackagedSmokeWindowCompositionEffect
 import com.wzx.huitai.agent.protocol.ApplicationProtocol
 import com.wzx.huitai.presentation.form.FormPatch
 import java.util.UUID
@@ -76,20 +78,11 @@ fun main() {
     val root = startup.root
     val factory = startup.factory
     val smokeProbe = startup.smokeProbe
-    if (smokeProbe != null) {
-        try {
-            runBlocking { smokeProbe.write(factory.packagedSmokeEvidence()) }
-        } catch (_: Exception) {
-            LoggerFactory.getLogger("BusinessDesktopSmoke")
-                .error("业务桌面安装包烟测失败")
-        } finally {
-            try {
-                runBlocking { root.shutdown() }
-            } finally {
-                runtimeScope.cancel()
-            }
-        }
-        return
+    val smokeCoordinator = smokeProbe?.let { probe ->
+        PackagedSmokeCompositionCoordinator(
+            probe = probe,
+            evidenceProvider = factory::packagedSmokeEvidence,
+        )
     }
     val view = requireNotNull(root.runtimeView)
     val storage = requireNotNull(root.productionStorage)
@@ -396,6 +389,25 @@ fun main() {
                         },
                         onProviderOAuthLogin = { providerId ->
                             uiScope.launch { view.production.providerSettingsController.oauthLogin(providerId) }
+                        },
+                    )
+                    PackagedSmokeWindowCompositionEffect(
+                        coordinator = smokeCoordinator,
+                        assistantInitiallyCollapsed = !assistantExpanded,
+                        productName = BusinessDesktopWindowSpec.title,
+                        onFailure = {
+                            LoggerFactory.getLogger("BusinessDesktopSmoke")
+                                .error("业务桌面安装包窗口烟测失败")
+                        },
+                        onFinished = {
+                            closeBusinessDesktop(
+                                shutdown = { root.shutdown() },
+                                cancelRuntime = runtimeScope::cancel,
+                                exitApplication = ::exitApplication,
+                            )?.let {
+                                LoggerFactory.getLogger("BusinessDesktopSmoke")
+                                    .error("业务桌面安装包资源关闭失败")
+                            }
                         },
                     )
 

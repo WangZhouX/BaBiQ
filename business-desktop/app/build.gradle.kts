@@ -137,7 +137,7 @@ tasks.matching {
 val smokePackagedDistribution by tasks.registering(Exec::class) {
     group = "verification"
     description = "Extracts and smoke-tests the packaged Windows desktop distribution."
-    dependsOn("packageMsi")
+    dependsOn("createDistributable", "packageMsi", "packageExe")
     onlyIf { System.getProperty("os.name").startsWith("Windows", ignoreCase = true) }
     workingDir(rootProject.projectDir)
     commandLine(

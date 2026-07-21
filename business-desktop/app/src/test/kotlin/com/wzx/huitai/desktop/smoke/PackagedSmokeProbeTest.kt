@@ -40,6 +40,7 @@ class PackagedSmokeProbeTest {
                 authenticatedConnection = true,
                 signedOutIdentityBound = true,
                 childPid = 42_424,
+                uiReadiness = PackagedSmokeUiReadiness.ready(),
             ),
         )
 
@@ -54,6 +55,12 @@ class PackagedSmokeProbeTest {
         assertTrue(report.getValue("unauthorizedHandshakeRejected").jsonPrimitive.boolean)
         assertTrue(report.getValue("authenticatedConnection").jsonPrimitive.boolean)
         assertTrue(report.getValue("signedOutIdentityBound").jsonPrimitive.boolean)
+        assertTrue(report.getValue("windowComposed").jsonPrimitive.boolean)
+        assertTrue(report.getValue("brandLogoDecoded").jsonPrimitive.boolean)
+        assertTrue(report.getValue("mascotDecoded").jsonPrimitive.boolean)
+        assertTrue(report.getValue("topNavigationComposed").jsonPrimitive.boolean)
+        assertTrue(report.getValue("assistantInitiallyCollapsed").jsonPrimitive.boolean)
+        assertEquals("翔鸟律智桌面端", report.getValue("productName").jsonPrimitive.content)
         assertEquals(42_424, report.getValue("childPid").jsonPrimitive.content.toLong())
         assertEquals(runtimeRoot.toAbsolutePath().normalize().toString(), report.getValue("runtimeRoot").jsonPrimitive.content)
         assertFalse(text.contains("token", ignoreCase = true) && text.contains("secret-value"))
@@ -65,6 +72,49 @@ class PackagedSmokeProbeTest {
             Files.list(home).use { files -> files.noneMatch { it.fileName.toString().endsWith(".tmp") } },
             "atomic report publication must not leave temporary files",
         )
+    }
+
+    @Test
+    fun `rejects a report without successful window composition readiness`() {
+        val home = Files.createTempDirectory("invalid-ui-packaged-smoke")
+        val runtimeRoot = home.resolve(".huitai-agent-desktop")
+        val desktopRoot = runtimeRoot.resolve("desktop")
+        val agentRoot = runtimeRoot.resolve("agent")
+        val evidence = PackagedSmokeEvidence(
+            profile = "business-desktop",
+            address = "127.0.0.1",
+            port = 49_151,
+            runtimeRoot = runtimeRoot,
+            desktopRoot = desktopRoot,
+            agentRoot = agentRoot,
+            desktopDatabase = desktopRoot.resolve("data/business-desktop.db"),
+            agentDatabase = agentRoot.resolve("data/babiq-business.db"),
+            desktopKeyStore = desktopRoot.resolve("secrets/business-desktop.jceks"),
+            agentKeyStore = agentRoot.resolve("secrets/business-agent.jceks"),
+            tokenFile = agentRoot.resolve("session-token"),
+            tokenFileDeleted = true,
+            unauthorizedHandshakeRejected = true,
+            authenticatedConnection = true,
+            signedOutIdentityBound = true,
+            childPid = 42_424,
+        )
+
+        val ready = PackagedSmokeUiReadiness.ready()
+        val invalidReadiness = listOf(
+            ready.copy(windowComposed = false),
+            ready.copy(brandLogoDecoded = false),
+            ready.copy(mascotDecoded = false),
+            ready.copy(topNavigationComposed = false),
+            ready.copy(assistantInitiallyCollapsed = false),
+            ready.copy(productName = "wrong-product"),
+        )
+        invalidReadiness.forEachIndexed { index, readiness ->
+            val report = home.resolve("report-$index.json")
+            assertFailsWith<IllegalArgumentException> {
+                PackagedSmokeProbe(report).write(evidence.copy(uiReadiness = readiness))
+            }
+            assertFalse(Files.exists(report))
+        }
     }
 
     @Test

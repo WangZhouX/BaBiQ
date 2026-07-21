@@ -39,7 +39,9 @@ class DistributionBuildLogicTest {
         assertContains(source, "msiexec.exe")
         assertContains(source, "/a")
         assertContains(source, "HUITAI_DESKTOP_SMOKE_REPORT")
-        assertContains(source, "HuitaiBusinessDesktop.exe")
+        assertContains(source, "compose\\binaries\\main\\msi")
+        assertContains(source, "compose\\binaries\\main\\exe")
+        assertContains(source, "\$desktopLauncherName = \"\$expectedProductName.exe\"")
         assertContains(source, "120")
         assertContains(source, "babiq-server.jar")
         assertContains(source, ".huitai-agent-desktop")
@@ -47,6 +49,11 @@ class DistributionBuildLogicTest {
         assertContains(source, "unauthorizedHandshakeRejected")
         assertContains(source, "authenticatedConnection")
         assertContains(source, "signedOutIdentityBound")
+        assertContains(source, "windowComposed")
+        assertContains(source, "brandLogoDecoded")
+        assertContains(source, "mascotDecoded")
+        assertContains(source, "topNavigationComposed")
+        assertContains(source, "assistantInitiallyCollapsed")
         assertContains(source, "childPid")
     }
 }

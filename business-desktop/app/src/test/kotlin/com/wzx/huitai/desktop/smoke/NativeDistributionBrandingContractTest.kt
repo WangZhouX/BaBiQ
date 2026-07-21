@@ -20,14 +20,9 @@ class NativeDistributionBrandingContractTest {
         assertTrue(buildScript.contains("vendor = \"翔鸟律智\""))
         assertFalse(buildScript.contains("HuitaiBusinessDesktop"))
 
-        val packageName = assertNotNull(
-            Regex("""packageName\s*=\s*"([^"]+)"""").find(buildScript),
-        ).groupValues[1]
-        val launcherName = assertNotNull(
-            Regex("""\${'$'}desktopLauncherName\s*=\s*'([^']+)'""").find(smokeScript),
-        ).groupValues[1]
-        assertEquals("$packageName.exe", launcherName)
+        assertTrue(smokeScript.contains("\$desktopLauncherName = \"\$expectedProductName.exe\""))
         assertFalse(smokeScript.contains("HuitaiBusinessDesktop.exe"))
+        assertTrue(buildScript.contains("dependsOn(\"createDistributable\", \"packageMsi\", \"packageExe\")"))
     }
 
     @Test

@@ -94,6 +94,33 @@ function Stop-SmokeProcessId {
     }
 }
 
+function Get-MsiProperty {
+    param(
+        [Parameter(Mandatory = $true)] [string]$Path,
+        [Parameter(Mandatory = $true)] [string]$Property
+    )
+    $installerObject = $null
+    $database = $null
+    $view = $null
+    $record = $null
+    try {
+        $installerObject = New-Object -ComObject WindowsInstaller.Installer
+        $database = $installerObject.OpenDatabase($Path, 0)
+        $query = "SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = '$Property'"
+        $view = $database.OpenView($query)
+        [void]$view.Execute()
+        $record = $view.Fetch()
+        if ($null -eq $record) { return $null }
+        return [string]$record.StringData(1)
+    } finally {
+        foreach ($item in @($record, $view, $database, $installerObject)) {
+            if ($null -ne $item -and [Runtime.InteropServices.Marshal]::IsComObject($item)) {
+                [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($item)
+            }
+        }
+    }
+}
+
 $appBuild = [IO.Path]::GetFullPath($AppBuildDir)
 $repoRoot = [IO.Path]::GetFullPath($RepositoryRoot)
 Assert-Smoke (Test-Path -LiteralPath $repoRoot -PathType Container) 'Repository root is unavailable.'
@@ -111,7 +138,8 @@ $environmentSnapshot = $null
 $desktopProcess = $null
 $reportedChildPid = $null
 $primaryFailure = $null
-$desktopLauncherName = '翔鸟律智桌面端.exe'
+$expectedProductName = -join ([char[]]@(0x7FD4, 0x9E1F, 0x5F8B, 0x667A, 0x684C, 0x9762, 0x7AEF))
+$desktopLauncherName = "$expectedProductName.exe"
 try {
     $msiRoot = Join-Path $appBuild 'compose\binaries\main\msi'
     Assert-Smoke (Test-Path -LiteralPath $msiRoot -PathType Container) 'Canonical packaged MSI directory is missing.'
@@ -119,6 +147,21 @@ try {
         Sort-Object LastWriteTimeUtc -Descending |
         Select-Object -First 1
     Assert-Smoke ($null -ne $msi) 'Packaged MSI was not produced.'
+
+    $exeRoot = Join-Path $appBuild 'compose\binaries\main\exe'
+    Assert-Smoke (Test-Path -LiteralPath $exeRoot -PathType Container) 'Canonical packaged EXE directory is missing.'
+    $packageExe = Get-ChildItem -LiteralPath $exeRoot -File -Filter '*.exe' |
+        Sort-Object LastWriteTimeUtc -Descending |
+        Select-Object -First 1
+    Assert-Smoke ($null -ne $packageExe) 'Packaged EXE was not produced.'
+
+    $expectedInstallerProductName = "$expectedProductName Installer"
+    $expectedInstallerDescription = "Installer of $expectedProductName"
+    $msiProductName = Get-MsiProperty -Path $msi.FullName -Property 'ProductName'
+    Assert-Smoke ($msiProductName -eq $expectedProductName) 'MSI ProductName does not match the Xiangniao brand.'
+    $packageExeVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($packageExe.FullName)
+    Assert-Smoke ($packageExeVersion.ProductName -eq $expectedInstallerProductName) 'EXE ProductName does not match the Xiangniao installer brand.'
+    Assert-Smoke ($packageExeVersion.FileDescription -eq $expectedInstallerDescription) 'EXE FileDescription does not match the Xiangniao installer brand.'
 
     $extractedRoot = Join-Path $temporaryRoot 'extracted'
     New-Item -ItemType Directory -Path $extractedRoot | Out-Null
@@ -134,6 +177,17 @@ try {
     $desktopExe = Get-ChildItem -LiteralPath $extractedRoot -Recurse -File -Filter $desktopLauncherName |
         Select-Object -First 1
     Assert-Smoke ($null -ne $desktopExe) ("{0} is missing from the extracted MSI." -f $desktopLauncherName)
+    $launcherVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($desktopExe.FullName)
+    Assert-Smoke ($launcherVersion.ProductName -eq $expectedProductName) 'Extracted launcher ProductName is invalid.'
+    Add-Type -AssemblyName System.Drawing
+    $associatedIcon = $null
+    try {
+        $associatedIcon = [Drawing.Icon]::ExtractAssociatedIcon($desktopExe.FullName)
+        Assert-Smoke ($null -ne $associatedIcon) 'The branded launcher has no associated Windows icon.'
+        Assert-Smoke ($associatedIcon.Width -ge 16 -and $associatedIcon.Height -ge 16) 'The launcher icon dimensions are invalid.'
+    } finally {
+        if ($null -ne $associatedIcon) { $associatedIcon.Dispose() }
+    }
     $bundledJar = Get-ChildItem -LiteralPath $extractedRoot -Recurse -File -Filter 'babiq-server.jar' |
         Where-Object { $_.FullName -match '[\\/]backend[\\/]babiq-server\.jar$' } |
         Select-Object -First 1
@@ -173,6 +227,12 @@ try {
     Assert-Smoke ($report.unauthorizedHandshakeRejected -eq $true) 'Unauthorized handshake rejection was not proven.'
     Assert-Smoke ($report.authenticatedConnection -eq $true) 'Authenticated WebSocket connection was not proven.'
     Assert-Smoke ($report.signedOutIdentityBound -eq $true) 'Framework signed-out identity bind was not proven.'
+    Assert-Smoke ($report.windowComposed -eq $true) 'The real Compose Window was not committed.'
+    Assert-Smoke ($report.brandLogoDecoded -eq $true) 'The packaged brand logo was not decoded.'
+    Assert-Smoke ($report.mascotDecoded -eq $true) 'The packaged assistant mascot was not decoded.'
+    Assert-Smoke ($report.topNavigationComposed -eq $true) 'The top navigation was not composed.'
+    Assert-Smoke ($report.assistantInitiallyCollapsed -eq $true) 'The assistant did not start collapsed.'
+    Assert-Smoke ($report.productName -eq $expectedProductName) 'The composed product name is invalid.'
     Assert-Smoke ([long]$report.childPid -gt 0) 'Child PID is missing.'
     $reportedChildPid = [int]$report.childPid
 
@@ -198,6 +258,11 @@ try {
     $desktopProcess.Refresh()
     Assert-Smoke ($desktopProcess.HasExited) 'Desktop process remains alive after smoke completion.'
     $child = Get-Process -Id $reportedChildPid -ErrorAction SilentlyContinue
+    if ($null -ne $child) {
+        Assert-Smoke ($child.WaitForExit(30000)) 'Bundled Agent child process did not stop during graceful shutdown.'
+        $child.Refresh()
+    }
+    $child = Get-Process -Id $reportedChildPid -ErrorAction SilentlyContinue
     Assert-Smoke ($null -eq $child) 'Bundled Agent child process remains alive after desktop shutdown.'
 
     $secretHits = Get-ChildItem -LiteralPath $expectedRuntimeRoot -Recurse -File -Filter '*.log' -ErrorAction SilentlyContinue |
@@ -206,7 +271,7 @@ try {
 
     $reportedChildPid = $null
     $desktopProcess = $null
-    Write-Host ("Packaged distribution smoke passed: {0}" -f $msi.FullName)
+    Write-Host ("Packaged distribution smoke passed: MSI={0}; EXE={1}" -f $msi.FullName, $packageExe.FullName)
 }
 catch {
     $primaryFailure = $_
