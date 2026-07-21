@@ -13,4 +13,13 @@ class PackagingScriptContractTest {
         assertTrue(script.contains("compose\\binaries\\main\\msi"))
         assertFalse(script.contains("Get-ChildItem -LiteralPath \$appBuild -Recurse"))
     }
+
+    @Test
+    fun `packaged smoke launches only the Xiangniao branded executable`() {
+        val script = Path.of("..", "scripts", "smoke-packaged-distribution.ps1").toFile().readText()
+
+        assertTrue(script.contains("\$desktopLauncherName = '翔鸟律智桌面端.exe'"))
+        assertTrue(script.contains("-Filter \$desktopLauncherName"))
+        assertFalse(script.contains("HuitaiBusinessDesktop.exe"))
+    }
 }

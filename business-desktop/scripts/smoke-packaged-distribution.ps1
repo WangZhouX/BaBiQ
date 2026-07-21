@@ -111,6 +111,7 @@ $environmentSnapshot = $null
 $desktopProcess = $null
 $reportedChildPid = $null
 $primaryFailure = $null
+$desktopLauncherName = '翔鸟律智桌面端.exe'
 try {
     $msiRoot = Join-Path $appBuild 'compose\binaries\main\msi'
     Assert-Smoke (Test-Path -LiteralPath $msiRoot -PathType Container) 'Canonical packaged MSI directory is missing.'
@@ -130,9 +131,9 @@ try {
     $installer = Start-Process -FilePath 'msiexec.exe' -ArgumentList $msiArguments -Wait -PassThru -WindowStyle Hidden
     Assert-Smoke ($installer.ExitCode -eq 0) ("MSI administrative extraction failed: {0}" -f $installer.ExitCode)
 
-    $desktopExe = Get-ChildItem -LiteralPath $extractedRoot -Recurse -File -Filter 'HuitaiBusinessDesktop.exe' |
+    $desktopExe = Get-ChildItem -LiteralPath $extractedRoot -Recurse -File -Filter $desktopLauncherName |
         Select-Object -First 1
-    Assert-Smoke ($null -ne $desktopExe) 'HuitaiBusinessDesktop.exe is missing from the extracted MSI.'
+    Assert-Smoke ($null -ne $desktopExe) ("{0} is missing from the extracted MSI." -f $desktopLauncherName)
     $bundledJar = Get-ChildItem -LiteralPath $extractedRoot -Recurse -File -Filter 'babiq-server.jar' |
         Where-Object { $_.FullName -match '[\\/]backend[\\/]babiq-server\.jar$' } |
         Select-Object -First 1
@@ -157,7 +158,7 @@ try {
     $deadline = [DateTime]::UtcNow.AddSeconds(120)
     while (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) {
         if ($desktopProcess.HasExited) {
-            throw ("HuitaiBusinessDesktop.exe exited before writing the smoke report: {0}" -f $desktopProcess.ExitCode)
+            throw ("{0} exited before writing the smoke report: {1}" -f $desktopLauncherName, $desktopProcess.ExitCode)
         }
         if ([DateTime]::UtcNow -ge $deadline) { throw 'Packaged desktop smoke timed out after 120 seconds.' }
         Start-Sleep -Milliseconds 250

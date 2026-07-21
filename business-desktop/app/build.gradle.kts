@@ -92,6 +92,7 @@ compose.desktop {
                 shortcut = true
                 menu = true
                 menuGroup = "翔鸟律智"
+                upgradeUuid = "5938a1de-244d-41c4-b193-064654515e62"
             }
         }
     }
