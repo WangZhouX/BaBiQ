@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -29,6 +31,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -36,6 +39,7 @@ import com.wzx.huitai.desktop.ui.brand.BusinessBrandResources
 
 object BusinessTopNavigationTags {
     const val ROOT = "business-top-navigation"
+    const val GROUP = "business-top-navigation-group"
     const val BRAND = "business-top-navigation-brand"
     const val LOGO = "business-top-navigation-logo"
     const val WORKBENCH = "navigation-workbench"
@@ -59,7 +63,7 @@ private val primaryNavigationItems = listOf(
 @Composable
 fun BusinessTopNavigation(
     selectedDestination: BusinessDesktopDestination,
-    onDestinationSelected: (BusinessDesktopDestination) -> Unit = {},
+    onDestinationSelected: (BusinessDesktopDestination) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Surface(
@@ -72,8 +76,8 @@ fun BusinessTopNavigation(
         BoxWithConstraints {
             val compact = maxWidth < 1008.dp
             val horizontalPadding = if (compact) 12.dp else 20.dp
-            val brandWidth = if (compact) 184.dp else 212.dp
-            val itemWidth = if (compact) 88.dp else 104.dp
+            val brandMinWidth = if (compact) 184.dp else 212.dp
+            val itemMinWidth = if (compact) 88.dp else 104.dp
             val itemGap = if (compact) 2.dp else 8.dp
 
             Box {
@@ -81,17 +85,19 @@ fun BusinessTopNavigation(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(63.dp)
-                        .padding(horizontal = horizontalPadding),
+                        .padding(horizontal = horizontalPadding)
+                        .selectableGroup()
+                        .testTag(BusinessTopNavigationTags.GROUP),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    BrandBlock(compact = compact, width = brandWidth)
+                    BrandBlock(compact = compact, minWidth = brandMinWidth)
                     Spacer(Modifier.width(if (compact) 8.dp else 20.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(itemGap)) {
                         primaryNavigationItems.forEach { item ->
                             TopNavigationButton(
                                 item = item,
                                 selected = selectedDestination == item.destination,
-                                width = itemWidth,
+                                minWidth = itemMinWidth,
                                 compact = compact,
                                 onClick = { onDestinationSelected(item.destination) },
                             )
@@ -104,7 +110,7 @@ fun BusinessTopNavigation(
                             BusinessTopNavigationTags.SETTINGS,
                         ),
                         selected = selectedDestination == BusinessDesktopDestination.SETTINGS,
-                        width = itemWidth,
+                        minWidth = itemMinWidth,
                         compact = compact,
                         onClick = { onDestinationSelected(BusinessDesktopDestination.SETTINGS) },
                     )
@@ -117,11 +123,13 @@ fun BusinessTopNavigation(
         }
     }
 }
+
 @Composable
-private fun BrandBlock(compact: Boolean, width: Dp) {
+private fun BrandBlock(compact: Boolean, minWidth: Dp) {
     Row(
         modifier = Modifier
-            .width(width)
+            .width(IntrinsicSize.Min)
+            .widthIn(min = minWidth)
             .testTag(BusinessTopNavigationTags.BRAND),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -140,6 +148,7 @@ private fun BrandBlock(compact: Boolean, width: Dp) {
             fontSize = if (compact) 15.sp else 17.sp,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
+            softWrap = false,
         )
     }
 }
@@ -148,7 +157,7 @@ private fun BrandBlock(compact: Boolean, width: Dp) {
 private fun TopNavigationButton(
     item: TopNavigationItem,
     selected: Boolean,
-    width: Dp,
+    minWidth: Dp,
     compact: Boolean,
     onClick: () -> Unit,
 ) {
@@ -156,7 +165,8 @@ private fun TopNavigationButton(
     val foreground = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
     Box(
         modifier = Modifier
-            .widthIn(min = width, max = width)
+            .width(IntrinsicSize.Min)
+            .widthIn(min = minWidth)
             .height(40.dp)
             .clip(RoundedCornerShape(10.dp))
             .background(background)
@@ -171,10 +181,13 @@ private fun TopNavigationButton(
     ) {
         Text(
             text = item.destination.label,
+            modifier = Modifier.fillMaxWidth(),
             color = foreground,
             fontSize = if (compact) 13.sp else 14.sp,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
             maxLines = 1,
+            softWrap = false,
+            textAlign = TextAlign.Center,
         )
     }
 }
