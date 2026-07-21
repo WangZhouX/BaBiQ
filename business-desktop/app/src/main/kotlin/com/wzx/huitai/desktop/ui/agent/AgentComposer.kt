@@ -104,7 +104,7 @@ fun AgentComposer(
                 value = value,
                 onValueChange = onValueChanged,
                 enabled = enabled,
-                placeholder = { Text("告诉 Agent 需要整理或修改的内容") },
+                placeholder = { Text("告诉小律智能助手需要整理或修改的内容") },
                 modifier = Modifier
                     .weight(1f)
                     .onPreviewKeyEvent { event ->

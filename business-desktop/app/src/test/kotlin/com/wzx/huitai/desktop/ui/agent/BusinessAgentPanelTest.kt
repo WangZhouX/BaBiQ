@@ -50,6 +50,30 @@ class BusinessAgentPanelTest {
     val rule = createComposeRule()
 
     @Test
+    fun `assistant panel uses xiaolv title message label and composer prompt`() {
+        rule.setContent {
+            HuitaiBusinessTheme {
+                BusinessAgentPanel(
+                    state = composerState(
+                        BusinessAuthenticationStatus.AUTHENTICATED,
+                        identity = identity(),
+                    ).copy(
+                        messages = listOf(
+                            BusinessThreadItem.AgentMessage("assistant-copy", text = "已整理完成"),
+                        ),
+                    ),
+                )
+            }
+        }
+
+        rule.onNodeWithText("小律智能助手").assertExists()
+        rule.onNodeWithText("小律").assertExists()
+        rule.onNodeWithText("告诉小律智能助手需要整理或修改的内容").assertExists()
+        rule.onAllNodesWithText("Agent").assertCountEquals(0)
+        rule.onAllNodesWithText("告诉 Agent 需要整理或修改的内容").assertCountEquals(0)
+    }
+
+    @Test
     fun `expanded panel exposes dedicated mascot slot without legacy collapse action`() {
         var toggleCount = 0
         rule.setContent {

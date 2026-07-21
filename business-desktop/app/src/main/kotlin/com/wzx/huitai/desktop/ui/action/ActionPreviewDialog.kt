@@ -119,7 +119,7 @@ internal fun ActionDecisionBody(state: ActionDecisionDialogState) {
 /** 将协议来源映射为通用中文标签，不暴露其他命令载荷。 */
 private fun ActionOrigin.toDisplayLabel(): String = when (this) {
     ActionOrigin.USER -> "用户操作"
-    ActionOrigin.AGENT -> "Agent 建议"
+    ActionOrigin.AGENT -> "小律建议"
 }
 
 private val DECISION_CONTENT_MAX_HEIGHT = 360.dp

@@ -794,7 +794,7 @@ class ProductionBusinessDesktopCompositionFactory(
             val value = change.newValue ?: return@mapNotNull null
             val source = change.sourceReferences.firstOrNull()?.let { reference ->
                 reference.label ?: reference.type
-            } ?: "Agent"
+            } ?: "小律"
             BusinessFieldSuggestion(
                 fieldId = change.fieldId,
                 value = value,

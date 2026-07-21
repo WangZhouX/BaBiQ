@@ -172,7 +172,7 @@ private fun MessageCard(text: String, user: Boolean) {
         color = if (user) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(if (user) "用户" else "Agent", style = MaterialTheme.typography.labelSmall)
+            Text(if (user) "用户" else "小律", style = MaterialTheme.typography.labelSmall)
             Text(text)
         }
     }

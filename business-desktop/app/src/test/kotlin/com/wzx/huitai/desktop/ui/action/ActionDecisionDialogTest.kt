@@ -46,7 +46,7 @@ class ActionDecisionDialogTest {
         listOf(
             "确认动作预览",
             "通用资料更新",
-            "来源：Agent 建议",
+            "来源：小律建议",
             "将更新两个通用字段",
             "资料名称",
             "变更前：旧名称",
