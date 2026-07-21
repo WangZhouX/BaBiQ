@@ -91,6 +91,10 @@ fun BusinessDesktopShell(
     modifier: Modifier = Modifier,
 ) {
     var expansionMessage by remember { mutableStateOf<String?>(null) }
+    var resizeAccumulator by remember { mutableStateOf(requestedAssistantWidth) }
+    LaunchedEffect(requestedAssistantWidth) {
+        resizeAccumulator = requestedAssistantWidth
+    }
     Column(modifier.fillMaxSize()) {
         BusinessTopNavigation(
             selectedDestination = selectedDestination,
@@ -175,13 +179,13 @@ fun BusinessDesktopShell(
                     }
                     BusinessAssistantResizeHandle(
                         onResizeBy = { delta ->
-                            onRequestedAssistantWidthChange(
-                                BusinessDesktopLayoutPolicy.resizeAssistantWidth(
-                                    current = requestedAssistantWidth,
-                                    dragDeltaX = delta,
-                                    availableWidth = availableWidth,
-                                ),
+                            val nextWidth = BusinessDesktopLayoutPolicy.resizeAssistantWidth(
+                                current = resizeAccumulator,
+                                dragDeltaX = delta,
+                                availableWidth = availableWidth,
                             )
+                            resizeAccumulator = nextWidth
+                            onRequestedAssistantWidthChange(nextWidth)
                         },
                         modifier = Modifier
                             .offset(x = layout.businessWidth - 2.dp)

@@ -10,6 +10,7 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertHeightIsEqualTo
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -123,6 +124,87 @@ class BusinessAgentPanelTest {
             val target = rule.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot
             org.junit.Assert.assertFalse("mascot must not overlap $tag", mascot.overlaps(target))
         }
+    }
+
+    @Test
+    fun `minimum height keeps many attachments error multiline input and actions inside panel`() {
+        val displayIds = listOf(
+            "A-BCDEFG",
+            "A-BCDEFH",
+            "A-BCDEFJ",
+            "A-BCDEFK",
+            "A-BCDEFM",
+            "A-BCDEFN",
+            "A-BCDEFP",
+            "A-BCDEFQ",
+        )
+        val attachments = displayIds.mapIndexed { index, displayId ->
+            draftAttachment().copy(
+                id = "00000000-0000-0000-0000-${(index + 1).toString().padStart(12, '0')}",
+                displayId = displayId,
+                name = "第${index + 1}份-${"很长的业务资料文件名".repeat(8)}.pdf",
+            )
+        }
+        rule.setContent {
+            HuitaiBusinessTheme {
+                BusinessAgentPanel(
+                    state = composerState(
+                        BusinessAuthenticationStatus.AUTHENTICATED,
+                        identity = identity(),
+                    ),
+                    composerText = "第一行\n第二行\n第三行\n第四行",
+                    composerAttachments = attachments,
+                    attachmentError = "ATTACHMENT_TOTAL_TOO_LARGE: 附件总大小超过限制，请删除不需要的文件后重试",
+                    mascot = {
+                        BusinessAssistantMascotButton(expanded = true, onToggle = {})
+                    },
+                    modifier = Modifier.requiredSize(460.dp, 656.dp),
+                )
+            }
+        }
+
+        fun bounds(tag: String) = rule.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot
+        fun assertInside(childTag: String, parentBounds: androidx.compose.ui.geometry.Rect) {
+            val child = bounds(childTag)
+            org.junit.Assert.assertTrue("$childTag left escaped", child.left >= parentBounds.left)
+            org.junit.Assert.assertTrue("$childTag top escaped", child.top >= parentBounds.top)
+            org.junit.Assert.assertTrue("$childTag right escaped", child.right <= parentBounds.right)
+            org.junit.Assert.assertTrue("$childTag bottom escaped", child.bottom <= parentBounds.bottom)
+        }
+
+        val attachmentsTag = BusinessAssistantChromeTags.ATTACHMENTS_CONTAINER
+        val panel = bounds(com.wzx.huitai.desktop.ui.shell.BusinessUiTags.AGENT_PANEL)
+        val composer = bounds(BusinessAssistantChromeTags.COMPOSER)
+        val mascotSlot = bounds(BusinessAssistantChromeTags.MASCOT_SLOT)
+        val attachmentsContainer = bounds(attachmentsTag)
+        rule.onNodeWithTag(attachmentsTag).assertHeightIsEqualTo(96.dp)
+        listOf(
+            BusinessAssistantChromeTags.COMPOSER,
+            BusinessAssistantChromeTags.MASCOT_SLOT,
+            BusinessAssistantChromeTags.MASCOT,
+            attachmentsTag,
+            "agent-attachment-error",
+            "agent-composer-input",
+            "agent-composer-attach",
+            "agent-composer-send",
+        ).forEach { assertInside(it, panel) }
+        listOf(
+            attachmentsTag,
+            "agent-attachment-error",
+            "agent-composer-input",
+            "agent-composer-attach",
+            "agent-composer-send",
+        ).forEach { assertInside(it, composer) }
+        org.junit.Assert.assertTrue(mascotSlot.bottom <= composer.top)
+        org.junit.Assert.assertFalse(bounds("agent-composer-attach").overlaps(bounds("agent-composer-input")))
+        org.junit.Assert.assertFalse(bounds("agent-composer-input").overlaps(bounds("agent-composer-send")))
+        org.junit.Assert.assertTrue(attachmentsContainer.bottom <= bounds("agent-attachment-error").top)
+
+        val lastAttachment = attachments.last()
+        rule.onNodeWithTag("agent-attachment-${lastAttachment.displayId}").performScrollTo()
+        assertInside("agent-attachment-${lastAttachment.displayId}", attachmentsContainer)
+        assertInside("agent-composer-attach", panel)
+        assertInside("agent-composer-send", panel)
     }
 
     @Test

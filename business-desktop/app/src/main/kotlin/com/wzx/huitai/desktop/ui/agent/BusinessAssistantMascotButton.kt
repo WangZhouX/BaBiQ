@@ -30,6 +30,7 @@ object BusinessAssistantChromeTags {
     const val MASCOT_SLOT: String = "business-assistant-mascot-slot"
     const val MESSAGES: String = "business-agent-messages"
     const val COMPOSER: String = "agent-composer-root"
+    const val ATTACHMENTS_CONTAINER: String = "agent-attachments-container"
     const val RESIZE_HANDLE: String = "business-assistant-resize-handle"
     const val RESIZE_RAIL: String = "business-assistant-resize-rail"
 }

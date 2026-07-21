@@ -194,6 +194,60 @@ class BusinessDesktopShellTest {
     }
 
     @Test
+    fun `one pointer gesture accumulates every move delta and then syncs an external width`() {
+        val requestedWidth = mutableStateOf(460.dp)
+        val emittedWidths = mutableListOf<Dp>()
+        rule.setContent {
+            CompositionLocalProvider(LocalDensity provides Density(0.75f)) {
+                HuitaiBusinessTheme {
+                    BusinessDesktopShell(
+                        state = authenticatedShellState(),
+                        formState = DemoFormState(),
+                        agentPanelExpanded = true,
+                        requestedAssistantWidth = requestedWidth.value,
+                        onRequestedAssistantWidthChange = { emittedWidths += it },
+                        modifier = Modifier.shellSize(1200.dp),
+                    )
+                }
+            }
+        }
+
+        rule.onNodeWithTag(BusinessAssistantChromeTags.RESIZE_HANDLE).performMouseInput {
+            moveTo(center)
+            press()
+            moveBy(Offset(-10f, 0f))
+            moveBy(Offset(-10f, 0f))
+            moveBy(Offset(-10f, 0f))
+            release()
+        }
+        rule.runOnIdle {
+            assertTrue(
+                abs(emittedWidths.last().value - 500f) <= 0.1f,
+                "expected one gesture to emit 500dp, actual ${emittedWidths.last()}",
+            )
+            emittedWidths.clear()
+            requestedWidth.value = 520.dp
+        }
+        rule.waitForIdle()
+        rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertWidthIsEqualTo(520.dp)
+
+        rule.onNodeWithTag(BusinessAssistantChromeTags.RESIZE_HANDLE).performMouseInput {
+            moveTo(center)
+            press()
+            moveBy(Offset(10f, 0f))
+            moveBy(Offset(10f, 0f))
+            moveBy(Offset(10f, 0f))
+            release()
+        }
+        rule.runOnIdle {
+            assertTrue(
+                abs(emittedWidths.last().value - 480f) <= 0.1f,
+                "expected external 520dp to sync before emitting 480dp, actual ${emittedWidths.last()}",
+            )
+        }
+    }
+
+    @Test
     fun `eight dp divider exposes an unclipped twelve dp handle whose two outer edges drag`() {
         val resizeEvents = mutableListOf<Dp>()
         rule.setContent {
