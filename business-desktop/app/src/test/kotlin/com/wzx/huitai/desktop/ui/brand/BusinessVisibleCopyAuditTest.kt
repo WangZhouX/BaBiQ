@@ -11,6 +11,13 @@ import org.junit.Test
 
 class BusinessVisibleCopyAuditTest {
     @Test
+    fun `constant template is audited as its complete runtime technical string`() {
+        val source = "val error = \"\${\"Agent\"} connection changed\""
+
+        assertTrue(auditKotlinSource(source).isEmpty())
+    }
+
+    @Test
     fun `kotlin scanner audits strings inside a non constant template expression`() {
         val source = "Text(\"\"\"业务 \${if (enabled) \"\\u0041gent\" else \"小律\"}\"\"\")"
 
@@ -344,8 +351,10 @@ private object KotlinVisibleStringScanner {
             val expressionStart = index + 2
             val expressionEnd = findTemplateExpressionEnd(expressionStart) ?: return null
             val expression = source.substring(expressionStart, expressionEnd)
-            independentlyVisible += KotlinVisibleStringScanner.scan(expression)
             val constant = constantStringExpression(expression)
+            if (constant == null) {
+                independentlyVisible += KotlinVisibleStringScanner.scan(expression)
+            }
             target.append(constant ?: " ")
             index = expressionEnd + 1
             return constant != null
