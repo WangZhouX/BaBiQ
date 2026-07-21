@@ -28,6 +28,7 @@ import com.wzx.huitai.desktop.ui.action.HighRiskApprovalDialog
 import com.wzx.huitai.desktop.ui.shell.BusinessDesktopDestination
 import com.wzx.huitai.desktop.ui.shell.BusinessDesktopShell
 import com.wzx.huitai.desktop.ui.theme.HuitaiBusinessTheme
+import com.wzx.huitai.desktop.ui.layout.BusinessDesktopLayoutPolicy
 import com.wzx.huitai.desktop.ui.window.BusinessDesktopWindowSpec
 import com.wzx.huitai.desktop.smoke.PackagedSmokeProbe
 import com.wzx.huitai.agent.protocol.ApplicationProtocol
@@ -130,7 +131,8 @@ fun main() {
                 val activeComposerSession = composerSession
                 val composerDraft = activeComposerSession.draft
                 val composerAttachmentError = activeComposerSession.attachmentError
-                var agentPanelExpanded by remember { mutableStateOf(true) }
+                var assistantExpanded by remember { mutableStateOf(false) }
+                var requestedAssistantWidth by remember { mutableStateOf(BusinessDesktopLayoutPolicy.defaultAssistantWidth) }
                 val uiScope = rememberCoroutineScope()
                 val sendCoordinator = remember(view, storage) {
                     BusinessComposerSendCoordinator { text, attachments ->
@@ -159,9 +161,11 @@ fun main() {
                         composerAttachments = composerDraft.attachments,
                         attachmentError = composerAttachmentError?.let { "${it.code}: ${it.message}" },
                         composerSubmitting = composerSubmitting,
-                        agentPanelExpanded = agentPanelExpanded,
+                        agentPanelExpanded = assistantExpanded,
+                        requestedAssistantWidth = requestedAssistantWidth,
                         onDestinationSelected = { selectedDestination = it },
-                        onAgentPanelExpandedChange = { agentPanelExpanded = it },
+                        onAgentPanelExpandedChange = { assistantExpanded = it },
+                        onRequestedAssistantWidthChange = { requestedAssistantWidth = it },
                         onFieldEdited = { fieldId, value ->
                             storage.screen.dispatch(DemoFormEvent.EditField(fieldId, value))
                             uiScope.launch {

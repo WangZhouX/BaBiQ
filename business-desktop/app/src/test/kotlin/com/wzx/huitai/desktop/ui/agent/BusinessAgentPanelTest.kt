@@ -4,6 +4,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -18,6 +20,7 @@ import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.unit.dp
 import com.wzx.huitai.agent.conversation.BusinessAttachmentDraft
 import com.wzx.huitai.agent.conversation.BusinessMessageAttachment
 import com.wzx.huitai.agent.conversation.BusinessPlanStep
@@ -31,6 +34,7 @@ import com.wzx.huitai.desktop.state.BusinessAuthenticationStatus
 import com.wzx.huitai.desktop.state.BusinessDesktopError
 import com.wzx.huitai.desktop.state.BusinessDesktopState
 import com.wzx.huitai.desktop.state.BusinessIdentity
+import com.wzx.huitai.desktop.ui.theme.HuitaiBusinessTheme
 import com.wzx.huitai.presentation.form.FieldChange
 import com.wzx.huitai.presentation.form.FormPatch
 import com.wzx.huitai.presentation.form.SourceReference
@@ -45,19 +49,76 @@ class BusinessAgentPanelTest {
     val rule = createComposeRule()
 
     @Test
-    fun `expanded panel exposes a semantic collapse action`() {
-        var collapseCount = 0
+    fun `expanded panel exposes dedicated mascot slot without legacy collapse action`() {
+        var toggleCount = 0
         rule.setContent {
-            BusinessAgentPanel(
-                state = BusinessDesktopState(),
-                onCollapse = { collapseCount += 1 },
-            )
+            HuitaiBusinessTheme {
+                BusinessAgentPanel(
+                    state = composerState(
+                        BusinessAuthenticationStatus.AUTHENTICATED,
+                        identity = identity(),
+                    ),
+                    mascot = {
+                        BusinessAssistantMascotButton(
+                            expanded = true,
+                            onToggle = { toggleCount += 1 },
+                        )
+                    },
+                    modifier = Modifier.requiredSize(460.dp, 900.dp),
+                )
+            }
         }
 
-        rule.onNodeWithContentDescription("收起业务 Agent")
-            .assertContentDescriptionEquals("收起业务 Agent")
-            .performClick()
-        assertEquals(1, collapseCount)
+        rule.onNodeWithText("小律智能助手").assertExists()
+        rule.onNodeWithContentDescription("收起业务 Agent").assertDoesNotExist()
+        val slot = rule.onNodeWithTag(BusinessAssistantChromeTags.MASCOT_SLOT)
+            .fetchSemanticsNode().boundsInRoot
+        val mascot = rule.onNodeWithTag(BusinessAssistantChromeTags.MASCOT)
+            .fetchSemanticsNode().boundsInRoot
+        val input = rule.onNodeWithTag("agent-composer-input").fetchSemanticsNode().boundsInRoot
+        val send = rule.onNodeWithTag("agent-composer-send").fetchSemanticsNode().boundsInRoot
+        org.junit.Assert.assertTrue(mascot.left >= slot.left && mascot.right <= slot.right)
+        org.junit.Assert.assertTrue(mascot.top >= slot.top && mascot.bottom <= slot.bottom)
+        org.junit.Assert.assertFalse(mascot.overlaps(input))
+        org.junit.Assert.assertFalse(mascot.overlaps(send))
+
+        rule.onNodeWithContentDescription("收回小律智能助手").performClick()
+        assertEquals(1, toggleCount)
+    }
+
+    @Test
+    fun `mascot slot stays disjoint from attachment error chip and multiline composer`() {
+        val attachment = draftAttachment()
+        rule.setContent {
+            HuitaiBusinessTheme {
+                BusinessAgentPanel(
+                    state = composerState(
+                        BusinessAuthenticationStatus.AUTHENTICATED,
+                        identity = identity(),
+                    ),
+                    composerText = "第一行\n第二行\n第三行\n第四行\n第五行",
+                    composerAttachments = listOf(attachment),
+                    attachmentError = "ATTACHMENT_TOTAL_TOO_LARGE: 附件总大小超过限制",
+                    mascot = {
+                        BusinessAssistantMascotButton(expanded = true, onToggle = {})
+                    },
+                    modifier = Modifier.requiredSize(460.dp, 1000.dp),
+                )
+            }
+        }
+
+        val mascot = rule.onNodeWithTag(BusinessAssistantChromeTags.MASCOT)
+            .fetchSemanticsNode().boundsInRoot
+        listOf(
+            "agent-composer-input",
+            "agent-composer-attach",
+            "agent-composer-send",
+            "agent-attachment-${attachment.displayId}",
+            "agent-attachment-error",
+        ).forEach { tag ->
+            val target = rule.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot
+            org.junit.Assert.assertFalse("mascot must not overlap $tag", mascot.overlaps(target))
+        }
     }
 
     @Test

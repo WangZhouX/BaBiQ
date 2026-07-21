@@ -1,33 +1,41 @@
-package com.wzx.huitai.desktop.ui.shell
+﻿package com.wzx.huitai.desktop.ui.shell
 
-import androidx.compose.foundation.layout.requiredWidth
+import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.test.assertCountEquals
-import androidx.compose.ui.test.assertContentDescriptionEquals
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assertWidthIsEqualTo
 import androidx.compose.ui.test.junit4.v2.createComposeRule
-import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
-import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performKeyInput
+import androidx.compose.ui.test.performMouseInput
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.pressKey
+import androidx.compose.ui.test.requestFocus
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import com.wzx.huitai.demo.model.DemoFormState
-import com.wzx.huitai.agent.conversation.BusinessProvider
-import com.wzx.huitai.agent.conversation.BusinessProviderModel
 import com.wzx.huitai.agent.conversation.BusinessAttachmentDraft
 import com.wzx.huitai.agent.conversation.BusinessThreadItem
+import com.wzx.huitai.demo.model.DemoFormState
 import com.wzx.huitai.desktop.controller.BusinessProviderSettingsState
 import com.wzx.huitai.desktop.state.BusinessAuthenticationStatus
 import com.wzx.huitai.desktop.state.BusinessConnectionStatus
 import com.wzx.huitai.desktop.state.BusinessDesktopState
 import com.wzx.huitai.desktop.state.BusinessIdentity
+import com.wzx.huitai.desktop.ui.agent.BusinessAssistantChromeTags
+import com.wzx.huitai.desktop.ui.layout.BusinessDesktopLayoutPolicy
 import com.wzx.huitai.desktop.ui.theme.HuitaiBusinessTheme
+import kotlin.math.abs
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
@@ -36,298 +44,182 @@ class BusinessDesktopShellTest {
     val rule = createComposeRule()
 
     @Test
-    fun `wide shell renders generic navigation form and persistent agent by default`() {
+    fun `collapsed shell uses top navigation full width business region and mascot without legacy chrome`() {
         rule.setContent {
-            HuitaiBusinessTheme {
-                BusinessDesktopShell(
-                    state = BusinessDesktopState(),
-                    formState = DemoFormState(),
-                    providerSettingsState = BusinessProviderSettingsState(),
-                    modifier = Modifier.widthForTest(1280.dp),
-                )
+            CompositionLocalProvider(LocalDensity provides Density(0.75f)) {
+                HuitaiBusinessTheme {
+                    BusinessDesktopShell(
+                        state = BusinessDesktopState(),
+                        formState = DemoFormState(),
+                        providerSettingsState = BusinessProviderSettingsState(),
+                        agentPanelExpanded = false,
+                        modifier = Modifier.shellSize(1200.dp),
+                    )
+                }
             }
         }
 
-        listOf("工作台", "资料录入", "运行记录", "设置").forEach {
-            rule.onNodeWithText(it).assertExists()
-        }
-        listOf("客户", "案件", "文书", "审批").forEach {
-            rule.onAllNodesWithText(it).assertCountEquals(0)
-        }
-        rule.onNodeWithTag(BusinessUiTags.SIDEBAR).assertExists()
-        rule.onNodeWithTag(BusinessUiTags.FORM_PANEL).assertExists()
-        rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertExists()
+        rule.onNodeWithTag(BusinessTopNavigationTags.ROOT).assertExists()
+        rule.onNodeWithTag(BusinessUiTags.BUSINESS_REGION).assertWidthIsEqualTo(1200.dp)
+        rule.onNodeWithTag(BusinessUiTags.FORM_PANEL).assertWidthIsEqualTo(1200.dp)
+        rule.onNodeWithTag(BusinessAssistantChromeTags.MASCOT).assertExists()
+        rule.onNodeWithTag("business-sidebar").assertDoesNotExist()
+        rule.onNodeWithTag("business-agent-collapsed-rail").assertDoesNotExist()
+        rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertDoesNotExist()
     }
 
     @Test
-    fun `fixed agent rail collapses to 52 dp and restores conversation state`() {
-        val expanded = mutableStateOf(true)
-        val state = BusinessDesktopState(
-            messages = listOf(BusinessThreadItem.AgentMessage("agent-1", text = "折叠前的回答")),
-            providers = listOf(
-                BusinessProvider(
-                    id = "relay",
-                    displayName = "我的中转站",
-                    models = listOf(BusinessProviderModel("kimi-k3", "kimi-k3", active = true)),
-                    authMode = "api_key",
-                    hasApiKey = true,
-                    active = true,
-                ),
-            ),
-            activeProviderId = "relay",
-        )
+    fun `expanded dock fills content exactly without overlap and mascot restores full business width`() {
+        val expanded = mutableStateOf(false)
+        val requestedWidth = mutableStateOf(460.dp)
         rule.setContent {
-            HuitaiBusinessTheme {
-                BusinessDesktopShell(
-                    state = state,
-                    formState = DemoFormState(),
-                    providerSettingsState = BusinessProviderSettingsState(),
-                    composerText = "尚未发送的输入",
-                    agentPanelExpanded = expanded.value,
-                    onAgentPanelExpandedChange = { expanded.value = it },
-                    modifier = Modifier.widthForTest(1024.dp),
-                )
+            CompositionLocalProvider(LocalDensity provides Density(0.75f)) {
+                HuitaiBusinessTheme {
+                    BusinessDesktopShell(
+                        state = authenticatedShellState().copy(
+                            messages = listOf(BusinessThreadItem.AgentMessage("agent-1", text = "折叠前的回答")),
+                        ),
+                        formState = DemoFormState(),
+                        composerText = "尚未发送的输入",
+                        agentPanelExpanded = expanded.value,
+                        requestedAssistantWidth = requestedWidth.value,
+                        onAgentPanelExpandedChange = { expanded.value = it },
+                        onRequestedAssistantWidthChange = { requestedWidth.value = it },
+                        modifier = Modifier.shellSize(1200.dp),
+                    )
+                }
             }
         }
 
-        rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertWidthIsEqualTo(360.dp)
-        rule.onNodeWithContentDescription("收起业务 Agent").performClick()
-        rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertDoesNotExist()
-        rule.onNodeWithTag(BusinessUiTags.AGENT_COLLAPSED_RAIL).assertWidthIsEqualTo(52.dp)
-        rule.onNodeWithTag(BusinessUiTags.FORM_PANEL).assertWidthIsEqualTo(900.dp)
+        rule.onNodeWithTag(BusinessAssistantChromeTags.MASCOT).performClick()
 
-        rule.onNodeWithContentDescription("展开业务 Agent").performClick()
-        rule.onNodeWithTag(BusinessUiTags.AGENT_COLLAPSED_RAIL).assertDoesNotExist()
-        rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertWidthIsEqualTo(360.dp)
+        val content = bounds(BusinessUiTags.CONTENT)
+        val business = bounds(BusinessUiTags.BUSINESS_REGION)
+        val divider = bounds(BusinessUiTags.DIVIDER_SLOT)
+        val assistant = bounds(BusinessUiTags.AGENT_PANEL)
+        assertApproximately(content.left, business.left)
+        assertApproximately(business.right, divider.left)
+        assertApproximately(divider.right, assistant.left)
+        assertApproximately(content.right, assistant.right)
+        assertApproximately(content.width, business.width + divider.width + assistant.width)
+        assertApproximately(640f * 0.75f, business.width, minimum = true)
+        assertApproximately(8f * 0.75f, divider.width)
+        assertApproximately(460f * 0.75f, assistant.width)
+
+        rule.onNodeWithContentDescription("收回小律智能助手").performClick()
+        rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertDoesNotExist()
+        rule.onNodeWithTag(BusinessUiTags.DIVIDER_SLOT).assertDoesNotExist()
+        rule.onNodeWithTag(BusinessUiTags.BUSINESS_REGION).assertWidthIsEqualTo(1200.dp)
+        rule.onNodeWithContentDescription("打开小律智能助手").assertExists()
+
+        rule.onNodeWithContentDescription("打开小律智能助手").performClick()
+        rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertWidthIsEqualTo(460.dp)
         rule.onNodeWithText("折叠前的回答").assertExists()
-        rule.onNodeWithText("我的中转站").assertExists()
         rule.onNodeWithTag("agent-composer-input").assertTextContains("尚未发送的输入")
     }
 
     @Test
-    fun `compact agent stays full page when wide rail preference is collapsed`() {
+    fun `1007dp refuses expansion with stable message while 1008dp allows it`() {
+        val width = mutableStateOf(1007.dp)
+        val expanded = mutableStateOf(false)
         rule.setContent {
-            HuitaiBusinessTheme {
-                BusinessDesktopShell(
-                    state = BusinessDesktopState(),
-                    formState = DemoFormState(),
-                    providerSettingsState = BusinessProviderSettingsState(),
-                    selectedDestination = BusinessDesktopDestination.AGENT,
-                    agentPanelExpanded = false,
-                    modifier = Modifier.widthForTest(900.dp),
-                )
+            CompositionLocalProvider(LocalDensity provides Density(0.75f)) {
+                HuitaiBusinessTheme {
+                    BusinessDesktopShell(
+                        state = BusinessDesktopState(),
+                        formState = DemoFormState(),
+                        agentPanelExpanded = expanded.value,
+                        onAgentPanelExpandedChange = { expanded.value = it },
+                        modifier = Modifier.shellSize(width.value),
+                    )
+                }
             }
         }
 
-        rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertExists()
-        rule.onNodeWithTag(BusinessUiTags.AGENT_COLLAPSED_RAIL).assertDoesNotExist()
-        rule.onNodeWithContentDescription("收起业务 Agent").assertDoesNotExist()
-    }
-
-    @Test
-    fun `wide navigation routes center content while keeping agent rail`() {
-        val destination = mutableStateOf(BusinessDesktopDestination.DATA_ENTRY)
-        rule.setContent {
-            HuitaiBusinessTheme {
-                BusinessDesktopShell(
-                    state = BusinessDesktopState(),
-                    formState = DemoFormState(),
-                    providerSettingsState = BusinessProviderSettingsState(),
-                    selectedDestination = destination.value,
-                    onDestinationSelected = { destination.value = it },
-                    modifier = Modifier.widthForTest(1024.dp),
-                )
-            }
-        }
-
-        rule.onNodeWithTag("navigation-settings").performClick()
-        assertEquals(BusinessDesktopDestination.SETTINGS, destination.value)
-        rule.onNodeWithTag("provider-settings-panel").assertExists()
-        rule.onNodeWithTag(BusinessUiTags.FORM_PANEL).assertDoesNotExist()
-        rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertExists()
-
-        rule.onNodeWithTag("navigation-data_entry").performClick()
-        rule.onNodeWithTag(BusinessUiTags.FORM_PANEL).assertExists()
-        rule.onNodeWithTag("provider-settings-panel").assertDoesNotExist()
-
-        rule.onNodeWithTag("navigation-workbench").performClick()
-        rule.onNodeWithText("工作台功能将在后续阶段开放").assertExists()
-        rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertExists()
-
-        rule.onNodeWithTag("navigation-run_history").performClick()
-        rule.onNodeWithText("运行记录功能将在后续阶段开放").assertExists()
-        rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertExists()
-    }
-
-    @Test
-    fun `compact shell exposes exactly one of data settings or agent`() {
-        val destination = mutableStateOf(BusinessDesktopDestination.DATA_ENTRY)
-        rule.setContent {
-            HuitaiBusinessTheme {
-                BusinessDesktopShell(
-                    state = BusinessDesktopState(),
-                    formState = DemoFormState(),
-                    providerSettingsState = BusinessProviderSettingsState(),
-                    selectedDestination = destination.value,
-                    onDestinationSelected = { destination.value = it },
-                    modifier = Modifier.widthForTest(900.dp),
-                )
-            }
-        }
-
-        listOf("资料录入", "设置", "Agent").forEach { rule.onNodeWithText(it).assertExists() }
-        rule.onNodeWithTag(BusinessUiTags.FORM_PANEL).assertExists()
-        rule.onNodeWithTag("provider-settings-panel").assertDoesNotExist()
+        rule.onNodeWithContentDescription("打开小律智能助手").performClick()
         rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertDoesNotExist()
+        rule.onNodeWithTag(BusinessUiTags.EXPAND_WIDTH_MESSAGE)
+            .assertTextContains("窗口宽度不足，请先最大化或放大窗口")
+        rule.runOnIdle { assertFalse(expanded.value) }
 
-        rule.onNodeWithText("设置").performClick()
-        rule.onNodeWithTag(BusinessUiTags.FORM_PANEL).assertDoesNotExist()
+        rule.runOnIdle { width.value = 1008.dp }
+        rule.onNodeWithContentDescription("打开小律智能助手").performClick()
+        rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertExists()
+        rule.onNodeWithTag(BusinessUiTags.EXPAND_WIDTH_MESSAGE).assertDoesNotExist()
+        rule.runOnIdle { assertTrue(expanded.value) }
+    }
+
+    @Test
+    fun `real drag keyboard resize and navigation preserve requested assistant width`() {
+        val destination = mutableStateOf(BusinessDesktopDestination.DATA_ENTRY)
+        val requestedWidth = mutableStateOf(460.dp)
+        rule.setContent {
+            CompositionLocalProvider(LocalDensity provides Density(0.75f)) {
+                HuitaiBusinessTheme {
+                    BusinessDesktopShell(
+                        state = authenticatedShellState(),
+                        formState = DemoFormState(),
+                        selectedDestination = destination.value,
+                        agentPanelExpanded = true,
+                        requestedAssistantWidth = requestedWidth.value,
+                        onDestinationSelected = { destination.value = it },
+                        onRequestedAssistantWidthChange = { requestedWidth.value = it },
+                        modifier = Modifier.shellSize(1200.dp),
+                    )
+                }
+            }
+        }
+
+        rule.onNodeWithTag(BusinessAssistantChromeTags.RESIZE_HANDLE).performMouseInput {
+            moveTo(center)
+            press()
+            moveBy(Offset(-30f, 0f))
+            release()
+        }
+        rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertWidthIsEqualTo(500.dp)
+
+        rule.onNodeWithTag(BusinessAssistantChromeTags.RESIZE_HANDLE)
+            .requestFocus()
+            .performKeyInput { pressKey(Key.DirectionLeft) }
+        rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertWidthIsEqualTo(516.dp)
+
+        rule.onNodeWithTag(BusinessTopNavigationTags.SETTINGS).performClick()
         rule.onNodeWithTag("provider-settings-panel").assertExists()
-        rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertDoesNotExist()
-
-        rule.onNodeWithText("Agent").performClick()
-        rule.onNodeWithTag(BusinessUiTags.FORM_PANEL).assertDoesNotExist()
-        rule.onNodeWithTag("provider-settings-panel").assertDoesNotExist()
-        rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertExists()
-    }
-
-    @Test
-    fun `settings remains canonical when wide window becomes compact`() {
-        val width = mutableStateOf(1280.dp)
-        val destination = mutableStateOf(BusinessDesktopDestination.SETTINGS)
-        rule.setContent {
-            HuitaiBusinessTheme {
-                BusinessDesktopShell(
-                    state = BusinessDesktopState(),
-                    formState = DemoFormState(),
-                    providerSettingsState = BusinessProviderSettingsState(),
-                    selectedDestination = destination.value,
-                    onDestinationSelected = { destination.value = it },
-                    modifier = Modifier.widthForTest(width.value),
-                )
-            }
-        }
-
-        rule.onNodeWithTag("provider-settings-panel").assertExists()
-        rule.runOnIdle { width.value = 900.dp }
-        rule.onNodeWithTag("provider-settings-panel").assertExists()
-        assertEquals(BusinessDesktopDestination.SETTINGS, destination.value)
-    }
-
-    @Test
-    fun `compact agent uses data fallback on wide and returns to agent when compact again`() {
-        val width = mutableStateOf(900.dp)
-        val destination = mutableStateOf(BusinessDesktopDestination.AGENT)
-        rule.setContent {
-            HuitaiBusinessTheme {
-                BusinessDesktopShell(
-                    state = BusinessDesktopState(),
-                    formState = DemoFormState(),
-                    providerSettingsState = BusinessProviderSettingsState(),
-                    selectedDestination = destination.value,
-                    onDestinationSelected = { destination.value = it },
-                    modifier = Modifier.widthForTest(width.value),
-                )
-            }
-        }
-
-        rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertExists()
-        rule.onNodeWithTag(BusinessUiTags.FORM_PANEL).assertDoesNotExist()
-        rule.runOnIdle { width.value = 1280.dp }
+        rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertWidthIsEqualTo(516.dp)
+        rule.onNodeWithTag(BusinessTopNavigationTags.DATA_ENTRY).performClick()
         rule.onNodeWithTag(BusinessUiTags.FORM_PANEL).assertExists()
-        rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertExists()
-        assertEquals(BusinessDesktopDestination.AGENT, destination.value)
-        rule.runOnIdle { width.value = 900.dp }
-        rule.onNodeWithTag(BusinessUiTags.FORM_PANEL).assertDoesNotExist()
-        rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertExists()
-        assertEquals(BusinessDesktopDestination.AGENT, destination.value)
+        rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertWidthIsEqualTo(516.dp)
+        rule.runOnIdle { assertEquals(516.dp, requestedWidth.value) }
     }
 
     @Test
-    fun `workbench and run history use compact data fallback without changing canonical destination`() {
-        val width = mutableStateOf(1280.dp)
-        val destination = mutableStateOf(BusinessDesktopDestination.WORKBENCH)
+    fun `collapsed mascot never intersects form save or submit actions`() {
         rule.setContent {
-            HuitaiBusinessTheme {
-                BusinessDesktopShell(
-                    state = BusinessDesktopState(),
-                    formState = DemoFormState(),
-                    providerSettingsState = BusinessProviderSettingsState(),
-                    selectedDestination = destination.value,
-                    onDestinationSelected = { destination.value = it },
-                    modifier = Modifier.widthForTest(width.value),
-                )
+            CompositionLocalProvider(LocalDensity provides Density(0.75f)) {
+                HuitaiBusinessTheme {
+                    BusinessDesktopShell(
+                        state = BusinessDesktopState(),
+                        formState = DemoFormState(),
+                        agentPanelExpanded = false,
+                        modifier = Modifier.shellSize(1200.dp),
+                    )
+                }
             }
         }
 
-        rule.onNodeWithText("工作台功能将在后续阶段开放").assertExists()
-        rule.runOnIdle { width.value = 900.dp }
-        rule.onNodeWithTag(BusinessUiTags.FORM_PANEL).assertExists()
-        assertEquals(BusinessDesktopDestination.WORKBENCH, destination.value)
-        rule.runOnIdle {
-            width.value = 1280.dp
-            destination.value = BusinessDesktopDestination.RUN_HISTORY
-        }
-        rule.onNodeWithText("运行记录功能将在后续阶段开放").assertExists()
-        rule.runOnIdle { width.value = 900.dp }
-        rule.onNodeWithTag(BusinessUiTags.FORM_PANEL).assertExists()
-        assertEquals(BusinessDesktopDestination.RUN_HISTORY, destination.value)
+        rule.onNodeWithTag("save-draft-action").performScrollTo()
+        val safeArea = bounds(BusinessUiTags.MASCOT_SAFE_AREA)
+        val form = bounds(BusinessUiTags.FORM_PANEL)
+        val mascot = bounds(BusinessAssistantChromeTags.MASCOT)
+        assertTrue(form.bottom <= safeArea.top + 0.5f)
+        assertTrue(mascot.left >= safeArea.left && mascot.right <= safeArea.right)
+        assertTrue(mascot.top >= safeArea.top && mascot.bottom <= safeArea.bottom)
+        assertFalse(mascot.overlaps(bounds("save-draft-action")))
+        assertFalse(mascot.overlaps(bounds("submit-action")))
     }
 
     @Test
-    fun `medium shell keeps 72 dp accessible navigation beside center and agent`() {
-        rule.setContent {
-            HuitaiBusinessTheme {
-                BusinessDesktopShell(
-                    state = BusinessDesktopState(),
-                    formState = DemoFormState(),
-                    providerSettingsState = BusinessProviderSettingsState(),
-                    modifier = Modifier.widthForTest(1024.dp),
-                )
-            }
-        }
-
-        rule.onNodeWithTag(BusinessUiTags.SIDEBAR).assertWidthIsEqualTo(72.dp)
-        mapOf(
-            "workbench" to "工作台",
-            "data_entry" to "资料录入",
-            "run_history" to "运行记录",
-            "settings" to "设置",
-        ).forEach { (tagSuffix, label) ->
-            rule.onNodeWithTag("navigation-$tagSuffix")
-                .assertExists()
-                .assertContentDescriptionEquals(label)
-        }
-        rule.onNodeWithTag(BusinessUiTags.FORM_PANEL).assertExists()
-        rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertExists()
-    }
-
-    @Test
-    fun `shell forwards form save and submit callbacks`() {
-        var saved = false
-        var submitted = false
-        rule.setContent {
-            HuitaiBusinessTheme {
-                BusinessDesktopShell(
-                    state = BusinessDesktopState(),
-                    formState = DemoFormState(),
-                    providerSettingsState = BusinessProviderSettingsState(),
-                    onSaveDraft = { saved = true },
-                    onSubmit = { submitted = true },
-                    modifier = Modifier.widthForTest(1280.dp),
-                )
-            }
-        }
-
-        rule.onNodeWithTag("save-draft-action").performScrollTo().performClick()
-        rule.onNodeWithTag("submit-action").performScrollTo().performClick()
-
-        org.junit.Assert.assertTrue(saved)
-        org.junit.Assert.assertTrue(submitted)
-    }
-
-    @Test
-    fun `shell forwards attachment draft actions through the persistent agent rail`() {
+    fun `shell forwards form actions and attachment actions in expanded assistant`() {
         val attachment = BusinessAttachmentDraft(
             id = "00000000-0000-0000-0000-000000000401",
             displayId = "A-BCDEFG",
@@ -336,30 +228,54 @@ class BusinessDesktopShellTest {
             sizeBytes = 1024,
             displayType = "PDF",
         )
+        var saved = false
+        var submitted = false
         var chooseCount = 0
         var removed: String? = null
         rule.setContent {
-            HuitaiBusinessTheme {
-                BusinessDesktopShell(
-                    state = authenticatedShellState(),
-                    formState = DemoFormState(),
-                    composerAttachments = listOf(attachment),
-                    onChooseFiles = { chooseCount++ },
-                    onRemoveAttachment = { removed = it },
-                    modifier = Modifier.widthForTest(1280.dp),
-                )
+            CompositionLocalProvider(LocalDensity provides Density(0.75f)) {
+                HuitaiBusinessTheme {
+                    BusinessDesktopShell(
+                        state = authenticatedShellState(),
+                        formState = DemoFormState(),
+                        composerAttachments = listOf(attachment),
+                        agentPanelExpanded = true,
+                        onSaveDraft = { saved = true },
+                        onSubmit = { submitted = true },
+                        onChooseFiles = { chooseCount++ },
+                        onRemoveAttachment = { removed = it },
+                        modifier = Modifier.shellSize(1200.dp),
+                    )
+                }
             }
         }
 
+        rule.onNodeWithTag("save-draft-action").performScrollTo().performClick()
+        rule.onNodeWithTag("submit-action").performScrollTo().performClick()
         rule.onNodeWithTag("agent-composer-attach").performClick()
         rule.onNodeWithContentDescription("移除附件 ${attachment.displayId}").performClick()
 
-        assertEquals(1, chooseCount)
-        assertEquals(attachment.id, removed)
+        rule.runOnIdle {
+            assertTrue(saved)
+            assertTrue(submitted)
+            assertEquals(1, chooseCount)
+            assertEquals(attachment.id, removed)
+        }
+    }
+
+    private fun bounds(tag: String) = rule.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot
+
+    private fun assertApproximately(expected: Float, actual: Float, minimum: Boolean = false) {
+        if (minimum) {
+            assertTrue(actual + 0.5f >= expected, "expected at least $expected, actual $actual")
+        } else {
+            assertTrue(abs(expected - actual) <= 0.5f, "expected $expected, actual $actual")
+        }
     }
 }
 
-private fun Modifier.widthForTest(width: Dp): Modifier = then(Modifier.requiredWidth(width))
+private fun Modifier.shellSize(width: Dp, height: Dp = 900.dp): Modifier =
+    then(Modifier.requiredSize(width, height))
 
 private fun authenticatedShellState(): BusinessDesktopState = BusinessDesktopState(
     connectionStatus = BusinessConnectionStatus.CONNECTED,

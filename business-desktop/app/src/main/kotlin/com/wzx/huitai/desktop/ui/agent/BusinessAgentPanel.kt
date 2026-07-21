@@ -3,10 +3,12 @@ package com.wzx.huitai.desktop.ui.agent
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -15,7 +17,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -24,8 +25,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.wzx.huitai.agent.conversation.BusinessThreadItem
@@ -39,7 +38,7 @@ import com.wzx.huitai.presentation.form.FormPatch
 import java.util.Locale
 
 /**
- * 业务 Agent 的纯展示面板。
+ * 小律智能助手的纯展示面板。
  *
  * 面板只消费 Task 31 的不可变状态和回调，不执行协议分发、ActionBus 调用或持久化。
  */
@@ -59,7 +58,7 @@ fun BusinessAgentPanel(
     onSend: () -> Unit = {},
     onReconnect: () -> Unit = {},
     onProviderSelected: (providerId: String, modelId: String) -> Unit = { _, _ -> },
-    onCollapse: (() -> Unit)? = null,
+    mascot: (@Composable () -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     Surface(
@@ -69,25 +68,11 @@ fun BusinessAgentPanel(
     ) {
         Column(Modifier.fillMaxSize()) {
             Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        "业务 Agent",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.weight(1f),
-                    )
-                    onCollapse?.let { collapse ->
-                        TextButton(
-                            onClick = collapse,
-                            modifier = Modifier.semantics { contentDescription = "收起业务 Agent" },
-                        ) {
-                            Text("‹", style = MaterialTheme.typography.titleLarge)
-                        }
-                    }
-                }
+                Text(
+                    "小律智能助手",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                )
                 ConnectionBanner(state.connectionStatus, onReconnect)
                 BusinessProviderSelector(
                     providers = state.providers,
@@ -95,6 +80,17 @@ fun BusinessAgentPanel(
                     selectedModelId = selectedModelId,
                     onSelected = onProviderSelected,
                 )
+            }
+            mascot?.let { mascotContent ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(124.dp)
+                        .testTag(BusinessAssistantChromeTags.MASCOT_SLOT),
+                    contentAlignment = Alignment.CenterEnd,
+                ) {
+                    mascotContent()
+                }
             }
             HorizontalDivider()
             Column(

@@ -28,4 +28,29 @@ class BusinessDesktopWindowBindingContractTest {
         assertFalse(source.contains("undecorated = true"))
         assertFalse(source.contains("transparent = true"))
     }
+
+    @Test
+    fun `Main owns collapsed assistant state and preserves requested dock width`() {
+        val source = Path.of(
+            "src",
+            "main",
+            "kotlin",
+            "com",
+            "wzx",
+            "huitai",
+            "desktop",
+            "Main.kt",
+        ).toFile().readText()
+
+        assertTrue(source.contains("var assistantExpanded by remember { mutableStateOf(false) }"))
+        assertTrue(
+            source.contains(
+                "var requestedAssistantWidth by remember { mutableStateOf(BusinessDesktopLayoutPolicy.defaultAssistantWidth) }",
+            ),
+        )
+        assertTrue(source.contains("agentPanelExpanded = assistantExpanded"))
+        assertTrue(source.contains("requestedAssistantWidth = requestedAssistantWidth"))
+        assertTrue(source.contains("onAgentPanelExpandedChange = { assistantExpanded = it }"))
+        assertTrue(source.contains("onRequestedAssistantWidthChange = { requestedAssistantWidth = it }"))
+    }
 }

@@ -27,6 +27,7 @@ import com.wzx.huitai.desktop.ui.brand.BusinessBrandResources
 
 object BusinessAssistantChromeTags {
     const val MASCOT: String = "business-assistant-mascot"
+    const val MASCOT_SLOT: String = "business-assistant-mascot-slot"
     const val RESIZE_HANDLE: String = "business-assistant-resize-handle"
     const val RESIZE_RAIL: String = "business-assistant-resize-rail"
 }

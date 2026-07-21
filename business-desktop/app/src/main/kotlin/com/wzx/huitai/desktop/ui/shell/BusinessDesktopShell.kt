@@ -5,44 +5,49 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.PrimaryTabRow
-import androidx.compose.material3.Tab
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import com.wzx.huitai.agent.conversation.BusinessProviderDraft
 import com.wzx.huitai.agent.conversation.BusinessAttachmentDraft
+import com.wzx.huitai.agent.conversation.BusinessProviderDraft
 import com.wzx.huitai.demo.model.DemoFormState
 import com.wzx.huitai.desktop.controller.BusinessProviderSettingsState
 import com.wzx.huitai.desktop.state.BusinessDesktopState
 import com.wzx.huitai.desktop.state.BusinessFieldSuggestion
 import com.wzx.huitai.desktop.ui.agent.BusinessAgentPanel
-import com.wzx.huitai.desktop.ui.agent.BusinessAgentCollapsedRail
+import com.wzx.huitai.desktop.ui.agent.BusinessAssistantMascotButton
+import com.wzx.huitai.desktop.ui.agent.BusinessAssistantResizeHandle
 import com.wzx.huitai.desktop.ui.form.DemoFormPanel
-import com.wzx.huitai.desktop.ui.layout.BusinessDesktopLayoutMode
 import com.wzx.huitai.desktop.ui.layout.BusinessDesktopLayoutPolicy
 import com.wzx.huitai.desktop.ui.settings.BusinessProviderSettingsPanel
 
-/** 跨组件共享的稳定语义标签，供桌面 UI 自动化定位而不依赖视觉文本。 */
+/** 跨组件共享的稳定语义标签，供桌面 UI 自动化定位。 */
 object BusinessUiTags {
-    const val SIDEBAR = "business-sidebar"
+    const val CONTENT = "business-shell-content"
+    const val BUSINESS_REGION = "business-region"
+    const val DIVIDER_SLOT = "business-assistant-divider-slot"
+    const val MASCOT_SAFE_AREA = "business-mascot-safe-area"
+    const val EXPAND_WIDTH_MESSAGE = "business-assistant-expand-width-message"
     const val FORM_PANEL = "business-form-panel"
     const val AGENT_PANEL = "business-agent-panel"
-    const val AGENT_COLLAPSED_RAIL = "business-agent-collapsed-rail"
     const val PLACEHOLDER_PANEL = "business-placeholder-panel"
 }
 
-/**
- * 按唯一 canonical destination 装配导航、中心工作区和 Agent 面板。
- *
- * 响应式切换只改变视觉映射；[selectedDestination] 永远由上层持有，Shell 不复制导航状态。
- */
+/** 顶部一级导航和不遮挡业务内容的小律停靠分栏。 */
 @Composable
 fun BusinessDesktopShell(
     state: BusinessDesktopState,
@@ -54,7 +59,8 @@ fun BusinessDesktopShell(
     composerAttachments: List<BusinessAttachmentDraft> = emptyList(),
     attachmentError: String? = null,
     composerSubmitting: Boolean = false,
-    agentPanelExpanded: Boolean = true,
+    agentPanelExpanded: Boolean = false,
+    requestedAssistantWidth: Dp = BusinessDesktopLayoutPolicy.defaultAssistantWidth,
     onDestinationSelected: (BusinessDesktopDestination) -> Unit = {},
     onFieldEdited: (fieldId: String, value: String) -> Unit = { _, _ -> },
     onSuggestionsChanged: (Map<String, BusinessFieldSuggestion>) -> Unit = {},
@@ -78,111 +84,80 @@ fun BusinessDesktopShell(
     onProviderOAuthStatus: (String) -> Unit = {},
     onProviderOAuthLogin: (String) -> Unit = {},
     onAgentPanelExpandedChange: (Boolean) -> Unit = {},
+    onRequestedAssistantWidthChange: (Dp) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    BoxWithConstraints(modifier.fillMaxSize()) {
-        val layout = BusinessDesktopLayoutPolicy.resolve(maxWidth, agentPanelExpanded)
-        if (layout.mode == BusinessDesktopLayoutMode.COMPACT) {
-            val visualDestination = selectedDestination.compactVisualDestination()
-            Column(Modifier.fillMaxSize()) {
-                PrimaryTabRow(
-                    selectedTabIndex = when (visualDestination) {
-                        BusinessDesktopDestination.DATA_ENTRY -> 0
-                        BusinessDesktopDestination.SETTINGS -> 1
-                        BusinessDesktopDestination.AGENT -> 2
-                        else -> 0
-                    },
-                    modifier = Modifier.height(48.dp),
-                ) {
-                    CompactDestinationTab(
-                        destination = BusinessDesktopDestination.DATA_ENTRY,
-                        selected = visualDestination == BusinessDesktopDestination.DATA_ENTRY,
-                        onDestinationSelected = onDestinationSelected,
-                    )
-                    CompactDestinationTab(
-                        destination = BusinessDesktopDestination.SETTINGS,
-                        selected = visualDestination == BusinessDesktopDestination.SETTINGS,
-                        onDestinationSelected = onDestinationSelected,
-                    )
-                    CompactDestinationTab(
-                        destination = BusinessDesktopDestination.AGENT,
-                        selected = visualDestination == BusinessDesktopDestination.AGENT,
-                        onDestinationSelected = onDestinationSelected,
-                    )
-                }
-                when (visualDestination) {
-                    BusinessDesktopDestination.SETTINGS -> ProviderSettingsForShell(
-                        state = providerSettingsState,
-                        onRefresh = onProviderRefresh,
-                        onCreate = onProviderCreate,
-                        onUpdate = onProviderUpdate,
-                        onDelete = onProviderDelete,
-                        onTest = onProviderTest,
-                        onSetActive = onProviderActivated,
-                        onOAuthStatus = onProviderOAuthStatus,
-                        onOAuthLogin = onProviderOAuthLogin,
-                        modifier = Modifier.weight(1f),
-                    )
-                    BusinessDesktopDestination.AGENT -> AgentPanelForShell(
-                        state = state,
-                        formState = formState,
-                        selectedModelId = selectedModelId,
-                        composerText = composerText,
-                        composerAttachments = composerAttachments,
-                        attachmentError = attachmentError,
-                        composerSubmitting = composerSubmitting,
-                        onComposerTextChanged = onComposerTextChanged,
-                        onChooseFiles = onChooseFiles,
-                        onPasteImage = onPasteImage,
-                        onRemoveAttachment = onRemoveAttachment,
-                        onSend = onSend,
-                        onReconnect = onReconnect,
-                        onProviderSelected = onProviderSelected,
-                        modifier = Modifier.weight(1f),
-                    )
-                    else -> FormPanelForShell(
-                        state = state,
-                        formState = formState,
-                        onFieldEdited = onFieldEdited,
-                        onSuggestionsChanged = onSuggestionsChanged,
-                        onAcceptSuggestion = onAcceptSuggestion,
-                        onAcceptAllSuggestions = onAcceptAllSuggestions,
-                        onSaveDraft = onSaveDraft,
-                        onSubmit = onSubmit,
-                        modifier = Modifier.weight(1f),
-                    )
-                }
+    var expansionMessage by remember { mutableStateOf<String?>(null) }
+    Column(modifier.fillMaxSize()) {
+        BusinessTopNavigation(
+            selectedDestination = selectedDestination,
+            onDestinationSelected = onDestinationSelected,
+        )
+        BoxWithConstraints(
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .testTag(BusinessUiTags.CONTENT),
+        ) {
+            val availableWidth = maxWidth
+            val layout = BusinessDesktopLayoutPolicy.resolveDocked(
+                availableWidth = availableWidth,
+                assistantExpanded = agentPanelExpanded,
+                requestedAssistantWidth = requestedAssistantWidth,
+            )
+            LaunchedEffect(layout.assistantExpanded) {
+                if (layout.assistantExpanded) expansionMessage = null
             }
-        } else {
-            Row(Modifier.fillMaxSize()) {
-                BusinessSidebar(
-                    selected = selectedDestination,
-                    compact = layout.mode == BusinessDesktopLayoutMode.MEDIUM,
-                    onSelected = onDestinationSelected,
-                    modifier = Modifier.width(layout.navigationWidth),
-                )
-                CenterPanelForShell(
-                    destination = selectedDestination.wideCenterDestination(),
-                    state = state,
-                    formState = formState,
-                    providerSettingsState = providerSettingsState,
-                    onFieldEdited = onFieldEdited,
-                    onSuggestionsChanged = onSuggestionsChanged,
-                    onAcceptSuggestion = onAcceptSuggestion,
-                    onAcceptAllSuggestions = onAcceptAllSuggestions,
-                    onSaveDraft = onSaveDraft,
-                    onSubmit = onSubmit,
-                    onProviderRefresh = onProviderRefresh,
-                    onProviderCreate = onProviderCreate,
-                    onProviderUpdate = onProviderUpdate,
-                    onProviderDelete = onProviderDelete,
-                    onProviderTest = onProviderTest,
-                    onProviderActivated = onProviderActivated,
-                    onProviderOAuthStatus = onProviderOAuthStatus,
-                    onProviderOAuthLogin = onProviderOAuthLogin,
-                    modifier = Modifier.width(layout.formWidth),
-                )
-                if (agentPanelExpanded) {
+
+            if (layout.assistantExpanded) {
+                Row(Modifier.fillMaxSize()) {
+                    Box(
+                        Modifier
+                            .width(layout.businessWidth)
+                            .fillMaxSize()
+                            .testTag(BusinessUiTags.BUSINESS_REGION),
+                    ) {
+                        BusinessContent(
+                            destination = selectedDestination,
+                            state = state,
+                            formState = formState,
+                            providerSettingsState = providerSettingsState,
+                            onFieldEdited = onFieldEdited,
+                            onSuggestionsChanged = onSuggestionsChanged,
+                            onAcceptSuggestion = onAcceptSuggestion,
+                            onAcceptAllSuggestions = onAcceptAllSuggestions,
+                            onSaveDraft = onSaveDraft,
+                            onSubmit = onSubmit,
+                            onProviderRefresh = onProviderRefresh,
+                            onProviderCreate = onProviderCreate,
+                            onProviderUpdate = onProviderUpdate,
+                            onProviderDelete = onProviderDelete,
+                            onProviderTest = onProviderTest,
+                            onProviderActivated = onProviderActivated,
+                            onProviderOAuthStatus = onProviderOAuthStatus,
+                            onProviderOAuthLogin = onProviderOAuthLogin,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
+                    Box(
+                        Modifier
+                            .width(layout.dividerWidth)
+                            .fillMaxSize()
+                            .testTag(BusinessUiTags.DIVIDER_SLOT),
+                    ) {
+                        BusinessAssistantResizeHandle(
+                            onResizeBy = { delta ->
+                                onRequestedAssistantWidthChange(
+                                    BusinessDesktopLayoutPolicy.resizeAssistantWidth(
+                                        current = requestedAssistantWidth,
+                                        dragDeltaX = delta,
+                                        availableWidth = availableWidth,
+                                    ),
+                                )
+                            },
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
                     AgentPanelForShell(
                         state = state,
                         formState = formState,
@@ -198,35 +173,127 @@ fun BusinessDesktopShell(
                         onSend = onSend,
                         onReconnect = onReconnect,
                         onProviderSelected = onProviderSelected,
-                        onCollapse = { onAgentPanelExpandedChange(false) },
-                        modifier = Modifier.width(layout.agentWidth),
-                    )
-                } else {
-                    BusinessAgentCollapsedRail(
-                        onExpand = { onAgentPanelExpandedChange(true) },
-                        modifier = Modifier.width(layout.agentWidth),
+                        mascot = {
+                            BusinessAssistantMascotButton(
+                                expanded = true,
+                                onToggle = { onAgentPanelExpandedChange(false) },
+                            )
+                        },
+                        modifier = Modifier.width(layout.assistantWidth),
                     )
                 }
+            } else {
+                CollapsedBusinessRegion(
+                    destination = selectedDestination,
+                    state = state,
+                    formState = formState,
+                    providerSettingsState = providerSettingsState,
+                    expansionMessage = expansionMessage,
+                    onMascotClick = {
+                        if (layout.canExpand) {
+                            expansionMessage = null
+                            onAgentPanelExpandedChange(true)
+                        } else {
+                            expansionMessage = "窗口宽度不足，请先最大化或放大窗口"
+                        }
+                    },
+                    onFieldEdited = onFieldEdited,
+                    onSuggestionsChanged = onSuggestionsChanged,
+                    onAcceptSuggestion = onAcceptSuggestion,
+                    onAcceptAllSuggestions = onAcceptAllSuggestions,
+                    onSaveDraft = onSaveDraft,
+                    onSubmit = onSubmit,
+                    onProviderRefresh = onProviderRefresh,
+                    onProviderCreate = onProviderCreate,
+                    onProviderUpdate = onProviderUpdate,
+                    onProviderDelete = onProviderDelete,
+                    onProviderTest = onProviderTest,
+                    onProviderActivated = onProviderActivated,
+                    onProviderOAuthStatus = onProviderOAuthStatus,
+                    onProviderOAuthLogin = onProviderOAuthLogin,
+                    modifier = Modifier
+                        .width(layout.businessWidth)
+                        .fillMaxSize()
+                        .testTag(BusinessUiTags.BUSINESS_REGION),
+                )
             }
         }
     }
 }
 
 @Composable
-private fun CompactDestinationTab(
+private fun CollapsedBusinessRegion(
     destination: BusinessDesktopDestination,
-    selected: Boolean,
-    onDestinationSelected: (BusinessDesktopDestination) -> Unit,
+    state: BusinessDesktopState,
+    formState: DemoFormState,
+    providerSettingsState: BusinessProviderSettingsState,
+    expansionMessage: String?,
+    onMascotClick: () -> Unit,
+    onFieldEdited: (String, String) -> Unit,
+    onSuggestionsChanged: (Map<String, BusinessFieldSuggestion>) -> Unit,
+    onAcceptSuggestion: (String, Long) -> Unit,
+    onAcceptAllSuggestions: (Long) -> Unit,
+    onSaveDraft: () -> Unit,
+    onSubmit: () -> Unit,
+    onProviderRefresh: () -> Unit,
+    onProviderCreate: suspend (BusinessProviderDraft) -> Boolean,
+    onProviderUpdate: suspend (BusinessProviderDraft) -> Boolean,
+    onProviderDelete: (String) -> Unit,
+    onProviderTest: (String) -> Unit,
+    onProviderActivated: (String, String?) -> Unit,
+    onProviderOAuthStatus: (String) -> Unit,
+    onProviderOAuthLogin: (String) -> Unit,
+    modifier: Modifier,
 ) {
-    Tab(
-        selected = selected,
-        onClick = { onDestinationSelected(destination) },
-        text = { Text(destination.label) },
-    )
+    Column(modifier) {
+        BusinessContent(
+            destination = destination,
+            state = state,
+            formState = formState,
+            providerSettingsState = providerSettingsState,
+            onFieldEdited = onFieldEdited,
+            onSuggestionsChanged = onSuggestionsChanged,
+            onAcceptSuggestion = onAcceptSuggestion,
+            onAcceptAllSuggestions = onAcceptAllSuggestions,
+            onSaveDraft = onSaveDraft,
+            onSubmit = onSubmit,
+            onProviderRefresh = onProviderRefresh,
+            onProviderCreate = onProviderCreate,
+            onProviderUpdate = onProviderUpdate,
+            onProviderDelete = onProviderDelete,
+            onProviderTest = onProviderTest,
+            onProviderActivated = onProviderActivated,
+            onProviderOAuthStatus = onProviderOAuthStatus,
+            onProviderOAuthLogin = onProviderOAuthLogin,
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(124.dp)
+                .testTag(BusinessUiTags.MASCOT_SAFE_AREA),
+        ) {
+            expansionMessage?.let {
+                Text(
+                    text = it,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(horizontal = 132.dp)
+                        .testTag(BusinessUiTags.EXPAND_WIDTH_MESSAGE),
+                )
+            }
+            BusinessAssistantMascotButton(
+                expanded = false,
+                onToggle = onMascotClick,
+                modifier = Modifier.align(Alignment.CenterEnd).padding(end = 12.dp),
+            )
+        }
+    }
 }
 
 @Composable
-private fun CenterPanelForShell(
+private fun BusinessContent(
     destination: BusinessDesktopDestination,
     state: BusinessDesktopState,
     formState: DemoFormState,
@@ -248,32 +315,31 @@ private fun CenterPanelForShell(
     modifier: Modifier,
 ) {
     when (destination) {
-        BusinessDesktopDestination.DATA_ENTRY -> FormPanelForShell(
-            state,
-            formState,
-            onFieldEdited,
-            onSuggestionsChanged,
-            onAcceptSuggestion,
-            onAcceptAllSuggestions,
-            onSaveDraft,
-            onSubmit,
-            modifier,
-        )
-        BusinessDesktopDestination.SETTINGS -> ProviderSettingsForShell(
-            providerSettingsState,
-            onProviderRefresh,
-            onProviderCreate,
-            onProviderUpdate,
-            onProviderDelete,
-            onProviderTest,
-            onProviderActivated,
-            onProviderOAuthStatus,
-            onProviderOAuthLogin,
-            modifier,
-        )
         BusinessDesktopDestination.WORKBENCH -> PlaceholderPanel("工作台功能将在后续阶段开放", modifier)
+        BusinessDesktopDestination.DATA_ENTRY -> FormPanelForShell(
+            state = state,
+            formState = formState,
+            onFieldEdited = onFieldEdited,
+            onSuggestionsChanged = onSuggestionsChanged,
+            onAcceptSuggestion = onAcceptSuggestion,
+            onAcceptAllSuggestions = onAcceptAllSuggestions,
+            onSaveDraft = onSaveDraft,
+            onSubmit = onSubmit,
+            modifier = modifier,
+        )
         BusinessDesktopDestination.RUN_HISTORY -> PlaceholderPanel("运行记录功能将在后续阶段开放", modifier)
-        BusinessDesktopDestination.AGENT -> Unit
+        BusinessDesktopDestination.SETTINGS -> ProviderSettingsForShell(
+            state = providerSettingsState,
+            onRefresh = onProviderRefresh,
+            onCreate = onProviderCreate,
+            onUpdate = onProviderUpdate,
+            onDelete = onProviderDelete,
+            onTest = onProviderTest,
+            onSetActive = onProviderActivated,
+            onOAuthStatus = onProviderOAuthStatus,
+            onOAuthLogin = onProviderOAuthLogin,
+            modifier = modifier,
+        )
     }
 }
 
@@ -331,7 +397,10 @@ private fun ProviderSettingsForShell(
 
 @Composable
 private fun PlaceholderPanel(message: String, modifier: Modifier) {
-    Box(modifier.fillMaxSize().padding(24.dp).testTag(BusinessUiTags.PLACEHOLDER_PANEL), contentAlignment = Alignment.Center) {
+    Box(
+        modifier.fillMaxSize().padding(24.dp).testTag(BusinessUiTags.PLACEHOLDER_PANEL),
+        contentAlignment = Alignment.Center,
+    ) {
         Text(message)
     }
 }
@@ -352,7 +421,7 @@ private fun AgentPanelForShell(
     onSend: () -> Unit,
     onReconnect: () -> Unit,
     onProviderSelected: (String, String) -> Unit,
-    onCollapse: (() -> Unit)? = null,
+    mascot: @Composable () -> Unit,
     modifier: Modifier,
 ) {
     BusinessAgentPanel(
@@ -370,7 +439,7 @@ private fun AgentPanelForShell(
         onSend = onSend,
         onReconnect = onReconnect,
         onProviderSelected = onProviderSelected,
-        onCollapse = onCollapse,
+        mascot = mascot,
         modifier = modifier,
     )
 }

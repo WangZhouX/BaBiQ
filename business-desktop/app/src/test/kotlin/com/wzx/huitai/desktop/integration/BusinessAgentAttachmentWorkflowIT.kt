@@ -147,6 +147,7 @@ class BusinessAgentAttachmentWorkflowIT {
                     composerText = draft.text,
                     composerAttachments = draft.attachments,
                     composerSubmitting = submitting,
+                    agentPanelExpanded = true,
                     onChooseFiles = {
                         draft = draft.copy(
                             attachments = mergeBusinessComposerAttachments(
