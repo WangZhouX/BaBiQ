@@ -55,6 +55,7 @@ class ActionDecisionDialogTest {
             "变更前：${AuditRedactor.REDACTED}",
             "请核对字段差异",
         ).forEach { rule.onNodeWithText(it).assertExists() }
+        rule.onNodeWithText("来源：Agent 建议").assertDoesNotExist()
         listOf("raw-secret", "raw-user", "raw-tenant").forEach {
             rule.onAllNodesWithText(it, substring = true).assertCountEquals(0)
         }
