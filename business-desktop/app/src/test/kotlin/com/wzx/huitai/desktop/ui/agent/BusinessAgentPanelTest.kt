@@ -75,8 +75,12 @@ class BusinessAgentPanelTest {
             .fetchSemanticsNode().boundsInRoot
         val mascot = rule.onNodeWithTag(BusinessAssistantChromeTags.MASCOT)
             .fetchSemanticsNode().boundsInRoot
+        val messages = rule.onNodeWithTag("business-agent-messages").fetchSemanticsNode().boundsInRoot
+        val composer = rule.onNodeWithTag("agent-composer-root").fetchSemanticsNode().boundsInRoot
         val input = rule.onNodeWithTag("agent-composer-input").fetchSemanticsNode().boundsInRoot
         val send = rule.onNodeWithTag("agent-composer-send").fetchSemanticsNode().boundsInRoot
+        org.junit.Assert.assertTrue(messages.bottom <= slot.top)
+        org.junit.Assert.assertTrue(slot.bottom <= composer.top)
         org.junit.Assert.assertTrue(mascot.left >= slot.left && mascot.right <= slot.right)
         org.junit.Assert.assertTrue(mascot.top >= slot.top && mascot.bottom <= slot.bottom)
         org.junit.Assert.assertFalse(mascot.overlaps(input))

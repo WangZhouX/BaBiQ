@@ -50,7 +50,10 @@ fun AgentComposer(
     modifier: Modifier = Modifier,
 ) {
     Column(
-        modifier = modifier.fillMaxWidth().padding(12.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(12.dp)
+            .testTag(BusinessAssistantChromeTags.COMPOSER),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         if (attachments.isNotEmpty()) {

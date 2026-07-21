@@ -12,6 +12,7 @@ import androidx.compose.ui.test.assertWidthIsEqualTo
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performMouseInput
@@ -190,6 +191,50 @@ class BusinessDesktopShellTest {
         rule.onNodeWithTag(BusinessUiTags.FORM_PANEL).assertExists()
         rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertWidthIsEqualTo(516.dp)
         rule.runOnIdle { assertEquals(516.dp, requestedWidth.value) }
+    }
+
+    @Test
+    fun `eight dp divider exposes an unclipped twelve dp handle whose two outer edges drag`() {
+        val resizeEvents = mutableListOf<Dp>()
+        rule.setContent {
+            CompositionLocalProvider(LocalDensity provides Density(0.75f)) {
+                HuitaiBusinessTheme {
+                    BusinessDesktopShell(
+                        state = authenticatedShellState(),
+                        formState = DemoFormState(),
+                        agentPanelExpanded = true,
+                        requestedAssistantWidth = 460.dp,
+                        onRequestedAssistantWidthChange = { resizeEvents += it },
+                        modifier = Modifier.shellSize(1200.dp),
+                    )
+                }
+            }
+        }
+
+        rule.onNodeWithTag(BusinessUiTags.DIVIDER_SLOT).assertWidthIsEqualTo(8.dp)
+        rule.onNodeWithTag(BusinessAssistantChromeTags.RESIZE_HANDLE).assertWidthIsEqualTo(12.dp)
+        rule.onNodeWithTag(BusinessAssistantChromeTags.RESIZE_RAIL).assertWidthIsEqualTo(1.dp)
+        val slot = bounds(BusinessUiTags.DIVIDER_SLOT)
+        val handle = bounds(BusinessAssistantChromeTags.RESIZE_HANDLE)
+        assertTrue(handle.left < slot.left)
+        assertTrue(handle.right > slot.right)
+
+        rule.onNodeWithTag(BusinessAssistantChromeTags.RESIZE_HANDLE).performMouseInput {
+            moveTo(Offset(0.5f, center.y))
+            press()
+            moveBy(Offset(-3f, 0f))
+            release()
+        }
+        rule.waitForIdle()
+        rule.onNodeWithTag(BusinessAssistantChromeTags.RESIZE_HANDLE).performMouseInput {
+            moveTo(Offset(handle.width - 0.5f, center.y))
+            press()
+            moveBy(Offset(3f, 0f))
+            release()
+        }
+        rule.runOnIdle {
+            assertTrue(resizeEvents.size >= 2, "左右透明边缘都必须命中真实拖拽手势")
+        }
     }
 
     @Test

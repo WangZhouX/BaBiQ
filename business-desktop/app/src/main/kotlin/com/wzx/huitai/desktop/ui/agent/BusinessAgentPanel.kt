@@ -81,20 +81,13 @@ fun BusinessAgentPanel(
                     onSelected = onProviderSelected,
                 )
             }
-            mascot?.let { mascotContent ->
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(124.dp)
-                        .testTag(BusinessAssistantChromeTags.MASCOT_SLOT),
-                    contentAlignment = Alignment.CenterEnd,
-                ) {
-                    mascotContent()
-                }
-            }
             HorizontalDivider()
             Column(
-                modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(14.dp),
+                modifier = Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
+                    .padding(14.dp)
+                    .testTag(BusinessAssistantChromeTags.MESSAGES),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 state.messages.forEach { item ->
@@ -123,6 +116,17 @@ fun BusinessAgentPanel(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.testTag("unknown-event-diagnostic"),
                     )
+                }
+            }
+            mascot?.let { mascotContent ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(124.dp)
+                        .testTag(BusinessAssistantChromeTags.MASCOT_SLOT),
+                    contentAlignment = Alignment.CenterEnd,
+                ) {
+                    mascotContent()
                 }
             }
             HorizontalDivider()

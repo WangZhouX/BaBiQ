@@ -5,9 +5,12 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -110,76 +113,80 @@ fun BusinessDesktopShell(
             }
 
             if (layout.assistantExpanded) {
-                Row(Modifier.fillMaxSize()) {
-                    Box(
-                        Modifier
-                            .width(layout.businessWidth)
-                            .fillMaxSize()
-                            .testTag(BusinessUiTags.BUSINESS_REGION),
-                    ) {
-                        BusinessContent(
-                            destination = selectedDestination,
+                Box(Modifier.fillMaxSize()) {
+                    Row(Modifier.fillMaxSize()) {
+                        Box(
+                            Modifier
+                                .width(layout.businessWidth)
+                                .fillMaxSize()
+                                .testTag(BusinessUiTags.BUSINESS_REGION),
+                        ) {
+                            BusinessContent(
+                                destination = selectedDestination,
+                                state = state,
+                                formState = formState,
+                                providerSettingsState = providerSettingsState,
+                                onFieldEdited = onFieldEdited,
+                                onSuggestionsChanged = onSuggestionsChanged,
+                                onAcceptSuggestion = onAcceptSuggestion,
+                                onAcceptAllSuggestions = onAcceptAllSuggestions,
+                                onSaveDraft = onSaveDraft,
+                                onSubmit = onSubmit,
+                                onProviderRefresh = onProviderRefresh,
+                                onProviderCreate = onProviderCreate,
+                                onProviderUpdate = onProviderUpdate,
+                                onProviderDelete = onProviderDelete,
+                                onProviderTest = onProviderTest,
+                                onProviderActivated = onProviderActivated,
+                                onProviderOAuthStatus = onProviderOAuthStatus,
+                                onProviderOAuthLogin = onProviderOAuthLogin,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        }
+                        Box(
+                            Modifier
+                                .width(layout.dividerWidth)
+                                .fillMaxSize()
+                                .testTag(BusinessUiTags.DIVIDER_SLOT),
+                        )
+                        AgentPanelForShell(
                             state = state,
                             formState = formState,
-                            providerSettingsState = providerSettingsState,
-                            onFieldEdited = onFieldEdited,
-                            onSuggestionsChanged = onSuggestionsChanged,
-                            onAcceptSuggestion = onAcceptSuggestion,
-                            onAcceptAllSuggestions = onAcceptAllSuggestions,
-                            onSaveDraft = onSaveDraft,
-                            onSubmit = onSubmit,
-                            onProviderRefresh = onProviderRefresh,
-                            onProviderCreate = onProviderCreate,
-                            onProviderUpdate = onProviderUpdate,
-                            onProviderDelete = onProviderDelete,
-                            onProviderTest = onProviderTest,
-                            onProviderActivated = onProviderActivated,
-                            onProviderOAuthStatus = onProviderOAuthStatus,
-                            onProviderOAuthLogin = onProviderOAuthLogin,
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                    }
-                    Box(
-                        Modifier
-                            .width(layout.dividerWidth)
-                            .fillMaxSize()
-                            .testTag(BusinessUiTags.DIVIDER_SLOT),
-                    ) {
-                        BusinessAssistantResizeHandle(
-                            onResizeBy = { delta ->
-                                onRequestedAssistantWidthChange(
-                                    BusinessDesktopLayoutPolicy.resizeAssistantWidth(
-                                        current = requestedAssistantWidth,
-                                        dragDeltaX = delta,
-                                        availableWidth = availableWidth,
-                                    ),
+                            selectedModelId = selectedModelId,
+                            composerText = composerText,
+                            composerAttachments = composerAttachments,
+                            attachmentError = attachmentError,
+                            composerSubmitting = composerSubmitting,
+                            onComposerTextChanged = onComposerTextChanged,
+                            onChooseFiles = onChooseFiles,
+                            onPasteImage = onPasteImage,
+                            onRemoveAttachment = onRemoveAttachment,
+                            onSend = onSend,
+                            onReconnect = onReconnect,
+                            onProviderSelected = onProviderSelected,
+                            mascot = {
+                                BusinessAssistantMascotButton(
+                                    expanded = true,
+                                    onToggle = { onAgentPanelExpandedChange(false) },
                                 )
                             },
-                            modifier = Modifier.fillMaxSize(),
+                            modifier = Modifier.width(layout.assistantWidth),
                         )
                     }
-                    AgentPanelForShell(
-                        state = state,
-                        formState = formState,
-                        selectedModelId = selectedModelId,
-                        composerText = composerText,
-                        composerAttachments = composerAttachments,
-                        attachmentError = attachmentError,
-                        composerSubmitting = composerSubmitting,
-                        onComposerTextChanged = onComposerTextChanged,
-                        onChooseFiles = onChooseFiles,
-                        onPasteImage = onPasteImage,
-                        onRemoveAttachment = onRemoveAttachment,
-                        onSend = onSend,
-                        onReconnect = onReconnect,
-                        onProviderSelected = onProviderSelected,
-                        mascot = {
-                            BusinessAssistantMascotButton(
-                                expanded = true,
-                                onToggle = { onAgentPanelExpandedChange(false) },
+                    BusinessAssistantResizeHandle(
+                        onResizeBy = { delta ->
+                            onRequestedAssistantWidthChange(
+                                BusinessDesktopLayoutPolicy.resizeAssistantWidth(
+                                    current = requestedAssistantWidth,
+                                    dragDeltaX = delta,
+                                    availableWidth = availableWidth,
+                                ),
                             )
                         },
-                        modifier = Modifier.width(layout.assistantWidth),
+                        modifier = Modifier
+                            .offset(x = layout.businessWidth - 2.dp)
+                            .requiredWidth(12.dp)
+                            .fillMaxHeight(),
                     )
                 }
             } else {
