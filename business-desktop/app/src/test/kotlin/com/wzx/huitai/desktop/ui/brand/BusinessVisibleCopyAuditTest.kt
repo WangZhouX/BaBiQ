@@ -2,6 +2,7 @@ package com.wzx.huitai.desktop.ui.brand
 
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.Locale
 import kotlin.io.path.extension
 import kotlin.io.path.isRegularFile
 import kotlin.io.path.readText
@@ -9,6 +10,38 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BusinessVisibleCopyAuditTest {
+    @Test
+    fun `kotlin scanner audits strings inside a non constant template expression`() {
+        val source = "Text(\"\"\"业务 \${if (enabled) \"\\u0041gent\" else \"小律\"}\"\"\")"
+
+        assertTrue(auditKotlinSource(source).contains("\"Agent\""))
+    }
+
+    @Test
+    fun `standalone agent allowance is exact to path and decoded literal`() {
+        val technicalPath = "kotlin/com/example/runtime/TechnicalAgentValue.kt"
+        val allowance = StandaloneLiteralAllowance(
+            relativePath = ".\\KOTLIN\\com\\example\\runtime\\TechnicalAgentValue.kt",
+            exactLiteral = "Agent",
+            reason = "已审查的内部技术枚举值",
+        )
+        val source = "val internalValue = \"Agent\""
+
+        assertTrue(auditKotlinSource(source, "kotlin/com/example/ui/AgentPanel.kt").contains("\"Agent\""))
+        assertTrue(auditKotlinSource(source, technicalPath, listOf(allowance)).isEmpty())
+        assertTrue(
+            auditKotlinSource(source, "kotlin/com/example/runtime/OtherValue.kt", listOf(allowance))
+                .contains("\"Agent\""),
+        )
+    }
+
+    @Test
+    fun `legacy organization fragment alone is not treated as a retired product name`() {
+        val source = "val technicalScope = \"汇泰业务协同运行时\""
+
+        assertTrue(auditKotlinSource(source).isEmpty())
+    }
+
     @Test
     fun `kotlin scanner flags legacy copy in a regular string`() {
         assertTrue(auditKotlinSource("val title = \"汇泰业务桌面端\"").contains("汇泰业务桌面端"))
@@ -52,9 +85,12 @@ class BusinessVisibleCopyAuditTest {
         val findings = textFilesUnder(mainRoot).flatMap { file ->
             val text = file.readText()
             val copyFindings = if (file.extension.equals("kt", ignoreCase = true)) {
-                auditKotlinSource(text)
+                auditKotlinSource(
+                    source = text,
+                    relativePath = mainRoot.relativize(file).toString(),
+                )
             } else {
-                auditVisibleSegments(listOf(text))
+                auditVisibleSegments(listOf(text), relativePath = mainRoot.relativize(file).toString())
             }
             copyFindings.map { finding ->
                 "${file.toString().replace('\\', '/')}: $finding"
@@ -74,18 +110,50 @@ class BusinessVisibleCopyAuditTest {
             .toList()
     }
 
-    private fun auditKotlinSource(source: String): List<String> =
-        auditVisibleSegments(KotlinVisibleStringScanner.scan(source))
+    private fun auditKotlinSource(
+        source: String,
+        relativePath: String = "kotlin/com/example/ui/Fixture.kt",
+        allowances: List<StandaloneLiteralAllowance> = ACTUAL_STANDALONE_ALLOWANCES,
+    ): List<String> = auditVisibleSegments(
+        segments = KotlinVisibleStringScanner.scan(source),
+        relativePath = relativePath,
+        allowances = allowances,
+    )
 
-    private fun auditVisibleSegments(segments: List<String>): List<String> = buildList {
+    private fun auditVisibleSegments(
+        segments: List<String>,
+        relativePath: String,
+        allowances: List<StandaloneLiteralAllowance> = ACTUAL_STANDALONE_ALLOWANCES,
+    ): List<String> = buildList {
+        val normalizedPath = normalizeRelativePath(relativePath)
         segments.forEach { segment ->
             val normalized = normalizeVisibleCopy(segment)
             FORBIDDEN_VISIBLE_COPY.forEach { (pattern, finding) ->
                 if (pattern.containsMatchIn(normalized)) add(finding)
             }
-            if (normalized == "Agent") add("\"Agent\"")
+            if (
+                normalized == "Agent" &&
+                allowances.none { allowance ->
+                    normalizeRelativePath(allowance.relativePath) == normalizedPath &&
+                        allowance.exactLiteral == segment
+                }
+            ) {
+                add("\"Agent\"")
+            }
         }
     }.distinct()
+
+    private fun normalizeRelativePath(path: String): String {
+        val normalizedSegments = mutableListOf<String>()
+        path.replace('\\', '/').split('/').forEach { segment ->
+            when (segment) {
+                "", "." -> Unit
+                ".." -> if (normalizedSegments.isNotEmpty()) normalizedSegments.removeLast()
+                else -> normalizedSegments += segment.lowercase(Locale.ROOT)
+            }
+        }
+        return normalizedSegments.joinToString("/")
+    }
 
     private fun normalizeVisibleCopy(copy: String): String = buildString(copy.length) {
         var pendingSpace = false
@@ -119,11 +187,11 @@ class BusinessVisibleCopyAuditTest {
         val FORBIDDEN_VISIBLE_COPY = listOf(
             Regex("汇泰业务桌面\\s*Agent") to "汇泰业务桌面 Agent",
             Regex("汇泰业务桌面端") to "汇泰业务桌面端",
-            Regex("汇泰业务") to "汇泰业务",
             Regex("业务\\s*Agent") to "业务 Agent",
             Regex("告诉\\s*Agent\\s*需要整理或修改的内容") to "告诉 Agent 需要整理或修改的内容",
             Regex("Agent\\s*建议") to "Agent 建议",
         )
+        val ACTUAL_STANDALONE_ALLOWANCES = emptyList<StandaloneLiteralAllowance>()
         val PUNCTUATION_OR_SYMBOL_TYPES = setOf(
             Character.CONNECTOR_PUNCTUATION.toInt(),
             Character.DASH_PUNCTUATION.toInt(),
@@ -140,6 +208,18 @@ class BusinessVisibleCopyAuditTest {
     }
 }
 
+private data class StandaloneLiteralAllowance(
+    val relativePath: String,
+    val exactLiteral: String,
+    val reason: String,
+) {
+    init {
+        require(relativePath.isNotBlank()) { "allowance path must not be blank" }
+        require(exactLiteral.isNotBlank()) { "allowance literal must not be blank" }
+        require(reason.isNotBlank()) { "allowance reason must not be blank" }
+    }
+}
+
 /**
  * 面向可见文案审计的轻量 Kotlin lexer。
  *
@@ -148,7 +228,8 @@ class BusinessVisibleCopyAuditTest {
  */
 private object KotlinVisibleStringScanner {
     fun scan(source: String): List<String> {
-        val lexemes = Lexer(source).lex()
+        val lexer = Lexer(source)
+        val lexemes = lexer.lex()
         return buildList {
             var index = 0
             while (index < lexemes.size) {
@@ -171,6 +252,7 @@ private object KotlinVisibleStringScanner {
                 }
                 index = if (cursor == index) index + 1 else cursor + 1
             }
+            addAll(lexer.independentlyVisibleStrings())
         }.distinct()
     }
 
@@ -182,6 +264,9 @@ private object KotlinVisibleStringScanner {
 
     private class Lexer(private val source: String) {
         private var index = 0
+        private val independentlyVisible = mutableListOf<String>()
+
+        fun independentlyVisibleStrings(): List<String> = independentlyVisible.toList()
 
         fun lex(): List<Lexeme> = buildList {
             while (index < source.length) {
@@ -211,9 +296,10 @@ private object KotlinVisibleStringScanner {
             if (lastOrNull() != Lexeme.Boundary) add(Lexeme.Boundary)
         }
 
-        private fun parseString(raw: Boolean): Lexeme.Literal {
+        private fun parseString(raw: Boolean): Lexeme {
             index += if (raw) 3 else 1
             val value = StringBuilder()
+            var constant = true
             while (index < source.length) {
                 if (raw && source.startsWith("\"\"\"", index)) {
                     index += 3
@@ -228,29 +314,41 @@ private object KotlinVisibleStringScanner {
                     continue
                 }
                 if (source[index] == '$') {
-                    if (appendConstantTemplate(value)) continue
+                    val templateConstant = appendTemplate(value)
+                    if (templateConstant != null) {
+                        if (!templateConstant) constant = false
+                        continue
+                    }
                     if (index + 1 < source.length && source[index + 1].isKotlinIdentifierStart()) {
                         index += 2
                         while (index < source.length && source[index].isKotlinIdentifierPart()) index += 1
                         value.append(' ')
+                        constant = false
                         continue
                     }
                 }
                 value.append(source[index])
                 index += 1
             }
-            return Lexeme.Literal(value.toString())
+            val rendered = value.toString()
+            return if (constant) {
+                Lexeme.Literal(rendered)
+            } else {
+                independentlyVisible += rendered
+                Lexeme.Boundary
+            }
         }
 
-        private fun appendConstantTemplate(target: StringBuilder): Boolean {
-            if (!source.startsWith("${'$'}{", index)) return false
+        private fun appendTemplate(target: StringBuilder): Boolean? {
+            if (!source.startsWith("${'$'}{", index)) return null
             val expressionStart = index + 2
-            val expressionEnd = findTemplateExpressionEnd(expressionStart) ?: return false
+            val expressionEnd = findTemplateExpressionEnd(expressionStart) ?: return null
             val expression = source.substring(expressionStart, expressionEnd)
+            independentlyVisible += KotlinVisibleStringScanner.scan(expression)
             val constant = constantStringExpression(expression)
             target.append(constant ?: " ")
             index = expressionEnd + 1
-            return true
+            return constant != null
         }
 
         private fun constantStringExpression(expression: String): String? {
