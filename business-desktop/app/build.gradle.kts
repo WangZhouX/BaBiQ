@@ -81,10 +81,18 @@ compose.desktop {
         mainClass = "com.wzx.huitai.desktop.MainKt"
         nativeDistributions {
             targetFormats(TargetFormat.Msi, TargetFormat.Exe)
-            packageName = "HuitaiBusinessDesktop"
+            packageName = "翔鸟律智桌面端"
             packageVersion = "0.1.0"
+            description = "翔鸟律智桌面端"
+            vendor = "翔鸟律智"
             includeAllModules = true
             appResourcesRootDir.set(preparedAppResourcesRoot)
+            windows {
+                iconFile.set(project.file("src/main/resources/brand/xiangniao.ico"))
+                shortcut = true
+                menu = true
+                menuGroup = "翔鸟律智"
+            }
         }
     }
 }

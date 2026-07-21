@@ -7,7 +7,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import com.wzx.huitai.demo.model.DemoFormEvent
@@ -29,6 +28,7 @@ import com.wzx.huitai.desktop.ui.action.HighRiskApprovalDialog
 import com.wzx.huitai.desktop.ui.shell.BusinessDesktopDestination
 import com.wzx.huitai.desktop.ui.shell.BusinessDesktopShell
 import com.wzx.huitai.desktop.ui.theme.HuitaiBusinessTheme
+import com.wzx.huitai.desktop.ui.window.BusinessDesktopWindowSpec
 import com.wzx.huitai.desktop.smoke.PackagedSmokeProbe
 import com.wzx.huitai.agent.protocol.ApplicationProtocol
 import com.wzx.huitai.presentation.form.FormPatch
@@ -96,8 +96,13 @@ fun main() {
     try {
         application {
             Window(
-                title = "汇泰业务桌面 Agent",
-                state = androidx.compose.ui.window.rememberWindowState(width = 1440.dp, height = 900.dp),
+                title = BusinessDesktopWindowSpec.title,
+                state = androidx.compose.ui.window.rememberWindowState(
+                    placement = BusinessDesktopWindowSpec.initialPlacement,
+                    width = BusinessDesktopWindowSpec.restoredWidth,
+                    height = BusinessDesktopWindowSpec.restoredHeight,
+                ),
+                icon = BusinessDesktopWindowSpec.iconPainter(),
                 onCloseRequest = {
                     closeBusinessDesktop(
                         shutdown = { root.shutdown() },
@@ -109,6 +114,9 @@ fun main() {
                     }
                 },
             ) {
+                LaunchedEffect(window) {
+                    BusinessDesktopWindowSpec.applyNativeBranding(window)
+                }
                 val desktopState by view.desktopState.collectAsState()
                 val formState by view.formState.collectAsState()
                 val decisionState by view.decisions.state.collectAsState()
