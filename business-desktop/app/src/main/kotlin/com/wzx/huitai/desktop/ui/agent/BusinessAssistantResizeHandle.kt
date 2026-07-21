@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.key.Key
@@ -42,6 +43,7 @@ fun BusinessAssistantResizeHandle(
     modifier: Modifier = Modifier,
 ) {
     val density = LocalDensity.current
+    val latestOnResizeBy = rememberUpdatedState(onResizeBy)
     Box(
         modifier = modifier
             .width(ResizeHandleWidth)
@@ -49,39 +51,39 @@ fun BusinessAssistantResizeHandle(
             .testTag(BusinessAssistantChromeTags.RESIZE_HANDLE)
             .semantics {
                 contentDescription = "调整小律智能助手宽度"
-                stateDescription = "左键增宽，右键减宽，每次调整 16dp"
+                stateDescription = "左方向键增宽，右方向键减宽"
                 role = Role.ValuePicker
             }
             .pointerHoverIcon(PointerIcon(Cursor.getPredefinedCursor(Cursor.E_RESIZE_CURSOR)))
-            .pointerInput(density, onResizeBy) {
+            .pointerInput(density) {
                 detectDragGestures(
                     orientationLock = Orientation.Horizontal,
                     shouldAwaitTouchSlop = { false },
                     onDrag = { change, dragAmount ->
                         change.consume()
                         if (dragAmount.x != 0f) {
-                            onResizeBy(with(density) { dragAmount.x.toDp() })
+                            latestOnResizeBy.value(with(density) { dragAmount.x.toDp() })
                         }
                     },
                 )
             }
             .onKeyEvent { event ->
-                if (event.type != KeyEventType.KeyDown) {
-                    false
-                } else {
-                    when (event.key) {
-                        Key.DirectionLeft -> {
-                            onResizeBy(-KeyboardResizeStep)
-                            true
+                when (event.key) {
+                    Key.DirectionLeft -> {
+                        if (event.type == KeyEventType.KeyDown) {
+                            latestOnResizeBy.value(-KeyboardResizeStep)
                         }
-
-                        Key.DirectionRight -> {
-                            onResizeBy(KeyboardResizeStep)
-                            true
-                        }
-
-                        else -> false
+                        event.type == KeyEventType.KeyDown || event.type == KeyEventType.KeyUp
                     }
+
+                    Key.DirectionRight -> {
+                        if (event.type == KeyEventType.KeyDown) {
+                            latestOnResizeBy.value(KeyboardResizeStep)
+                        }
+                        event.type == KeyEventType.KeyDown || event.type == KeyEventType.KeyUp
+                    }
+
+                    else -> false
                 }
             }
             .focusable(),

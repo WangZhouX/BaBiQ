@@ -3,9 +3,14 @@ package com.wzx.huitai.desktop.ui.agent
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsActions
@@ -102,7 +107,7 @@ class BusinessAssistantChromeTest {
             .assertContentDescriptionEquals("调整小律智能助手宽度")
         val config = handle.fetchSemanticsNode().config
         assertEquals(Role.ValuePicker, config[SemanticsProperties.Role])
-        assertEquals("左键增宽，右键减宽，每次调整 16dp", config[SemanticsProperties.StateDescription])
+        assertEquals("左方向键增宽，右方向键减宽", config[SemanticsProperties.StateDescription])
         assertTrue(config.contains(SemanticsActions.RequestFocus))
 
         handle.requestFocus().assertIsFocused()
@@ -148,11 +153,61 @@ class BusinessAssistantChromeTest {
     }
 
     @Test
-    fun `focused resize handle supports repeatable 16dp keyboard steps`() {
+    fun `mouse drag survives callback identity replacement after recomposition`() {
+        val callbackGeneration = mutableStateOf(0)
+        val callbackGenerations = mutableListOf<Int>()
         val deltas = mutableListOf<Dp>()
         rule.setContent {
+            CompositionLocalProvider(LocalDensity provides Density(2f)) {
+                HuitaiBusinessTheme {
+                    Box(Modifier.requiredSize(80.dp)) {
+                        val generation = callbackGeneration.value
+                        BusinessAssistantResizeHandle(
+                            onResizeBy = { delta ->
+                                deltas += delta
+                                callbackGenerations += generation
+                                if (generation == 0) {
+                                    callbackGeneration.value = 1
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+        }
+
+        val handle = rule.onNodeWithTag(BusinessAssistantChromeTags.RESIZE_HANDLE)
+        handle.performMouseInput {
+            moveTo(center)
+            press()
+            moveBy(Offset(-20f, 0f))
+        }
+        rule.waitForIdle()
+        handle.performMouseInput {
+            moveBy(Offset(-20f, 0f))
+            release()
+        }
+
+        rule.runOnIdle {
+            assertApproximately(-20f, deltas.sumOf { it.value.toDouble() }.toFloat())
+            assertEquals(listOf(0, 1), callbackGenerations)
+        }
+    }
+
+    @Test
+    fun `focused resize handle supports repeatable 16dp keyboard steps`() {
+        val deltas = mutableListOf<Dp>()
+        val parentEvents = mutableListOf<Pair<Key, KeyEventType>>()
+        rule.setContent {
             HuitaiBusinessTheme {
-                Box(Modifier.requiredSize(80.dp)) {
+                Box(
+                    Modifier
+                        .requiredSize(80.dp)
+                        .onKeyEvent { event ->
+                            parentEvents += event.key to event.type
+                            false
+                        },
+                ) {
                     BusinessAssistantResizeHandle(onResizeBy = { delta: Dp -> deltas += delta })
                 }
             }
@@ -171,6 +226,7 @@ class BusinessAssistantChromeTest {
 
         rule.runOnIdle {
             assertEquals(listOf((-16).dp, (-16).dp, 16.dp), deltas)
+            assertEquals(emptyList(), parentEvents, "方向键 KeyDown 与 KeyUp 都应由分隔条消费")
         }
     }
 
