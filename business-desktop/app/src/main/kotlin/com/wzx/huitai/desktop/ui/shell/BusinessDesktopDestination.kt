@@ -8,7 +8,7 @@ enum class BusinessDesktopDestination(val label: String, val compactLabel: Strin
     SETTINGS("设置"),
 }
 
-/** 左侧栏只承载业务目的地；设置始终由顶部工具栏进入。 */
+/** 左侧栏顶部只承载这三个业务目的地；设置在侧栏底部单独渲染。 */
 internal val businessSidebarDestinations = listOf(
     BusinessDesktopDestination.WORKBENCH,
     BusinessDesktopDestination.DATA_ENTRY,

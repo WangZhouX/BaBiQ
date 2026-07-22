@@ -3,6 +3,7 @@ package com.wzx.huitai.desktop.ui.shell
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -12,6 +13,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
@@ -28,12 +30,14 @@ object BusinessSidebarTags {
     const val WORKBENCH = "business-sidebar-navigation-workbench"
     const val DATA_ENTRY = "business-sidebar-navigation-data-entry"
     const val RUN_HISTORY = "business-sidebar-navigation-run-history"
+    const val SETTINGS = "business-sidebar-navigation-settings"
 }
 
 private val sidebarTags = mapOf(
     BusinessDesktopDestination.WORKBENCH to BusinessSidebarTags.WORKBENCH,
     BusinessDesktopDestination.DATA_ENTRY to BusinessSidebarTags.DATA_ENTRY,
     BusinessDesktopDestination.RUN_HISTORY to BusinessSidebarTags.RUN_HISTORY,
+    BusinessDesktopDestination.SETTINGS to BusinessSidebarTags.SETTINGS,
 )
 
 /**
@@ -45,8 +49,10 @@ private val sidebarTags = mapOf(
 fun BusinessSidebar(
     selected: BusinessDesktopDestination = BusinessDesktopDestination.DATA_ENTRY,
     onSelected: (BusinessDesktopDestination) -> Unit = {},
+    onComposed: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    SideEffect(onComposed)
     Column(
         modifier = modifier
             .fillMaxHeight()
@@ -64,37 +70,55 @@ fun BusinessSidebar(
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
         )
         businessSidebarDestinations.forEach { destination ->
-            val active = destination == selected
-            val shape = RoundedCornerShape(8.dp)
-            Text(
-                text = destination.label,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
-                color = if (active) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(shape)
-                    .background(
-                        color = if (active) {
-                            MaterialTheme.colorScheme.primaryContainer
-                        } else {
-                            MaterialTheme.colorScheme.surface
-                        },
-                    )
-                    .selectable(
-                        selected = active,
-                        onClick = { onSelected(destination) },
-                        role = Role.Tab,
-                    )
-                    .semantics { contentDescription = destination.label }
-                    .testTag(sidebarTags.getValue(destination))
-                    .padding(horizontal = 12.dp, vertical = 12.dp),
+            SidebarDestinationButton(
+                destination = destination,
+                selected = destination == selected,
+                onSelected = onSelected,
             )
         }
+        Spacer(Modifier.weight(1f))
+        SidebarDestinationButton(
+            destination = BusinessDesktopDestination.SETTINGS,
+            selected = selected == BusinessDesktopDestination.SETTINGS,
+            onSelected = onSelected,
+        )
     }
+}
+
+@Composable
+private fun SidebarDestinationButton(
+    destination: BusinessDesktopDestination,
+    selected: Boolean,
+    onSelected: (BusinessDesktopDestination) -> Unit,
+) {
+    val shape = RoundedCornerShape(8.dp)
+    Text(
+        text = destination.label,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+        color = if (selected) {
+            MaterialTheme.colorScheme.primary
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant
+        },
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(
+                color = if (selected) {
+                    MaterialTheme.colorScheme.primaryContainer
+                } else {
+                    MaterialTheme.colorScheme.surface
+                },
+            )
+            .selectable(
+                selected = selected,
+                onClick = { onSelected(destination) },
+                role = Role.Tab,
+            )
+            .semantics { contentDescription = destination.label }
+            .testTag(sidebarTags.getValue(destination))
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+    )
 }
