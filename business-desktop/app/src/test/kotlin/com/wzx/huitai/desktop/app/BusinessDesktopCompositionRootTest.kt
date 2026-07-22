@@ -14,6 +14,7 @@ import com.wzx.huitai.agent.protocol.ApplicationProtocol
 import com.wzx.huitai.agent.protocol.CommonApplicationFields
 import com.wzx.huitai.agent.protocol.JsonRpcRequest
 import com.wzx.huitai.desktop.runtime.ManagedBusinessAgentConnection
+import com.wzx.huitai.desktop.runtime.BusinessAgentDevelopmentSessionFile
 import com.wzx.huitai.desktop.logging.DesktopLoggingBootstrap
 import com.wzx.huitai.desktop.decision.ActionDecisionPhase
 import com.wzx.huitai.demo.action.DemoActionCatalog
@@ -590,6 +591,58 @@ class BusinessDesktopCompositionRootTest {
                 environment = mapOf("HUITAI_DESKTOP_HOME" to root.toString()),
             ),
         )
+    }
+
+    @Test
+    fun `external development mode reads the published session without launching an embedded backend`() = runTest {
+        val home = Files.createTempDirectory("huitai-external-backend-composition")
+        val paths = com.wzx.huitai.desktop.runtime.BusinessDesktopRuntimePaths.create(home)
+        val identity = DesktopSessionIdentity.forChildLaunch(
+            desktopInstanceId = java.util.UUID.randomUUID().toString(),
+            localOrigin = "http://127.0.0.1",
+        )
+        val request = com.wzx.huitai.agent.client.AgentConnectRequest(
+            "ws://127.0.0.1:49391/ws/agent",
+            identity,
+        )
+        val ownership = BusinessAgentDevelopmentSessionFile.acquireOwnership(paths.agentDevelopmentSession)
+        val lease = BusinessAgentDevelopmentSessionFile.publish(
+            paths.agentDevelopmentSession,
+            request,
+            ownership,
+        )
+        val connection = AutoRespondingConnection()
+        var embeddedLaunches = 0
+        val factory = ProductionBusinessDesktopCompositionFactory(
+            configuration = BusinessDesktopProductionConfiguration(
+                home = home,
+                backendJar = home.resolve("backend/unused.jar"),
+                desktopSecretBootstrap = DesktopSecretBootstrap {
+                    "external-development-password".toCharArray()
+                },
+                frameworkDemoIdentity = true,
+                agentLaunchMode = BusinessAgentLaunchMode.ExternalDevelopment,
+            ),
+            parentScope = this,
+            childLauncher = BusinessAgentChildLauncher {
+                embeddedLaunches += 1
+                error("external mode must not launch an embedded backend")
+            },
+            connector = BusinessAgentConnector {
+                assertEquals(identity.desktopSessionId, it.identity.desktopSessionId)
+                BusinessAgentConnectionHandle(connection, CompositionResource { connection.close() })
+            },
+        )
+
+        val root = BusinessDesktopCompositionRoot.start(factory)
+
+        assertEquals(0, embeddedLaunches)
+        assertEquals(identity.desktopSessionId, requireNotNull(root.runtimeView).desktopState.value.identity?.desktopSessionId)
+        assertTrue(Files.exists(paths.agentDevelopmentSession), "frontend must not own the backend session file")
+
+        root.shutdown()
+        lease.close()
+        ownership.close()
     }
 
     @Test

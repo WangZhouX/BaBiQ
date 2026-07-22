@@ -137,7 +137,7 @@ class LocalObservabilityServiceTest {
         if (toolName != null) {
             toolCallPersistenceService.recordStarted("call_" + turnId, threadId, turnId,
                     toolName, "{\"demo\":true}", toolStartedAt);
-            toolCallPersistenceService.recordFinished("call_" + turnId, toolStatus,
+            toolCallPersistenceService.recordFinished(turnId, "call_" + turnId, toolStatus,
                     toolStatus.equals("failed") ? null : "ok",
                     toolStatus.equals("failed") ? "工具失败" : null,
                     toolCompletedAt);

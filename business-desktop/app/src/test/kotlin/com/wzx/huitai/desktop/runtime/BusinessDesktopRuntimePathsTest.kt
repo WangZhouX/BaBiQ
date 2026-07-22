@@ -28,6 +28,7 @@ class BusinessDesktopRuntimePathsTest {
         assertEquals(root.resolve("agent/teams"), paths.agentTeamRoot)
         assertEquals(root.resolve("agent/instance.lock"), paths.agentInstanceLock)
         assertEquals(root.resolve("agent/session-token"), paths.agentSessionToken)
+        assertEquals(root.resolve("agent/development-session.json"), paths.agentDevelopmentSession)
         assertEquals(root.resolve("agent/attachments"), paths.agentAttachmentRoot)
         assertEquals(root.resolve("agent/attachments/clipboard"), paths.agentClipboardAttachmentRoot)
         assertEquals(root.resolve("desktop"), paths.desktopRoot)
@@ -45,6 +46,10 @@ class BusinessDesktopRuntimePathsTest {
         assertTrue(paths.agentClipboardAttachmentRoot.toRealPath().startsWith(paths.agentRoot.toRealPath()))
         assertTrue(paths.desktopDatabase.parent.exists())
         assertFalse(paths.agentSessionToken.exists(), "runtime setup must never pre-create the one-shot token")
+        assertFalse(
+            paths.agentDevelopmentSession.exists(),
+            "runtime setup must never pre-create the development session",
+        )
         assertFalse(paths.desktopInstallationId.exists(), "runtime setup must not invent installation identity")
     }
 

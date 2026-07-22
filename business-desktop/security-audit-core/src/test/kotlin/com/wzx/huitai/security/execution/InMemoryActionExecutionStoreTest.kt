@@ -1,6 +1,7 @@
 package com.wzx.huitai.security.execution
 
 import com.wzx.huitai.action.model.ActionCommand
+import com.wzx.huitai.action.model.ActionCorrelation
 import com.wzx.huitai.action.model.ActionError
 import com.wzx.huitai.action.model.ActionErrorCode
 import com.wzx.huitai.action.model.ActionExecutionState
@@ -46,6 +47,49 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class InMemoryActionExecutionStoreTest {
+    @Test
+    fun `tool call identity is scoped to turn and same turn duplicates return conflict`() = runTest {
+        val store = InMemoryActionExecutionStore()
+        fun correlatedRecord(executionId: String, threadId: String, turnId: String): ActionExecutionRecord {
+            val command = command().copy(
+                executionId = executionId,
+                correlation = ActionCorrelation(threadId, turnId, "application_action_0"),
+            )
+            return runningRecord().copy(command = command, binding = binding(command))
+        }
+        val oldTurn = correlatedRecord(
+            executionId = "execution-old-turn",
+            threadId = "thread-old",
+            turnId = "turn-old",
+        )
+        val currentTurn = correlatedRecord(
+            executionId = "execution-current-turn",
+            threadId = "thread-current",
+            turnId = "turn-current",
+        )
+        val currentTurnDuplicate = correlatedRecord(
+            executionId = "execution-current-turn-duplicate",
+            threadId = "thread-current",
+            turnId = "turn-current",
+        )
+
+        assertIs<ExecutionCreateResult.Created>(
+            store.compareAndCreate(oldTurn, audit().copy(executionId = oldTurn.command.executionId)),
+        )
+        assertIs<ExecutionCreateResult.Created>(
+            store.compareAndCreate(currentTurn, audit().copy(executionId = currentTurn.command.executionId)),
+        )
+        val conflict = assertIs<ExecutionCreateResult.Conflict>(
+            store.compareAndCreate(
+                currentTurnDuplicate,
+                audit().copy(executionId = currentTurnDuplicate.command.executionId),
+            ),
+        )
+
+        assertEquals(ActionErrorCode.EXECUTION_CONFLICT, conflict.error.code)
+        assertNull(store.find("execution-current-turn-duplicate"))
+    }
+
     @Test
     fun `create rejects command binding inconsistencies before records or audit are written`() = runTest {
         val original = runningRecord()

@@ -56,6 +56,42 @@ import kotlin.test.assertTrue
 
 class SQLiteActionExecutionStoreTest {
     @Test
+    fun `tool call identity is scoped to turn and same turn duplicates return conflict`() = runTest {
+        fixture().database.use { database ->
+            val store = store(database)
+            val oldTurn = runningRecord(
+                executionId = "execution-old-turn",
+                command = command("execution-old-turn").copy(
+                    correlation = ActionCorrelation("thread-old", "turn-old", "application_action_0"),
+                ),
+            )
+            val currentTurn = runningRecord(
+                executionId = "execution-current-turn",
+                command = command("execution-current-turn").copy(
+                    correlation = ActionCorrelation("thread-current", "turn-current", "application_action_0"),
+                ),
+            )
+            val currentTurnDuplicate = runningRecord(
+                executionId = "execution-current-turn-duplicate",
+                command = command("execution-current-turn-duplicate").copy(
+                    correlation = ActionCorrelation("thread-current", "turn-current", "application_action_0"),
+                ),
+            )
+
+            assertIs<ExecutionCreateResult.Created>(store.compareAndCreate(oldTurn, audit(oldTurn)))
+            assertIs<ExecutionCreateResult.Created>(store.compareAndCreate(currentTurn, audit(currentTurn)))
+            val conflict = assertIs<ExecutionCreateResult.Conflict>(
+                store.compareAndCreate(currentTurnDuplicate, audit(currentTurnDuplicate)),
+            )
+
+            assertEquals(ActionErrorCode.EXECUTION_CONFLICT, conflict.error.code)
+            assertEquals(ActionExecutionState.EXECUTING, store.find("execution-current-turn")?.state)
+            assertNull(store.find("execution-current-turn-duplicate"))
+            assertEquals("2", scalar(database, "SELECT COUNT(*) FROM bd_action_executions"))
+        }
+    }
+
+    @Test
     fun `two database adapters atomically compare and create one execution`() = runTest {
         val fixture = fixture()
         fixture.database.use { database ->
@@ -73,6 +109,36 @@ class SQLiteActionExecutionStoreTest {
 
             val conflicting = record.copy(binding = record.binding.copy(inputFingerprint = "other-fingerprint"))
             assertIs<ExecutionCreateResult.Conflict>(second.compareAndCreate(conflicting, audit()))
+        }
+    }
+
+    @Test
+    fun `two database adapters atomically reject duplicate turn tool identity`() = runTest {
+        fixture().database.use { database ->
+            val firstRecord = runningRecord(
+                executionId = "execution-first",
+                command = command("execution-first").copy(
+                    correlation = ActionCorrelation("thread-current", "turn-current", "application_action_0"),
+                ),
+            )
+            val secondRecord = runningRecord(
+                executionId = "execution-second",
+                command = command("execution-second").copy(
+                    correlation = ActionCorrelation("thread-current", "turn-current", "application_action_0"),
+                ),
+            )
+
+            val results = listOf(
+                async(Dispatchers.IO) { store(database).compareAndCreate(firstRecord, audit(firstRecord)) },
+                async(Dispatchers.IO) { store(database).compareAndCreate(secondRecord, audit(secondRecord)) },
+            ).awaitAll()
+
+            assertEquals(1, results.count { it is ExecutionCreateResult.Created })
+            val conflict = assertIs<ExecutionCreateResult.Conflict>(
+                results.single { it is ExecutionCreateResult.Conflict },
+            )
+            assertEquals(ActionErrorCode.EXECUTION_CONFLICT, conflict.error.code)
+            assertEquals("1", scalar(database, "SELECT COUNT(*) FROM bd_action_executions"))
         }
     }
 

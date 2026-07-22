@@ -78,11 +78,11 @@ public class ToolObservationInterceptor extends ToolInterceptor {
         long startedNanos = System.nanoTime();
         try (ApplicationToolInvocationContext.Scope ignored = installApplicationContext(request, context)) {
             ToolCallResponse response = handler.call(request);
-            persistFinishedIfPossible(request, response);
+            persistFinishedIfPossible(request, response, context);
             emitToolDetailIfPossible(request, response, elapsedMillis(startedNanos));
             return response;
         } catch (RuntimeException exception) {
-            persistFailedIfPossible(request, exception);
+            persistFailedIfPossible(request, exception, context);
             emitFailedToolDetailIfPossible(request, exception, elapsedMillis(startedNanos));
             throw exception;
         }
@@ -187,8 +187,9 @@ public class ToolObservationInterceptor extends ToolInterceptor {
         }
     }
 
-    private void persistFinishedIfPossible(ToolCallRequest request, ToolCallResponse response) {
-        if (toolCallPersistenceService == null) {
+    private void persistFinishedIfPossible(ToolCallRequest request, ToolCallResponse response,
+                                           TurnObservationContext context) {
+        if (toolCallPersistenceService == null || context == null) {
             return;
         }
         String status = response.isError() ? deniedOrFailed(response.getResult()) : "completed";
@@ -196,7 +197,8 @@ public class ToolObservationInterceptor extends ToolInterceptor {
         String errorMessage = response.isError() ? response.getResult() : null;
         try {
             toolCallPersistenceService.recordFinished(
-                    request.getToolCallId(), status, resultPreview, errorMessage, Instant.now());
+                    context.turnId(), request.getToolCallId(),
+                    status, resultPreview, errorMessage, Instant.now());
         } catch (RuntimeException exception) {
             // 完成态更新失败同样不能覆盖工具真实结果，否则用户会看到“工具成功但 turn 失败”的假错误。
             log.warn("工具调用完成记录持久化失败，已保留工具真实响应: toolCallId={}, status={}, reason={}",
@@ -205,13 +207,15 @@ public class ToolObservationInterceptor extends ToolInterceptor {
         }
     }
 
-    private void persistFailedIfPossible(ToolCallRequest request, RuntimeException exception) {
-        if (toolCallPersistenceService == null) {
+    private void persistFailedIfPossible(ToolCallRequest request, RuntimeException exception,
+                                         TurnObservationContext context) {
+        if (toolCallPersistenceService == null || context == null) {
             return;
         }
         try {
             toolCallPersistenceService.recordFinished(
-                    request.getToolCallId(), "failed", null, exception.getMessage(), Instant.now());
+                    context.turnId(), request.getToolCallId(),
+                    "failed", null, exception.getMessage(), Instant.now());
         } catch (RuntimeException persistenceException) {
             // 这里正在处理工具异常，持久化异常只写日志，不能掩盖原始工具异常。
             log.warn("工具调用失败记录持久化失败，已保留原始工具异常: toolCallId={}, reason={}",

@@ -1,6 +1,7 @@
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.gradle.api.tasks.Copy
 import org.gradle.api.tasks.Exec
+import org.gradle.api.tasks.JavaExec
 import org.gradle.api.tasks.testing.Test
 import java.nio.file.Path
 
@@ -74,6 +75,26 @@ tasks.named<Test>("test") {
         .withPropertyName("businessBackendJar")
         .withPathSensitivity(PathSensitivity.NONE)
     systemProperty("huitai.backend.jar", backendJar.absolutePath)
+}
+
+val runBusinessBackendDevelopment by tasks.registering(JavaExec::class) {
+    group = "application"
+    description = "Runs only the standalone business backend and keeps its logs in this console."
+    dependsOn(packageBusinessBackendJar, "classes")
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.wzx.huitai.desktop.runtime.BusinessBackendDevelopmentRunnerKt")
+    systemProperty("huitai.backend.jar", backendJar.absolutePath)
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
+}
+
+val runBusinessFrontendDevelopment by tasks.registering(JavaExec::class) {
+    group = "application"
+    description = "Runs only the Compose frontend and connects to an already running backend."
+    dependsOn("classes")
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.wzx.huitai.desktop.MainKt")
+    environment("HUITAI_DESKTOP_EXTERNAL_BACKEND", "1")
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
 }
 
 compose.desktop {

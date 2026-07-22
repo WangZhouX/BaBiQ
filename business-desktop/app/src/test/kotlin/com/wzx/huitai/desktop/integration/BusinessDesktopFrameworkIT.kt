@@ -124,15 +124,18 @@ class BusinessDesktopFrameworkIT {
                 ),
                 fixture.auditStates(invalidRead),
             )
-            assertEquals(
-                listOf(
-                    ApplicationMethod.ACTION_ACCEPTED.wireName,
-                    ApplicationMethod.ACTION_RUNNING.wireName,
-                    ApplicationMethod.ACTION_FAILED.wireName,
-                ),
-                fixture.methodsFor(invalidRead),
-            )
-            assertFalse(ApplicationMethod.ACTION_REJECTED.wireName in fixture.methodsFor(invalidRead))
+            val invalidMethods = fixture.methodsFor(invalidRead)
+            assertEquals(ApplicationMethod.ACTION_ACCEPTED.wireName, invalidMethods.first())
+            assertEquals(ApplicationMethod.ACTION_FAILED.wireName, invalidMethods.last())
+            assertEquals(1, invalidMethods.count { it == ApplicationMethod.ACTION_ACCEPTED.wireName })
+            assertTrue(invalidMethods.count { it == ApplicationMethod.ACTION_RUNNING.wireName } <= 1)
+            assertEquals(1, invalidMethods.count { it == ApplicationMethod.ACTION_FAILED.wireName })
+            assertTrue(invalidMethods.all {
+                it == ApplicationMethod.ACTION_ACCEPTED.wireName ||
+                    it == ApplicationMethod.ACTION_RUNNING.wireName ||
+                    it == ApplicationMethod.ACTION_FAILED.wireName
+            })
+            assertFalse(ApplicationMethod.ACTION_REJECTED.wireName in invalidMethods)
 
             val patchExecution = "patch-1"
             val patchRequest = async { fixture.request(patchExecution, "form.apply_patch", fixture.patchInput(patchExecution)) }

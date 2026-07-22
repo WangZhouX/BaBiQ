@@ -58,6 +58,7 @@ class BusinessAgentLaunchRequest private constructor(
     /** 生成 ProcessBuilder 参数数组，绝不拼成 shell 字符串。 */
     fun command(): List<String> = listOf(
         javaExecutable.toString(),
+        "--enable-native-access=ALL-UNNAMED",
         "-jar",
         backendJar.toString(),
         "--spring.profiles.active=business-desktop",

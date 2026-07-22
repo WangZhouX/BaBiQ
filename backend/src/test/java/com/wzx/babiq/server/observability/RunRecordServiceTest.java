@@ -67,7 +67,8 @@ class RunRecordServiceTest {
         toolCallPersistenceService.recordStarted("call_1", "thr_record", "turn_record",
                 "read_file", "{\"path\":\"README.md\"}",
                 "explorer", "babiq_agent", "dlg_1", now);
-        toolCallPersistenceService.recordFinished("call_1", "completed", "ok", null, now.plusMillis(20));
+        toolCallPersistenceService.recordFinished(
+                "turn_record", "call_1", "completed", "ok", null, now.plusMillis(20));
 
         RunTurnListResult list = runRecordService.listTurns("thr_record", 10, null);
         RunTurnDetailResult detail = runRecordService.getTurn("turn_record");

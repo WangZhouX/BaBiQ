@@ -152,31 +152,25 @@ class BusinessScopedHandlersIT {
     }
 
     @Test
-    @DisplayName("ToolCall ID 不能跨身份或不可变元数据重绑定且相同写入幂等")
-    void toolCallIdCannotOverwriteImmutableOwnerOrMetadata() {
+    @DisplayName("同一 Turn 的 ToolCall ID 不能覆盖身份或不可变元数据")
+    void turnScopedToolCallIdCannotOverwriteImmutableOwnerOrMetadata() {
         String suffix = UUID.randomUUID().toString();
         String threadA = "thread-tool-owner-a-" + suffix;
-        String threadB = "thread-tool-owner-b-" + suffix;
         String turnA = "turn-tool-owner-a-" + suffix;
-        String turnB = "turn-tool-owner-b-" + suffix;
         String toolCallId = "tool-owner-" + suffix;
         Instant startedAt = Instant.parse("2026-07-17T01:30:00Z");
         conversations.createThread(threadA, "a", "C:/a", "p", "m",
                 "workspace_write", "on_request", startedAt, SCOPE_A);
-        conversations.createThread(threadB, "b", "C:/b", "p", "m",
-                "workspace_write", "on_request", startedAt, SCOPE_B);
         turns.saveTurn(TurnRecord.started(turnA, threadA, "RUNNING", "a", "C:/a", "p", "m",
                 "workspace_write", "on_request", startedAt, SCOPE_A));
-        turns.saveTurn(TurnRecord.started(turnB, threadB, "RUNNING", "b", "C:/b", "p", "m",
-                "workspace_write", "on_request", startedAt, SCOPE_B));
         tools.recordStarted(toolCallId, threadA, turnA, "application_action", "{\"a\":1}",
                 "babiq_agent", null, null, SCOPE_A, startedAt);
-        tools.recordFinished(toolCallId, "completed", "done", null, startedAt.plusSeconds(1));
+        tools.recordFinished(turnA, toolCallId, "completed", "done", null, startedAt.plusSeconds(1));
 
         tools.recordStarted(toolCallId, threadA, turnA, "application_action", "{\"a\":1}",
                 "babiq_agent", null, null, SCOPE_A, startedAt);
         assertThatThrownBy(() -> tools.recordStarted(
-                toolCallId, threadB, turnB, "write_file", "{\"b\":2}",
+                toolCallId, threadA, turnA, "write_file", "{\"b\":2}",
                 "explorer", "babiq_agent", "delegation-b", SCOPE_B, startedAt.plusSeconds(2)))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("tool call immutable metadata conflict");
@@ -200,12 +194,12 @@ class BusinessScopedHandlersIT {
                 "p", "m", "workspace_write", "on_request", startedAt));
         tools.recordStarted(legacyTool, legacyThread, legacyTurn, "read_file", "{}", startedAt);
         assertThatThrownBy(() -> tools.recordStarted(
-                legacyTool, threadA, turnA, "read_file", "{}", "babiq_agent", null, null,
+                legacyTool, legacyThread, legacyTurn, "read_file", "{}", "babiq_agent", null, null,
                 SCOPE_A, startedAt))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("tool call immutable metadata conflict");
         assertThatThrownBy(() -> tools.recordStarted(
-                toolCallId, legacyThread, legacyTurn, "application_action", "{\"a\":1}", startedAt))
+                toolCallId, threadA, turnA, "application_action", "{\"a\":1}", startedAt))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("tool call immutable metadata conflict");
     }

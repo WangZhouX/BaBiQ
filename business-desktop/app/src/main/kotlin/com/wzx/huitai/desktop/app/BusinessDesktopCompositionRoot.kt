@@ -38,10 +38,13 @@ import com.wzx.huitai.desktop.decision.ComposeApprovalPort
 import com.wzx.huitai.desktop.decision.ComposeConfirmationPort
 import com.wzx.huitai.desktop.logging.DesktopLoggingBootstrap
 import com.wzx.huitai.desktop.runtime.AuthenticatedWebSocketProbe
+import com.wzx.huitai.desktop.runtime.BusinessAgentConnectionSession
+import com.wzx.huitai.desktop.runtime.BusinessAgentDevelopmentSessionFile
 import com.wzx.huitai.desktop.runtime.BusinessAttachmentIdFactory
 import com.wzx.huitai.desktop.runtime.BusinessAgentProcessLauncher
 import com.wzx.huitai.desktop.runtime.BusinessAgentReadinessProbe
 import com.wzx.huitai.desktop.runtime.BusinessAgentRuntimeSession
+import com.wzx.huitai.desktop.runtime.BusinessBackendKeyStorePasswordVault
 import com.wzx.huitai.desktop.runtime.BusinessDesktopRuntimePaths
 import com.wzx.huitai.desktop.runtime.ClipboardImageAttachmentStore
 import com.wzx.huitai.desktop.runtime.DesktopInstallationIdentityStore
@@ -72,17 +75,14 @@ import com.wzx.huitai.security.execution.ActionExecutionPolicyResolver
 import com.wzx.huitai.security.instance.ProcessInstanceLock
 import com.wzx.huitai.security.risk.DefaultActionRiskPolicy
 import com.wzx.huitai.security.secret.JceksSecretStore
-import com.wzx.huitai.security.secret.SecretRef
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.websocket.WebSockets
 import java.nio.file.Path
 import java.nio.file.Files
 import java.nio.file.LinkOption
-import java.security.SecureRandom
 import java.time.Instant
 import java.util.Arrays
-import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -280,6 +280,7 @@ class BusinessDesktopProductionConfiguration(
     val backendJar: Path,
     val desktopSecretBootstrap: DesktopSecretBootstrap = EnvironmentDesktopSecretBootstrap(),
     val frameworkDemoIdentity: Boolean = false,
+    val agentLaunchMode: BusinessAgentLaunchMode = BusinessAgentLaunchMode.Embedded,
 ) {
     override fun toString(): String =
         "BusinessDesktopProductionConfiguration(home=[REDACTED], backendJar=[REDACTED], secret=[REDACTED])"
@@ -314,12 +315,18 @@ class BusinessDesktopProductionConfiguration(
     }
 }
 
+enum class BusinessAgentLaunchMode {
+    Embedded,
+    ExternalDevelopment,
+}
+
 /** child 阶段返回的稳定身份、计数器和进程资源。 */
 class BusinessAgentChildHandle internal constructor(
     val identity: DesktopSessionIdentity,
     val sequenceTracker: ApplicationSequenceTracker,
     val resource: CompositionResource,
     internal val runtimeSession: BusinessAgentRuntimeSession? = null,
+    internal val connectionSession: BusinessAgentConnectionSession? = runtimeSession?.connectionSession,
 )
 
 /** 测试可替换 child 启动，但不能替换 storage 和应用动作核心。 */
@@ -443,7 +450,7 @@ class ProductionBusinessDesktopCompositionFactory(
             desktopPassword = configuration.desktopSecretBootstrap.load()
             require(desktopPassword.isNotEmpty()) { "desktop KeyStore password must not be empty" }
             secretStore = JceksSecretStore(paths.desktopKeyStore, desktopPassword)
-            backendPassword = loadOrCreateBackendPassword(secretStore)
+            backendPassword = BusinessBackendKeyStorePasswordVault.loadOrCreate(secretStore)
             val screen = DemoScreenModel()
             val catalog = DemoActionCatalog(screen, FakeHuitaiGateway())
             val registry = catalog.createRegistry()
@@ -517,6 +524,18 @@ class ProductionBusinessDesktopCompositionFactory(
     }
 
     override suspend fun launchChild(storage: BusinessDesktopStorageAssembly): CompositionResource {
+        if (configuration.agentLaunchMode == BusinessAgentLaunchMode.ExternalDevelopment) {
+            val connectionSession = BusinessAgentConnectionSession(
+                BusinessAgentDevelopmentSessionFile.read(paths.agentDevelopmentSession),
+            )
+            child = BusinessAgentChildHandle(
+                identity = connectionSession.identity,
+                sequenceTracker = connectionSession.sequenceTracker,
+                resource = CompositionResource { },
+                connectionSession = connectionSession,
+            )
+            return child.resource
+        }
         val installationId = DesktopInstallationIdentityStore(paths.desktopInstallationId).loadOrCreate()
         val launchPassword = this.storage.backendKeyStorePassword.copyOf()
         try {
@@ -1019,7 +1038,9 @@ class ProductionBusinessDesktopCompositionFactory(
     }
 
     private fun defaultConnector(): BusinessAgentConnector = BusinessAgentConnector { child ->
-        val session = requireNotNull(child.runtimeSession) { "production child runtime session is missing" }
+        val session = requireNotNull(child.connectionSession) {
+            "business Agent connection session is missing"
+        }
         val httpClient = HttpClient(CIO) { install(WebSockets) }
         try {
             val transport = KtorAgentTransport(httpClient, scope)
@@ -1070,26 +1091,6 @@ class ProductionBusinessDesktopCompositionFactory(
         }
     }
 
-    private fun loadOrCreateBackendPassword(secretStore: JceksSecretStore): CharArray {
-        val ref = SecretRef.parse(BACKEND_PASSWORD_ALIAS)
-        secretStore.load(ref)?.let { return it }
-        val bytes = ByteArray(32).also(SecureRandom()::nextBytes)
-        val generated = try {
-            Base64.getUrlEncoder().withoutPadding().encodeToString(bytes).toCharArray()
-        } finally {
-            Arrays.fill(bytes, 0)
-        }
-        try {
-            secretStore.upsert(ref.value, generated)
-            return generated.copyOf()
-        } finally {
-            Arrays.fill(generated, '\u0000')
-        }
-    }
-
-    private companion object {
-        const val BACKEND_PASSWORD_ALIAS = "huitai.backend.keystore.password.v1"
-    }
 }
 
 /**

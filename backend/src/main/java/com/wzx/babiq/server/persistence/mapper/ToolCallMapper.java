@@ -19,7 +19,8 @@ public interface ToolCallMapper extends BaseMapper<ToolCallEntity> {
     @Update("""
             UPDATE bq_tool_calls
             SET execution_id = #{executionId}
-            WHERE tool_call_id = #{toolCallId}
+            WHERE turn_id = #{turnId}
+              AND tool_call_id = #{toolCallId}
               AND execution_id IS NULL
               AND ((#{scoped} = 0 AND desktop_instance_id IS NULL)
                 OR (#{scoped} = 1
@@ -32,6 +33,7 @@ public interface ToolCallMapper extends BaseMapper<ToolCallEntity> {
                   AND platform_id = #{platformId}))
             """)
     int bindExecutionIdIfUnbound(
+            @Param("turnId") String turnId,
             @Param("toolCallId") String toolCallId,
             @Param("executionId") String executionId,
             @Param("scoped") int scoped,

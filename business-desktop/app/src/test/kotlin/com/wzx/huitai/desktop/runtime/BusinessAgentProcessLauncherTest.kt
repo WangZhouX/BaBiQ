@@ -31,6 +31,32 @@ import kotlinx.coroutines.flow.StateFlow
 @OptIn(ExperimentalCoroutinesApi::class)
 class BusinessAgentProcessLauncherTest {
     @Test
+    fun `development backend inherits parent console output`() = runTest {
+        val fixture = fixture(port = 43115)
+        var capturedBuilder: ProcessBuilder? = null
+        val launcher = BusinessAgentProcessLauncher(
+            processStarter = { builder ->
+                capturedBuilder = builder
+                FakeProcess()
+            },
+            readinessProbe = BusinessAgentReadinessProbe(
+                authenticator = AuthenticatedWebSocketProbe {
+                    Files.deleteIfExists(fixture.paths.agentSessionToken)
+                    true
+                },
+                retryDelayMillis = { },
+            ),
+            output = BusinessAgentProcessOutput.ParentConsole,
+        )
+
+        launcher.launch(fixture.request).close()
+
+        assertEquals(ProcessBuilder.Redirect.INHERIT, capturedBuilder?.redirectOutput())
+        assertEquals(ProcessBuilder.Redirect.INHERIT, capturedBuilder?.redirectError())
+        assertFalse(capturedBuilder?.redirectErrorStream() ?: true)
+    }
+
+    @Test
     fun `launcher copies only required runtime and explicit provider bootstrap variables`() = runTest {
         val fixture = fixture(port = 43116)
         val process = FakeProcess()
@@ -86,6 +112,7 @@ class BusinessAgentProcessLauncherTest {
         val command = fixture.request.command()
 
         assertTrue(command.contains(fixture.javaExecutable.toString()))
+        assertTrue(command.contains("--enable-native-access=ALL-UNNAMED"))
         assertTrue(command.contains("-jar"))
         assertTrue(command.contains(fixture.backendJar.toString()))
         assertTrue(command.contains("--spring.profiles.active=business-desktop"))

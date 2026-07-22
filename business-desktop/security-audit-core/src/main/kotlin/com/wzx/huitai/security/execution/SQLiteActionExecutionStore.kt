@@ -175,6 +175,16 @@ class SQLiteActionExecutionStore(
                     else -> ExecutionCreateResult.ExistingRunning(existing)
                 }
             }
+            record.binding.correlation?.let { correlation ->
+                val occupied = selectRecord(
+                    connection,
+                    FIND_BY_TURN_AND_TOOL_CALL,
+                    listOf(correlation.turnId, correlation.toolCallId),
+                )
+                if (occupied != null) {
+                    return@write createConflict("turn-scoped tool call identity conflict")
+                }
+            }
             val policies = policyResolver.resolve(record)
             val safeEnvelope = encodeEnvelope(record, policies.reconciliationPolicy, claim = null)
             val safeAudit = prepareAudit(connection, audit)
@@ -1122,6 +1132,10 @@ class SQLiteActionExecutionStore(
         """.trimIndent().replace("\n", " ")
 
         val FIND_BY_ID = "SELECT $EXECUTION_COLUMNS FROM bd_action_executions WHERE execution_id=?"
+        val FIND_BY_TURN_AND_TOOL_CALL = """
+            SELECT $EXECUTION_COLUMNS FROM bd_action_executions
+            WHERE turn_id=? AND tool_call_id=?
+        """.trimIndent()
         val FIND_BY_ID_AND_SCOPE = """
             SELECT $EXECUTION_COLUMNS FROM bd_action_executions
             WHERE execution_id=? AND desktop_instance_id=? AND desktop_session_id=? AND auth_session_id=?

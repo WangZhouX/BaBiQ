@@ -594,6 +594,7 @@ public final class PendingApplicationActions implements AutoCloseable {
                     executionId, correlation, connectionContext, terminalState, payload);
         }
         TerminalPublication publication;
+        PendingApplicationAction synthesizedRunning = null;
         boolean historicalFallback = false;
         boolean liveLate = false;
         synchronized (entry) {
@@ -628,9 +629,19 @@ public final class PendingApplicationActions implements AutoCloseable {
                 publication = null;
                 historicalFallback = true;
             } else {
+                boolean synthesizeRunning = !entry.acknowledgementUncertain
+                        && shouldSynthesizeRunning(entry.action, terminalState);
                 if (!(entry.acknowledgementUncertain && terminalState.isTerminal())
-                        && !terminalAllowed(entry.action.state(), terminalState)) {
+                        && !terminalAllowed(entry.action.state(), terminalState)
+                        && !synthesizeRunning) {
                     return false;
+                }
+                if (synthesizeRunning) {
+                    PendingApplicationAction previous = entry.action;
+                    synthesizedRunning = previous.transition(
+                            PendingApplicationAction.State.RUNNING, null, clock.instant());
+                    entry.action = synthesizedRunning;
+                    entry.enqueueAudit(AuditPublication.transition(previous, synthesizedRunning));
                 }
                 PendingApplicationAction.State effectiveState = mayHaveExecuted(entry)
                         && terminalState == PendingApplicationAction.State.EXPIRED
@@ -655,6 +666,9 @@ public final class PendingApplicationActions implements AutoCloseable {
         if (liveLate) {
             drainAudit(entry);
             return false;
+        }
+        if (synthesizedRunning != null) {
+            entry.notifyProgress(synthesizedRunning);
         }
         publishTerminal(publication);
         return true;
@@ -1413,6 +1427,15 @@ public final class PendingApplicationActions implements AutoCloseable {
             case HIGH_RISK -> action.state() == PendingApplicationAction.State.APPROVAL_REQUIRED;
             case UNKNOWN_PERSISTED -> false;
         };
+    }
+
+    /** 快速动作允许省略 wire 进度，但只能从该风险路径的合法执行门槛补记 RUNNING。 */
+    private static boolean shouldSynthesizeRunning(
+            PendingApplicationAction action,
+            PendingApplicationAction.State terminal) {
+        return (terminal == PendingApplicationAction.State.COMPLETED
+                || terminal == PendingApplicationAction.State.OUTCOME_UNKNOWN)
+                && mayEnterRunning(action);
     }
 
     private static boolean terminalAllowed(

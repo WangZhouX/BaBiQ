@@ -2,11 +2,13 @@ package com.wzx.huitai.security.database
 
 import java.nio.file.Files
 import java.sql.Connection
+import java.sql.DriverManager
 import java.lang.reflect.Proxy
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import org.flywaydb.core.Flyway
 
 class BusinessDesktopMigrationTest {
     @Test
@@ -100,7 +102,11 @@ class BusinessDesktopMigrationTest {
                 listOf("APPROVED", "DENIED", "EXPIRED").forEach { assertTrue(it in approvalSql) }
 
                 val indexes = indexes(connection)
-                assertTrue(indexes["bd_action_executions_tool_call_id_unique"]?.contains("WHERE tool_call_id IS NOT NULL", ignoreCase = true) == true)
+                assertTrue("bd_action_executions_tool_call_id_unique" !in indexes)
+                val turnScopedToolIndex = indexes["bd_action_executions_turn_tool_call_id_unique"].orEmpty()
+                assertTrue(turnScopedToolIndex.contains("turn_id, tool_call_id", ignoreCase = true))
+                assertTrue(turnScopedToolIndex.contains("turn_id IS NOT NULL", ignoreCase = true))
+                assertTrue(turnScopedToolIndex.contains("tool_call_id IS NOT NULL", ignoreCase = true))
                 assertTrue("bd_action_executions_identity_scope_status_idx" in indexes)
                 assertTrue("bd_action_executions_correlation_idx" in indexes)
                 assertTrue("bd_action_approvals_identity_scope_idx" in indexes)
@@ -111,11 +117,68 @@ class BusinessDesktopMigrationTest {
                     assertFailsWith<java.sql.SQLException> { statement.executeUpdate("UPDATE bd_action_events SET event_type='changed' WHERE event_id='ev'") }
                     assertFailsWith<java.sql.SQLException> { statement.executeUpdate("DELETE FROM bd_action_events WHERE event_id='ev'") }
                 }
+                insertExecution(connection, "turn-a-execution", "turn-a", "application_action_0")
+                insertExecution(connection, "turn-b-execution", "turn-b", "application_action_0")
+                assertFailsWith<java.sql.SQLException> {
+                    insertExecution(connection, "turn-b-duplicate", "turn-b", "application_action_0")
+                }
                 assertTrue("RAISE(ABORT" in schemaSql(connection, "trigger", "bd_action_events_reject_update").uppercase())
                 assertTrue("RAISE(ABORT" in schemaSql(connection, "trigger", "bd_action_events_reject_delete").uppercase())
             }
         }
         BusinessDesktopDatabase(path).use { it.read { connection -> assertEquals(EXECUTION_COLUMNS, columns(connection, "bd_action_executions")) } }
+    }
+
+    @Test
+    fun `V1 audit history upgrades to turn scoped identity without data loss`() {
+        val path = Files.createTempDirectory("business-desktop-v1-upgrade").resolve("business.db")
+        Flyway.configure()
+            .dataSource("jdbc:sqlite:${path.toAbsolutePath().normalize()}", null, null)
+            .locations("classpath:db/migration")
+            .target("1")
+            .load()
+            .migrate()
+
+        DriverManager.getConnection("jdbc:sqlite:${path.toAbsolutePath().normalize()}").use { connection ->
+            insertExecution(connection, "legacy-execution", "legacy-turn", "application_action_0")
+            connection.createStatement().use { statement ->
+                statement.executeUpdate(
+                    """
+                    INSERT INTO bd_action_events (
+                        event_id,execution_id,event_sequence,to_status,event_type,
+                        payload_json_redacted,occurred_at
+                    ) VALUES ('legacy-event','legacy-execution',1,'RECEIVED','received','{}','now')
+                    """.trimIndent(),
+                )
+                statement.executeUpdate(
+                    """
+                    INSERT INTO bd_action_approvals (
+                        approval_id,execution_id,desktop_instance_id,auth_session_id,identity_epoch,
+                        user_id,tenant_id,platform_id,requested_at,expires_at
+                    ) VALUES (
+                        'legacy-approval','legacy-execution','desktop','auth',1,
+                        'user','tenant','platform','now','later'
+                    )
+                    """.trimIndent(),
+                )
+            }
+            assertEquals(1, rowCount(connection, "bd_action_executions"))
+            assertEquals(1, rowCount(connection, "bd_action_events"))
+            assertEquals(1, rowCount(connection, "bd_action_approvals"))
+        }
+
+        BusinessDesktopDatabase(path).use { database ->
+            database.read { connection ->
+                assertEquals("2", installedVersion(connection))
+                assertEquals(1, rowCount(connection, "bd_action_executions"))
+                assertEquals(1, rowCount(connection, "bd_action_events"))
+                assertEquals(1, rowCount(connection, "bd_action_approvals"))
+                insertExecution(connection, "current-execution", "current-turn", "application_action_0")
+                assertFailsWith<java.sql.SQLException> {
+                    insertExecution(connection, "current-duplicate", "current-turn", "application_action_0")
+                }
+            }
+        }
     }
 
     private fun businessTables(connection: Connection) = connection.createStatement().use { statement ->
@@ -132,6 +195,39 @@ class BusinessDesktopMigrationTest {
     private fun pragmaInt(connection: Connection, name: String) = pragmaText(connection, name).toInt()
     private fun schemaSql(connection: Connection, type: String, name: String) = connection.prepareStatement("SELECT sql FROM sqlite_master WHERE type=? AND name=?").use { statement -> statement.setString(1, type); statement.setString(2, name); statement.executeQuery().use { it.next(); it.getString(1) } }
     private fun indexes(connection: Connection) = connection.createStatement().use { statement -> statement.executeQuery("SELECT name,sql FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'").use { result -> buildMap { while (result.next()) put(result.getString(1), result.getString(2) ?: "") } } }
+    private fun rowCount(connection: Connection, table: String) = connection.createStatement().use { statement ->
+        statement.executeQuery("SELECT COUNT(*) FROM $table").use { result -> result.next(); result.getInt(1) }
+    }
+    private fun installedVersion(connection: Connection) = connection.createStatement().use { statement ->
+        statement.executeQuery(
+            "SELECT version FROM flyway_schema_history WHERE success = 1 ORDER BY installed_rank DESC LIMIT 1",
+        ).use { result -> result.next(); result.getString(1) }
+    }
+    private fun insertExecution(
+        connection: Connection,
+        executionId: String,
+        turnId: String,
+        toolCallId: String,
+    ) {
+        connection.prepareStatement(
+            """
+            INSERT INTO bd_action_executions (
+                execution_id,action_id,action_version,input_fingerprint,origin,
+                desktop_instance_id,desktop_session_id,auth_session_id,identity_epoch,
+                user_id,tenant_id,platform_id,page_id,context_revision,
+                thread_id,turn_id,tool_call_id,risk_level,replay_policy,reconciliation_policy,
+                status,reconciliation_status,reconciliation_attempts,created_at,updated_at,record_version
+            ) VALUES (?,?,1,'fingerprint','AGENT','desktop','session','auth',1,'user','tenant','platform',
+                'page',1,'thread',?,?,'READ_ONLY','SAFE','NONE','RECEIVED','NOT_REQUIRED',0,'now','now',0)
+            """.trimIndent(),
+        ).use { statement ->
+            statement.setString(1, executionId)
+            statement.setString(2, "action")
+            statement.setString(3, turnId)
+            statement.setString(4, toolCallId)
+            assertEquals(1, statement.executeUpdate())
+        }
+    }
 
     companion object {
         val EXECUTION_COLUMNS = listOf("execution_id","action_id","action_version","input_fingerprint","origin","desktop_instance_id","desktop_session_id","auth_session_id","identity_epoch","user_id","tenant_id","platform_id","page_id","context_revision","thread_id","turn_id","tool_call_id","risk_level","replay_policy","reconciliation_policy","status","remote_reference","result_json_redacted","error_code","error_message_redacted","reconciliation_status","reconciliation_attempts","last_reconciled_at","created_at","started_at","completed_at","updated_at","record_version")

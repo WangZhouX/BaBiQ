@@ -119,6 +119,69 @@ internal fun strictSchema(vararg properties: Pair<String, String>): JsonObject =
     put("required", buildJsonArray { properties.forEach { add(JsonPrimitive(it.first)) } })
 }
 
+/** 表单补丁动作使用的完整结构 schema；executionId 仍由后端在出站前权威注入。 */
+internal fun formPatchInputSchema(): JsonObject = strictObjectSchema(
+    properties = linkedMapOf(
+        "executionId" to typeSchema("string"),
+        "patch" to strictObjectSchema(
+            properties = linkedMapOf(
+                "pageId" to typeSchema("string"),
+                "baseRevision" to buildJsonObject {
+                    put("type", "integer")
+                    put("minimum", 0)
+                },
+                "changes" to buildJsonObject {
+                    put("type", "array")
+                    put("minItems", 1)
+                    put("maxItems", 256)
+                    put("items", fieldChangeSchema())
+                },
+            ),
+        ),
+    ),
+)
+
+private fun fieldChangeSchema(): JsonObject = strictObjectSchema(
+    properties = linkedMapOf(
+        "fieldId" to typeSchema("string"),
+        "previousValue" to buildJsonObject { },
+        "newValue" to buildJsonObject { },
+        "reason" to typeSchema("string"),
+        "confidence" to buildJsonObject {
+            put("type", "number")
+            put("minimum", 0)
+            put("maximum", 1)
+        },
+        "sourceReferences" to buildJsonObject {
+            put("type", "array")
+            put("maxItems", 64)
+            put("items", strictObjectSchema(
+                properties = linkedMapOf(
+                    "type" to typeSchema("string"),
+                    "id" to typeSchema("string"),
+                    "label" to typeSchema("string"),
+                ),
+                required = listOf("type", "id"),
+            ))
+        },
+    ),
+    required = listOf("fieldId", "previousValue", "newValue", "reason", "confidence"),
+)
+
+private fun typeSchema(type: String): JsonObject = buildJsonObject { put("type", type) }
+
+private fun strictObjectSchema(
+    properties: LinkedHashMap<String, JsonObject>,
+    required: List<String> = properties.keys.toList(),
+): JsonObject = buildJsonObject {
+    put("type", "object")
+    put("additionalProperties", false)
+    put("properties", buildJsonObject {
+        properties.forEach { (name, schema) -> put(name, schema) }
+    })
+    put("required", buildJsonArray { required.forEach { add(JsonPrimitive(it)) } })
+}
+
 /** 只有 executionId 的动作输入 codec。 */
 internal fun <I : Any> executionOnlyCodec(factory: (String) -> I): ActionInputCodec<I> = ActionInputCodec { input ->
     decodeStrict(input, setOf("executionId")) {

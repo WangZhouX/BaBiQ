@@ -125,6 +125,88 @@ public final class ApplicationContextModelContributor {
         if (!blank(description)) {
             summary.put("description", description);
         }
+        JsonNode inputSchema = modelInputSchema(action.get("inputSchema"), 0);
+        if (inputSchema != null) {
+            summary.set("inputSchema", inputSchema);
+        }
+    }
+
+    /**
+     * 只向模型投影 JSON Schema 的结构约束：去掉服务端注入字段、描述文本和敏感属性，
+     * 防止不可信 schema 借 description/default/example 等字段注入提示或泄露凭据。
+     */
+    private JsonNode modelInputSchema(JsonNode schema, int depth) {
+        if (schema == null || !schema.isObject() || depth > 12) {
+            return null;
+        }
+        if (schema.isEmpty()) {
+            return json.createObjectNode();
+        }
+        String type = text(schema, "type");
+        if (type == null
+                || !Set.of("object", "array", "string", "integer", "number", "boolean", "null")
+                        .contains(type)) {
+            return null;
+        }
+        ObjectNode safe = json.createObjectNode().put("type", type);
+        copyBoolean(schema, safe, "additionalProperties");
+        copyIntegral(schema, safe, "minItems");
+        copyIntegral(schema, safe, "maxItems");
+        copyIntegral(schema, safe, "minLength");
+        copyIntegral(schema, safe, "maxLength");
+        copyNumber(schema, safe, "minimum");
+        copyNumber(schema, safe, "maximum");
+
+        if ("array".equals(type)) {
+            JsonNode items = modelInputSchema(schema.get("items"), depth + 1);
+            if (items == null) return null;
+            safe.set("items", items);
+        }
+        if ("object".equals(type)) {
+            JsonNode properties = schema.get("properties");
+            if (properties != null && !properties.isObject()) return null;
+            ObjectNode safeProperties = safe.putObject("properties");
+            if (properties != null) {
+                var fields = properties.fields();
+                while (fields.hasNext()) {
+                    var field = fields.next();
+                    String name = field.getKey();
+                    if ("executionId".equals(name)) continue;
+                    if (blank(name) || name.length() > 128 || credentialKey(name)) return null;
+                    JsonNode child = modelInputSchema(field.getValue(), depth + 1);
+                    if (child == null) return null;
+                    safeProperties.set(name, child);
+                }
+            }
+            JsonNode required = schema.get("required");
+            if (required != null && !required.isArray()) return null;
+            var safeRequired = safe.putArray("required");
+            if (required != null) {
+                for (JsonNode value : required) {
+                    if (!value.isTextual()) return null;
+                    String name = value.textValue();
+                    if ("executionId".equals(name)) continue;
+                    if (credentialKey(name) || !safeProperties.has(name)) return null;
+                    safeRequired.add(name);
+                }
+            }
+        }
+        return safe;
+    }
+
+    private static void copyBoolean(JsonNode source, ObjectNode target, String field) {
+        JsonNode value = source.get(field);
+        if (value != null && value.isBoolean()) target.put(field, value.booleanValue());
+    }
+
+    private static void copyIntegral(JsonNode source, ObjectNode target, String field) {
+        JsonNode value = source.get(field);
+        if (value != null && value.isIntegralNumber()) target.put(field, value.longValue());
+    }
+
+    private static void copyNumber(JsonNode source, ObjectNode target, String field) {
+        JsonNode value = source.get(field);
+        if (value != null && value.isNumber()) target.put(field, value.decimalValue());
     }
 
     private JsonNode sanitizePageContext(JsonNode source, JsonNode catalogActions) {

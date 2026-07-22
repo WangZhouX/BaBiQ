@@ -2,10 +2,14 @@ package com.wzx.babiq.server.interceptor;
 
 import com.alibaba.cloud.ai.graph.agent.interceptor.ToolCallRequest;
 import com.alibaba.cloud.ai.graph.agent.interceptor.ToolCallResponse;
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
 import com.wzx.babiq.server.conversation.repository.ConversationRepository;
 import com.wzx.babiq.server.conversation.repository.TurnRecord;
 import com.wzx.babiq.server.observability.BaBiQMetrics;
 import com.wzx.babiq.server.observability.TurnObservationContext;
+import com.wzx.babiq.server.persistence.entity.ToolCallEntity;
+import com.wzx.babiq.server.persistence.mapper.ToolCallMapper;
 import com.wzx.babiq.server.persistence.service.ToolCallPersistenceService;
 import com.wzx.babiq.server.persistence.service.TurnPersistenceService;
 import org.junit.jupiter.api.DisplayName;
@@ -47,6 +51,8 @@ class ToolCallRecordTest {
     private TurnPersistenceService turnPersistenceService;
     @Autowired
     private ToolCallPersistenceService toolCallPersistenceService;
+    @Autowired
+    private ToolCallMapper toolCallMapper;
 
     @Test
     @DisplayName("ToolObservationInterceptor 会把工具调用开始和完成状态写入 bq_tool_calls")
@@ -80,5 +86,74 @@ class ToolCallRecordTest {
                     assertThat(record.status()).isEqualTo("completed");
                     assertThat(record.resultPreview()).isEqualTo("README");
                 });
+    }
+
+    @Test
+    @DisplayName("不同 turn 复用同一工具调用 ID 时分别完成各自记录")
+    void interceptor_should_scope_reused_tool_call_id_to_turn() {
+        String suffix = UUID.randomUUID().toString().replace("-", "");
+        String threadId = "thr_tool_scope_" + suffix;
+        String firstTurnId = "turn_tool_scope_a_" + suffix;
+        String secondTurnId = "turn_tool_scope_b_" + suffix;
+        String toolCallId = "application_action_0";
+        Instant now = Instant.now();
+        conversationRepository.createThread(threadId, "工具组合身份", "E:\\BaBiQ",
+                "deepseek", "deepseek-v4-pro", "DANGER_FULL_ACCESS", "ON_REQUEST", now);
+        turnPersistenceService.saveTurn(TurnRecord.started(
+                firstTurnId, threadId, "RUNNING", "第一次调用", "E:\\BaBiQ",
+                "deepseek", "deepseek-v4-pro", "DANGER_FULL_ACCESS", "ON_REQUEST", now));
+        turnPersistenceService.saveTurn(TurnRecord.started(
+                secondTurnId, threadId, "RUNNING", "第二次调用", "E:\\BaBiQ",
+                "deepseek", "deepseek-v4-pro", "DANGER_FULL_ACCESS", "ON_REQUEST", now.plusSeconds(1)));
+        ToolObservationInterceptor interceptor = new ToolObservationInterceptor(
+                new BaBiQMetrics(), toolCallPersistenceService);
+
+        intercept(interceptor, threadId, firstTurnId, toolCallId, "first-result");
+        intercept(interceptor, threadId, secondTurnId, toolCallId, "second-result");
+        toolCallPersistenceService.bindExecutionId(
+                firstTurnId, toolCallId, BusinessIdentityScope.UNSCOPED, "execution-first");
+        toolCallPersistenceService.bindExecutionId(
+                secondTurnId, toolCallId, BusinessIdentityScope.UNSCOPED, "execution-second");
+
+        assertThat(toolCallPersistenceService.listByTurnId(firstTurnId))
+                .singleElement()
+                .satisfies(record -> {
+                    assertThat(record.toolCallId()).isEqualTo(toolCallId);
+                    assertThat(record.status()).isEqualTo("completed");
+                    assertThat(record.resultPreview()).isEqualTo("first-result");
+                });
+        assertThat(toolCallPersistenceService.listByTurnId(secondTurnId))
+                .singleElement()
+                .satisfies(record -> {
+                    assertThat(record.toolCallId()).isEqualTo(toolCallId);
+                    assertThat(record.status()).isEqualTo("completed");
+                    assertThat(record.resultPreview()).isEqualTo("second-result");
+                });
+        assertThat(findToolCall(firstTurnId, toolCallId).getExecutionId()).isEqualTo("execution-first");
+        assertThat(findToolCall(secondTurnId, toolCallId).getExecutionId()).isEqualTo("execution-second");
+    }
+
+    private ToolCallEntity findToolCall(String turnId, String toolCallId) {
+        return toolCallMapper.selectOne(Wrappers.<ToolCallEntity>lambdaQuery()
+                .eq(ToolCallEntity::getTurnId, turnId)
+                .eq(ToolCallEntity::getToolCallId, toolCallId));
+    }
+
+    private static void intercept(
+            ToolObservationInterceptor interceptor,
+            String threadId,
+            String turnId,
+            String toolCallId,
+            String result) {
+        TurnObservationContext context = TurnObservationContext.start(
+                threadId, turnId, "deepseek", "deepseek-v4-pro");
+        ToolCallRequest request = ToolCallRequest.builder()
+                .toolName("application_action")
+                .toolCallId(toolCallId)
+                .arguments("{\"actionId\":\"form.read_state\",\"input\":{}}")
+                .context(Map.of(TurnObservationContext.METADATA_KEY, context))
+                .build();
+        interceptor.interceptToolCall(request,
+                ignored -> ToolCallResponse.of(toolCallId, "application_action", result));
     }
 }

@@ -217,7 +217,11 @@ public final class ApplicationActionTool implements Tool {
                     progress::accept);
             if (toolCalls != null) {
                 try {
-                    toolCalls.bindExecutionId(invocation.toolCallId(), invocation.businessIdentityScope(), executionId);
+                    toolCalls.bindExecutionId(
+                            invocation.turnId(),
+                            invocation.toolCallId(),
+                            invocation.businessIdentityScope(),
+                            executionId);
                 } catch (RuntimeException bindingFailure) {
                     pending.cancel(executionId, correlation, "tool call execution binding failed");
                     throw bindingFailure;

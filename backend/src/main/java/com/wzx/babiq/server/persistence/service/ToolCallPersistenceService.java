@@ -102,7 +102,7 @@ public class ToolCallPersistenceService {
         entity.setStatus("running");
         entity.setStartedAt(PersistenceTime.write(startedAt));
         applyScope(entity, scope);
-        ToolCallEntity existing = findEntity(toolCallId);
+        ToolCallEntity existing = findEntity(turnId, toolCallId);
         if (existing == null) {
             toolCallMapper.insert(entity);
             return;
@@ -122,6 +122,7 @@ public class ToolCallPersistenceService {
     /**
      * 记录工具调用完成或失败。
      *
+     * @param turnId 所属 turn
      * @param toolCallId SAA 工具调用 id
      * @param status completed、failed 或 denied
      * @param resultPreview 成功结果短预览
@@ -129,9 +130,9 @@ public class ToolCallPersistenceService {
      * @param completedAt 完成时间
      */
     @Transactional
-    public void recordFinished(String toolCallId, String status, String resultPreview,
+    public void recordFinished(String turnId, String toolCallId, String status, String resultPreview,
                                String errorMessage, Instant completedAt) {
-        ToolCallEntity existing = findEntity(toolCallId);
+        ToolCallEntity existing = findEntity(turnId, toolCallId);
         if (existing == null) {
             return;
         }
@@ -163,8 +164,9 @@ public class ToolCallPersistenceService {
     }
 
     @Transactional
-    public void bindExecutionId(String toolCallId, BusinessIdentityScope scope, String executionId) {
-        ToolCallEntity existing = findEntity(toolCallId, scope).orElse(null);
+    public void bindExecutionId(String turnId, String toolCallId,
+                                BusinessIdentityScope scope, String executionId) {
+        ToolCallEntity existing = findEntity(turnId, toolCallId, scope).orElse(null);
         if (existing == null) {
             throw new IllegalStateException("tool call execution binding conflict");
         }
@@ -175,9 +177,9 @@ public class ToolCallPersistenceService {
             throw new IllegalStateException("tool call execution binding conflict");
         }
         int updated = toolCallMapper.bindExecutionIdIfUnbound(
-                toolCallId, executionId, scoped(scope), desktopInstanceId(scope), desktopSessionId(scope),
+                turnId, toolCallId, executionId, scoped(scope), desktopInstanceId(scope), desktopSessionId(scope),
                 authSessionId(scope), identityEpoch(scope), userId(scope), tenantId(scope), platformId(scope));
-        if (updated == 0 && !findEntity(toolCallId, scope)
+        if (updated == 0 && !findEntity(turnId, toolCallId, scope)
                 .map(entity -> Objects.equals(entity.getExecutionId(), executionId)).orElse(false)) {
             throw new IllegalStateException("tool call execution binding conflict");
         }
@@ -192,13 +194,17 @@ public class ToolCallPersistenceService {
     private static String tenantId(BusinessIdentityScope scope) { return scoped(scope) == 1 ? scope.tenantId() : null; }
     private static String platformId(BusinessIdentityScope scope) { return scoped(scope) == 1 ? scope.platformId() : null; }
 
-    private ToolCallEntity findEntity(String toolCallId) {
+    private ToolCallEntity findEntity(String turnId, String toolCallId) {
         return toolCallMapper.selectOne(Wrappers.<ToolCallEntity>lambdaQuery()
+                .eq(ToolCallEntity::getTurnId, turnId)
                 .eq(ToolCallEntity::getToolCallId, toolCallId));
     }
 
-    private Optional<ToolCallEntity> findEntity(String toolCallId, BusinessIdentityScope scope) {
-        var query = Wrappers.<ToolCallEntity>lambdaQuery().eq(ToolCallEntity::getToolCallId, toolCallId);
+    private Optional<ToolCallEntity> findEntity(String turnId, String toolCallId,
+                                                BusinessIdentityScope scope) {
+        var query = Wrappers.<ToolCallEntity>lambdaQuery()
+                .eq(ToolCallEntity::getTurnId, turnId)
+                .eq(ToolCallEntity::getToolCallId, toolCallId);
         if (scope == null || !scope.scoped()) {
             query.isNull(ToolCallEntity::getDesktopInstanceId);
         } else {

@@ -21,13 +21,44 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 
 class DemoActionCatalogTest {
+    @Test
+    fun `表单补丁动作声明模型可生成的完整嵌套 schema`() {
+        val actions = DemoActionCatalog(DemoScreenModel(), FakeHuitaiGateway())
+            .actions.associateBy { it.descriptor.id }
+
+        listOf("form.preview_patch", "form.apply_patch").forEach { actionId ->
+            val schema = actions.getValue(actionId).descriptor.inputSchema
+            val patch = schema.getValue("properties").jsonObject.getValue("patch").jsonObject
+            val patchProperties = patch.getValue("properties").jsonObject
+            val change = patchProperties.getValue("changes").jsonObject
+                .getValue("items").jsonObject
+            val changeProperties = change.getValue("properties").jsonObject
+
+            assertEquals(
+                listOf("pageId", "baseRevision", "changes"),
+                patch.getValue("required").jsonArray.map { it.jsonPrimitive.content },
+            )
+            assertEquals("string", patchProperties.getValue("pageId").jsonObject.getValue("type").jsonPrimitive.content)
+            assertEquals("integer", patchProperties.getValue("baseRevision").jsonObject.getValue("type").jsonPrimitive.content)
+            assertEquals("array", patchProperties.getValue("changes").jsonObject.getValue("type").jsonPrimitive.content)
+            assertEquals(
+                listOf("fieldId", "previousValue", "newValue", "reason", "confidence"),
+                change.getValue("required").jsonArray.map { it.jsonPrimitive.content },
+            )
+            assertEquals("string", changeProperties.getValue("fieldId").jsonObject.getValue("type").jsonPrimitive.content)
+            assertEquals("number", changeProperties.getValue("confidence").jsonObject.getValue("type").jsonPrimitive.content)
+        }
+    }
+
     @Test
     fun `目录恰好注册七个动作及其固定风险与重放策略`() {
         val catalog = DemoActionCatalog(DemoScreenModel(), FakeHuitaiGateway())

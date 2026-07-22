@@ -90,6 +90,16 @@ class InMemoryActionExecutionStore(
         validateCreateAudit(record, audit)
         val existing = records[record.command.executionId]
         if (existing == null) {
+            val correlation = record.command.correlation
+            val duplicateToolCall = correlation != null && records.values.any { candidate ->
+                candidate.command.correlation?.let { existingCorrelation ->
+                    existingCorrelation.turnId == correlation.turnId &&
+                        existingCorrelation.toolCallId == correlation.toolCallId
+                } == true
+            }
+            if (duplicateToolCall) {
+                return@withLock createConflict("turn tool call identity conflict")
+            }
             val frozen = record.freeze()
             val event = prepareAudit(audit)
             commit(frozen, event)

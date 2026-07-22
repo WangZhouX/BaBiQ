@@ -8,6 +8,11 @@ fun interface BusinessAgentProcessStarter {
     fun start(builder: ProcessBuilder): Process
 }
 
+enum class BusinessAgentProcessOutput {
+    AgentLogFile,
+    ParentConsole,
+}
+
 /**
  * 启动安装包内 Agent jar，并把进程责任转移给 [BusinessAgentRuntimeSession]。
  *
@@ -18,6 +23,7 @@ class BusinessAgentProcessLauncher(
     private val processStarter: BusinessAgentProcessStarter = BusinessAgentProcessStarter { it.start() },
     private val readinessProbe: BusinessAgentReadinessProbe,
     private val parentEnvironment: () -> Map<String, String> = { System.getenv() },
+    private val output: BusinessAgentProcessOutput = BusinessAgentProcessOutput.AgentLogFile,
 ) {
     /** 以参数数组启动子进程，认证就绪后返回可幂等关闭的会话。 */
     suspend fun launch(request: BusinessAgentLaunchRequest): BusinessAgentRuntimeSession {
@@ -25,8 +31,14 @@ class BusinessAgentProcessLauncher(
         try {
             val logIdentity = SecureRuntimeFile.prepare(request.paths.agentLog)
             val builder = ProcessBuilder(request.command())
-                .redirectErrorStream(true)
-                .redirectOutput(ProcessBuilder.Redirect.appendTo(request.paths.agentLog.toFile()))
+            when (output) {
+                BusinessAgentProcessOutput.AgentLogFile -> builder
+                    .redirectErrorStream(true)
+                    .redirectOutput(ProcessBuilder.Redirect.appendTo(request.paths.agentLog.toFile()))
+                BusinessAgentProcessOutput.ParentConsole -> builder
+                    .redirectOutput(ProcessBuilder.Redirect.INHERIT)
+                    .redirectError(ProcessBuilder.Redirect.INHERIT)
+            }
             val environment = builder.environment()
             environment.clear()
             val parent = parentEnvironment()

@@ -166,6 +166,35 @@ class ApplicationContextModelContributorTest {
     }
 
     @Test
+    void model_receives_only_structural_action_schema_without_reserved_execution_id_or_descriptions() {
+        Fixture fixture = fixture();
+        ObjectNode catalog = json.createObjectNode();
+        ObjectNode action = action("form.preview_patch", 1, true, "demo:read", "Preview", "read_only");
+        ObjectNode schema = action.putObject("inputSchema");
+        schema.put("type", "object").put("additionalProperties", false);
+        ObjectNode properties = schema.putObject("properties");
+        properties.putObject("executionId").put("type", "string");
+        ObjectNode patch = properties.putObject("patch");
+        patch.put("type", "object").put("description", "schema-secret");
+        patch.putObject("properties").putObject("pageId").put("type", "string");
+        patch.putArray("required").add("pageId");
+        schema.putArray("required").add("executionId").add("patch");
+        catalog.set("actions", json.createObjectNode().set("form.preview_patch", action));
+        fixture.snapshots(catalog, json.createObjectNode()
+                .put("pageId", "demo.form").put("contextRevision", 1));
+
+        JsonNode modelAction = untrustedPayload(fixture.contributor().contribute(fixture.scope()).getFirst())
+                .path("actions").get(0);
+        JsonNode modelSchema = modelAction.path("inputSchema");
+
+        assertThat(modelSchema.path("type").asText()).isEqualTo("object");
+        assertThat(modelSchema.path("properties").has("patch")).isTrue();
+        assertThat(modelSchema.path("properties").has("executionId")).isFalse();
+        assertThat(modelSchema.path("required").toString()).isEqualTo("[\"patch\"]");
+        assertThat(modelSchema.toString()).contains("pageId").doesNotContain("schema-secret", "description");
+    }
+
+    @Test
     void nested_credential_keys_are_removed_after_secure_normalization() {
         Fixture fixture = fixture();
         ObjectNode catalog = json.createObjectNode().set("actions", json.createObjectNode());

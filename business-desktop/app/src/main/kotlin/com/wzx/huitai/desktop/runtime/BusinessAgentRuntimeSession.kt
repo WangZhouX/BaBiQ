@@ -43,11 +43,11 @@ class BusinessAgentRuntimeSession internal constructor(
     private val request: BusinessAgentLaunchRequest,
 ) : AutoCloseable {
     private val closed = AtomicBoolean(false)
-    private val connectionAttached = AtomicBoolean(false)
 
-    val identity: DesktopSessionIdentity = request.identity
-    val connectRequest = request.connectRequest
-    val sequenceTracker = ApplicationSequenceTracker(identity.desktopSessionId)
+    val connectionSession = BusinessAgentConnectionSession(request.connectRequest)
+    val identity: DesktopSessionIdentity = connectionSession.identity
+    val connectRequest = connectionSession.connectRequest
+    val sequenceTracker = connectionSession.sequenceTracker
 
     /** 同一 child 的所有 reconnect 都取回同一个身份对象。 */
     fun identityForReconnect(): DesktopSessionIdentity = identity
@@ -76,29 +76,12 @@ class BusinessAgentRuntimeSession internal constructor(
         transport: AgentTransport,
         scope: CoroutineScope,
         timeoutMillis: Long = 30_000L,
-    ): AgentConnection {
-        check(connectionAttached.compareAndSet(false, true)) { "business Agent connection is already attached" }
-        val supervisor = AgentConnectionSupervisor(transport, connectRequest, scope)
-        try {
-            supervisor.start()
-            val terminal = withTimeout(timeoutMillis) {
-                supervisor.state.first { state ->
-                    state is AgentSupervisorState.Connected ||
-                        state == AgentSupervisorState.AuthenticationFailed ||
-                        state == AgentSupervisorState.ManualRetryRequired ||
-                        state == AgentSupervisorState.Shutdown
-                }
-            }
-            check(terminal is AgentSupervisorState.Connected) { "business Agent connection was not authenticated" }
-            return SupervisorAgentConnection(supervisor, scope, terminal.connectionId)
-        } catch (failure: Throwable) {
-            withContext(NonCancellable) {
-                runCatching { supervisor.shutdown() }
-            }.exceptionOrNull()?.let(failure::addSuppressed)
-            connectionAttached.set(false)
-            throw failure
-        }
-    }
+    ): AgentConnection = connectionSession.connect(transport, scope, timeoutMillis)
+
+    fun awaitExit(): Int = process.waitFor()
+
+    val exitCodeIfFinished: Int?
+        get() = if (process.isAlive) null else process.exitValue()
 
     /** 先请求优雅退出，最多五秒；仍存活时强制终止并等待，最后清理内存密码和残留 token。 */
     override fun close() {
@@ -128,6 +111,55 @@ class BusinessAgentRuntimeSession internal constructor(
         private const val FORCED_SHUTDOWN_SECONDS = 5L
         private const val LOOPBACK_ADDRESS = "127.0.0.1"
     }
+}
+
+/**
+ * An authenticated desktop-to-Agent session that is independent from ownership of the backend
+ * process. Embedded production mode and split development mode share the same reconnect and
+ * sequence semantics without allowing the frontend process to launch a backend implicitly.
+ */
+class BusinessAgentConnectionSession(
+    val connectRequest: com.wzx.huitai.agent.client.AgentConnectRequest,
+) {
+    private val connectionAttached = AtomicBoolean(false)
+
+    val identity: DesktopSessionIdentity = connectRequest.identity
+    val sequenceTracker = ApplicationSequenceTracker(identity.desktopSessionId)
+
+    suspend fun connect(
+        transport: AgentTransport,
+        scope: CoroutineScope,
+        timeoutMillis: Long = 30_000L,
+    ): AgentConnection {
+        check(connectionAttached.compareAndSet(false, true)) {
+            "business Agent connection is already attached"
+        }
+        val supervisor = AgentConnectionSupervisor(transport, connectRequest, scope)
+        try {
+            supervisor.start()
+            val terminal = withTimeout(timeoutMillis) {
+                supervisor.state.first { state ->
+                    state is AgentSupervisorState.Connected ||
+                        state == AgentSupervisorState.AuthenticationFailed ||
+                        state == AgentSupervisorState.ManualRetryRequired ||
+                        state == AgentSupervisorState.Shutdown
+                }
+            }
+            check(terminal is AgentSupervisorState.Connected) {
+                "business Agent connection was not authenticated"
+            }
+            return SupervisorAgentConnection(supervisor, scope, terminal.connectionId)
+        } catch (failure: Throwable) {
+            withContext(NonCancellable) {
+                runCatching { supervisor.shutdown() }
+            }.exceptionOrNull()?.let(failure::addSuppressed)
+            connectionAttached.set(false)
+            throw failure
+        }
+    }
+
+    override fun toString(): String =
+        "BusinessAgentConnectionSession(connectRequest=[REDACTED], identity=[REDACTED])"
 }
 
 /** AgentJsonRpcClient 可跨 reconnect 持有的稳定 facade，只消费 supervisor 已过滤的状态和帧。 */

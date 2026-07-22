@@ -140,7 +140,7 @@ class ApplicationProtocolReconnectIT {
                     new com.wzx.babiq.server.application.action.PendingApplicationActions.RegistrationMetadata(
                             "case.read", 1, "sha256:" + UUID.randomUUID()),
                     null);
-            toolCalls.bindExecutionId(toolCallId, scope, executionId);
+            toolCalls.bindExecutionId(turnId, toolCallId, scope, executionId);
             actions.acceptedAuthorized(executionId, correlation, context);
             actions.runningAuthorized(executionId, correlation, context);
         }

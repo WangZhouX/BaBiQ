@@ -14,9 +14,9 @@ import com.wzx.huitai.action.model.ActionRiskLevel
 import com.wzx.huitai.demo.action.DEMO_JSON_OUTPUT_CODEC
 import com.wzx.huitai.demo.action.decodeStrict
 import com.wzx.huitai.demo.action.demoDescriptor
+import com.wzx.huitai.demo.action.formPatchInputSchema
 import com.wzx.huitai.demo.action.requiredPatch
 import com.wzx.huitai.demo.action.requiredString
-import com.wzx.huitai.demo.action.strictSchema
 import com.wzx.huitai.demo.model.DemoDispatchResult
 import com.wzx.huitai.demo.model.DemoFormEvent
 import com.wzx.huitai.demo.model.DemoFormState
@@ -41,7 +41,7 @@ class FormApplyPatchAction private constructor(
         risk = ActionRiskLevel.REVERSIBLE_WRITE,
         replay = ActionReplayPolicy.SAFE,
         requiredPermissions = setOf("demo.write"),
-        inputSchema = strictSchema("executionId" to "string", "patch" to "object"),
+        inputSchema = formPatchInputSchema(),
     )
 
     /** 根据补丁生成确认预览，不修改页面。 */

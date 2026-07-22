@@ -281,8 +281,6 @@ class ApplicationBridgeEndToEndIT {
                     json.createObjectNode().put("accepted", true).put("executionId", executionId)));
             request(session, received, 15, "application/action/accepted",
                     actionProgress(action, "received", null));
-            request(session, received, 16, "application/action/running",
-                    actionProgress(action, "executing", null));
             request(session, received, 17, "application/action/completed",
                     actionProgress(action, "succeeded", json.createObjectNode().put("output", "ok")));
 
@@ -303,7 +301,7 @@ class ApplicationBridgeEndToEndIT {
                         assertThat(row.get("execution_id")).isEqualTo(executionId);
                     });
             org.assertj.core.api.Assertions.assertThatThrownBy(() ->
-                    toolCalls.bindExecutionId(toolCallId, scope, "different-" + executionId))
+                    toolCalls.bindExecutionId(turnId, toolCallId, scope, "different-" + executionId))
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("binding conflict");
             assertThat(conversationRepository.listItems(threadId, 20, null, scope)).singleElement()

@@ -1191,6 +1191,38 @@ class PendingApplicationActionsTest {
     }
 
     @Test
+    void fastReadOnlyCompletionSynthesizesRunningBeforeTerminal() throws Exception {
+        BlockingAuditStore store = new BlockingAuditStore();
+        PendingApplicationActions local = actions(store, action ->
+                CompletableFuture.completedFuture(PendingApplicationActions.RemoteStatus.running()));
+        PendingApplicationAction.Correlation correlation = correlation("tool-fast-read");
+        PendingApplicationAction.ConnectionContext context = connectionContext("ws-fast-read");
+        List<PendingApplicationAction.State> progress = new CopyOnWriteArrayList<>();
+        CompletableFuture<PendingApplicationAction> terminal = local.register(
+                "execution-fast-read",
+                correlation,
+                PendingApplicationAction.Path.READ_ONLY,
+                context,
+                snapshot -> progress.add(snapshot.state()));
+
+        assertThat(local.acceptedAuthorized("execution-fast-read", correlation, context)).isTrue();
+        assertThat(local.terminalAuthorized(
+                "execution-fast-read",
+                correlation,
+                context,
+                PendingApplicationAction.State.COMPLETED,
+                objectMapper.createObjectNode().put("state", "succeeded"))).isTrue();
+
+        assertThat(terminal.get(1, TimeUnit.SECONDS).state())
+                .isEqualTo(PendingApplicationAction.State.COMPLETED);
+        assertThat(progress).containsExactly(
+                PendingApplicationAction.State.ACCEPTED,
+                PendingApplicationAction.State.RUNNING,
+                PendingApplicationAction.State.COMPLETED);
+        assertThat(store.events).containsExactly("REQUESTED", "ACCEPTED", "EXECUTING", "COMPLETED");
+    }
+
+    @Test
     void terminalTransitionsFollowTheCompletePreRunAndRunningMatrix() {
         List<PendingApplicationAction.State> terminals = List.of(
                 PendingApplicationAction.State.COMPLETED,
@@ -1239,7 +1271,7 @@ class PendingApplicationActionsTest {
 
                     boolean actual = local.terminalAuthorized(
                             executionId, correlation, context, terminalState, null);
-                    boolean expected = terminalAllowed(from, terminalState);
+                    boolean expected = terminalAllowed(pathRow.getKey(), from, terminalState);
 
                     assertThat(actual).as("%s -> %s", from, terminalState).isEqualTo(expected);
                     if (expected) {
@@ -2544,10 +2576,17 @@ class PendingApplicationActionsTest {
     }
 
     private static boolean terminalAllowed(
+            PendingApplicationAction.Path path,
             PendingApplicationAction.State from,
             PendingApplicationAction.State terminal) {
         return switch (terminal) {
-            case COMPLETED, OUTCOME_UNKNOWN -> from == PendingApplicationAction.State.RUNNING;
+            case COMPLETED, OUTCOME_UNKNOWN -> from == PendingApplicationAction.State.RUNNING
+                    || path == PendingApplicationAction.Path.READ_ONLY
+                            && from == PendingApplicationAction.State.ACCEPTED
+                    || path == PendingApplicationAction.Path.REVERSIBLE_WRITE
+                            && from == PendingApplicationAction.State.PREVIEWED
+                    || path == PendingApplicationAction.Path.HIGH_RISK
+                            && from == PendingApplicationAction.State.APPROVAL_REQUIRED;
             case FAILED, CANCELED -> from == PendingApplicationAction.State.ACCEPTED
                     || from == PendingApplicationAction.State.PREVIEWED
                     || from == PendingApplicationAction.State.APPROVAL_REQUIRED

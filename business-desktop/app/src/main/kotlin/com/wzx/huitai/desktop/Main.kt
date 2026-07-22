@@ -11,6 +11,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import com.wzx.huitai.demo.model.DemoFormEvent
+import com.wzx.huitai.desktop.app.BusinessAgentLaunchMode
 import com.wzx.huitai.desktop.app.BusinessDesktopCompositionRoot
 import com.wzx.huitai.desktop.app.BusinessDesktopProductionConfiguration
 import com.wzx.huitai.desktop.app.ProductionBusinessDesktopCompositionFactory
@@ -56,6 +57,7 @@ import org.slf4j.LoggerFactory
  */
 fun main() {
     val runtimeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val agentLaunchMode = resolveBusinessAgentLaunchMode(System.getenv())
     val startup = try {
         val smokeProbe = PackagedSmokeProbe.fromEnvironment()
         val factory = ProductionBusinessDesktopCompositionFactory(
@@ -63,6 +65,7 @@ fun main() {
                 home = BusinessDesktopProductionConfiguration.resolveHome(),
                 backendJar = BusinessDesktopProductionConfiguration.resolveBundledBackendJar(),
                 frameworkDemoIdentity = System.getenv("HUITAI_DESKTOP_FRAMEWORK_DEMO_IDENTITY") == "1",
+                agentLaunchMode = agentLaunchMode,
             ),
             parentScope = runtimeScope,
         )
@@ -72,8 +75,13 @@ fun main() {
             smokeProbe = smokeProbe,
         )
     } catch (_: Exception) {
+        val message = if (agentLaunchMode == BusinessAgentLaunchMode.ExternalDevelopment) {
+            "业务桌面前端连接失败，请先启动并保持运行 Business Backend（后端）"
+        } else {
+            "业务桌面初始化失败，请检查本机安装与安全配置"
+        }
         LoggerFactory.getLogger("BusinessDesktopStartup")
-            .error("业务桌面初始化失败，请检查本机安装与安全配置")
+            .error(message)
         runtimeScope.cancel()
         return
     }
@@ -444,6 +452,15 @@ fun main() {
         }
     }
 }
+
+internal fun resolveBusinessAgentLaunchMode(
+    environment: Map<String, String>,
+): BusinessAgentLaunchMode =
+    if (environment["HUITAI_DESKTOP_EXTERNAL_BACKEND"] == "1") {
+        BusinessAgentLaunchMode.ExternalDevelopment
+    } else {
+        BusinessAgentLaunchMode.Embedded
+    }
 
 private data class DesktopStartup(
     val root: BusinessDesktopCompositionRoot,

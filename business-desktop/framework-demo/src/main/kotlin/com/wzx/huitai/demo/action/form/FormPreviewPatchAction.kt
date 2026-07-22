@@ -14,9 +14,9 @@ import com.wzx.huitai.action.model.ActionRiskLevel
 import com.wzx.huitai.demo.action.DEMO_JSON_OUTPUT_CODEC
 import com.wzx.huitai.demo.action.decodeStrict
 import com.wzx.huitai.demo.action.demoDescriptor
+import com.wzx.huitai.demo.action.formPatchInputSchema
 import com.wzx.huitai.demo.action.requiredPatch
 import com.wzx.huitai.demo.action.requiredString
-import com.wzx.huitai.demo.action.strictSchema
 import com.wzx.huitai.demo.model.DemoScreenModel
 import com.wzx.huitai.demo.model.DemoFormState
 import com.wzx.huitai.demo.model.DemoFormEvent
@@ -38,7 +38,7 @@ class FormPreviewPatchAction private constructor(
         description = "预览绑定当前 revision 的字段变化",
         risk = ActionRiskLevel.READ_ONLY,
         replay = ActionReplayPolicy.SAFE,
-        inputSchema = strictSchema("executionId" to "string", "patch" to "object"),
+        inputSchema = formPatchInputSchema(),
     )
 
     /** 根据补丁值生成无副作用变化列表。 */
