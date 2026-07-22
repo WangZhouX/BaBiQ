@@ -25,6 +25,7 @@ import com.wzx.huitai.integration.oa.auth.OaTokenBundle
 import com.wzx.huitai.security.secret.JceksSecretStore
 import java.nio.file.Files
 import java.time.Instant
+import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
@@ -37,6 +38,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
@@ -372,6 +374,122 @@ class BusinessAuthenticationOrchestratorTest {
     }
 
     @Test
+    fun `revocation waits for cancelled authentication compensation before global cleanup and reopening login`() = runTest {
+        val fixture = Fixture().apply {
+            registration.commitStarted = CompletableDeferred()
+            registration.commitRelease = CompletableDeferred()
+            registration.rollbackStarted = CompletableDeferred()
+            registration.rollbackRelease = CompletableDeferred()
+            candidateGateway.logoutStarted = CompletableDeferred()
+            candidateGateway.logoutRelease = CompletableDeferred()
+            candidateGateway.remainingGatedLogoutCalls = 1
+        }
+        fixture.verify()
+        val login = async {
+            fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+        }
+        fixture.registration.commitStarted!!.await()
+
+        val logout = async { fixture.orchestrator.logout() }
+        fixture.registration.rollbackStarted!!.await()
+        val expiry = async { fixture.orchestrator.onAuthenticationExpired() }
+        runCurrent()
+        assertFalse(logout.isCompleted)
+        assertFalse(expiry.isCompleted)
+        assertEquals(BusinessAccessGateState.SIGNING_OUT, fixture.orchestrator.gate.value)
+        assertTrue("signed-out" !in fixture.registration.calls)
+        assertTrue("clear-workspace" !in fixture.registration.calls)
+        assertFailsWith<BusinessAuthenticationException> {
+            fixture.orchestrator.findTenantCandidates("lawyer@example.com")
+        }
+
+        fixture.registration.rollbackRelease!!.complete(Unit)
+        fixture.candidateGateway.logoutStarted!!.await()
+        assertTrue("signed-out" !in fixture.registration.calls)
+        assertTrue("clear-workspace" !in fixture.registration.calls)
+        fixture.candidateGateway.logoutRelease!!.complete(Unit)
+
+        assertFailsWith<CancellationException> { login.await() }
+        logout.await()
+        expiry.await()
+        assertEquals(
+            listOf(
+                "rollback-complete",
+                "candidate-logout-complete",
+                "global-signed-out",
+                "global-clear-workspace",
+            ),
+            fixture.cleanupEvents,
+        )
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value)
+
+        fixture.registration.commitStarted = null
+        fixture.registration.commitRelease = null
+        fixture.verify()
+        fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+        runCurrent()
+        assertEquals(BusinessAccessGateState.READY, fixture.orchestrator.gate.value)
+        assertEquals("user-1", fixture.registry.currentIdentity()?.userId)
+        assertEquals(1, fixture.cleanupEvents.count { it == "global-signed-out" })
+        assertEquals(1, fixture.cleanupEvents.count { it == "global-clear-workspace" })
+    }
+
+    @Test
+    fun `operation settle timeout retains completed failure flight and permanently rejects new leaders`() = runTest {
+        val fixture = Fixture(
+            cleanupStepTimeoutMillis = 30_000,
+            operationSettleTimeoutMillis = 50,
+        ).apply {
+            registration.commitStarted = CompletableDeferred()
+            registration.commitRelease = CompletableDeferred()
+            registration.rollbackStarted = CompletableDeferred()
+            registration.rollbackRelease = CompletableDeferred()
+        }
+        fixture.verify()
+        val login = async {
+            fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+        }
+        fixture.registration.commitStarted!!.await()
+
+        val owner = async {
+            assertFailsWith<BusinessAuthenticationException> { fixture.orchestrator.logout() }
+        }
+        fixture.registration.rollbackStarted!!.await()
+        val waiter = async {
+            assertFailsWith<BusinessAuthenticationException> { fixture.orchestrator.onAuthenticationExpired() }
+        }
+        runCurrent()
+        advanceTimeBy(51)
+        runCurrent()
+
+        assertEquals(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE, owner.await().code)
+        assertEquals(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE, waiter.await().code)
+        assertEquals(BusinessAccessGateState.SIGNING_OUT, fixture.orchestrator.gate.value)
+        assertNull(fixture.registry.currentIdentity())
+        assertNull(fixture.credentials.tokens)
+        assertNull(fixture.metadata.value)
+        assertTrue("signed-out" !in fixture.registration.calls)
+        assertTrue("clear-workspace" !in fixture.registration.calls)
+
+        val repeated = assertFailsWith<BusinessAuthenticationException> { fixture.orchestrator.logout() }
+        assertEquals(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE, repeated.code)
+        assertEquals(1, fixture.revocationMarker.markCount)
+        assertFailsWith<BusinessAuthenticationException> {
+            fixture.orchestrator.findTenantCandidates("lawyer@example.com")
+        }
+
+        fixture.registration.rollbackRelease!!.complete(Unit)
+        assertFailsWith<CancellationException> { login.await() }
+        runCurrent()
+        assertEquals(BusinessAccessGateState.SIGNING_OUT, fixture.orchestrator.gate.value)
+        assertTrue("signed-out" !in fixture.registration.calls)
+        assertTrue("clear-workspace" !in fixture.registration.calls)
+        assertFailsWith<BusinessAuthenticationException> {
+            fixture.orchestrator.findTenantCandidates("lawyer@example.com")
+        }
+    }
+
+    @Test
     fun `authentication and membership expiry share revocation path but expose distinct stable errors`() = runTest {
         val authentication = Fixture()
         authentication.verify()
@@ -389,7 +507,7 @@ class BusinessAuthenticationOrchestratorTest {
     }
 
     @Test
-    fun `logout generation prevents cancellation ignoring late login from installing registry or ready`() = runTest {
+    fun `logout waits cancellation ignoring login before publishing signed out`() = runTest {
         val fixture = Fixture().apply {
             registration.commitStarted = CompletableDeferred()
             registration.commitRelease = CompletableDeferred()
@@ -401,9 +519,13 @@ class BusinessAuthenticationOrchestratorTest {
         }
         fixture.registration.commitStarted!!.await()
 
-        fixture.orchestrator.logout()
+        val logout = async { fixture.orchestrator.logout() }
+        runCurrent()
+        assertFalse(logout.isCompleted)
+        assertEquals(BusinessAccessGateState.SIGNING_OUT, fixture.orchestrator.gate.value)
         fixture.registration.commitRelease!!.complete(Unit)
         assertFailsWith<CancellationException> { login.await() }
+        logout.await()
         advanceUntilIdle()
         assertNull(fixture.registry.currentIdentity())
         assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value)
@@ -421,8 +543,10 @@ class BusinessAuthenticationOrchestratorTest {
         lifecycle.start()
         lifecycle.start()
         fixture.preAuth.refreshStarted!!.await()
-        lifecycle.close()
-        lifecycle.close()
+        withContext(Dispatchers.Default) {
+            lifecycle.close()
+            lifecycle.close()
+        }
         runCurrent()
 
         assertEquals(1, fixture.preAuth.refreshCalls.size)
@@ -487,7 +611,7 @@ class BusinessAuthenticationOrchestratorTest {
     }
 
     @Test
-    fun `late compensation from login A cannot revoke replacement login B`() = runTest {
+    fun `login B cannot start until cancelled login A compensation has settled`() = runTest {
         val fixture = Fixture().apply {
             registration.commitStarted = CompletableDeferred()
             registration.commitRelease = CompletableDeferred()
@@ -501,14 +625,21 @@ class BusinessAuthenticationOrchestratorTest {
         }
         fixture.registration.commitStarted!!.await()
 
-        fixture.orchestrator.logout()
+        val logout = async { fixture.orchestrator.logout() }
+        runCurrent()
+        val rejected = assertFailsWith<BusinessAuthenticationException> {
+            fixture.orchestrator.findTenantCandidates("lawyer@example.com")
+        }
+        assertEquals(BusinessLoginErrorCode.AUTHENTICATION_IN_PROGRESS, rejected.code)
+        assertEquals(BusinessAccessGateState.SIGNING_OUT, fixture.orchestrator.gate.value)
+
+        fixture.registration.commitRelease!!.complete(Unit)
+        assertFailsWith<CancellationException> { loginA.await() }
+        logout.await()
         fixture.preAuth.token = token(access = "access-b", refresh = "refresh-b")
         fixture.orchestrator.findTenantCandidates("lawyer@example.com")
         fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
         val identityB = requireNotNull(fixture.registry.currentIdentity())
-
-        fixture.registration.commitRelease!!.complete(Unit)
-        assertFailsWith<CancellationException> { loginA.await() }
         advanceUntilIdle()
 
         assertEquals(BusinessAccessGateState.READY, fixture.orchestrator.gate.value)
@@ -1031,14 +1162,16 @@ class BusinessAuthenticationOrchestratorTest {
     private class Fixture(
         remoteLogoutTimeoutMillis: Long = 2_000,
         cleanupStepTimeoutMillis: Long = 2_000,
+        operationSettleTimeoutMillis: Long = 15_000,
         val revocationMarker: FakeRevocationMarker = FakeRevocationMarker(),
     ) {
+        val cleanupEvents: MutableList<String> = Collections.synchronizedList(mutableListOf())
         var candidate = candidate()
         val preAuth = FakePreAuthenticationGateway()
-        val candidateGateway = FakeCandidateGateway()
+        val candidateGateway = FakeCandidateGateway(cleanupEvents)
         val credentials = FakeCredentialPersistence()
         val metadata = FakeMetadataPort()
-        val registration = FakeRegistrationPort()
+        val registration = FakeRegistrationPort(cleanupEvents)
         val registry = BusinessIdentityRegistry()
         val actions = FakeActions()
         private var authSessionSequence = 0
@@ -1059,6 +1192,7 @@ class BusinessAuthenticationOrchestratorTest {
             now = { Instant.parse("2026-07-22T00:00:00Z") },
             remoteLogoutTimeoutMillis = remoteLogoutTimeoutMillis,
             cleanupStepTimeoutMillis = cleanupStepTimeoutMillis,
+            operationSettleTimeoutMillis = operationSettleTimeoutMillis,
         )
 
         suspend fun verify(account: String = "lawyer@example.com") {
@@ -1143,13 +1277,18 @@ class BusinessAuthenticationOrchestratorTest {
         }
     }
 
-    private class FakeCandidateGateway : OaCandidateAuthenticationGateway {
+    private class FakeCandidateGateway(
+        private val cleanupEvents: MutableList<String>? = null,
+    ) : OaCandidateAuthenticationGateway {
         var permission = permission()
         var failure: Throwable? = null
         var logoutFailure: Throwable? = null
         var logoutNeverReturns = false
         var logoutThrowsCancellation = false
         var logoutCancelsContext = false
+        var logoutStarted: CompletableDeferred<Unit>? = null
+        var logoutRelease: CompletableDeferred<Unit>? = null
+        var remainingGatedLogoutCalls: Int? = null
         val loaded = mutableListOf<OaCandidateAccess>()
         var logoutCount = 0
 
@@ -1161,6 +1300,13 @@ class BusinessAuthenticationOrchestratorTest {
 
         override suspend fun logout(candidate: OaCandidateAccess) {
             logoutCount += 1
+            val remaining = remainingGatedLogoutCalls
+            val gated = logoutRelease != null && (remaining == null || remaining > 0)
+            if (remaining != null && remaining > 0) remainingGatedLogoutCalls = remaining - 1
+            if (gated) {
+                logoutStarted?.complete(Unit)
+                logoutRelease?.await()
+            }
             if (logoutNeverReturns) CompletableDeferred<Unit>().await()
             if (logoutThrowsCancellation) throw CancellationException("adapter self-cancelled")
             if (logoutCancelsContext) {
@@ -1168,6 +1314,7 @@ class BusinessAuthenticationOrchestratorTest {
                 yield()
             }
             logoutFailure?.let { throw it }
+            cleanupEvents?.add("candidate-logout-complete")
         }
     }
 
@@ -1231,7 +1378,9 @@ class BusinessAuthenticationOrchestratorTest {
         }
     }
 
-    private class FakeRegistrationPort : BusinessAgentRegistrationTransactionPort {
+    private class FakeRegistrationPort(
+        private val cleanupEvents: MutableList<String>? = null,
+    ) : BusinessAgentRegistrationTransactionPort {
         val calls = mutableListOf<String>()
         var failureStage: RegistrationFailureStage? = null
         var onCommit: (() -> Unit)? = null
@@ -1293,12 +1442,14 @@ class BusinessAuthenticationOrchestratorTest {
                     }
                     if (rollbackMustSuspend) yield()
                     rollbackCompleted = true
+                    cleanupEvents?.add("rollback-complete")
                 }
             }
         }
 
         override suspend fun publishSignedOut() {
             calls += "signed-out"
+            cleanupEvents?.add("global-signed-out")
             val remaining = remainingGatedPublishSignedOutCalls
             val gated = publishSignedOutRelease != null && (remaining == null || remaining > 0)
             if (remaining != null && remaining > 0) remainingGatedPublishSignedOutCalls = remaining - 1
@@ -1315,6 +1466,7 @@ class BusinessAuthenticationOrchestratorTest {
         }
         override suspend fun clearWorkspace() {
             calls += "clear-workspace"
+            cleanupEvents?.add("global-clear-workspace")
             if (clearWorkspaceNeverReturns) CompletableDeferred<Unit>().await()
             if (clearWorkspaceThrowsCancellation) throw CancellationException("adapter self-cancelled")
             if (clearWorkspaceCancelsContext) {

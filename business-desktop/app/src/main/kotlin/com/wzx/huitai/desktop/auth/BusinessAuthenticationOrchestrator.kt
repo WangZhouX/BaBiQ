@@ -71,10 +71,12 @@ class BusinessAuthenticationOrchestrator(
     private val now: () -> Instant = Instant::now,
     private val remoteLogoutTimeoutMillis: Long = 2_000,
     private val cleanupStepTimeoutMillis: Long = 2_000,
+    private val operationSettleTimeoutMillis: Long = 15_000,
 ) : BusinessAuthenticationOperations {
     init {
         require(remoteLogoutTimeoutMillis > 0) { "remoteLogoutTimeoutMillis must be positive" }
         require(cleanupStepTimeoutMillis > 0) { "cleanupStepTimeoutMillis must be positive" }
+        require(operationSettleTimeoutMillis > 0) { "operationSettleTimeoutMillis must be positive" }
     }
 
     constructor(
@@ -93,6 +95,7 @@ class BusinessAuthenticationOrchestrator(
         now: () -> Instant = Instant::now,
         remoteLogoutTimeoutMillis: Long = 2_000,
         cleanupStepTimeoutMillis: Long = 2_000,
+        operationSettleTimeoutMillis: Long = 15_000,
     ) : this(
         preAuthentication,
         candidateAuthentication,
@@ -109,6 +112,7 @@ class BusinessAuthenticationOrchestrator(
         now,
         remoteLogoutTimeoutMillis,
         cleanupStepTimeoutMillis,
+        operationSettleTimeoutMillis,
     )
 
     private val operationLock = Any()
@@ -471,58 +475,69 @@ class BusinessAuthenticationOrchestrator(
         reason: RevocationReason,
         remoteLogout: Boolean,
         allowClosed: Boolean = false,
-    ) = withContext(NonCancellable) {
-        val claim = synchronized(operationLock) {
-            val wasClosed = closed
-            if (reason == RevocationReason.CLOSE) closed = true
-            activeRevocation?.let { return@synchronized RevocationClaim(it, null) }
-            if (reason == RevocationReason.CLOSE && wasClosed) {
-                val completed = RevocationOutcome(visibleError = null, terminalFailure = null)
-                return@synchronized RevocationClaim(
-                    RevocationFlight(CompletableDeferred(completed)),
-                    null,
+    ) {
+        val callerJob = currentCoroutineContext()[Job]
+        withContext(NonCancellable) {
+            val claim = synchronized(operationLock) {
+                val wasClosed = closed
+                if (reason == RevocationReason.CLOSE) closed = true
+                activeRevocation?.let { return@synchronized RevocationClaim(it, null) }
+                if (reason == RevocationReason.CLOSE && wasClosed) {
+                    val completed = RevocationOutcome(
+                        visibleError = null,
+                        terminalFailure = null,
+                        safeToRelease = true,
+                    )
+                    return@synchronized RevocationClaim(
+                        RevocationFlight(CompletableDeferred(completed)),
+                        null,
+                    )
+                }
+                if (!allowClosed) ensureOpenLocked()
+                val flight = RevocationFlight(CompletableDeferred())
+                activeRevocation = flight
+                operationEpoch += 1
+                val operation = activeOperation
+                activeOperation = null
+                verifiedSelection = null
+                val identity = identityRegistry.invalidate(BusinessAccessGateState.SIGNING_OUT)
+                val candidate = activeCandidate
+                activeCandidate = null
+                RevocationClaim(flight, RevokedAuthority(operation?.job, identity, candidate))
+            }
+            val revoked = claim.revokedAuthority
+            if (revoked == null) {
+                claim.flight.completion.await().throwIfFailed()
+                return@withContext
+            }
+
+            val outcome = try {
+                performRevocation(revoked, reason, remoteLogout, callerJob)
+            } catch (_: Throwable) {
+                RevocationOutcome(
+                    visibleError = BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE,
+                    terminalFailure = BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE,
+                    safeToRelease = false,
                 )
             }
-            if (!allowClosed) ensureOpenLocked()
-            val flight = RevocationFlight(CompletableDeferred())
-            activeRevocation = flight
-            operationEpoch += 1
-            val operation = activeOperation
-            activeOperation = null
-            verifiedSelection = null
-            val identity = identityRegistry.invalidate(BusinessAccessGateState.SIGNING_OUT)
-            val candidate = activeCandidate
-            activeCandidate = null
-            RevocationClaim(flight, RevokedAuthority(operation?.job, identity, candidate))
+            synchronized(operationLock) {
+                check(activeRevocation === claim.flight) { "revocation ownership changed" }
+                mutableLastError.value = outcome.visibleError?.let(::BusinessLoginMessage)
+                if (outcome.safeToRelease) {
+                    identityRegistry.transitionTo(BusinessAccessGateState.SIGNED_OUT)
+                }
+                claim.flight.completion.complete(outcome)
+                if (outcome.safeToRelease) activeRevocation = null
+            }
+            outcome.throwIfFailed()
         }
-        val revoked = claim.revokedAuthority
-        if (revoked == null) {
-            claim.flight.completion.await().throwIfFailed()
-            return@withContext
-        }
-
-        val outcome = try {
-            performRevocation(revoked, reason, remoteLogout)
-        } catch (_: Throwable) {
-            RevocationOutcome(
-                visibleError = BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE,
-                terminalFailure = BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE,
-            )
-        }
-        synchronized(operationLock) {
-            check(activeRevocation === claim.flight) { "revocation ownership changed" }
-            mutableLastError.value = outcome.visibleError?.let(::BusinessLoginMessage)
-            identityRegistry.transitionTo(BusinessAccessGateState.SIGNED_OUT)
-            activeRevocation = null
-        }
-        claim.flight.completion.complete(outcome)
-        outcome.throwIfFailed()
     }
 
     private suspend fun performRevocation(
         revoked: RevokedAuthority,
         reason: RevocationReason,
         remoteLogout: Boolean,
+        callerJob: Job?,
     ): RevocationOutcome {
         authSessionManager.blockRequestAuthorityImmediately()
         revoked.operationJob?.cancel(CancellationException("Authentication operation revoked"))
@@ -551,6 +566,13 @@ class BusinessAuthenticationOrchestrator(
                 persistenceFailure = true
             }
         }
+        if (!awaitRevokedOperationSettlement(revoked.operationJob, callerJob)) {
+            return RevocationOutcome(
+                visibleError = BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE,
+                terminalFailure = BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE,
+                safeToRelease = false,
+            )
+        }
         revoked.identity?.let { revokeActionsBestEffort(it) }
         boundedCleanup { registration.publishSignedOut() }
         boundedCleanup { registration.clearWorkspace() }
@@ -569,7 +591,17 @@ class BusinessAuthenticationOrchestrator(
         return RevocationOutcome(
             visibleError = visibleError,
             terminalFailure = BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE.takeIf { durableFailure },
+            safeToRelease = true,
         )
+    }
+
+    private suspend fun awaitRevokedOperationSettlement(operationJob: Job?, callerJob: Job?): Boolean {
+        if (operationJob == null) return true
+        if (operationJob === callerJob) return false
+        return withTimeoutOrNull(operationSettleTimeoutMillis) {
+            operationJob.join()
+            true
+        } ?: false
     }
 
     private suspend fun clearCurrentLocalPair(operation: Operation): Boolean = authorityMutationMutex.withLock {
@@ -832,6 +864,7 @@ class BusinessAuthenticationOrchestrator(
     private data class RevocationOutcome(
         val visibleError: BusinessLoginErrorCode?,
         val terminalFailure: BusinessLoginErrorCode?,
+        val safeToRelease: Boolean,
     ) {
         fun throwIfFailed() {
             terminalFailure?.let { throw BusinessAuthenticationException(it) }
