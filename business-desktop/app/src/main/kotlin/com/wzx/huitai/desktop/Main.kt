@@ -397,7 +397,7 @@ fun main() {
                             uiScope.launch { view.production.providerSettingsController.oauthLogin(providerId) }
                         },
                         onShellComposed = smokeUiCompositionSignals::markShellComposed,
-                        onTopNavigationComposed = smokeUiCompositionSignals::markTopNavigationComposed,
+                        onSidebarNavigationComposed = smokeUiCompositionSignals::markSidebarNavigationComposed,
                     )
                     PackagedSmokeWindowCompositionEffect(
                         coordinator = smokeCoordinator,
