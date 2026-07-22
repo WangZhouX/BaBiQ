@@ -7,6 +7,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assertWidthIsEqualTo
 import androidx.compose.ui.test.junit4.v2.createComposeRule
@@ -17,6 +18,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performMouseInput
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.test.requestFocus
 import androidx.compose.ui.unit.Density
@@ -220,6 +222,33 @@ class BusinessDesktopShellTest {
     }
 
     @Test
+    fun `expand width message clears when dock becomes wide enough without another click`() {
+        val width = mutableStateOf(1217.dp)
+        val expanded = mutableStateOf(false)
+        rule.setContent {
+            CompositionLocalProvider(LocalDensity provides Density(0.75f)) {
+                HuitaiBusinessTheme {
+                    BusinessDesktopShell(
+                        state = BusinessDesktopState(),
+                        formState = DemoFormState(),
+                        agentPanelExpanded = expanded.value,
+                        onAgentPanelExpandedChange = { expanded.value = it },
+                        modifier = Modifier.shellSize(width.value),
+                    )
+                }
+            }
+        }
+
+        rule.onNodeWithContentDescription("打开小律智能助手").performClick()
+        rule.onNodeWithTag(BusinessUiTags.EXPAND_WIDTH_MESSAGE).assertExists()
+
+        rule.runOnIdle { width.value = 1218.dp }
+        rule.onNodeWithTag(BusinessUiTags.EXPAND_WIDTH_MESSAGE).assertDoesNotExist()
+        rule.onNodeWithTag(BusinessUiTags.COLLAPSED_ASSISTANT_CONTROL).assertWidthIsEqualTo(124.dp)
+        rule.runOnIdle { assertFalse(expanded.value) }
+    }
+
+    @Test
     fun `real drag keyboard resize and navigation preserve requested assistant width`() {
         val destination = mutableStateOf(BusinessDesktopDestination.DATA_ENTRY)
         val requestedWidth = mutableStateOf(460.dp)
@@ -260,6 +289,40 @@ class BusinessDesktopShellTest {
         rule.onNodeWithTag(BusinessUiTags.FORM_PANEL).assertExists()
         rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertWidthIsEqualTo(516.dp)
         rule.runOnIdle { assertEquals(516.dp, requestedWidth.value) }
+    }
+
+    @Test
+    fun `provider editor keeps its unsaved draft when assistant expansion changes`() {
+        val expanded = mutableStateOf(false)
+        rule.setContent {
+            CompositionLocalProvider(LocalDensity provides Density(0.75f)) {
+                HuitaiBusinessTheme {
+                    BusinessDesktopShell(
+                        state = BusinessDesktopState(),
+                        formState = DemoFormState(),
+                        providerSettingsState = BusinessProviderSettingsState(
+                            operationsEnabled = true,
+                            connectionGeneration = 1,
+                        ),
+                        selectedDestination = BusinessDesktopDestination.SETTINGS,
+                        agentPanelExpanded = expanded.value,
+                        modifier = Modifier.shellSize(1400.dp),
+                    )
+                }
+            }
+        }
+
+        rule.onNodeWithTag("provider-add-action").performClick()
+        rule.onNodeWithTag("provider-display-name-input").performTextReplacement("未保存 Provider")
+        rule.onNodeWithTag("provider-api-key-input").performTextReplacement("sk-unsaved-local")
+
+        rule.runOnIdle { expanded.value = true }
+        assertInputText("provider-display-name-input", "未保存 Provider")
+        assertInputText("provider-api-key-input", "sk-unsaved-local")
+
+        rule.runOnIdle { expanded.value = false }
+        assertInputText("provider-display-name-input", "未保存 Provider")
+        assertInputText("provider-api-key-input", "sk-unsaved-local")
     }
 
     @Test
@@ -436,6 +499,11 @@ class BusinessDesktopShellTest {
     }
 
     private fun bounds(tag: String) = rule.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot
+
+    private fun assertInputText(tag: String, expected: String) {
+        val input = rule.onNodeWithTag(tag).fetchSemanticsNode().config[SemanticsProperties.InputText]
+        assertEquals(expected, input.text)
+    }
 
     private fun assertApproximately(expected: Float, actual: Float, minimum: Boolean = false) {
         if (minimum) {

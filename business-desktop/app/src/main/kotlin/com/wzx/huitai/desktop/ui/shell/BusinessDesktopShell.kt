@@ -127,88 +127,11 @@ fun BusinessDesktopShell(
                     assistantExpanded = agentPanelExpanded,
                     requestedAssistantWidth = requestedAssistantWidth,
                 )
-                LaunchedEffect(layout.assistantExpanded) {
-                    if (layout.assistantExpanded) expansionMessage = null
+                LaunchedEffect(layout.assistantExpanded, layout.canExpand) {
+                    if (layout.assistantExpanded || layout.canExpand) expansionMessage = null
                 }
 
-                if (layout.assistantExpanded) {
-                    Box(Modifier.fillMaxSize()) {
-                        Row(Modifier.fillMaxSize()) {
-                            Box(
-                                Modifier
-                                    .width(layout.businessWidth)
-                                    .fillMaxSize()
-                                    .testTag(BusinessUiTags.BUSINESS_REGION),
-                            ) {
-                                BusinessContent(
-                                    destination = selectedDestination,
-                                    state = state,
-                                    formState = formState,
-                                    providerSettingsState = providerSettingsState,
-                                    onFieldEdited = onFieldEdited,
-                                    onSuggestionsChanged = onSuggestionsChanged,
-                                    onAcceptSuggestion = onAcceptSuggestion,
-                                    onAcceptAllSuggestions = onAcceptAllSuggestions,
-                                    onSaveDraft = onSaveDraft,
-                                    onSubmit = onSubmit,
-                                    onProviderRefresh = onProviderRefresh,
-                                    onProviderCreate = onProviderCreate,
-                                    onProviderUpdate = onProviderUpdate,
-                                    onProviderDelete = onProviderDelete,
-                                    onProviderTest = onProviderTest,
-                                    onProviderActivated = onProviderActivated,
-                                    onProviderOAuthStatus = onProviderOAuthStatus,
-                                    onProviderOAuthLogin = onProviderOAuthLogin,
-                                    modifier = Modifier.fillMaxSize(),
-                                )
-                            }
-                            Box(
-                                Modifier
-                                    .width(layout.dividerWidth)
-                                    .fillMaxSize()
-                                    .testTag(BusinessUiTags.DIVIDER_SLOT),
-                            )
-                            AgentPanelForShell(
-                                state = state,
-                                formState = formState,
-                                selectedModelId = selectedModelId,
-                                composerText = composerText,
-                                composerAttachments = composerAttachments,
-                                attachmentError = attachmentError,
-                                composerSubmitting = composerSubmitting,
-                                onComposerTextChanged = onComposerTextChanged,
-                                onChooseFiles = onChooseFiles,
-                                onPasteImage = onPasteImage,
-                                onRemoveAttachment = onRemoveAttachment,
-                                onSend = onSend,
-                                onReconnect = onReconnect,
-                                onProviderSelected = onProviderSelected,
-                                mascot = {
-                                    BusinessAssistantMascotButton(
-                                        expanded = true,
-                                        onToggle = { onAgentPanelExpandedChange(false) },
-                                    )
-                                },
-                                modifier = Modifier.width(layout.assistantWidth),
-                            )
-                        }
-                        BusinessAssistantResizeHandle(
-                            onResizeBy = { delta ->
-                                val nextWidth = BusinessDesktopLayoutPolicy.resizeAssistantWidth(
-                                    current = resizeAccumulator,
-                                    dragDeltaX = delta,
-                                    availableWidth = availableWidth,
-                                )
-                                resizeAccumulator = nextWidth
-                                onRequestedAssistantWidthChange(nextWidth)
-                            },
-                            modifier = Modifier
-                                .offset(x = layout.businessWidth - 2.dp)
-                                .requiredWidth(12.dp)
-                                .fillMaxHeight(),
-                        )
-                    }
-                } else {
+                Box(Modifier.fillMaxSize()) {
                     Row(Modifier.fillMaxSize()) {
                         Box(
                             Modifier
@@ -238,37 +161,86 @@ fun BusinessDesktopShell(
                                 modifier = Modifier.fillMaxSize(),
                             )
                         }
-                        Box(
-                            modifier = Modifier
-                                .width(layout.assistantWidth)
-                                .fillMaxHeight()
-                                .testTag(BusinessUiTags.COLLAPSED_ASSISTANT_CONTROL),
-                        ) {
-                            expansionMessage?.let {
-                                Text(
-                                    text = it,
-                                    color = MaterialTheme.colorScheme.error,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    modifier = Modifier
-                                        .align(Alignment.BottomCenter)
-                                        .padding(horizontal = 4.dp)
-                                        .padding(bottom = 112.dp)
-                                        .testTag(BusinessUiTags.EXPAND_WIDTH_MESSAGE),
+                        if (layout.assistantExpanded) {
+                            Box(
+                                Modifier
+                                    .width(layout.dividerWidth)
+                                    .fillMaxSize()
+                                    .testTag(BusinessUiTags.DIVIDER_SLOT),
+                            )
+                            AgentPanelForShell(
+                                state = state,
+                                formState = formState,
+                                selectedModelId = selectedModelId,
+                                composerText = composerText,
+                                composerAttachments = composerAttachments,
+                                attachmentError = attachmentError,
+                                composerSubmitting = composerSubmitting,
+                                onComposerTextChanged = onComposerTextChanged,
+                                onChooseFiles = onChooseFiles,
+                                onPasteImage = onPasteImage,
+                                onRemoveAttachment = onRemoveAttachment,
+                                onSend = onSend,
+                                onReconnect = onReconnect,
+                                onProviderSelected = onProviderSelected,
+                                mascot = {
+                                    BusinessAssistantMascotButton(
+                                        expanded = true,
+                                        onToggle = { onAgentPanelExpandedChange(false) },
+                                    )
+                                },
+                                modifier = Modifier.width(layout.assistantWidth),
+                            )
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .width(layout.assistantWidth)
+                                    .fillMaxHeight()
+                                    .testTag(BusinessUiTags.COLLAPSED_ASSISTANT_CONTROL),
+                            ) {
+                                expansionMessage?.let {
+                                    Text(
+                                        text = it,
+                                        color = MaterialTheme.colorScheme.error,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        modifier = Modifier
+                                            .align(Alignment.BottomCenter)
+                                            .padding(horizontal = 4.dp)
+                                            .padding(bottom = 112.dp)
+                                            .testTag(BusinessUiTags.EXPAND_WIDTH_MESSAGE),
+                                    )
+                                }
+                                BusinessAssistantMascotButton(
+                                    expanded = false,
+                                    onToggle = {
+                                        if (layout.canExpand) {
+                                            expansionMessage = null
+                                            onAgentPanelExpandedChange(true)
+                                        } else {
+                                            expansionMessage = "窗口宽度不足，请先最大化或放大窗口"
+                                        }
+                                    },
+                                    modifier = Modifier.align(Alignment.BottomCenter),
                                 )
                             }
-                            BusinessAssistantMascotButton(
-                                expanded = false,
-                                onToggle = {
-                                    if (layout.canExpand) {
-                                        expansionMessage = null
-                                        onAgentPanelExpandedChange(true)
-                                    } else {
-                                        expansionMessage = "窗口宽度不足，请先最大化或放大窗口"
-                                    }
-                                },
-                                modifier = Modifier.align(Alignment.BottomCenter),
-                            )
                         }
+                    }
+                    if (layout.assistantExpanded) {
+                        BusinessAssistantResizeHandle(
+                            onResizeBy = { delta ->
+                                val nextWidth = BusinessDesktopLayoutPolicy.resizeAssistantWidth(
+                                    current = resizeAccumulator,
+                                    dragDeltaX = delta,
+                                    availableWidth = availableWidth,
+                                )
+                                resizeAccumulator = nextWidth
+                                onRequestedAssistantWidthChange(nextWidth)
+                            },
+                            modifier = Modifier
+                                .offset(x = layout.businessWidth - 2.dp)
+                                .requiredWidth(12.dp)
+                                .fillMaxHeight(),
+                        )
                     }
                 }
             }
