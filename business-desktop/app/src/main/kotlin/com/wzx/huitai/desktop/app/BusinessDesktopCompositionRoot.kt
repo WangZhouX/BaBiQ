@@ -714,6 +714,7 @@ class ProductionBusinessDesktopCompositionFactory(
             supervisorState = lifecycle.state,
             desktopState = this.storage.desktopStore.state,
             accessGate = identityRegistry.gate,
+            usageGate = agentUsageGate,
             scope = scope,
             onProvidersChanged = conversation::acceptProviders,
         )

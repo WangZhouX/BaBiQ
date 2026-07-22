@@ -10,6 +10,8 @@ import com.wzx.huitai.agent.conversation.BusinessProviderOAuthStatus
 import com.wzx.huitai.agent.conversation.BusinessProviderSelection
 import com.wzx.huitai.agent.conversation.BusinessProviderTestResult
 import com.wzx.huitai.desktop.auth.BusinessAccessGateState
+import com.wzx.huitai.desktop.auth.ReadyAgentUsageGate
+import com.wzx.huitai.desktop.auth.ReadyAgentUsageSnapshot
 import com.wzx.huitai.desktop.state.BusinessAuthenticationStatus
 import com.wzx.huitai.desktop.state.BusinessDesktopState
 import java.io.Closeable
@@ -68,18 +70,21 @@ class BusinessProviderSettingsController(
     private val supervisorState: StateFlow<AgentSupervisorState>,
     private val desktopState: StateFlow<BusinessDesktopState>,
     private val accessGate: StateFlow<BusinessAccessGateState>,
+    private val usageGate: ReadyAgentUsageGate,
     scope: CoroutineScope,
     private val onProvidersChanged: (List<BusinessProvider>) -> Unit,
 ) : Closeable {
     private data class Availability(
         val connectionId: String? = null,
         val clearSensitiveState: Boolean = false,
+        val authentication: ReadyAgentUsageSnapshot? = null,
     )
 
     private data class OperationToken(
         val connectionId: String,
         val generation: Long,
         val operationMutex: Mutex,
+        val authentication: ReadyAgentUsageSnapshot,
     )
 
     private val closed = AtomicBoolean(false)
@@ -93,10 +98,11 @@ class BusinessProviderSettingsController(
     private var currentToken: OperationToken? = null
     private var refreshJob: Job? = null
     private val availabilityObserver = controllerScope.launch(start = CoroutineStart.UNDISPATCHED) {
-        combine(supervisorState, desktopState, accessGate) { supervisor, desktop, gate ->
+        combine(supervisorState, desktopState, accessGate, usageGate.readySnapshots) { supervisor, desktop, gate, auth ->
             val authenticated = gate == BusinessAccessGateState.READY &&
                 desktop.authenticationStatus == BusinessAuthenticationStatus.AUTHENTICATED &&
-                desktop.identity != null
+                desktop.identity != null &&
+                desktop.identity == auth?.identity
             Availability(
                 connectionId = if (authenticated) {
                     (supervisor as? AgentSupervisorState.Connected)?.connectionId
@@ -104,6 +110,7 @@ class BusinessProviderSettingsController(
                     null
                 },
                 clearSensitiveState = !authenticated,
+                authentication = auth.takeIf { authenticated },
             )
         }.distinctUntilChanged().collect(::onAvailabilityChanged)
     }
@@ -326,7 +333,8 @@ class BusinessProviderSettingsController(
             } else {
                 val isNewConnection = lastFinalizedConnectionId != connectionId
                 if (isNewConnection) lastFinalizedConnectionId = connectionId
-                val token = OperationToken(connectionId, operationGeneration, epochOperationMutex)
+                val authentication = availability.authentication ?: return@synchronized
+                val token = OperationToken(connectionId, operationGeneration, epochOperationMutex, authentication)
                 currentToken = token
                 mutableState.value = mutableState.value.copy(
                     operationsEnabled = true,
@@ -348,10 +356,8 @@ class BusinessProviderSettingsController(
     private suspend fun refreshProviders(token: OperationToken, publishSuccess: Boolean): List<BusinessProvider>? {
         val providers = gateway.listProviders()
         if (!isOperationCurrent(token)) return null
-        val committed = synchronized(stateMonitor) {
-            if (!isTokenCurrentLocked(token)) return@synchronized false
-            val current = mutableState.value
-            mutableState.value = current.copy(
+        val committed = commitIfCurrent(token) { current ->
+            current.copy(
                 providers = providers,
                 notice = if (publishSuccess) {
                     BusinessProviderSettingsNotice(
@@ -362,9 +368,7 @@ class BusinessProviderSettingsController(
                 } else {
                     current.notice
                 },
-            )
-            onProvidersChanged(providers)
-            true
+            ).also { onProvidersChanged(providers) }
         }
         return providers.takeIf { committed }
     }
@@ -375,18 +379,15 @@ class BusinessProviderSettingsController(
         providers: List<BusinessProvider>,
         noticeCode: String,
         noticeMessage: String,
-    ): Boolean = synchronized(stateMonitor) {
-        if (!isTokenCurrentLocked(token)) return@synchronized false
-        mutableState.value = mutableState.value.copy(
+    ): Boolean = commitIfCurrent(token) { current ->
+        current.copy(
             providers = providers,
             notice = BusinessProviderSettingsNotice(
                 noticeCode,
                 noticeMessage,
                 BusinessProviderSettingsNoticeLevel.SUCCESS,
             ),
-        )
-        onProvidersChanged(providers)
-        true
+        ).also { onProvidersChanged(providers) }
     }
 
     private fun captureTokenOrPublishUnavailable(): OperationToken? = synchronized(stateMonitor) {
@@ -410,15 +411,23 @@ class BusinessProviderSettingsController(
         !closed.get() &&
             currentToken == token &&
             availableConnectionId(supervisorState.value, desktopState.value, accessGate.value) == token.connectionId &&
+            usageGate.isCurrent(token.authentication) &&
             mutableState.value.operationsEnabled
 
-    private inline fun commitIfCurrent(
+    private fun commitIfCurrent(
         token: OperationToken,
         update: (BusinessProviderSettingsState) -> BusinessProviderSettingsState,
-    ): Boolean = synchronized(stateMonitor) {
-        if (!isTokenCurrentLocked(token)) return@synchronized false
-        mutableState.value = update(mutableState.value)
-        true
+    ): Boolean {
+        var committed = false
+        usageGate.commitIfCurrent(token.authentication) {
+            synchronized(stateMonitor) {
+                if (isTokenCurrentLocked(token)) {
+                    mutableState.value = update(mutableState.value)
+                    committed = true
+                }
+            }
+        }
+        return committed
     }
 
     private fun publishIfCurrent(

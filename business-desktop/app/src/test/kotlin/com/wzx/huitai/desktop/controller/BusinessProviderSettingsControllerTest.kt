@@ -16,6 +16,8 @@ import com.wzx.huitai.agent.conversation.BusinessThread
 import com.wzx.huitai.agent.conversation.BusinessTurn
 import com.wzx.huitai.desktop.state.BusinessAuthenticationStatus
 import com.wzx.huitai.desktop.auth.BusinessAccessGateState
+import com.wzx.huitai.desktop.auth.BusinessIdentityRegistry
+import com.wzx.huitai.desktop.auth.ReadyAgentUsageGate
 import com.wzx.huitai.desktop.state.BusinessDesktopEvent
 import com.wzx.huitai.desktop.state.BusinessDesktopReducer
 import com.wzx.huitai.desktop.state.BusinessDesktopState
@@ -47,6 +49,77 @@ import kotlinx.coroutines.withTimeout
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class BusinessProviderSettingsControllerTest {
+    @Test
+    fun `old identity provider response cannot overwrite the next ready identity`() = runTest {
+        val supervisor = MutableStateFlow<AgentSupervisorState>(AgentSupervisorState.Connected("connection-1"))
+        val oldIdentity = requireNotNull(authenticatedState().identity)
+        val desktop = MutableStateFlow(authenticatedState())
+        val registry = BusinessIdentityRegistry().also { check(it.publishReady(oldIdentity, 0)) }
+        val gateway = FakeGateway()
+        val controller = BusinessProviderSettingsController(
+            gateway,
+            supervisor,
+            desktop,
+            registry.gate,
+            ReadyAgentUsageGate(registry),
+            this,
+        ) { }
+        advanceUntilIdle()
+
+        gateway.providers = listOf(provider("old-identity"))
+        gateway.listStarted = CompletableDeferred()
+        gateway.listRelease = CompletableDeferred()
+        gateway.remainingGatedListCalls = 1
+        val oldRefresh = async { controller.refresh() }
+        gateway.listStarted!!.await()
+
+        registry.invalidate(BusinessAccessGateState.SIGNING_OUT)
+        val newIdentity = oldIdentity.copy(authSessionId = "auth-2", identityEpoch = 2, userId = "user-2")
+        desktop.value = authenticatedState().copy(identity = newIdentity)
+        gateway.providers = listOf(provider("new-identity"))
+        check(registry.publishReady(newIdentity, 1))
+        runCurrent()
+        assertEquals("new-identity", controller.refresh()?.single()?.id)
+        gateway.listRelease!!.complete(Unit)
+        assertNull(oldRefresh.await())
+        advanceUntilIdle()
+
+        assertEquals("new-identity", controller.state.value.providers.single().id)
+        controller.close()
+    }
+
+    @Test
+    fun `late oauth result after logout cannot commit provider state`() = runTest {
+        val supervisor = MutableStateFlow<AgentSupervisorState>(AgentSupervisorState.Connected("connection-1"))
+        val desktop = MutableStateFlow(authenticatedState())
+        val registry = BusinessIdentityRegistry().also {
+            check(it.publishReady(desktop.value.identity ?: requireNotNull(authenticatedState().identity), 0))
+        }
+        val gateway = FakeGateway().apply {
+            oauthStatusStarted = CompletableDeferred()
+            oauthStatusRelease = CompletableDeferred()
+        }
+        val controller = BusinessProviderSettingsController(
+            gateway,
+            supervisor,
+            desktop,
+            registry.gate,
+            ReadyAgentUsageGate(registry),
+            this,
+        ) { }
+        advanceUntilIdle()
+
+        val pending = async { controller.oauthStatus("claude") }
+        gateway.oauthStatusStarted!!.await()
+        registry.invalidate(BusinessAccessGateState.SIGNING_OUT)
+        runCurrent()
+        gateway.oauthStatusRelease!!.complete(Unit)
+
+        assertNull(pending.await())
+        assertTrue(controller.state.value.oauthStatus.isEmpty())
+        controller.close()
+    }
+
     @Test
     fun `state and notices never expose api key fields or secret text`() {
         val marker = "sk-fake-sensitive-marker"
@@ -541,7 +614,20 @@ class BusinessProviderSettingsControllerTest {
         desktop: MutableStateFlow<BusinessDesktopState>,
         accessGate: MutableStateFlow<BusinessAccessGateState> = MutableStateFlow(BusinessAccessGateState.READY),
         onChanged: (List<BusinessProvider>) -> Unit = {},
-    ) = BusinessProviderSettingsController(gateway, supervisor, desktop, accessGate, this, onChanged)
+    ): BusinessProviderSettingsController {
+        val registry = BusinessIdentityRegistry().also {
+            check(it.publishReady(desktop.value.identity ?: requireNotNull(authenticatedState().identity), 0))
+        }
+        return BusinessProviderSettingsController(
+            gateway,
+            supervisor,
+            desktop,
+            accessGate,
+            ReadyAgentUsageGate(registry),
+            this,
+            onChanged,
+        )
+    }
 
     private fun provider(
         id: String,
@@ -600,6 +686,8 @@ class BusinessProviderSettingsControllerTest {
         var deleteRelease: CompletableDeferred<Unit>? = null
         var testStarted: CompletableDeferred<Unit>? = null
         var testRelease: CompletableDeferred<Unit>? = null
+        var oauthStatusStarted: CompletableDeferred<Unit>? = null
+        var oauthStatusRelease: CompletableDeferred<Unit>? = null
         var ignoreCreateCancellation = false
         var createCancellationCount = 0
         var closeCount = 0
@@ -663,6 +751,8 @@ class BusinessProviderSettingsControllerTest {
 
         override suspend fun providerOAuthStatus(): BusinessProviderOAuthStatus {
             calls += "oauth-status"
+            oauthStatusStarted?.complete(Unit)
+            oauthStatusRelease?.await()
             failIfConfigured()
             return BusinessProviderOAuthStatus("ANTHROPIC", "oauth_cli", true, false, "未登录")
         }
