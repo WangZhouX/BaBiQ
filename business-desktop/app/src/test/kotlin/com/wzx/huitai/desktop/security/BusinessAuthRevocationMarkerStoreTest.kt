@@ -14,16 +14,24 @@ import kotlin.test.assertTrue
 
 class BusinessAuthRevocationMarkerStoreTest {
     @Test
-    fun `revocation marker survives reopening and only explicit clear removes it`() {
+    fun `missing malformed revoked and authorized records have exact fail closed semantics across reopen`() {
         val path = Files.createTempDirectory("business-auth-revocation").resolve("auth-revoked-v1")
         val first = FileBusinessAuthRevocationMarkerStore(path)
 
-        assertFalse(first.isRevoked())
+        assertTrue(first.isRevoked())
         first.markRevoked()
+        assertEquals("REVOKED v1\n", Files.readString(path))
         assertTrue(FileBusinessAuthRevocationMarkerStore(path).isRevoked())
 
         FileBusinessAuthRevocationMarkerStore(path).clearAfterExplicitLogin()
+        assertTrue(Files.exists(path), "authorization is a durable state record, not marker deletion")
+        assertEquals("AUTHORIZED v1\n", Files.readString(path))
         assertFalse(FileBusinessAuthRevocationMarkerStore(path).isRevoked())
+
+        Files.delete(path)
+        assertTrue(FileBusinessAuthRevocationMarkerStore(path).isRevoked())
+        Files.writeString(path, "UNKNOWN v1\n")
+        assertTrue(FileBusinessAuthRevocationMarkerStore(path).isRevoked())
     }
 
     @Test
@@ -59,15 +67,30 @@ class BusinessAuthRevocationMarkerStoreTest {
     }
 
     @Test
-    fun `redundant marker fails closed on unreadable copies and clears both explicitly`() {
-        val primary = FakeMarker(failRead = true, failClear = true)
-        val fallback = FakeMarker()
+    fun `redundant marker fails closed on unreadable copy and authorize requires both copies`() {
+        val primary = FakeMarker(revoked = true, failRead = true, failClear = true)
+        val fallback = FakeMarker(revoked = true)
         val redundant = RedundantBusinessAuthRevocationMarkerStore(primary, fallback)
 
-        assertFails { redundant.isRevoked() }
+        assertTrue(redundant.isRevoked())
         assertFails { redundant.clearAfterExplicitLogin() }
         assertEquals(1, primary.clearCalls)
         assertEquals(1, fallback.clearCalls)
+        assertFalse(fallback.revoked)
+        assertTrue(redundant.isRevoked())
+    }
+
+    @Test
+    fun `partial authorize remains revoked until both copies are authorized`() {
+        val primary = FakeMarker(revoked = true)
+        val fallback = FakeMarker(revoked = true, failClear = true)
+        val redundant = RedundantBusinessAuthRevocationMarkerStore(primary, fallback)
+
+        assertFails { redundant.clearAfterExplicitLogin() }
+
+        assertFalse(primary.revoked)
+        assertTrue(fallback.revoked)
+        assertTrue(redundant.isRevoked())
     }
 
     @Test

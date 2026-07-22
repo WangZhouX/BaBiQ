@@ -465,7 +465,9 @@ class BusinessAuthenticationOrchestratorTest {
     fun `registry generation rejection after registration commit compensates the whole provisional login`() = runTest {
         val fixture = Fixture()
         fixture.verify()
-        fixture.registration.onCommit = { fixture.registry.invalidate() }
+        fixture.registration.onCommit = {
+            fixture.registry.invalidate(BusinessAccessGateState.SIGNING_OUT)
+        }
 
         assertFailsWith<CancellationException> {
             fixture.orchestrator.authenticate(
@@ -555,6 +557,37 @@ class BusinessAuthenticationOrchestratorTest {
     }
 
     @Test
+    fun `revoke returns normally when both local credential records clear despite marker failure`() = runTest {
+        val fixture = Fixture()
+        fixture.verify()
+        fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+        fixture.revocationMarker.failMark = true
+
+        fixture.orchestrator.logout()
+
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value)
+        assertNull(fixture.credentials.tokens)
+        assertNull(fixture.metadata.value)
+    }
+
+    @Test
+    fun `revoke cannot return successfully without revoked marker or complete local pair deletion`() = runTest {
+        val fixture = Fixture()
+        fixture.verify()
+        fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+        fixture.revocationMarker.failMark = true
+        fixture.credentials.failClear = true
+        fixture.metadata.failClear = true
+
+        val failure = assertFailsWith<BusinessAuthenticationException> { fixture.orchestrator.logout() }
+
+        assertEquals(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE, failure.code)
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value)
+        assertNull(fixture.sessionManager.identity.value)
+        assertNull(fixture.registry.currentIdentity())
+    }
+
+    @Test
     fun `fallback revocation marker survives primary and JCEKS clear failures across restart`() = runTest {
         val root = Files.createTempDirectory("orchestrator-revocation-restart")
         val keyStorePath = root.resolve("credentials.jceks")
@@ -638,12 +671,12 @@ class BusinessAuthenticationOrchestratorTest {
     }
 
     @Test
-    fun `explicit login publishes ready registry atomically before clearing revocation marker`() = runTest {
+    fun `explicit login durably authorizes both records before publishing ready identity`() = runTest {
         val fixture = Fixture().apply {
             revocationMarker.revoked = true
             revocationMarker.onClear = {
-                assertEquals(BusinessAccessGateState.READY, orchestrator.gate.value)
-                assertEquals("user-1", registry.currentIdentity()?.userId)
+                assertEquals(BusinessAccessGateState.REGISTERING_AGENT, orchestrator.gate.value)
+                assertNull(registry.currentIdentity())
             }
         }
         fixture.verify()
@@ -655,10 +688,14 @@ class BusinessAuthenticationOrchestratorTest {
     }
 
     @Test
-    fun `revocation marker clear failure revokes the briefly ready identity and signs out`() = runTest {
+    fun `authorization record failure never publishes registry and signs out`() = runTest {
         val fixture = Fixture().apply {
             revocationMarker.revoked = true
             revocationMarker.failClear = true
+            revocationMarker.onClear = {
+                assertEquals(BusinessAccessGateState.REGISTERING_AGENT, orchestrator.gate.value)
+                assertNull(registry.currentIdentity())
+            }
         }
         fixture.verify()
 
@@ -674,6 +711,51 @@ class BusinessAuthenticationOrchestratorTest {
         assertNull(fixture.metadata.value)
         assertTrue(fixture.revocationMarker.revoked)
         assertTrue("rollback" in fixture.registration.calls)
+    }
+
+    @Test
+    fun `durably authorized credentials after a pre publish crash restore by redoing Agent registration`() = runTest {
+        val fixture = Fixture().apply {
+            credentials.tokens = AuthTokenSet("old-access", "old-refresh")
+            metadata.value = metadata()
+            revocationMarker.revoked = false
+        }
+
+        fixture.orchestrator.restore()
+
+        assertEquals(listOf("tenant-1" to "old-refresh"), fixture.preAuth.refreshCalls)
+        assertEquals(listOf("prepare", "identity", "catalog", "context", "commit"), fixture.registration.calls)
+        assertEquals(BusinessAccessGateState.READY, fixture.orchestrator.gate.value)
+        assertEquals("user-1", fixture.registry.currentIdentity()?.userId)
+    }
+
+    @Test
+    fun `revoke racing durable authorize prevents any ready publication and leaves revoked state`() = runTest {
+        val fixture = Fixture().apply {
+            revocationMarker.revoked = true
+            revocationMarker.clearStarted = CountDownLatch(1)
+            revocationMarker.clearRelease = CountDownLatch(1)
+        }
+        fixture.verify()
+        val observed = java.util.Collections.synchronizedList(mutableListOf<BusinessIdentityRegistrySnapshot>())
+        val collector = backgroundScope.launch { fixture.registry.snapshot.collect { observed += it } }
+        val login = async(Dispatchers.Default) {
+            fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+        }
+        assertTrue(fixture.revocationMarker.clearStarted!!.await(2, TimeUnit.SECONDS))
+        assertNull(fixture.registry.currentIdentity())
+
+        val logout = async(Dispatchers.Default) { fixture.orchestrator.logout() }
+        fixture.orchestrator.gate.first { it == BusinessAccessGateState.SIGNING_OUT }
+        fixture.revocationMarker.clearRelease!!.countDown()
+        assertFailsWith<CancellationException> { login.await() }
+        logout.await()
+        collector.cancel()
+
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value)
+        assertNull(fixture.registry.currentIdentity())
+        assertTrue(fixture.revocationMarker.revoked)
+        assertTrue(observed.none { it.gate == BusinessAccessGateState.READY })
     }
 
     @Test
@@ -872,12 +954,20 @@ class BusinessAuthenticationOrchestratorTest {
 
     private class FakeRevocationMarker : BusinessAuthRevocationMarkerPort {
         var revoked = false
+        var failMark = false
         var failClear = false
         var onClear: (() -> Unit)? = null
+        var clearStarted: CountDownLatch? = null
+        var clearRelease: CountDownLatch? = null
         override fun isRevoked(): Boolean = revoked
-        override fun markRevoked() { revoked = true }
+        override fun markRevoked() {
+            if (failMark) error("marker revoke failed")
+            revoked = true
+        }
         override fun clearAfterExplicitLogin() {
             onClear?.invoke()
+            clearStarted?.countDown()
+            clearRelease?.await()
             if (failClear) error("marker clear failed")
             revoked = false
         }

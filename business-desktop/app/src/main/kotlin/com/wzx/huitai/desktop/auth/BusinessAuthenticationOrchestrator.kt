@@ -112,7 +112,6 @@ class BusinessAuthenticationOrchestrator(
 
     private val operationLock = Any()
     private val authorityMutationMutex = Mutex()
-    private val mutableGate = MutableStateFlow(BusinessAccessGateState.STARTING)
     private val mutableLastError = MutableStateFlow<BusinessLoginMessage?>(null)
     private var operationEpoch = 0L
     private var activeOperation: Operation? = null
@@ -120,7 +119,7 @@ class BusinessAuthenticationOrchestrator(
     private var activeCandidate: OaCandidateAccess? = null
     private var closed = false
 
-    override val gate: StateFlow<BusinessAccessGateState> = mutableGate.asStateFlow()
+    override val gate: StateFlow<BusinessAccessGateState> = identityRegistry.gate
     val lastError: StateFlow<BusinessLoginMessage?> = mutableLastError.asStateFlow()
 
     override suspend fun findTenantCandidates(account: String): List<OaTenantCandidate> {
@@ -149,18 +148,18 @@ class BusinessAuthenticationOrchestrator(
 
     override fun enterTenantSelection() = synchronized(operationLock) {
         ensureOpenLocked()
-        check(mutableGate.value == BusinessAccessGateState.VERIFYING && verifiedSelection != null) {
+        check(gate.value == BusinessAccessGateState.VERIFYING && verifiedSelection != null) {
             "Tenant selection requires a verified candidate set"
         }
-        mutableGate.value = BusinessAccessGateState.SELECTING_TENANT
+        identityRegistry.transitionTo(BusinessAccessGateState.SELECTING_TENANT)
     }
 
     override fun cancelTenantSelection() = synchronized(operationLock) {
         if (closed) return@synchronized
-        if (mutableGate.value in setOf(BusinessAccessGateState.VERIFYING, BusinessAccessGateState.SELECTING_TENANT)) {
+        if (gate.value in setOf(BusinessAccessGateState.VERIFYING, BusinessAccessGateState.SELECTING_TENANT)) {
             operationEpoch += 1
             verifiedSelection = null
-            mutableGate.value = BusinessAccessGateState.SIGNED_OUT
+            identityRegistry.transitionTo(BusinessAccessGateState.SIGNED_OUT)
         }
     }
 
@@ -189,8 +188,7 @@ class BusinessAuthenticationOrchestrator(
             val permission = loadAndValidatePermission(candidate, tokens, resources.candidateAccess!!)
             commitLocalAuthentication(candidate, tokens, permission, operation, resources)
             finishRegistration(operation, resources)
-            commitReady(operation, resources)
-            clearRevocationMarkerAfterExplicitLogin(operation)
+            commitReady(operation, resources, authorizeExplicitLogin = true)
         } catch (cancelled: CancellationException) {
             withContext(NonCancellable) { compensate(operation, resources, null) }
             throw cancelled
@@ -249,7 +247,7 @@ class BusinessAuthenticationOrchestrator(
                     val permission = loadAndValidatePermission(candidate, tokens, resources.candidateAccess!!)
                     commitLocalAuthentication(candidate, tokens, permission, operation, resources)
                     finishRegistration(operation, resources)
-                    commitReady(operation, resources)
+                    commitReady(operation, resources, authorizeExplicitLogin = false)
                 }
             }
         } catch (cancelled: CancellationException) {
@@ -291,7 +289,7 @@ class BusinessAuthenticationOrchestrator(
     }
 
     override fun toString(): String =
-        "BusinessAuthenticationOrchestrator(gate=${mutableGate.value}, identity=[REDACTED], credentials=[REDACTED])"
+        "BusinessAuthenticationOrchestrator(gate=${gate.value}, identity=[REDACTED], credentials=[REDACTED])"
 
     private suspend fun commitLocalAuthentication(
         candidate: OaTenantCandidate,
@@ -340,7 +338,7 @@ class BusinessAuthenticationOrchestrator(
             )
             synchronized(operationLock) {
                 checkCurrentLocked(operation)
-                mutableGate.value = BusinessAccessGateState.REGISTERING_AGENT
+                identityRegistry.transitionTo(BusinessAccessGateState.REGISTERING_AGENT)
             }
         }
         resources.transaction = try {
@@ -371,20 +369,34 @@ class BusinessAuthenticationOrchestrator(
         }
     }
 
-    /** Publishes registry ownership, reconnect candidate and READY as one synchronous commit point. */
-    private fun commitReady(operation: Operation, resources: OperationResources) = synchronized(operationLock) {
-        checkCurrentLocked(operation)
-        val identity = resources.identity
-            ?: throw BusinessAuthenticationException(BusinessLoginErrorCode.AGENT_REGISTRATION_FAILED)
-        val candidate = resources.candidateAccess
-            ?: throw BusinessAuthenticationException(BusinessLoginErrorCode.AGENT_REGISTRATION_FAILED)
-        activeCandidate = candidate
-        if (!identityRegistry.install(identity, operation.registryGeneration)) {
-            activeCandidate = null
-            throw CancellationException("Authentication registry generation changed")
+    /** Explicit login authorizes durable records before the single READY+identity publication. */
+    private suspend fun commitReady(
+        operation: Operation,
+        resources: OperationResources,
+        authorizeExplicitLogin: Boolean,
+    ) = authorityMutationMutex.withLock {
+        checkCurrent(operation)
+        if (authorizeExplicitLogin) {
+            try {
+                revocationMarker.clearAfterExplicitLogin()
+            } catch (_: Throwable) {
+                throw BusinessAuthenticationException(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
+            }
         }
-        mutableGate.value = BusinessAccessGateState.READY
-        mutableLastError.value = null
+        checkCurrent(operation)
+        synchronized(operationLock) {
+            checkCurrentLocked(operation)
+            val identity = resources.identity
+                ?: throw BusinessAuthenticationException(BusinessLoginErrorCode.AGENT_REGISTRATION_FAILED)
+            val candidate = resources.candidateAccess
+                ?: throw BusinessAuthenticationException(BusinessLoginErrorCode.AGENT_REGISTRATION_FAILED)
+            activeCandidate = candidate
+            if (!identityRegistry.publishReady(identity, operation.registryGeneration)) {
+                activeCandidate = null
+                throw CancellationException("Authentication registry generation changed")
+            }
+            mutableLastError.value = null
+        }
     }
 
     private suspend fun compensate(
@@ -409,7 +421,7 @@ class BusinessAuthenticationOrchestrator(
             ownsAuthority = true
             if (!hasLocalEffects) return@withLock
 
-            identityRegistry.invalidate()
+            identityRegistry.invalidate(BusinessAccessGateState.SIGNING_OUT)
             val owner = resources.authOwner
             if (owner == null) {
                 authSessionManager.blockRequestAuthorityImmediately()
@@ -419,7 +431,6 @@ class BusinessAuthenticationOrchestrator(
             synchronized(operationLock) {
                 if (isOperationAuthorityCurrentLocked(operation)) {
                     activeCandidate = null
-                    mutableGate.value = BusinessAccessGateState.SIGNING_OUT
                 }
             }
 
@@ -457,7 +468,7 @@ class BusinessAuthenticationOrchestrator(
                     errorCode != null -> BusinessLoginMessage(errorCode)
                     else -> null
                 }
-                mutableGate.value = BusinessAccessGateState.SIGNED_OUT
+                identityRegistry.transitionTo(BusinessAccessGateState.SIGNED_OUT)
             }
         }
     }
@@ -473,8 +484,7 @@ class BusinessAuthenticationOrchestrator(
             val operation = activeOperation
             activeOperation = null
             verifiedSelection = null
-            mutableGate.value = BusinessAccessGateState.SIGNING_OUT
-            val identity = identityRegistry.invalidate()
+            val identity = identityRegistry.invalidate(BusinessAccessGateState.SIGNING_OUT)
             val candidate = activeCandidate
             activeCandidate = null
             RevokedAuthority(operation?.job, identity, candidate)
@@ -482,31 +492,41 @@ class BusinessAuthenticationOrchestrator(
         authSessionManager.blockRequestAuthorityImmediately()
         revoked.operationJob?.cancel(CancellationException("Authentication operation revoked"))
 
-        var durableFailure = false
+        var markerRevoked = false
+        var tokenRecordCleared = false
+        var metadataRecordCleared = false
+        var persistenceFailure = false
         authorityMutationMutex.withLock {
             try {
                 revocationMarker.markRevoked()
+                markerRevoked = true
             } catch (_: Throwable) {
-                durableFailure = true
+                persistenceFailure = true
+                // The local credential pair may still provide the durable revocation commit.
             }
             try {
                 authSessionManager.failClosedRevoke()
+                tokenRecordCleared = true
             } catch (_: Throwable) {
-                durableFailure = true
+                persistenceFailure = true
+                // Keep trying the remaining independent revocation records.
             }
             try {
                 metadataPersistence.clear()
+                metadataRecordCleared = true
             } catch (_: Throwable) {
-                durableFailure = true
+                persistenceFailure = true
+                // Keep the in-memory authority revoked even when persistence is unavailable.
             }
         }
+        val durableFailure = !markerRevoked && !(tokenRecordCleared && metadataRecordCleared)
         revoked.identity?.let { revokeActionsBestEffort(it) }
         boundedCleanup { registration.publishSignedOut() }
         boundedCleanup { registration.clearWorkspace() }
         if (remoteLogout) boundedCandidateLogout(revoked.candidate)
         synchronized(operationLock) {
             mutableLastError.value = when {
-                durableFailure -> BusinessLoginMessage(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
+                persistenceFailure -> BusinessLoginMessage(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
                 reason == RevocationReason.AUTH_EXPIRED -> BusinessLoginMessage(BusinessLoginErrorCode.AUTH_EXPIRED)
                 reason == RevocationReason.MEMBERSHIP_EXPIRED -> BusinessLoginMessage(BusinessLoginErrorCode.MEMBERSHIP_EXPIRED)
                 reason == RevocationReason.LOCAL_KEYSTORE_UNAVAILABLE ->
@@ -515,7 +535,10 @@ class BusinessAuthenticationOrchestrator(
                     BusinessLoginMessage(BusinessLoginErrorCode.LOCAL_CREDENTIAL_STORE_FAILED)
                 else -> null
             }
-            mutableGate.value = BusinessAccessGateState.SIGNED_OUT
+            identityRegistry.transitionTo(BusinessAccessGateState.SIGNED_OUT)
+        }
+        if (durableFailure) {
+            throw BusinessAuthenticationException(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
         }
     }
 
@@ -545,7 +568,7 @@ class BusinessAuthenticationOrchestrator(
         verifiedSelection = null
         activeCandidate = null
         mutableLastError.value = code?.let(::BusinessLoginMessage)
-        mutableGate.value = BusinessAccessGateState.SIGNED_OUT
+        identityRegistry.transitionTo(BusinessAccessGateState.SIGNED_OUT)
     }
 
     private fun isDurablyRevoked(): Boolean = try {
@@ -553,17 +576,6 @@ class BusinessAuthenticationOrchestrator(
     } catch (_: Throwable) {
         throw BusinessAuthenticationException(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
     }
-
-    private suspend fun clearRevocationMarkerAfterExplicitLogin(operation: Operation) =
-        authorityMutationMutex.withLock {
-            checkCurrent(operation)
-            try {
-                revocationMarker.clearAfterExplicitLogin()
-            } catch (_: Throwable) {
-                throw BusinessAuthenticationException(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
-            }
-            checkCurrent(operation)
-        }
 
     private suspend fun loadRestorePair(): RestoreLoad {
         var tokens: AuthTokenSet? = null
@@ -675,14 +687,14 @@ class BusinessAuthenticationOrchestrator(
         val job = context[Job] ?: error("Authentication operation requires a coroutine Job")
         return synchronized(operationLock) {
             ensureOpenLocked()
-            if (activeOperation?.job?.isActive == true || mutableGate.value !in allowedSources) {
+            if (activeOperation?.job?.isActive == true || gate.value !in allowedSources) {
                 throw BusinessAuthenticationException(BusinessLoginErrorCode.AUTHENTICATION_IN_PROGRESS)
             }
             operationEpoch += 1
             verifiedSelection = null
             Operation(operationEpoch, job, identityRegistry.currentGeneration()).also {
                 activeOperation = it
-                mutableGate.value = target
+                identityRegistry.transitionTo(target)
                 mutableLastError.value = null
             }
         }
@@ -700,7 +712,7 @@ class BusinessAuthenticationOrchestrator(
             val verified = verifiedSelection
             if (
                 activeOperation?.job?.isActive == true ||
-                mutableGate.value !in setOf(BusinessAccessGateState.VERIFYING, BusinessAccessGateState.SELECTING_TENANT) ||
+                gate.value !in setOf(BusinessAccessGateState.VERIFYING, BusinessAccessGateState.SELECTING_TENANT) ||
                 verified == null ||
                 verified.account != account ||
                 candidate !in verified.candidates
@@ -711,7 +723,7 @@ class BusinessAuthenticationOrchestrator(
             verifiedSelection = null
             Operation(operationEpoch, job, identityRegistry.currentGeneration()).also {
                 activeOperation = it
-                mutableGate.value = BusinessAccessGateState.AUTHENTICATING
+                identityRegistry.transitionTo(BusinessAccessGateState.AUTHENTICATING)
                 mutableLastError.value = null
             }
         }

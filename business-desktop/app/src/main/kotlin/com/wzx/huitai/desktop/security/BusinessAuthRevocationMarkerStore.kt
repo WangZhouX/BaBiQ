@@ -2,10 +2,10 @@ package com.wzx.huitai.desktop.security
 
 import com.wzx.huitai.security.path.SecureRuntimeFile
 import java.nio.ByteBuffer
-import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.AclEntry
 import java.nio.file.attribute.AclEntryPermission
@@ -28,22 +28,17 @@ class RedundantBusinessAuthRevocationMarkerStore(
     private val fallback: BusinessAuthRevocationMarkerPort,
 ) : BusinessAuthRevocationMarkerPort {
     override fun isRevoked(): Boolean {
-        var failure: Throwable? = null
-        val primaryRevoked = try {
-            primary.isRevoked()
-        } catch (caught: Throwable) {
-            failure = caught
+        val primaryAuthorized = try {
+            !primary.isRevoked()
+        } catch (_: Throwable) {
             false
         }
-        val fallbackRevoked = try {
-            fallback.isRevoked()
-        } catch (caught: Throwable) {
-            if (failure == null) failure = caught else failure.addSuppressed(caught)
+        val fallbackAuthorized = try {
+            !fallback.isRevoked()
+        } catch (_: Throwable) {
             false
         }
-        if (primaryRevoked || fallbackRevoked) return true
-        failure?.let { throw IllegalStateException("authentication revocation marker is unreadable", it) }
-        return false
+        return !(primaryAuthorized && fallbackAuthorized)
     }
 
     override fun markRevoked() {
@@ -72,7 +67,7 @@ class RedundantBusinessAuthRevocationMarkerStore(
     }
 }
 
-/** Non-sensitive fail-closed marker that survives credential deletion failures and process restarts. */
+/** Non-sensitive durable authorization state that survives credential deletion failures and process restarts. */
 class FileBusinessAuthRevocationMarkerStore(
     path: Path,
     private val permissionApplier: (Path, Boolean) -> Unit = ::applyVerifiedOwnerOnlyPermissions,
@@ -81,46 +76,62 @@ class FileBusinessAuthRevocationMarkerStore(
     private val path = path.toAbsolutePath().normalize()
 
     override fun isRevoked(): Boolean {
-        val identity = SecureRuntimeFile.captureIfExists(path) ?: return false
+        val identity = SecureRuntimeFile.captureIfExists(path) ?: return true
         SecureRuntimeFile.openChannel(path, StandardOpenOption.READ).use { channel ->
-            val buffer = ByteBuffer.allocate(MARKER_BYTES.size + 1)
+            val buffer = ByteBuffer.allocate(MAX_STATE_BYTES + 1)
             while (buffer.hasRemaining() && channel.read(buffer) > 0) Unit
             SecureRuntimeFile.verifyUnchanged(identity)
-            return true
+            buffer.flip()
+            val content = ByteArray(buffer.remaining())
+            buffer.get(content)
+            return !content.contentEquals(AUTHORIZED_BYTES)
         }
     }
 
-    override fun markRevoked() {
+    override fun markRevoked() = writeState(REVOKED_BYTES)
+
+    override fun clearAfterExplicitLogin() = writeState(AUTHORIZED_BYTES)
+
+    private fun writeState(state: ByteArray) {
         SecureRuntimeFile.validateParent(path)
         permissionApplier(path.parent, true)
         val parentIdentity = captureParentIdentity()
+        SecureRuntimeFile.captureIfExists(path)
+        beforeLeafCreate()
+        verifyParentIdentity(parentIdentity)
+        val temp = Files.createTempFile(path.parent, ".${path.fileName}.", ".tmp")
         try {
-            beforeLeafCreate()
+            val tempIdentity = SecureRuntimeFile.capture(temp)
+            permissionApplier(temp, false)
             verifyParentIdentity(parentIdentity)
             SecureRuntimeFile.openChannel(
-                path,
-                StandardOpenOption.CREATE_NEW,
+                temp,
                 StandardOpenOption.WRITE,
+                StandardOpenOption.TRUNCATE_EXISTING,
             ).use { channel ->
                 verifyParentIdentity(parentIdentity)
-                val buffer = ByteBuffer.wrap(MARKER_BYTES)
+                val buffer = ByteBuffer.wrap(state)
                 while (buffer.hasRemaining()) channel.write(buffer)
                 channel.force(true)
             }
-        } catch (_: FileAlreadyExistsException) {
-            check(isRevoked()) { "authentication revocation marker disappeared" }
+            SecureRuntimeFile.verifyUnchanged(tempIdentity)
+            permissionApplier(temp, false)
+            verifyParentIdentity(parentIdentity)
+            Files.move(
+                temp,
+                path,
+                StandardCopyOption.ATOMIC_MOVE,
+                StandardCopyOption.REPLACE_EXISTING,
+            )
+            SecureRuntimeFile.capture(path)
+            permissionApplier(path, false)
+            forceParentDirectory()
+        } catch (failure: Throwable) {
+            runCatching {
+                if (!Files.isSymbolicLink(temp)) Files.deleteIfExists(temp)
+            }
+            throw failure
         }
-        permissionApplier(path, false)
-        SecureRuntimeFile.capture(path)
-        forceParentDirectory()
-    }
-
-    override fun clearAfterExplicitLogin() {
-        val identity = SecureRuntimeFile.captureIfExists(path) ?: return
-        SecureRuntimeFile.verifyUnchanged(identity)
-        Files.deleteIfExists(path)
-        check(!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) { "authentication revocation marker still exists" }
-        forceParentDirectory()
     }
 
     override fun toString(): String = "FileBusinessAuthRevocationMarkerStore(path=[REDACTED])"
@@ -154,7 +165,9 @@ class FileBusinessAuthRevocationMarkerStore(
     }
 
     private companion object {
-        val MARKER_BYTES = "huitai-auth-revoked-v1\n".toByteArray(Charsets.US_ASCII)
+        val REVOKED_BYTES = "REVOKED v1\n".toByteArray(Charsets.US_ASCII)
+        val AUTHORIZED_BYTES = "AUTHORIZED v1\n".toByteArray(Charsets.US_ASCII)
+        val MAX_STATE_BYTES = maxOf(REVOKED_BYTES.size, AUTHORIZED_BYTES.size)
     }
 
     private data class ParentIdentity(val fileKey: Any?, val creationMillis: Long)
