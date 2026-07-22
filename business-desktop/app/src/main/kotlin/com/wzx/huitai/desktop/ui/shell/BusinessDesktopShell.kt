@@ -2,11 +2,9 @@ package com.wzx.huitai.desktop.ui.shell
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredWidth
@@ -98,17 +96,7 @@ fun BusinessDesktopShell(
     LaunchedEffect(requestedAssistantWidth) {
         resizeAccumulator = requestedAssistantWidth
     }
-    Column(modifier.fillMaxSize()) {
-        BusinessTopNavigation(
-            selectedDestination = selectedDestination,
-            onDestinationSelected = onDestinationSelected,
-        )
-        Row(
-            Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .fillMaxHeight(),
-        ) {
+    Row(modifier.fillMaxSize()) {
             BusinessSidebar(
                 selected = selectedDestination,
                 onSelected = onDestinationSelected,
@@ -238,7 +226,6 @@ fun BusinessDesktopShell(
                     }
                 }
             }
-        }
     }
 }
 

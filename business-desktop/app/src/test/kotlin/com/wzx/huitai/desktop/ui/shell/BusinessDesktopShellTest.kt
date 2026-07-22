@@ -8,9 +8,11 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assertWidthIsEqualTo
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -80,13 +82,13 @@ class BusinessDesktopShellTest {
                         formState = DemoFormState(),
                         providerSettingsState = BusinessProviderSettingsState(),
                         agentPanelExpanded = false,
-                        modifier = Modifier.shellSize(1200.dp),
+                        modifier = Modifier.shellSize(1200.dp, 700.dp),
                     )
                 }
             }
         }
 
-        rule.onNodeWithTag(BusinessTopNavigationTags.ROOT).assertExists()
+        rule.onNodeWithTag("business-top-navigation").assertDoesNotExist()
         rule.onNodeWithTag(BusinessSidebarTags.ROOT).assertWidthIsEqualTo(210.dp)
         rule.onNodeWithTag(BusinessSidebarTags.DATA_ENTRY).assertExists()
         rule.onNodeWithTag(BusinessUiTags.BUSINESS_REGION).assertWidthIsEqualTo(990.dp)
@@ -97,12 +99,12 @@ class BusinessDesktopShellTest {
         rule.onNodeWithTag("business-agent-collapsed-rail").assertDoesNotExist()
         rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertDoesNotExist()
 
-        val topToolbar = bounds(BusinessTopNavigationTags.ROOT)
         val sidebar = bounds(BusinessSidebarTags.ROOT)
         val dock = bounds(BusinessUiTags.CONTENT)
         val business = bounds(BusinessUiTags.BUSINESS_REGION)
         val mascot = bounds(BusinessAssistantChromeTags.MASCOT)
-        assertApproximately(topToolbar.bottom, sidebar.top)
+        assertApproximately(0f, sidebar.top)
+        assertApproximately(0f, dock.top)
         assertApproximately(sidebar.right, dock.left)
         assertApproximately(dock.left, business.left)
         assertApproximately(dock.right, business.right)
@@ -149,13 +151,13 @@ class BusinessDesktopShellTest {
         val divider = bounds(BusinessUiTags.DIVIDER_SLOT)
         val assistant = bounds(BusinessUiTags.AGENT_PANEL)
         val sidebar = bounds(BusinessSidebarTags.ROOT)
-        val topToolbar = bounds(BusinessTopNavigationTags.ROOT)
+        assertApproximately(0f, sidebar.top)
+        assertApproximately(0f, content.top)
         assertApproximately(sidebar.right, content.left)
         assertApproximately(content.left, business.left)
         assertApproximately(business.right, divider.left)
         assertApproximately(divider.right, assistant.left)
         assertApproximately(content.right, assistant.right)
-        assertApproximately(topToolbar.width, sidebar.width + content.width)
         assertApproximately(content.width, business.width + divider.width + assistant.width)
         assertApproximately(640f * 0.75f, business.width, minimum = true)
         assertApproximately(8f * 0.75f, divider.width)
@@ -201,7 +203,6 @@ class BusinessDesktopShellTest {
             .assertTextContains("窗口宽度不足，请先最大化或放大窗口")
         rule.runOnIdle { assertFalse(expanded.value) }
 
-        val topToolbar = bounds(BusinessTopNavigationTags.ROOT)
         val dock = bounds(BusinessUiTags.CONTENT)
         val business = bounds(BusinessUiTags.BUSINESS_REGION)
         val message = bounds(BusinessUiTags.EXPAND_WIDTH_MESSAGE)
@@ -212,7 +213,6 @@ class BusinessDesktopShellTest {
         assertTrue(message.top >= business.top && message.bottom <= business.bottom)
         assertTrue(message.bottom <= mascot.top + 0.5f)
         assertFalse(message.overlaps(mascot))
-        assertFalse(message.overlaps(topToolbar))
         assertTrue(mascot.left > business.center.x)
         assertTrue(mascot.top > business.center.y)
 
@@ -289,8 +289,14 @@ class BusinessDesktopShellTest {
             .performKeyInput { pressKey(Key.DirectionLeft) }
         rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertWidthIsEqualTo(516.dp)
 
-        rule.onNodeWithTag(BusinessTopNavigationTags.SETTINGS).performClick()
+        rule.onAllNodesWithText("设置").assertCountEquals(1)
+        rule.onNodeWithTag(BusinessSidebarTags.SETTINGS).performClick()
         rule.onNodeWithTag("provider-settings-panel").assertExists()
+        assertTrue(
+            rule.onNodeWithTag(BusinessSidebarTags.SETTINGS)
+                .fetchSemanticsNode()
+                .config[SemanticsProperties.Selected],
+        )
         rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertWidthIsEqualTo(516.dp)
         rule.onNodeWithTag(BusinessSidebarTags.DATA_ENTRY).performClick()
         rule.onNodeWithTag(BusinessUiTags.FORM_PANEL).assertExists()
