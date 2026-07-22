@@ -16,7 +16,10 @@ import com.wzx.huitai.agent.conversation.BusinessThread
 import com.wzx.huitai.agent.conversation.BusinessTurn
 import com.wzx.huitai.desktop.state.BusinessAuthenticationStatus
 import com.wzx.huitai.desktop.auth.BusinessAccessGateState
+import com.wzx.huitai.desktop.state.BusinessDesktopEvent
+import com.wzx.huitai.desktop.state.BusinessDesktopReducer
 import com.wzx.huitai.desktop.state.BusinessDesktopState
+import com.wzx.huitai.desktop.state.BusinessDesktopStore
 import com.wzx.huitai.desktop.state.BusinessIdentity
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
@@ -144,7 +147,18 @@ class BusinessProviderSettingsControllerTest {
         val desktop = MutableStateFlow(authenticatedState())
         val accessGate = MutableStateFlow(BusinessAccessGateState.REGISTERING_AGENT)
         val gateway = FakeGateway()
-        val controller = controller(gateway, supervisor, desktop, accessGate = accessGate)
+        val desktopStore = BusinessDesktopStore(BusinessDesktopReducer())
+        val projections = mutableListOf<List<BusinessProvider>>()
+        val controller = controller(
+            gateway,
+            supervisor,
+            desktop,
+            accessGate = accessGate,
+            onChanged = { providers ->
+                projections += providers
+                desktopStore.dispatch(BusinessDesktopEvent.ProvidersChanged(providers))
+            },
+        )
         advanceUntilIdle()
 
         assertFalse(controller.state.value.operationsEnabled)
@@ -157,6 +171,51 @@ class BusinessProviderSettingsControllerTest {
 
         assertTrue(controller.state.value.operationsEnabled)
         assertEquals(listOf("list"), gateway.calls)
+        assertEquals(gateway.providers, controller.state.value.providers)
+        assertEquals(gateway.providers, desktopStore.state.value.providers)
+        assertEquals(1, projections.count { it.isNotEmpty() })
+
+        accessGate.value = BusinessAccessGateState.SIGNING_OUT
+        advanceUntilIdle()
+        assertTrue(controller.state.value.providers.isEmpty())
+        assertTrue(desktopStore.state.value.providers.isEmpty())
+        assertEquals(emptyList(), projections.last())
+        controller.close()
+    }
+
+    @Test
+    fun `late ready provider list cannot repopulate projections after gate closes`() = runTest {
+        val supervisor = MutableStateFlow<AgentSupervisorState>(AgentSupervisorState.Connected("connection-1"))
+        val desktop = MutableStateFlow(authenticatedState())
+        val accessGate = MutableStateFlow(BusinessAccessGateState.REGISTERING_AGENT)
+        val gateway = FakeGateway().apply {
+            listStarted = CompletableDeferred()
+            listRelease = CompletableDeferred()
+        }
+        val desktopStore = BusinessDesktopStore(BusinessDesktopReducer())
+        val projections = mutableListOf<List<BusinessProvider>>()
+        val controller = controller(
+            gateway,
+            supervisor,
+            desktop,
+            accessGate = accessGate,
+            onChanged = { providers ->
+                projections += providers
+                desktopStore.dispatch(BusinessDesktopEvent.ProvidersChanged(providers))
+            },
+        )
+        advanceUntilIdle()
+
+        accessGate.value = BusinessAccessGateState.READY
+        gateway.listStarted!!.await()
+        accessGate.value = BusinessAccessGateState.SIGNING_OUT
+        runCurrent()
+        gateway.listRelease!!.complete(Unit)
+        advanceUntilIdle()
+
+        assertTrue(controller.state.value.providers.isEmpty())
+        assertTrue(desktopStore.state.value.providers.isEmpty())
+        assertTrue(projections.none { it.isNotEmpty() })
         controller.close()
     }
 
@@ -169,6 +228,7 @@ class BusinessProviderSettingsControllerTest {
         val controller = controller(gateway, supervisor, desktop) { callbackProviders += it }
         advanceUntilIdle()
         gateway.calls.clear()
+        callbackProviders.clear()
 
         val relay = provider("relay", active = false)
         gateway.providers = listOf(relay)
@@ -281,6 +341,7 @@ class BusinessProviderSettingsControllerTest {
         val controller = controller(gateway, supervisor, desktop) { callbacks.incrementAndGet() }
         advanceUntilIdle()
         val initialProviders = controller.state.value.providers
+        val initialCallbackCount = callbacks.get()
         gateway.calls.clear()
 
         gateway.providers = listOf(provider("stale-list"))
@@ -293,13 +354,15 @@ class BusinessProviderSettingsControllerTest {
         gateway.listRelease!!.complete(Unit)
         assertNull(refreshing.await())
         assertEquals(initialProviders, controller.state.value.providers)
-        assertEquals(0, callbacks.get())
+        assertEquals(initialCallbackCount, callbacks.get())
 
         gateway.listStarted = null
         gateway.listRelease = null
         gateway.providers = listOf(provider("connection-2"))
         supervisor.value = AgentSupervisorState.Connected("connection-2")
         advanceUntilIdle()
+        val connection2CallbackCount = callbacks.get()
+        assertEquals(initialCallbackCount + 1, connection2CallbackCount)
         gateway.calls.clear()
 
         gateway.createStarted = CompletableDeferred()
@@ -314,7 +377,7 @@ class BusinessProviderSettingsControllerTest {
         assertNull(creating.await())
         advanceUntilIdle()
         assertEquals(listOf(provider("connection-3")), controller.state.value.providers)
-        assertEquals(0, callbacks.get())
+        assertEquals(connection2CallbackCount + 1, callbacks.get())
         assertEquals(1, gateway.calls.count { it == "list" })
         assertTrue(controller.state.value.notice?.code != "PROVIDER_CREATED")
 
@@ -329,7 +392,7 @@ class BusinessProviderSettingsControllerTest {
         runCurrent()
         gateway.deleteRelease!!.complete(Unit)
         assertNull(deleting.await())
-        assertEquals(0, callbacks.get())
+        assertEquals(connection2CallbackCount + 1, callbacks.get())
         assertTrue(controller.state.value.notice?.code != "PROVIDER_DELETED")
 
         gateway.deleteStarted = null
@@ -358,6 +421,7 @@ class BusinessProviderSettingsControllerTest {
         val controller = controller(gateway, supervisor, desktop) { callbacks.incrementAndGet() }
         advanceUntilIdle()
         val initialProviders = controller.state.value.providers
+        val initialCallbackCount = callbacks.get()
         gateway.calls.clear()
 
         gateway.createStarted = CompletableDeferred()
@@ -372,7 +436,7 @@ class BusinessProviderSettingsControllerTest {
         gateway.createRelease!!.complete(Unit)
         advanceUntilIdle()
         assertEquals(initialProviders, controller.state.value.providers)
-        assertEquals(0, callbacks.get())
+        assertEquals(initialCallbackCount, callbacks.get())
         assertTrue(controller.state.value.notice?.code != "PROVIDER_CREATED")
 
         gateway.createStarted = CompletableDeferred()
@@ -387,7 +451,7 @@ class BusinessProviderSettingsControllerTest {
         assertFailsWith<CancellationException> { lateCreating.await() }
         advanceUntilIdle()
         assertEquals(initialProviders, controller.state.value.providers)
-        assertEquals(0, callbacks.get())
+        assertEquals(initialCallbackCount, callbacks.get())
         assertTrue(controller.state.value.notice?.code != "PROVIDER_CREATED")
         assertEquals(0, gateway.closeCount)
     }
@@ -438,6 +502,7 @@ class BusinessProviderSettingsControllerTest {
         val callbacks = AtomicInteger()
         val controller = controller(gateway, supervisor, desktop) { callbacks.incrementAndGet() }
         advanceUntilIdle()
+        val initialCallbackCount = callbacks.get()
 
         gateway.createStarted = CompletableDeferred()
         gateway.createRelease = CompletableDeferred()
@@ -457,7 +522,7 @@ class BusinessProviderSettingsControllerTest {
             val selection = withTimeout(1_000) { controller.setActive("connection-2", "kimi-k3") }
             assertEquals("connection-2", selection?.providerId)
             assertTrue(controller.state.value.providers.single().active)
-            assertEquals(1, callbacks.get())
+            assertEquals(initialCallbackCount + 2, callbacks.get())
             assertFalse(oldCreate.isCompleted)
         } finally {
             gateway.createRelease!!.complete(Unit)
@@ -466,7 +531,7 @@ class BusinessProviderSettingsControllerTest {
         assertNull(oldCreate.await())
         advanceUntilIdle()
         assertEquals("PROVIDER_ACTIVATED", controller.state.value.notice?.code)
-        assertEquals(1, callbacks.get())
+        assertEquals(initialCallbackCount + 2, callbacks.get())
         controller.close()
     }
 

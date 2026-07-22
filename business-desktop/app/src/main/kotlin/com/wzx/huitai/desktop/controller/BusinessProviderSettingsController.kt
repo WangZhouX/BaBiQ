@@ -348,8 +348,10 @@ class BusinessProviderSettingsController(
     private suspend fun refreshProviders(token: OperationToken, publishSuccess: Boolean): List<BusinessProvider>? {
         val providers = gateway.listProviders()
         if (!isOperationCurrent(token)) return null
-        val committed = commitIfCurrent(token) { current ->
-            current.copy(
+        val committed = synchronized(stateMonitor) {
+            if (!isTokenCurrentLocked(token)) return@synchronized false
+            val current = mutableState.value
+            mutableState.value = current.copy(
                 providers = providers,
                 notice = if (publishSuccess) {
                     BusinessProviderSettingsNotice(
@@ -361,6 +363,8 @@ class BusinessProviderSettingsController(
                     current.notice
                 },
             )
+            onProvidersChanged(providers)
+            true
         }
         return providers.takeIf { committed }
     }
