@@ -4,6 +4,7 @@ import com.wzx.huitai.action.model.ActionExecutionState
 import com.wzx.huitai.action.model.ActionIdentityScope
 import com.wzx.huitai.action.model.ActionResult
 import com.wzx.huitai.desktop.security.BusinessAuthSessionMetadata
+import com.wzx.huitai.desktop.security.LocalCredentialStoreUnavailableException
 import com.wzx.huitai.desktop.state.BusinessIdentity
 import com.wzx.huitai.integration.auth.AuthCredentialPersistencePort
 import com.wzx.huitai.integration.auth.AuthSessionManager
@@ -28,6 +29,8 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.yield
 import kotlinx.serialization.json.JsonElement
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -70,6 +73,7 @@ class BusinessAuthenticationOrchestratorTest {
         cases.forEach { mutate ->
             val fixture = Fixture()
             mutate(fixture)
+            fixture.verify()
             val failure = assertFailsWith<BusinessAuthenticationException> {
                 fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
             }
@@ -87,6 +91,7 @@ class BusinessAuthenticationOrchestratorTest {
         RegistrationFailureStage.entries.forEach { stage ->
             val fixture = Fixture()
             fixture.registration.failureStage = stage
+            fixture.verify()
             val failure = assertFailsWith<BusinessAuthenticationException>(stage.name) {
                 fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
             }
@@ -106,14 +111,17 @@ class BusinessAuthenticationOrchestratorTest {
     @Test
     fun `metadata and token persistence failures compensate without exposing primary secrets`() = runTest {
         val metadataFailure = Fixture().apply { metadata.failSave = true }
+        metadataFailure.verify()
         val first = assertFailsWith<BusinessAuthenticationException> {
             metadataFailure.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), metadataFailure.candidate)
         }
         assertEquals(BusinessLoginErrorCode.LOCAL_CREDENTIAL_STORE_FAILED, first.code)
         assertNull(metadataFailure.credentials.tokens)
+        assertNull(metadataFailure.metadata.value)
         assertEquals(1, metadataFailure.candidateGateway.logoutCount)
 
         val tokenFailure = Fixture().apply { credentials.failReplace = true }
+        tokenFailure.verify()
         val second = assertFailsWith<BusinessAuthenticationException> {
             tokenFailure.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), tokenFailure.candidate)
         }
@@ -215,6 +223,7 @@ class BusinessAuthenticationOrchestratorTest {
     @Test
     fun `logout immediately invalidates registry then revokes full old scope and remote failure cannot block local sign out`() = runTest {
         val fixture = Fixture()
+        fixture.verify()
         fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
         val oldIdentity = requireNotNull(fixture.registry.currentIdentity())
         fixture.candidateGateway.logoutFailure = IllegalStateException("remote token body")
@@ -238,12 +247,14 @@ class BusinessAuthenticationOrchestratorTest {
     @Test
     fun `authentication and membership expiry share revocation path but expose distinct stable errors`() = runTest {
         val authentication = Fixture()
+        authentication.verify()
         authentication.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), authentication.candidate)
         authentication.orchestrator.onAuthenticationExpired()
         assertEquals(BusinessLoginErrorCode.AUTH_EXPIRED, authentication.orchestrator.lastError.value?.code)
         assertEquals(BusinessAccessGateState.SIGNED_OUT, authentication.orchestrator.gate.value)
 
         val membership = Fixture()
+        membership.verify()
         membership.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), membership.candidate)
         membership.orchestrator.onMembershipExpired()
         assertEquals(BusinessLoginErrorCode.MEMBERSHIP_EXPIRED, membership.orchestrator.lastError.value?.code)
@@ -257,6 +268,7 @@ class BusinessAuthenticationOrchestratorTest {
             registration.commitRelease = CompletableDeferred()
             registration.ignoreCancellation = true
         }
+        fixture.verify()
         val login = async {
             fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
         }
@@ -293,7 +305,196 @@ class BusinessAuthenticationOrchestratorTest {
         assertNull(fixture.metadata.value)
     }
 
-    private class Fixture {
+    @Test
+    fun `authenticate requires an active verified account and candidate capability`() = runTest {
+        val fixture = Fixture()
+        val bypassPassword = "password8".toCharArray()
+        val direct = assertFailsWith<BusinessAuthenticationException> {
+            fixture.orchestrator.authenticate("lawyer@example.com", bypassPassword, fixture.candidate)
+        }
+        assertEquals(BusinessLoginErrorCode.AUTHENTICATION_IN_PROGRESS, direct.code)
+        assertEquals(0, fixture.preAuth.loginCount)
+
+        fixture.orchestrator.findTenantCandidates("lawyer@example.com")
+        val wrongAccount = assertFailsWith<BusinessAuthenticationException> {
+            fixture.orchestrator.authenticate("other@example.com", "password8".toCharArray(), fixture.candidate)
+        }
+        assertEquals(BusinessLoginErrorCode.AUTHENTICATION_IN_PROGRESS, wrongAccount.code)
+        assertEquals(0, fixture.preAuth.loginCount)
+
+        val forged = fixture.candidate.copy(tenantId = "tenant-forged")
+        val wrongCandidate = assertFailsWith<BusinessAuthenticationException> {
+            fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), forged)
+        }
+        assertEquals(BusinessLoginErrorCode.AUTHENTICATION_IN_PROGRESS, wrongCandidate.code)
+        assertEquals(0, fixture.preAuth.loginCount)
+
+        fixture.orchestrator.cancelTenantSelection()
+        assertFailsWith<BusinessAuthenticationException> {
+            fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+        }
+        assertEquals(0, fixture.preAuth.loginCount)
+    }
+
+    @Test
+    fun `restore owns pair loading so concurrent login is rejected and close cancels the load`() = runTest {
+        val fixture = Fixture().apply {
+            credentials.tokens = AuthTokenSet("old-access", "old-refresh")
+            metadata.value = metadata()
+            credentials.loadStarted = CompletableDeferred()
+            credentials.loadRelease = CompletableDeferred()
+        }
+        val restoring = async { fixture.orchestrator.restore() }
+        fixture.credentials.loadStarted!!.await()
+
+        assertEquals(BusinessAccessGateState.RESTORING, fixture.orchestrator.gate.value)
+        val concurrent = assertFailsWith<BusinessAuthenticationException> {
+            fixture.orchestrator.findTenantCandidates("lawyer@example.com")
+        }
+        assertEquals(BusinessLoginErrorCode.AUTHENTICATION_IN_PROGRESS, concurrent.code)
+
+        fixture.orchestrator.close()
+        fixture.credentials.loadRelease!!.complete(Unit)
+        assertFailsWith<CancellationException> { restoring.await() }
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value)
+    }
+
+    @Test
+    fun `late compensation from login A cannot revoke replacement login B`() = runTest {
+        val fixture = Fixture().apply {
+            registration.commitStarted = CompletableDeferred()
+            registration.commitRelease = CompletableDeferred()
+            registration.remainingGatedCommitCalls = 1
+            registration.ignoreCancellation = true
+        }
+        fixture.orchestrator.findTenantCandidates("lawyer@example.com")
+        fixture.preAuth.token = token(access = "access-a", refresh = "refresh-a")
+        val loginA = async {
+            fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+        }
+        fixture.registration.commitStarted!!.await()
+
+        fixture.orchestrator.logout()
+        fixture.preAuth.token = token(access = "access-b", refresh = "refresh-b")
+        fixture.orchestrator.findTenantCandidates("lawyer@example.com")
+        fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+        val identityB = requireNotNull(fixture.registry.currentIdentity())
+
+        fixture.registration.commitRelease!!.complete(Unit)
+        assertFailsWith<CancellationException> { loginA.await() }
+        advanceUntilIdle()
+
+        assertEquals(BusinessAccessGateState.READY, fixture.orchestrator.gate.value)
+        assertEquals(identityB, fixture.registry.currentIdentity())
+        assertEquals(identityB.authSessionId, fixture.sessionManager.identity.value?.authSessionId)
+        assertEquals("access-b", fixture.credentials.tokens?.accessToken)
+        assertEquals(1, fixture.registration.calls.count { it == "signed-out" })
+        assertEquals(1, fixture.registration.calls.count { it == "clear-workspace" })
+        assertEquals(1, fixture.credentials.clearCount)
+    }
+
+    @Test
+    fun `cancellation completes suspending rollback in non cancellable cleanup`() = runTest {
+        val fixture = Fixture().apply {
+            registration.commitStarted = CompletableDeferred()
+            registration.commitRelease = CompletableDeferred()
+            registration.rollbackMustSuspend = true
+        }
+        fixture.orchestrator.findTenantCandidates("lawyer@example.com")
+        val login = async {
+            fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+        }
+        fixture.registration.commitStarted!!.await()
+
+        login.cancel()
+        fixture.registration.commitRelease!!.complete(Unit)
+        assertFailsWith<CancellationException> { login.await() }
+
+        assertTrue(fixture.registration.rollbackCompleted)
+        assertTrue("signed-out" in fixture.registration.calls)
+        assertNull(fixture.registry.currentIdentity())
+    }
+
+    @Test
+    fun `registry generation rejection after registration commit compensates the whole provisional login`() = runTest {
+        val fixture = Fixture()
+        fixture.verify()
+        fixture.registration.onCommit = { fixture.registry.invalidate() }
+
+        assertFailsWith<CancellationException> {
+            fixture.orchestrator.authenticate(
+                "lawyer@example.com",
+                "password8".toCharArray(),
+                fixture.candidate,
+            )
+        }
+
+        assertTrue("commit" in fixture.registration.calls)
+        assertTrue("rollback" in fixture.registration.calls)
+        assertTrue("signed-out" in fixture.registration.calls)
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value)
+        assertNull(fixture.registry.currentIdentity())
+        assertNull(fixture.sessionManager.identity.value)
+        assertNull(fixture.credentials.tokens)
+        assertNull(fixture.metadata.value)
+    }
+
+    @Test
+    fun `tenant selection transition is illegal until candidate verification succeeds`() {
+        val fixture = Fixture()
+
+        assertFailsWith<IllegalStateException> { fixture.orchestrator.enterTenantSelection() }
+        assertEquals(BusinessAccessGateState.STARTING, fixture.orchestrator.gate.value)
+    }
+
+    @Test
+    fun `remote candidate logout is bounded and cannot stall local revocation`() = runTest {
+        val fixture = Fixture(remoteLogoutTimeoutMillis = 10).apply {
+            candidateGateway.logoutNeverReturns = true
+        }
+        fixture.orchestrator.findTenantCandidates("lawyer@example.com")
+        fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+
+        fixture.orchestrator.logout()
+
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value)
+        assertNull(fixture.registry.currentIdentity())
+        assertNull(fixture.sessionManager.identity.value)
+    }
+
+    @Test
+    fun `durable clear failure keeps gate signed out and fail closes in memory authority`() = runTest {
+        val fixture = Fixture()
+        fixture.orchestrator.findTenantCandidates("lawyer@example.com")
+        fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+        fixture.credentials.failClear = true
+        fixture.metadata.failClear = true
+
+        fixture.orchestrator.logout()
+
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value)
+        assertNull(fixture.registry.currentIdentity())
+        assertNull(fixture.sessionManager.identity.value)
+        assertEquals(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE, fixture.orchestrator.lastError.value?.code)
+    }
+
+    @Test
+    fun `restore classifies unavailable shared store without attempting destructive cleanup`() = runTest {
+        val fixture = Fixture().apply {
+            metadata.loadFailure = LocalCredentialStoreUnavailableException()
+        }
+
+        fixture.orchestrator.restore()
+
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value)
+        assertEquals(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE, fixture.orchestrator.lastError.value?.code)
+        assertEquals(0, fixture.credentials.clearCount)
+        assertEquals(0, fixture.metadata.clearCount)
+    }
+
+    private class Fixture(
+        remoteLogoutTimeoutMillis: Long = 2_000,
+    ) {
         var candidate = candidate()
         val preAuth = FakePreAuthenticationGateway()
         val candidateGateway = FakeCandidateGateway()
@@ -302,7 +503,8 @@ class BusinessAuthenticationOrchestratorTest {
         val registration = FakeRegistrationPort()
         val registry = BusinessIdentityRegistry()
         val actions = FakeActions()
-        val sessionManager = AuthSessionManager(credentials, authSessionIdFactory = { "auth-session-1" })
+        private var authSessionSequence = 0
+        val sessionManager = AuthSessionManager(credentials, authSessionIdFactory = { "auth-session-${++authSessionSequence}" })
         val orchestrator = BusinessAuthenticationOrchestrator(
             preAuthentication = preAuth,
             candidateAuthentication = candidateGateway,
@@ -316,7 +518,13 @@ class BusinessAuthenticationOrchestratorTest {
             desktopSessionId = "desktop-session-1",
             platformId = 100,
             now = { Instant.parse("2026-07-22T00:00:00Z") },
+            remoteLogoutTimeoutMillis = remoteLogoutTimeoutMillis,
         )
+
+        suspend fun verify(account: String = "lawyer@example.com") {
+            preAuth.candidates = listOf(candidate)
+            orchestrator.findTenantCandidates(account)
+        }
     }
 
     private class FakePreAuthenticationGateway : OaPreAuthenticationGateway {
@@ -324,6 +532,7 @@ class BusinessAuthenticationOrchestratorTest {
         var token = token()
         var failure: Throwable? = null
         var onLogin: (() -> Unit)? = null
+        var loginCount = 0
         val refreshCalls = mutableListOf<Pair<String, String>>()
         var refreshStarted: CompletableDeferred<Unit>? = null
         var refreshRelease: CompletableDeferred<Unit>? = null
@@ -334,6 +543,7 @@ class BusinessAuthenticationOrchestratorTest {
         }
 
         override suspend fun login(mobileOrEmail: String, password: CharArray, tenantId: String): OaTokenBundle {
+            loginCount += 1
             onLogin?.invoke()
             failure?.let { throw it }
             return token
@@ -352,6 +562,7 @@ class BusinessAuthenticationOrchestratorTest {
         var permission = permission()
         var failure: Throwable? = null
         var logoutFailure: Throwable? = null
+        var logoutNeverReturns = false
         val loaded = mutableListOf<OaCandidateAccess>()
         var logoutCount = 0
 
@@ -363,6 +574,7 @@ class BusinessAuthenticationOrchestratorTest {
 
         override suspend fun logout(candidate: OaCandidateAccess) {
             logoutCount += 1
+            if (logoutNeverReturns) CompletableDeferred<Unit>().await()
             logoutFailure?.let { throw it }
         }
     }
@@ -373,8 +585,13 @@ class BusinessAuthenticationOrchestratorTest {
         var loadFailure: Throwable? = null
         var failReplace = false
         var failClear = false
+        var clearCount = 0
+        var loadStarted: CompletableDeferred<Unit>? = null
+        var loadRelease: CompletableDeferred<Unit>? = null
 
         override suspend fun load(): AuthTokenSet? {
+            loadStarted?.complete(Unit)
+            loadRelease?.await()
             loadFailure?.let { throw it }
             if (failLoad) error("invalid token entry")
             return tokens
@@ -386,6 +603,7 @@ class BusinessAuthenticationOrchestratorTest {
         }
 
         override suspend fun clear() {
+            clearCount += 1
             if (failClear) error("token clear failed")
             tokens = null
         }
@@ -396,6 +614,7 @@ class BusinessAuthenticationOrchestratorTest {
         var loadFailure: Throwable? = null
         var failSave = false
         var failClear = false
+        var clearCount = 0
 
         override fun load(): BusinessAuthSessionMetadata? {
             loadFailure?.let { throw it }
@@ -403,11 +622,12 @@ class BusinessAuthenticationOrchestratorTest {
         }
 
         override fun saveOrReplace(metadata: BusinessAuthSessionMetadata) {
-            if (failSave) error("metadata persistence failed")
             value = metadata
+            if (failSave) error("metadata persistence failed")
         }
 
         override fun clear() {
+            clearCount += 1
             if (failClear) error("metadata clear failed")
             value = null
         }
@@ -420,6 +640,9 @@ class BusinessAuthenticationOrchestratorTest {
         var commitStarted: CompletableDeferred<Unit>? = null
         var commitRelease: CompletableDeferred<Unit>? = null
         var ignoreCancellation = false
+        var remainingGatedCommitCalls: Int? = null
+        var rollbackMustSuspend = false
+        var rollbackCompleted = false
 
         override suspend fun prepare(identity: BusinessIdentity): BusinessAgentRegistrationTransaction {
             calls += "prepare"
@@ -430,18 +653,27 @@ class BusinessAuthenticationOrchestratorTest {
                 override suspend fun registerInitialContext() { calls += "context"; fail(RegistrationFailureStage.CONTEXT) }
                 override suspend fun commit() {
                     calls += "commit"
-                    commitStarted?.complete(Unit)
-                    try {
-                        commitRelease?.await()
-                    } catch (cancelled: CancellationException) {
-                        if (!ignoreCancellation) throw cancelled
-                        withContext(NonCancellable) { commitRelease?.await() }
-                        throw cancelled
+                    val remaining = remainingGatedCommitCalls
+                    val gated = commitRelease != null && (remaining == null || remaining > 0)
+                    if (remaining != null && remaining > 0) remainingGatedCommitCalls = remaining - 1
+                    if (gated) {
+                        commitStarted?.complete(Unit)
+                        try {
+                            commitRelease?.await()
+                        } catch (cancelled: CancellationException) {
+                            if (!ignoreCancellation) throw cancelled
+                            withContext(NonCancellable) { commitRelease?.await() }
+                            throw cancelled
+                        }
                     }
                     fail(RegistrationFailureStage.COMMIT)
                     onCommit?.invoke()
                 }
-                override suspend fun rollback() { calls += "rollback" }
+                override suspend fun rollback() {
+                    calls += "rollback"
+                    if (rollbackMustSuspend) yield()
+                    rollbackCompleted = true
+                }
             }
         }
 

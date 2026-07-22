@@ -7,6 +7,9 @@ import com.wzx.huitai.integration.oa.auth.OaTenantCandidate
 import java.util.Arrays
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -80,6 +83,9 @@ class BusinessLoginController(
 
     private val closed = AtomicBoolean(false)
     private val requestMutex = Mutex()
+    private val requestLock = Any()
+    private var requestGeneration = 0L
+    private var activeRequestJob: Job? = null
     private val mutableState = MutableStateFlow(BusinessLoginState())
     val state: StateFlow<BusinessLoginState> = mutableState.asStateFlow()
 
@@ -89,12 +95,14 @@ class BusinessLoginController(
             rememberedLogin.load()?.use { remembered ->
                 val password = remembered.copyPassword()
                 try {
-                    mutableState.value = mutableState.value.copy(
-                        account = remembered.account,
-                        password = password.concatToString(),
-                        remember = true,
-                        notice = null,
-                    )
+                    updateIfOpen {
+                        copy(
+                            account = remembered.account,
+                            password = password.concatToString(),
+                            remember = true,
+                            notice = null,
+                        )
+                    }
                 } finally {
                     Arrays.fill(password, '\u0000')
                 }
@@ -102,27 +110,33 @@ class BusinessLoginController(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: BusinessLoginException) {
-            mutableState.value = mutableState.value.copy(notice = BusinessLoginMessage(failure.code), error = null)
+            updateIfOpen { copy(notice = BusinessLoginMessage(failure.code), error = null) }
         } catch (_: Throwable) {
-            mutableState.value = mutableState.value.copy(
-                error = BusinessLoginMessage(BusinessLoginErrorCode.LOCAL_CREDENTIAL_STORE_FAILED),
-            )
+            updateIfOpen {
+                copy(error = BusinessLoginMessage(BusinessLoginErrorCode.LOCAL_CREDENTIAL_STORE_FAILED))
+            }
         }
     }
 
-    fun updateAccount(value: String) = update { copy(account = value, error = null, notice = null) }
-    fun updatePassword(value: String) = update { copy(password = value, error = null, notice = null) }
-    fun updateAgreement(value: Boolean) = update { copy(agreementAccepted = value, error = null, notice = null) }
+    fun updateAccount(value: String) = updateIfOpen { copy(account = value, error = null, notice = null) }
+    fun updatePassword(value: String) = updateIfOpen { copy(password = value, error = null, notice = null) }
+    fun updateAgreement(value: Boolean) = updateIfOpen { copy(agreementAccepted = value, error = null, notice = null) }
 
     fun updateRemember(value: Boolean) {
-        update { copy(remember = value, error = null, notice = null) }
-        if (!value) {
+        val shouldClear = synchronized(requestLock) {
+            if (closed.get()) return
+            mutableState.value = mutableState.value.copy(remember = value, error = null, notice = null)
+            !value
+        }
+        if (shouldClear) {
             try {
-                rememberedLogin.clear()
+                synchronized(requestLock) {
+                    if (!closed.get()) rememberedLogin.clear()
+                }
             } catch (_: LocalCredentialStoreUnavailableException) {
-                fail(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
+                failIfOpen(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
             } catch (_: Throwable) {
-                fail(BusinessLoginErrorCode.LOCAL_CREDENTIAL_STORE_FAILED)
+                failIfOpen(BusinessLoginErrorCode.LOCAL_CREDENTIAL_STORE_FAILED)
             }
         }
     }
@@ -131,48 +145,54 @@ class BusinessLoginController(
         if (closed.get() || mutableState.value.submitting) return
         val validation = validate(mutableState.value)
         if (validation != null) {
-            fail(validation)
+            failIfOpen(validation)
             return
         }
-        update { copy(slider = BusinessSliderState.REQUESTED, error = null, notice = null) }
+        updateIfOpen { copy(slider = BusinessSliderState.REQUESTED, error = null, notice = null) }
     }
 
-    fun dismissSlider() = update { copy(slider = BusinessSliderState.IDLE) }
+    fun dismissSlider() = updateIfOpen { copy(slider = BusinessSliderState.IDLE) }
 
     suspend fun completeSlider(success: Boolean) {
         if (closed.get() || mutableState.value.slider != BusinessSliderState.REQUESTED) return
-        update { copy(slider = BusinessSliderState.IDLE) }
+        updateIfOpen { copy(slider = BusinessSliderState.IDLE) }
         if (!success || !requestMutex.tryLock()) return
+        val request = beginRequest() ?: run {
+            requestMutex.unlock()
+            return
+        }
         try {
-            update { copy(submitting = true, error = null, notice = null) }
+            updateIfCurrent(request) { copy(submitting = true, error = null, notice = null) }
             val snapshot = mutableState.value
             val candidates = authentication.findTenantCandidates(snapshot.account)
+            ensureRequestCurrent(request)
             val available = candidates.filterNot { it.tenantEnterStatus == 1 || it.tenantEnterStatus == 2 }
             when {
                 candidates.isEmpty() -> {
                     authentication.cancelTenantSelection()
-                    fail(BusinessLoginErrorCode.ACCOUNT_NOT_FOUND)
+                    failIfCurrent(request, BusinessLoginErrorCode.ACCOUNT_NOT_FOUND)
                 }
                 available.isEmpty() -> {
                     authentication.cancelTenantSelection()
-                    update { copy(tenantCandidates = candidates.toStates()) }
-                    fail(BusinessLoginErrorCode.TENANT_UNAVAILABLE)
+                    updateIfCurrent(request) { copy(tenantCandidates = candidates.toStates()) }
+                    failIfCurrent(request, BusinessLoginErrorCode.TENANT_UNAVAILABLE)
                 }
-                available.size == 1 -> authenticate(snapshot, available.single())
+                available.size == 1 -> authenticate(snapshot, available.single(), request)
                 else -> {
                     authentication.enterTenantSelection()
-                    update { copy(tenantCandidates = candidates.toStates()) }
+                    updateIfCurrent(request) { copy(tenantCandidates = candidates.toStates()) }
                 }
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: BusinessAuthenticationException) {
-            if (failure.code == BusinessLoginErrorCode.INVALID_CREDENTIALS) clearPassword()
-            fail(failure.code)
+            if (failure.code == BusinessLoginErrorCode.INVALID_CREDENTIALS) clearPasswordIfCurrent(request)
+            failIfCurrent(request, failure.code)
         } catch (_: Throwable) {
-            fail(BusinessLoginErrorCode.REMOTE_UNAVAILABLE)
+            failIfCurrent(request, BusinessLoginErrorCode.REMOTE_UNAVAILABLE)
         } finally {
-            update { copy(submitting = false) }
+            updateIfCurrent(request) { copy(submitting = false) }
+            endRequest(request)
             requestMutex.unlock()
         }
     }
@@ -181,26 +201,32 @@ class BusinessLoginController(
         if (closed.get() || mutableState.value.submitting) return
         val option = mutableState.value.tenantCandidates.firstOrNull { it.candidate == candidate } ?: return
         if (!option.enabled || !requestMutex.tryLock()) return
+        val request = beginRequest() ?: run {
+            requestMutex.unlock()
+            return
+        }
         try {
-            update { copy(submitting = true, error = null, notice = null) }
-            authenticate(mutableState.value, candidate)
+            updateIfCurrent(request) { copy(submitting = true, error = null, notice = null) }
+            authenticate(mutableState.value, candidate, request)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: BusinessAuthenticationException) {
-            if (failure.code == BusinessLoginErrorCode.INVALID_CREDENTIALS) clearPassword()
-            fail(failure.code)
+            if (failure.code == BusinessLoginErrorCode.INVALID_CREDENTIALS) clearPasswordIfCurrent(request)
+            failIfCurrent(request, failure.code)
         } catch (_: Throwable) {
-            fail(BusinessLoginErrorCode.REMOTE_UNAVAILABLE)
+            failIfCurrent(request, BusinessLoginErrorCode.REMOTE_UNAVAILABLE)
         } finally {
-            update { copy(submitting = false) }
+            updateIfCurrent(request) { copy(submitting = false) }
+            endRequest(request)
             requestMutex.unlock()
         }
     }
 
     fun cancelTenantSelection() {
-        authentication.cancelTenantSelection()
-        update {
-            copy(
+        synchronized(requestLock) {
+            if (closed.get()) return
+            authentication.cancelTenantSelection()
+            mutableState.value = mutableState.value.copy(
                 tenantCandidates = emptyList(),
                 error = null,
                 notice = BusinessLoginMessage(BusinessLoginErrorCode.TENANT_SELECTION_CANCELLED),
@@ -208,30 +234,50 @@ class BusinessLoginController(
         }
     }
 
-    fun clearSensitiveInput() = clearPassword()
+    fun clearSensitiveInput() = updateIfOpen { copy(password = "") }
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
-        clearPassword()
+        val job = synchronized(requestLock) {
+            requestGeneration += 1
+            val active = activeRequestJob
+            activeRequestJob = null
+            mutableState.value = mutableState.value.copy(
+                password = "",
+                slider = BusinessSliderState.IDLE,
+                submitting = false,
+                tenantCandidates = emptyList(),
+            )
+            active
+        }
+        job?.cancel(CancellationException("Login controller closed"))
     }
 
     override fun toString(): String = "BusinessLoginController(state=[REDACTED])"
 
-    private suspend fun authenticate(snapshot: BusinessLoginState, candidate: OaTenantCandidate) {
+    private suspend fun authenticate(
+        snapshot: BusinessLoginState,
+        candidate: OaTenantCandidate,
+        request: Request,
+    ) {
         val password = snapshot.password.toCharArray()
         val authenticationPassword = password.copyOf()
         try {
             authentication.authenticate(snapshot.account, authenticationPassword, candidate)
+            ensureRequestCurrent(request)
             if (authentication.gate.value != BusinessAccessGateState.READY) {
                 throw BusinessAuthenticationException(BusinessLoginErrorCode.AGENT_REGISTRATION_FAILED)
             }
-            clearPassword()
-            if (snapshot.remember) {
-                rememberedLogin.saveOrReplace(snapshot.account, password)
-            } else {
-                rememberedLogin.clear()
+            clearPasswordIfCurrent(request)
+            synchronized(requestLock) {
+                checkRequestCurrentLocked(request)
+                if (snapshot.remember) {
+                    rememberedLogin.saveOrReplace(snapshot.account, password)
+                } else {
+                    rememberedLogin.clear()
+                }
             }
-            update { copy(tenantCandidates = emptyList(), error = null, notice = null) }
+            updateIfCurrent(request) { copy(tenantCandidates = emptyList(), error = null, notice = null) }
         } catch (failure: LocalCredentialStoreUnavailableException) {
             throw BusinessAuthenticationException(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
         } finally {
@@ -240,10 +286,53 @@ class BusinessLoginController(
         }
     }
 
-    private fun clearPassword() = update { copy(password = "") }
-    private fun fail(code: BusinessLoginErrorCode) = update { copy(error = BusinessLoginMessage(code), notice = null) }
-    private fun update(transform: BusinessLoginState.() -> BusinessLoginState) {
-        mutableState.value = mutableState.value.transform()
+    private suspend fun beginRequest(): Request? {
+        val context = currentCoroutineContext()
+        context.ensureActive()
+        val job = context[Job] ?: error("Login request requires a coroutine Job")
+        return synchronized(requestLock) {
+            if (closed.get() || activeRequestJob?.isActive == true) return@synchronized null
+            requestGeneration += 1
+            activeRequestJob = job
+            Request(requestGeneration, job)
+        }
+    }
+
+    private fun ensureRequestCurrent(request: Request) = synchronized(requestLock) {
+        checkRequestCurrentLocked(request)
+    }
+
+    private fun checkRequestCurrentLocked(request: Request) {
+        if (closed.get() || !request.job.isActive || request.generation != requestGeneration || activeRequestJob !== request.job) {
+            throw CancellationException("Login request superseded")
+        }
+    }
+
+    private fun endRequest(request: Request) = synchronized(requestLock) {
+        if (request.generation == requestGeneration && activeRequestJob === request.job) activeRequestJob = null
+    }
+
+    private fun updateIfOpen(transform: BusinessLoginState.() -> BusinessLoginState) = synchronized(requestLock) {
+        if (!closed.get()) mutableState.value = mutableState.value.transform()
+    }
+
+    private fun updateIfCurrent(request: Request, transform: BusinessLoginState.() -> BusinessLoginState) =
+        synchronized(requestLock) {
+            if (
+                !closed.get() &&
+                request.generation == requestGeneration &&
+                activeRequestJob === request.job
+            ) {
+                mutableState.value = mutableState.value.transform()
+            }
+        }
+
+    private fun clearPasswordIfCurrent(request: Request) = updateIfCurrent(request) { copy(password = "") }
+    private fun failIfOpen(code: BusinessLoginErrorCode) = updateIfOpen {
+        copy(error = BusinessLoginMessage(code), notice = null)
+    }
+    private fun failIfCurrent(request: Request, code: BusinessLoginErrorCode) = updateIfCurrent(request) {
+        copy(error = BusinessLoginMessage(code), notice = null)
     }
 
     private fun validate(state: BusinessLoginState): BusinessLoginErrorCode? = when {
@@ -263,4 +352,6 @@ class BusinessLoginController(
         val EMAIL = Regex("^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+$")
         val PASSWORD = Regex("^(?=.*[A-Za-z])(?=.*[0-9])[A-Za-z0-9]{8,16}$")
     }
+
+    private data class Request(val generation: Long, val job: Job)
 }

@@ -225,7 +225,54 @@ class AuthSessionManager(
         mutableIdentity.value = null
     }
 
-    /** 将当前认证收束为普通凭据失效，并删除本地身份和凭据。 */
+    /**
+     * Fail-closed local revocation for security compensation paths.
+     *
+     * Unlike [logout], the in-memory token and identity become unusable even when durable deletion fails.
+     * The durable failure is rethrown only after the in-memory authority has been revoked.
+     */
+    suspend fun failClosedRevoke() = mutex.withLock {
+        failClosedRevokeLocked()
+    }
+
+    /** Revokes only the exact identity owned by a superseded authentication operation. */
+    suspend fun failClosedRevokeIfCurrent(
+        expectedAuthSessionId: String,
+        expectedIdentityEpoch: Long,
+    ): Boolean = mutex.withLock {
+        val current = mutableIdentity.value
+        if (
+            current?.authSessionId != expectedAuthSessionId ||
+            current.identityEpoch != expectedIdentityEpoch
+        ) {
+            return@withLock false
+        }
+        failClosedRevokeLocked()
+        true
+    }
+
+    private suspend fun failClosedRevokeLocked() {
+        val previousState = mutableState.value
+        val previousIdentity = mutableIdentity.value
+        val nextEpoch = identityEpoch + 1
+        credentialSnapshot = CredentialSnapshot(tokens = null, readable = false, requestIdentity = null)
+        identityEpoch = nextEpoch
+        mutableState.value = AuthenticationState.SIGNED_OUT
+        mutableIdentity.value = null
+        if (previousIdentity != null || previousState != AuthenticationState.SIGNED_OUT) {
+            publishTransition(
+                AuthIdentityTransition(
+                    previousIdentity = previousIdentity,
+                    currentIdentity = null,
+                    identityEpoch = nextEpoch,
+                    fromState = previousState,
+                    toState = AuthenticationState.SIGNED_OUT,
+                ),
+            )
+        }
+        credentialPersistence.clear()
+    }
+
     suspend fun expireAuthentication() = expire(AuthenticationState.EXPIRED)
 
     /** 将当前认证收束为会员失效，并保留独立终态供 UI 和策略判断。 */

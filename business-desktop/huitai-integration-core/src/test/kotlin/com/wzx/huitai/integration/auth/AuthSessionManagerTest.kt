@@ -661,6 +661,41 @@ class AuthSessionManagerTest {
         assertEquals(before, manager.requestIdentitySnapshot())
     }
 
+    @Test
+    fun `fail closed revoke removes in memory identity and token even when durable clear fails`() = runTest {
+        val persistence = RecordingCredentialPersistence()
+        val manager = AuthSessionManager(persistence)
+        val tokenProvider: AuthTokenProvider = manager
+        manager.login(tokens = tokenSet("fail-closed"), identity = identityArguments)
+        persistence.failClear = true
+
+        assertFailsWith<IllegalStateException> { manager.failClosedRevoke() }
+
+        assertEquals(AuthenticationState.SIGNED_OUT, manager.state.value)
+        assertNull(manager.identity.value)
+        assertNull(tokenProvider.accessToken())
+        assertNull(tokenProvider.refreshToken())
+    }
+
+    @Test
+    fun `conditional fail closed revoke cannot clear a replacement identity`() = runTest {
+        val persistence = RecordingCredentialPersistence()
+        val manager = AuthSessionManager(persistence)
+        val tokenProvider: AuthTokenProvider = manager
+        manager.login(tokens = tokenSet("old"), identity = identityArguments)
+        val old = assertNotNull(manager.identity.value)
+        val replacementArguments = identityArguments.copy(tenantId = "tenant-replacement")
+        refreshWith(manager, tokenSet("replacement"), replacementArguments)
+        val replacement = assertNotNull(manager.identity.value)
+
+        assertFalse(manager.failClosedRevokeIfCurrent(old.authSessionId, old.identityEpoch))
+
+        assertEquals(replacement, manager.identity.value)
+        assertEquals("access-replacement", tokenProvider.accessToken())
+        assertEquals("refresh-replacement", tokenProvider.refreshToken())
+        assertEquals(AuthenticationState.AUTHENTICATED, manager.state.value)
+    }
+
     private companion object {
         val identityArguments = IdentityArguments(
             userId = "user-1",

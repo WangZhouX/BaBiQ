@@ -5,7 +5,9 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -167,6 +169,50 @@ class BusinessLoginControllerTest {
         assertFalse(controller.toString().contains(secret))
     }
 
+    @Test
+    fun `close cancels active request and late cancellation ignoring result cannot save or mutate state`() = runTest {
+        val authentication = FakeAuthenticationOperations(candidates = listOf(candidate("tenant-1"))).apply {
+            authenticateStarted = CompletableDeferred()
+            authenticateRelease = CompletableDeferred()
+            ignoreAuthenticateCancellation = true
+        }
+        val remembered = FakeRememberedLoginPort()
+        val controller = validController(authentication, remembered)
+        controller.submit()
+        val request = async { controller.completeSlider(true) }
+        authentication.authenticateStarted!!.await()
+
+        controller.close()
+        controller.updateAccount("late@example.com")
+        controller.updatePassword("latepass8")
+        controller.updateAgreement(false)
+        controller.updateRemember(false)
+        controller.dismissSlider()
+        controller.cancelTenantSelection()
+        authentication.authenticateRelease!!.complete(Unit)
+        assertFailsWith<CancellationException> { request.await() }
+
+        assertEquals("lawyer@example.com", controller.state.value.account)
+        assertEquals("", controller.state.value.password)
+        assertFalse(controller.state.value.submitting)
+        assertTrue(controller.state.value.agreementAccepted)
+        assertTrue(controller.state.value.remember)
+        assertTrue(remembered.saved.isEmpty())
+        assertEquals(0, remembered.clearCount)
+    }
+
+    @Test
+    fun `remembered login value close is idempotent and rejects later password copies`() {
+        val source = "password8".toCharArray()
+        val remembered = RememberedLoginValue("lawyer@example.com", source)
+        source.fill('x')
+        remembered.close()
+        remembered.close()
+
+        val failure = assertFailsWith<IllegalStateException> { remembered.copyPassword() }
+        assertFalse(failure.toString().contains("password8"))
+    }
+
     private fun validController(
         authentication: FakeAuthenticationOperations,
         remembered: FakeRememberedLoginPort = FakeRememberedLoginPort(),
@@ -194,6 +240,9 @@ class BusinessLoginControllerTest {
         var findStarted: CompletableDeferred<Unit>? = null
         var findRelease: CompletableDeferred<Unit>? = null
         var authenticateFailure: Throwable? = null
+        var authenticateStarted: CompletableDeferred<Unit>? = null
+        var authenticateRelease: CompletableDeferred<Unit>? = null
+        var ignoreAuthenticateCancellation = false
 
         override suspend fun findTenantCandidates(account: String): List<OaTenantCandidate> {
             calls += "find"
@@ -222,6 +271,13 @@ class BusinessLoginControllerTest {
         override suspend fun authenticate(account: String, password: CharArray, candidate: OaTenantCandidate) {
             try {
                 calls += "authenticate:${candidate.tenantId}"
+                authenticateStarted?.complete(Unit)
+                try {
+                    authenticateRelease?.await()
+                } catch (cancelled: CancellationException) {
+                    if (!ignoreAuthenticateCancellation) throw cancelled
+                    withContext(NonCancellable) { authenticateRelease?.await() }
+                }
                 authenticateFailure?.let { throw it }
                 gate.value = BusinessAccessGateState.READY
             } finally {
