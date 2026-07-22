@@ -259,6 +259,31 @@ class BusinessAuthenticationOrchestratorTest {
     }
 
     @Test
+    fun `logout stays fail closed when pre execution cancellation cannot be completed`() = runTest {
+        val fixture = Fixture()
+        fixture.verify()
+        fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+        fixture.actions.cancelFailure = IllegalStateException("cas retry exhausted")
+
+        val failure = assertFailsWith<BusinessAuthenticationException> {
+            fixture.orchestrator.logout()
+        }
+
+        assertEquals(BusinessLoginErrorCode.ACTION_REVOCATION_FAILED, failure.code)
+        assertEquals(BusinessAccessGateState.SIGNING_OUT, fixture.orchestrator.gate.value)
+        assertNull(fixture.registry.currentIdentity())
+        assertNull(fixture.sessionManager.identity.value)
+        assertNull(fixture.credentials.tokens)
+        assertNull(fixture.metadata.value)
+        assertTrue("signed-out" in fixture.registration.calls)
+        assertTrue("clear-workspace" in fixture.registration.calls)
+        val newLogin = assertFailsWith<BusinessAuthenticationException> {
+            fixture.orchestrator.findTenantCandidates("lawyer@example.com")
+        }
+        assertEquals(BusinessLoginErrorCode.AUTHENTICATION_IN_PROGRESS, newLogin.code)
+    }
+
+    @Test
     fun `concurrent logout and expiry share one revocation and keep login closed until cleanup finishes`() = runTest {
         val fixture = Fixture().apply {
             registration.publishSignedOutStarted = CompletableDeferred()
@@ -1487,6 +1512,7 @@ class BusinessAuthenticationOrchestratorTest {
         var detachThrowsCancellation = false
         var cancelCancelsContext = false
         var detachCancelsContext = false
+        var cancelFailure: Throwable? = null
         var cancelCount = 0
         var detachCount = 0
         override suspend fun cancelPreExecution(identityScope: ActionIdentityScope, states: Set<ActionExecutionState>) {
@@ -1497,6 +1523,7 @@ class BusinessAuthenticationOrchestratorTest {
                 currentCoroutineContext().cancel(CancellationException("adapter cancelled child context"))
                 yield()
             }
+            cancelFailure?.let { throw it }
             cancelledScope = identityScope
             cancelledStates = states
         }

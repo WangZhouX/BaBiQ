@@ -6,6 +6,7 @@ import com.wzx.huitai.action.model.ActionResult
 import com.wzx.huitai.action.port.ActionAuditDraft
 import com.wzx.huitai.action.port.ActionExecutionStore
 import com.wzx.huitai.action.port.ExecutionTransition
+import com.wzx.huitai.action.port.ExecutionTransitionResult
 import com.wzx.huitai.action.port.ScopedActionExecutionQuery
 import com.wzx.huitai.integration.identity.IdentityBoundaryActionPort
 import java.time.Instant
@@ -17,16 +18,28 @@ class ProductionIdentityBoundaryActionAdapter(
     private val executionStore: ActionExecutionStore,
     private val query: ScopedActionExecutionQuery,
     private val now: () -> Instant = Instant::now,
+    private val maxCancellationAttempts: Int = 4,
 ) : IdentityBoundaryActionPort {
+    init {
+        require(maxCancellationAttempts > 0) { "maxCancellationAttempts must be positive" }
+    }
+
     override suspend fun cancelPreExecution(
         identityScope: ActionIdentityScope,
         states: Set<ActionExecutionState>,
     ) {
-        query.listNonTerminal(identityScope)
-            .filter { it.state in states && it.state != ActionExecutionState.EXECUTING }
-            .forEach { record ->
+        repeat(maxCancellationAttempts) { attempt ->
+            var conflicted = false
+            val targets = query.listNonTerminal(identityScope)
+                .filter { record ->
+                    record.command.identityScope == identityScope &&
+                        record.state in states &&
+                        record.state != ActionExecutionState.EXECUTING
+                }
+            if (targets.isEmpty()) return
+            targets.forEach { record ->
                 val at = now()
-                executionStore.transition(
+                when (executionStore.transition(
                     ExecutionTransition(
                         executionId = record.command.executionId,
                         expectedVersion = record.recordVersion,
@@ -44,8 +57,21 @@ class ProductionIdentityBoundaryActionAdapter(
                             occurredAt = at,
                         ),
                     ),
+                )) {
+                    is ExecutionTransitionResult.Updated,
+                    is ExecutionTransitionResult.ExistingTerminal,
+                    -> Unit
+                    is ExecutionTransitionResult.Conflict -> conflicted = true
+                }
+            }
+            if (!conflicted) return
+            if (attempt == maxCancellationAttempts - 1) {
+                throw IllegalStateException(
+                    "Identity-scoped pre-execution cancellation remained conflicted after " +
+                        "$maxCancellationAttempts attempts",
                 )
             }
+        }
     }
 
     override suspend fun detachExecutingForReconciliation(identityScope: ActionIdentityScope) {

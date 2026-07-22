@@ -573,7 +573,7 @@ class BusinessAuthenticationOrchestrator(
                 safeToRelease = false,
             )
         }
-        revoked.identity?.let { revokeActionsBestEffort(it) }
+        val actionRevocationComplete = revoked.identity?.let { revokeActionsFailClosed(it) } ?: true
         boundedCleanup { registration.publishSignedOut() }
         boundedCleanup { registration.clearWorkspace() }
         if (remoteLogout) boundedCandidateLogout(revoked.candidate)
@@ -581,6 +581,7 @@ class BusinessAuthenticationOrchestrator(
         val durableFailure = !markerRevoked && !(tokenRecordCleared && metadataRecordCleared)
         val visibleError = when {
             persistenceFailure -> BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE
+            !actionRevocationComplete -> BusinessLoginErrorCode.ACTION_REVOCATION_FAILED
             reason == RevocationReason.AUTH_EXPIRED -> BusinessLoginErrorCode.AUTH_EXPIRED
             reason == RevocationReason.MEMBERSHIP_EXPIRED -> BusinessLoginErrorCode.MEMBERSHIP_EXPIRED
             reason == RevocationReason.LOCAL_KEYSTORE_UNAVAILABLE -> BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE
@@ -590,8 +591,12 @@ class BusinessAuthenticationOrchestrator(
         }
         return RevocationOutcome(
             visibleError = visibleError,
-            terminalFailure = BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE.takeIf { durableFailure },
-            safeToRelease = true,
+            terminalFailure = when {
+                durableFailure -> BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE
+                !actionRevocationComplete -> BusinessLoginErrorCode.ACTION_REVOCATION_FAILED
+                else -> null
+            },
+            safeToRelease = actionRevocationComplete,
         )
     }
 
@@ -716,6 +721,14 @@ class BusinessAuthenticationOrchestrator(
         boundedCleanup { actions.detachExecutingForReconciliation(identity.actionScope()) }
     }
 
+    private suspend fun revokeActionsFailClosed(identity: BusinessIdentity): Boolean {
+        val preExecutionCanceled = boundedRequiredCleanup {
+            actions.cancelPreExecution(identity.actionScope(), PRE_EXECUTION_STATES)
+        }
+        boundedCleanup { actions.detachExecutingForReconciliation(identity.actionScope()) }
+        return preExecutionCanceled
+    }
+
     private suspend fun boundedCandidateLogout(candidate: OaCandidateAccess?) {
         if (candidate == null) return
         boundedCleanup(remoteLogoutTimeoutMillis) { candidateAuthentication.logout(candidate) }
@@ -739,6 +752,24 @@ class BusinessAuthenticationOrchestrator(
             }
         }
     }
+
+    private suspend fun boundedRequiredCleanup(
+        timeoutMillis: Long = cleanupStepTimeoutMillis,
+        block: suspend () -> Unit,
+    ): Boolean = withTimeoutOrNull(timeoutMillis) {
+        supervisorScope {
+            val adapter = async { block() }
+            try {
+                adapter.await()
+                true
+            } catch (cancelled: CancellationException) {
+                if (!currentCoroutineContext().isActive) throw cancelled
+                false
+            } catch (_: Throwable) {
+                false
+            }
+        }
+    } ?: false
 
     private suspend fun beginOperation(
         target: BusinessAccessGateState,

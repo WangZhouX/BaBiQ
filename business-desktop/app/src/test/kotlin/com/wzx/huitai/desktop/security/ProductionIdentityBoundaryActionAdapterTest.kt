@@ -2,6 +2,8 @@ package com.wzx.huitai.desktop.security
 
 import com.wzx.huitai.action.model.ActionCommand
 import com.wzx.huitai.action.model.ActionExecutionState
+import com.wzx.huitai.action.model.ActionError
+import com.wzx.huitai.action.model.ActionErrorCode
 import com.wzx.huitai.action.model.ActionIdentityScope
 import com.wzx.huitai.action.model.ActionOrigin
 import com.wzx.huitai.action.model.ActionRiskLevel
@@ -9,12 +11,18 @@ import com.wzx.huitai.action.model.ActionResult
 import com.wzx.huitai.action.port.ActionAuditDraft
 import com.wzx.huitai.action.port.ActionExecutionRecord
 import com.wzx.huitai.action.port.ExecutionBinding
+import com.wzx.huitai.action.port.ExecutionTransition
+import com.wzx.huitai.action.port.ExecutionTransitionResult
+import com.wzx.huitai.action.port.ActionExecutionStore
+import com.wzx.huitai.action.port.ScopedActionExecutionQuery
 import com.wzx.huitai.security.execution.InMemoryActionExecutionStore
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNull
+import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -41,6 +49,118 @@ class ProductionIdentityBoundaryActionAdapterTest {
         assertEquals(ActionExecutionState.EXECUTING, requireNotNull(store.find("executing", oldScope)).state)
         assertEquals(ActionExecutionState.WAITING_APPROVAL, requireNotNull(store.find("newer", newScope)).state)
         assertNull(adapter.result("newer", oldScope))
+    }
+
+    @Test
+    fun `revocation rereads the complete old scope after a cas conflict and cancels the advanced record`() = runTest {
+        val backing = InMemoryActionExecutionStore()
+        val oldScope = scope("old-auth", 1)
+        val newScope = scope("new-auth", 2)
+        val stale = record("stale", oldScope, ActionExecutionState.RECEIVED)
+        val newer = record("newer", newScope, ActionExecutionState.RECEIVED)
+        listOf(stale, newer).forEach { backing.compareAndCreate(it, createAudit(it)) }
+        var firstTransition = true
+        val store = object : ActionExecutionStore by backing {
+            override suspend fun transition(update: ExecutionTransition): ExecutionTransitionResult {
+                if (firstTransition) {
+                    firstTransition = false
+                    val advancedAt = NOW.plusMillis(500)
+                    backing.transition(
+                        ExecutionTransition(
+                            executionId = update.executionId,
+                            expectedVersion = update.expectedVersion,
+                            state = ActionExecutionState.VALIDATING,
+                            updatedAt = advancedAt,
+                            audit = ActionAuditDraft(
+                                executionId = update.executionId,
+                                fromState = ActionExecutionState.RECEIVED,
+                                toState = ActionExecutionState.VALIDATING,
+                                type = "validation_started",
+                                redactedPayload = JsonObject(emptyMap()),
+                                actorId = null,
+                                occurredAt = advancedAt,
+                            ),
+                        ),
+                    )
+                }
+                return backing.transition(update)
+            }
+        }
+        val queriedScopes = mutableListOf<ActionIdentityScope>()
+        val query = object : ScopedActionExecutionQuery {
+            override suspend fun find(
+                executionId: String,
+                identityScope: ActionIdentityScope,
+            ): ActionExecutionRecord? = backing.find(executionId, identityScope)
+
+            override suspend fun listNonTerminal(identityScope: ActionIdentityScope): List<ActionExecutionRecord> {
+                queriedScopes += identityScope
+                return backing.listNonTerminal(identityScope) + listOfNotNull(backing.find("newer", newScope))
+            }
+        }
+        val adapter = ProductionIdentityBoundaryActionAdapter(store, query, now = { NOW.plusSeconds(1) })
+
+        adapter.cancelPreExecution(
+            oldScope,
+            setOf(ActionExecutionState.RECEIVED, ActionExecutionState.VALIDATING),
+        )
+
+        assertEquals(listOf(oldScope, oldScope), queriedScopes)
+        assertEquals(ActionExecutionState.CANCELED, requireNotNull(backing.find("stale", oldScope)).state)
+        assertEquals(ActionExecutionState.RECEIVED, requireNotNull(backing.find("newer", newScope)).state)
+    }
+
+    @Test
+    fun `revocation stops after a finite number of conflicts and fails closed`() = runTest {
+        val backing = InMemoryActionExecutionStore()
+        val oldScope = scope("old-auth", 1)
+        val stale = record("stale", oldScope, ActionExecutionState.RECEIVED)
+        backing.compareAndCreate(stale, createAudit(stale))
+        var transitionCalls = 0
+        val store = object : ActionExecutionStore by backing {
+            override suspend fun transition(update: ExecutionTransition): ExecutionTransitionResult {
+                transitionCalls += 1
+                return ExecutionTransitionResult.Conflict(
+                    ActionError(ActionErrorCode.EXECUTION_CONFLICT, "forced conflict"),
+                )
+            }
+        }
+        val adapter = ProductionIdentityBoundaryActionAdapter(
+            executionStore = store,
+            query = backing,
+            maxCancellationAttempts = 3,
+        )
+
+        val failure = assertFailsWith<IllegalStateException> {
+            adapter.cancelPreExecution(oldScope, setOf(ActionExecutionState.RECEIVED))
+        }
+
+        assertEquals(3, transitionCalls)
+        assertTrue(failure.message.orEmpty().contains("3 attempts"))
+        assertEquals(ActionExecutionState.RECEIVED, requireNotNull(backing.find("stale", oldScope)).state)
+    }
+
+    @Test
+    fun `revocation does not swallow scoped query failures`() = runTest {
+        val store = InMemoryActionExecutionStore()
+        val oldScope = scope("old-auth", 1)
+        val query = object : ScopedActionExecutionQuery {
+            override suspend fun find(
+                executionId: String,
+                identityScope: ActionIdentityScope,
+            ): ActionExecutionRecord? = null
+
+            override suspend fun listNonTerminal(identityScope: ActionIdentityScope): List<ActionExecutionRecord> {
+                throw IllegalStateException("query unavailable")
+            }
+        }
+        val adapter = ProductionIdentityBoundaryActionAdapter(store, query)
+
+        val failure = assertFailsWith<IllegalStateException> {
+            adapter.cancelPreExecution(oldScope, setOf(ActionExecutionState.RECEIVED))
+        }
+
+        assertEquals("query unavailable", failure.message)
     }
 
     private fun record(

@@ -19,6 +19,7 @@ enum class BusinessLoginErrorCode {
     LOCAL_CREDENTIAL_STORE_FAILED,
     LOCAL_KEYSTORE_UNAVAILABLE,
     AGENT_REGISTRATION_FAILED,
+    ACTION_REVOCATION_FAILED,
     AUTH_EXPIRED,
     MEMBERSHIP_EXPIRED,
     REMEMBERED_LOGIN_INVALID,
@@ -75,6 +76,7 @@ internal fun BusinessLoginErrorCode.defaultMessage(): String = when (this) {
     BusinessLoginErrorCode.LOCAL_CREDENTIAL_STORE_FAILED -> "本地凭据保存失败"
     BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE -> "本地安全存储不可用"
     BusinessLoginErrorCode.AGENT_REGISTRATION_FAILED -> "智能助手初始化失败，请重新登录"
+    BusinessLoginErrorCode.ACTION_REVOCATION_FAILED -> "未能安全终止旧的业务操作，请重启桌面端"
     BusinessLoginErrorCode.AUTH_EXPIRED -> "登录已过期，请重新登录"
     BusinessLoginErrorCode.MEMBERSHIP_EXPIRED -> "当前成员身份已失效，请重新登录"
     BusinessLoginErrorCode.REMEMBERED_LOGIN_INVALID -> "已保存的登录信息无效，请重新输入"
