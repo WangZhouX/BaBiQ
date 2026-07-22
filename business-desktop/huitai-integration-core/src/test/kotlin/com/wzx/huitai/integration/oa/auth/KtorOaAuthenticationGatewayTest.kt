@@ -3,6 +3,7 @@ package com.wzx.huitai.integration.oa.auth
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandleScope
 import io.ktor.client.engine.mock.respond
+import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.request.HttpRequestData
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
@@ -257,14 +258,13 @@ class KtorOaAuthenticationGatewayTest {
     }
 
     @Test
-    fun `public factories return isolated narrow ports rather than cross castable concrete gateway`() {
-        val engine = MockEngine { respondJson("""{"code":200,"msg":"ok","data":true}""") }
-        val pre: OaPreAuthenticationGateway = OaAuthenticationGatewayFactory.preAuthentication(
+    fun `public bundle owns one client exposes isolated ports and closes idempotently`() {
+        val engine = CloseCountingEngine(MockEngine { respondJson("""{"code":200,"msg":"ok","data":true}""") })
+        val bundle: OaAuthenticationGatewayBundle = OaAuthenticationGatewayFactory.create(
             "https://oa.example.test", "/api", 7, 3_000, engine,
         )
-        val candidate: OaCandidateAuthenticationGateway = OaAuthenticationGatewayFactory.candidateAuthentication(
-            "https://oa.example.test", "/api", 7, 3_000, engine,
-        )
+        val pre: OaPreAuthenticationGateway = bundle.preAuthentication
+        val candidate: OaCandidateAuthenticationGateway = bundle.candidateAuthentication
 
         assertFalse(pre is OaCandidateAuthenticationGateway)
         assertFalse(candidate is OaPreAuthenticationGateway)
@@ -273,6 +273,40 @@ class KtorOaAuthenticationGatewayTest {
         val publicFactoryMethods = OaAuthenticationGatewayFactory::class.java.methods
             .filter { it.declaringClass == OaAuthenticationGatewayFactory::class.java }
         assertTrue(publicFactoryMethods.none { it.returnType == KtorOaAuthenticationGateway::class.java })
+
+        bundle.close()
+        bundle.close()
+
+        assertEquals(1, engine.closeCalls)
+    }
+
+    @Test
+    fun `encodes plus slash equals spaces and Unicode in auth query parameters`() = runBlocking {
+        val requests = mutableListOf<HttpRequestData>()
+        val gateway = gateway(MockEngine { request ->
+            requests += request
+            when (request.url.encodedPath) {
+                "/api/system/auth/get-users-by-mobile" -> respondJson(
+                    """{"code":200,"msg":"ok","data":[{"userId":"u-1","tenantId":"t-1","platformId":7,"tenantEnterStatus":1}]}""",
+                )
+                else -> respondJson(
+                    """{"code":200,"msg":"ok","data":{"accessToken":"access-2","refreshToken":"refresh-2","userId":"u-1","expiresTime":456}}""",
+                )
+            }
+        })
+        val mobile = "+8613800138000"
+        val refreshToken = "refresh+ / =空格雪"
+
+        gateway.findTenantCandidates(mobile)
+        gateway.refresh("t-1", refreshToken)
+
+        assertEquals(mobile, requests[0].url.parameters["mobile"])
+        assertEquals("mobile=%2B8613800138000", requests[0].url.encodedQuery)
+        assertEquals(refreshToken, requests[1].url.parameters["refreshToken"])
+        assertEquals(
+            "refreshToken=refresh%2B+%2F+%3D%E7%A9%BA%E6%A0%BC%E9%9B%AA",
+            requests[1].url.encodedQuery,
+        )
     }
 
     private fun gateway(engine: MockEngine, requestTimeoutMs: Long = 3_000) = KtorOaAuthenticationGateway(
@@ -291,4 +325,16 @@ class KtorOaAuthenticationGatewayTest {
 
     private suspend fun authFailure(block: suspend () -> Any?): OaAuthenticationException =
         assertFailsWith { block() }
+
+    private class CloseCountingEngine(
+        private val delegate: HttpClientEngine,
+    ) : HttpClientEngine by delegate {
+        var closeCalls: Int = 0
+            private set
+
+        override fun close() {
+            closeCalls += 1
+            delegate.close()
+        }
+    }
 }

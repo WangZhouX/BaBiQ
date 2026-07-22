@@ -30,6 +30,7 @@ import java.io.IOException
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.nio.channels.UnresolvedAddressException
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 独立于 READY 会话的 OA 认证协议客户端。
@@ -43,6 +44,8 @@ internal class KtorOaAuthenticationGateway(
     requestTimeoutMs: Long,
     engine: HttpClientEngine = CIO.create(),
 ) : OaPreAuthenticationGateway, OaCandidateAuthenticationGateway, AutoCloseable {
+    private val closed = AtomicBoolean(false)
+    private val ownedEngine = engine
     private val endpointBase = endpointBase(baseUrl, apiPrefix)
     private val json = Json { ignoreUnknownKeys = true }
     private val httpClient = HttpClient(engine) {
@@ -117,7 +120,12 @@ internal class KtorOaAuthenticationGateway(
         }
     }
 
-    override fun close() = httpClient.close()
+    override fun close() {
+        if (closed.compareAndSet(false, true)) {
+            httpClient.close()
+            ownedEngine.close()
+        }
+    }
 
     private suspend fun successData(response: io.ktor.client.statement.HttpResponse): JsonElement {
         if (response.status.value !in 200..299) protocolError()
