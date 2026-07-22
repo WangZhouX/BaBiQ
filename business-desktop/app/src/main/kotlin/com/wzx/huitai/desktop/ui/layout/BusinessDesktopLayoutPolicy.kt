@@ -15,11 +15,13 @@ data class BusinessDesktopDockLayout(
 
 /** 业务区与小律助手之间的停靠布局策略，所有输入和输出单位均为 dp。 */
 object BusinessDesktopLayoutPolicy {
+    val navigationWidth: Dp = 210.dp
     val minimumBusinessWidth: Dp = 640.dp
     val minimumAssistantWidth: Dp = 360.dp
     val maximumAssistantWidth: Dp = 720.dp
     val dividerWidth: Dp = 8.dp
     val defaultAssistantWidth: Dp = 460.dp
+    val collapsedAssistantWidth: Dp = 124.dp
     val expandThreshold: Dp = minimumBusinessWidth + dividerWidth + minimumAssistantWidth
 
     /**
@@ -104,14 +106,17 @@ object BusinessDesktopLayoutPolicy {
     private fun collapsedLayout(
         availableWidth: Dp,
         canExpand: Boolean,
-    ): BusinessDesktopDockLayout = BusinessDesktopDockLayout(
-        availableWidth = availableWidth,
-        businessWidth = availableWidth,
-        dividerWidth = 0.dp,
-        assistantWidth = 0.dp,
-        canExpand = canExpand,
-        assistantExpanded = false,
-    )
+    ): BusinessDesktopDockLayout {
+        val assistantWidth = minOf(collapsedAssistantWidth, availableWidth)
+        return BusinessDesktopDockLayout(
+            availableWidth = availableWidth,
+            businessWidth = availableWidth - assistantWidth,
+            dividerWidth = 0.dp,
+            assistantWidth = assistantWidth,
+            canExpand = canExpand,
+            assistantExpanded = false,
+        )
+    }
 
     /** 只检查固定数量的相邻 Float 候选，不做不受控的 ULP 搜索。 */
     private fun exactAssistantWidth(
