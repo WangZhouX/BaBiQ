@@ -61,6 +61,7 @@ class ApplicationActionRequestHandler(
     private val rpc: AgentJsonRpcClient,
     private val runtime: ApplicationActionExecutionRuntime,
     private val trustedIdentity: () -> TrustedApplicationIdentity,
+    private val authenticationGate: ApplicationAuthenticationGate = ApplicationAuthenticationGate.trustedBy(trustedIdentity),
     private val nextSequence: () -> Long,
     private val now: () -> Instant,
     scope: CoroutineScope,
@@ -81,6 +82,7 @@ class ApplicationActionRequestHandler(
         executionStore: ActionExecutionStore,
         scopedQuery: ScopedActionExecutionQuery,
         trustedIdentity: () -> TrustedApplicationIdentity,
+        authenticationGate: ApplicationAuthenticationGate = ApplicationAuthenticationGate.trustedBy(trustedIdentity),
         nextSequence: () -> Long,
         now: () -> Instant,
         scope: CoroutineScope,
@@ -100,6 +102,7 @@ class ApplicationActionRequestHandler(
             completedCapacity,
         ),
         trustedIdentity = trustedIdentity,
+        authenticationGate = authenticationGate,
         nextSequence = nextSequence,
         now = now,
         scope = scope,
@@ -148,9 +151,14 @@ class ApplicationActionRequestHandler(
         }
         when (request.method) {
             ApplicationMethod.ACTION_REQUEST.wireName -> {
-                val identity = trustedIdentity()
-                if (!isTrusted(envelope, identity.scope)) rpc.respondProtocolError(request.id, PROTOCOL_ERROR_REASON)
-                else handleStart(request.id, envelope, identity)
+                val authentication = authenticationGate.captureIfReady()
+                if (authentication == null || !authenticationGate.isCurrent(authentication)) {
+                    rpc.respondProtocolError(request.id, AUTH_REQUIRED_REASON)
+                } else if (!isTrusted(envelope, authentication.identity.scope)) {
+                    rpc.respondProtocolError(request.id, PROTOCOL_ERROR_REASON)
+                } else {
+                    handleStart(request.id, envelope, authentication)
+                }
             }
             ApplicationMethod.ACTION_CANCEL.wireName -> handleCancel(request.id, envelope)
             ApplicationMethod.ACTION_STATUS.wireName -> handleStatus(request.id, envelope)
@@ -168,11 +176,16 @@ class ApplicationActionRequestHandler(
     private suspend fun handleStart(
         requestId: Long,
         envelope: ActionEnvelope,
-        identity: TrustedApplicationIdentity,
+        authentication: ApplicationAuthenticationSnapshot,
     ) {
+        val identity = authentication.identity
         val decoded = runCatching { decode(envelope, identity) }.getOrNull()
         if (decoded == null) {
             rpc.respondProtocolError(requestId)
+            return
+        }
+        if (!authenticationGate.isCurrent(authentication)) {
+            rpc.respondProtocolError(requestId, AUTH_REQUIRED_REASON)
             return
         }
         val correlation = envelope.correlation()
@@ -307,6 +320,7 @@ class ApplicationActionRequestHandler(
     }
 
     private companion object {
+        const val AUTH_REQUIRED_REASON = "auth_required"
         const val PROTOCOL_ERROR_REASON = "identity_scope_invalid"
     }
 }

@@ -64,6 +64,30 @@ import kotlinx.serialization.json.put
 @OptIn(ExperimentalCoroutinesApi::class)
 class ApplicationActionRequestHandlerTest {
     @Test
+    fun `action request while authentication is not ready returns stable auth required without reading identity or executing`() = runTest {
+        val gate = object : ApplicationAuthenticationGate {
+            override fun captureIfReady(): ApplicationAuthenticationSnapshot? = null
+
+            override fun isCurrent(snapshot: ApplicationAuthenticationSnapshot): Boolean = false
+        }
+        val fixture = Fixture(backgroundScope, authenticationGate = gate)
+        fixture.identityProvider = { error("identity must not be read while authentication is not ready") }
+
+        fixture.serverRequest("not-ready", ApplicationMethod.ACTION_REQUEST, requestEnvelope(sequence = 1))
+        runCurrent()
+
+        val error = fixture.response("not-ready").getValue("error").jsonObject
+        assertEquals(-32041, error.getValue("code").jsonPrimitive.content.toInt())
+        assertEquals("PROTOCOL_ERROR", error.getValue("message").jsonPrimitive.content)
+        assertEquals(
+            "auth_required",
+            error.getValue("data").jsonObject.getValue("reason").jsonPrimitive.content,
+        )
+        assertEquals(0, fixture.executor.calls)
+        fixture.close()
+    }
+
+    @Test
     fun `turn start attachment responses and errors never enter application action audit routing`() = runTest {
         val fixture = Fixture(backgroundScope)
         val privatePath = "C:\\Users\\secret\\customer-contract.pdf"
@@ -939,6 +963,7 @@ class ApplicationActionRequestHandlerTest {
         scope: kotlinx.coroutines.CoroutineScope,
         cleanupTimeoutMillis: Long = 2_000,
         completedCapacity: Int = 1_024,
+        authenticationGate: ApplicationAuthenticationGate? = null,
     ) {
         val connection = RecordingConnection()
         val rpc = AgentJsonRpcClient(connection, scope, requestTimeoutMillis = 1_000)
@@ -954,6 +979,7 @@ class ApplicationActionRequestHandlerTest {
             executionStore = store,
             scopedQuery = store,
             trustedIdentity = { identityProvider() },
+            authenticationGate = authenticationGate ?: ApplicationAuthenticationGate.trustedBy { identityProvider() },
             nextSequence = sequence::incrementAndGet,
             now = { NOW },
             scope = scope,
