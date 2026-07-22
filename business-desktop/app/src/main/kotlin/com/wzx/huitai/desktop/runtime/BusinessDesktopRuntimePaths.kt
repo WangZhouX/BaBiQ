@@ -31,6 +31,7 @@ class BusinessDesktopRuntimePaths private constructor(
     val desktopLog: Path,
     val desktopInstanceLock: Path,
     val desktopInstallationId: Path,
+    val desktopConfiguration: Path,
 ) {
     override fun toString(): String = "BusinessDesktopRuntimePaths(root=[REDACTED])"
 
@@ -64,6 +65,7 @@ class BusinessDesktopRuntimePaths private constructor(
                 desktopLog = desktop.resolve("logs/desktop.log"),
                 desktopInstanceLock = desktop.resolve("instance.lock"),
                 desktopInstallationId = desktop.resolve("installation-id"),
+                desktopConfiguration = desktop.resolve("config/business-desktop.properties"),
             )
             result.prepareDirectories()
             return result
@@ -99,6 +101,7 @@ class BusinessDesktopRuntimePaths private constructor(
             desktopDatabase.parent,
             desktopKeyStore.parent,
             desktopLog.parent,
+            desktopConfiguration.parent,
         )
         val controlledLeaves = linkedSetOf(
             agentDatabase,
@@ -112,6 +115,7 @@ class BusinessDesktopRuntimePaths private constructor(
             desktopLog,
             desktopInstanceLock,
             desktopInstallationId,
+            desktopConfiguration,
         )
         rejectExistingLinks(directories + controlledLeaves)
         directories.forEach(Files::createDirectories)

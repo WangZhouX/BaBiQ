@@ -37,6 +37,10 @@ class BusinessDesktopRuntimePathsTest {
         assertEquals(root.resolve("desktop/logs/desktop.log"), paths.desktopLog)
         assertEquals(root.resolve("desktop/instance.lock"), paths.desktopInstanceLock)
         assertEquals(root.resolve("desktop/installation-id"), paths.desktopInstallationId)
+        assertEquals(
+            root.resolve("desktop/config/business-desktop.properties"),
+            paths.desktopConfiguration,
+        )
 
         assertTrue(paths.agentMemoryRoot.exists())
         assertTrue(paths.agentTeamRoot.exists())
@@ -92,6 +96,23 @@ class BusinessDesktopRuntimePathsTest {
         Files.createDirectories(desktop)
         val leaf = desktop.resolve("installation-id")
         val linkCreated = runCatching { Files.createSymbolicLink(leaf, outside) }.isSuccess
+        if (!linkCreated) return
+
+        assertFailsWith<IllegalArgumentException> {
+            BusinessDesktopRuntimePaths.create(home)
+        }
+        assertEquals("outside-value", Files.readString(outside))
+    }
+
+    @Test
+    fun `rejects a controlled desktop configuration symbolic link without touching its target`() {
+        val home = Files.createTempDirectory("huitai-linked-config-home")
+        val outside = Files.createTempFile("huitai-outside-config", ".properties")
+        Files.writeString(outside, "outside-value")
+        val configDirectory = home.resolve(".huitai-agent-desktop/desktop/config")
+        Files.createDirectories(configDirectory)
+        val link = configDirectory.resolve("business-desktop.properties")
+        val linkCreated = runCatching { Files.createSymbolicLink(link, outside) }.isSuccess
         if (!linkCreated) return
 
         assertFailsWith<IllegalArgumentException> {
