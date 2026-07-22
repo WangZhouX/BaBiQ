@@ -38,6 +38,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.serialization.json.buildJsonObject
@@ -183,6 +184,40 @@ class BusinessDesktopCoordinatorTest {
         assertTrue(state.suggestions.isEmpty())
         assertTrue(state.providers.isEmpty())
         assertNull(state.activeProviderId)
+    }
+
+    @Test
+    fun `logout clear and suggestion update are linearized under one identity owner`() = runTest {
+        val suggestionEntered = CompletableDeferred<Unit>()
+        val releaseSuggestion = CompletableDeferred<Unit>()
+        val store = BusinessDesktopStore(BusinessDesktopReducer())
+        val workspace = BusinessWorkspaceController(
+            store,
+            BusinessContextPublicationPort { _, _, _, _ -> },
+            RecordingActionPort(),
+            beforeSuggestionDispatch = {
+                suggestionEntered.complete(Unit)
+                releaseSuggestion.await()
+            },
+        )
+        workspace.attachPublishedIdentity(identity(1), 1, page(1), 1, 1)
+
+        val update = async {
+            workspace.updateSuggestions(
+                listOf(BusinessFieldSuggestion("name", JsonPrimitive("stale"), "agent")),
+            )
+        }
+        suggestionEntered.await()
+        val clear = async { workspace.clearIdentity(2) }
+        runCurrent()
+
+        assertFalse(clear.isCompleted)
+        releaseSuggestion.complete(Unit)
+        update.await()
+        clear.await()
+
+        assertTrue(store.state.value.suggestions.isEmpty())
+        assertNull(store.state.value.identity)
     }
 
     @Test

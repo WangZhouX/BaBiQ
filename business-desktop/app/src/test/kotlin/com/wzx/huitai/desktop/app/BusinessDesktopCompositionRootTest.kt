@@ -422,7 +422,7 @@ class BusinessDesktopCompositionRootTest {
             .filter { it["method"]?.jsonPrimitive?.content == "application/context/publish" }
             .takeLast(2)
             .map { it.getValue("params").jsonObject }
-        assertEquals(listOf(1L, 1L), reconnectContexts.map { it.getValue("contextSequence").jsonPrimitive.long })
+        assertEquals(listOf(3L, 3L), reconnectContexts.map { it.getValue("contextSequence").jsonPrimitive.long })
         assertEquals(7, reconnectContexts.last().getValue("payload").jsonObject.getValue("fields").jsonArray.size)
         assertEquals(BusinessConnectionStatus.CONNECTED, view.desktopState.value.connectionStatus)
         val identitySessions = republished
@@ -454,7 +454,7 @@ class BusinessDesktopCompositionRootTest {
             .filter { it["method"]?.jsonPrimitive?.content == "application/context/publish" }
             .drop(contextCountBeforeConcurrentReconnect)
             .map { it.getValue("params").jsonObject.getValue("contextSequence").jsonPrimitive.long }
-        assertEquals(listOf(1L, 4L), serializedReconnectContexts)
+        assertEquals(listOf(3L, 4L), serializedReconnectContexts)
 
         val decisionResponder = launch {
             view.decisions.state.collect { decisionState ->

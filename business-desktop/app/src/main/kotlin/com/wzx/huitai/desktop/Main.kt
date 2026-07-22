@@ -176,7 +176,9 @@ fun main() {
                             }
                         },
                         onSuggestionsChanged = { suggestions ->
-                            view.production.workspaceController.updateSuggestions(suggestions.values.toList())
+                            uiScope.launch {
+                                view.production.workspaceController.updateSuggestions(suggestions.values.toList())
+                            }
                         },
                         onAcceptSuggestion = { fieldId, baseRevision ->
                             val installed = storage.screen.state.value.suggestionPatch

@@ -40,6 +40,7 @@ class BusinessWorkspaceController(
     private val contextPublication: BusinessContextPublicationPort,
     private val actionPort: UserApplicationActionPort,
     private val nextContextSequence: (() -> Long)? = null,
+    private val beforeSuggestionDispatch: suspend () -> Unit = {},
 ) {
     private val stateMutex = Mutex()
     private val publicationMutex = Mutex()
@@ -132,8 +133,9 @@ class BusinessWorkspaceController(
         }
     }
 
-    fun updateSuggestions(suggestions: List<BusinessFieldSuggestion>) {
-        if (activeIdentity == null) return
+    suspend fun updateSuggestions(suggestions: List<BusinessFieldSuggestion>) = stateMutex.withLock {
+        if (activeIdentity == null) return@withLock
+        beforeSuggestionDispatch()
         store.dispatch(BusinessDesktopEvent.SuggestionsChanged(suggestions))
     }
 
