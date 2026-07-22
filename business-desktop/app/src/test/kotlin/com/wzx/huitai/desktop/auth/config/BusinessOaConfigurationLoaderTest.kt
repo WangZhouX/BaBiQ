@@ -5,9 +5,6 @@ import java.io.ByteArrayInputStream
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.io.path.exists
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -44,31 +41,22 @@ class BusinessOaConfigurationLoaderTest {
     }
 
     @Test
-    fun `configuration created after initial check wins bootstrap race and is not overwritten`() {
+    fun `configuration created after final check wins atomic install race and is not overwritten`() {
         val paths = paths()
-        val moveReached = CountDownLatch(1)
-        val userConfigurationWritten = CountDownLatch(1)
-        val result = AtomicReference<BusinessOaConfiguration>()
-        val loader = object : BusinessOaConfigurationLoader(
-            environment = emptyMap(),
-            bundledDefault = { ByteArrayInputStream(validProperties().toByteArray()) },
-        ) {
-            override fun moveTemporaryConfigurationIfAbsent(temporary: Path, target: Path): Boolean {
-                moveReached.countDown()
-                assertTrue(userConfigurationWritten.await(5, TimeUnit.SECONDS))
-                return super.moveTemporaryConfigurationIfAbsent(temporary, target)
+        val fileOperations = object : BusinessOaConfigurationBootstrapFileOperations by
+            NioBusinessOaConfigurationBootstrapFileOperations {
+            override fun createLink(target: Path, temporary: Path) {
+                Files.writeString(target, validProperties(baseUrl = "https://user-won.example.test"))
+                NioBusinessOaConfigurationBootstrapFileOperations.createLink(target, temporary)
             }
         }
+        val loader = BusinessOaConfigurationLoader(
+            environment = emptyMap(),
+            bundledDefault = { ByteArrayInputStream(validProperties().toByteArray()) },
+            bootstrapInstaller = AtomicBusinessOaConfigurationBootstrap(fileOperations),
+        )
 
-        val bootstrap = Thread { result.set(loader.load(paths)) }
-        bootstrap.start()
-        assertTrue(moveReached.await(5, TimeUnit.SECONDS))
-        Files.writeString(paths.desktopConfiguration, validProperties(baseUrl = "https://user-won.example.test"))
-        userConfigurationWritten.countDown()
-        bootstrap.join(5_000)
-
-        assertFalse(bootstrap.isAlive)
-        assertEquals("https://user-won.example.test", result.get().baseUrl)
+        assertEquals("https://user-won.example.test", loader.load(paths).baseUrl)
         assertEquals("https://user-won.example.test", loader().load(paths).baseUrl)
         assertNoBootstrapTemporaryFiles(paths)
     }
@@ -76,15 +64,18 @@ class BusinessOaConfigurationLoaderTest {
     @Test
     fun `write failure removes bootstrap temporary file`() {
         val paths = paths()
-        val loader = object : BusinessOaConfigurationLoader(
-            environment = emptyMap(),
-            bundledDefault = { ByteArrayInputStream(validProperties().toByteArray()) },
-        ) {
-            override fun writeTemporaryConfiguration(temporary: Path, source: java.io.InputStream) {
+        val fileOperations = object : BusinessOaConfigurationBootstrapFileOperations by
+            NioBusinessOaConfigurationBootstrapFileOperations {
+            override fun writeAndForce(temporary: Path, source: java.io.InputStream) {
                 Files.writeString(temporary, "partial")
                 throw IOException("injected write failure")
             }
         }
+        val loader = BusinessOaConfigurationLoader(
+            environment = emptyMap(),
+            bundledDefault = { ByteArrayInputStream(validProperties().toByteArray()) },
+            bootstrapInstaller = AtomicBusinessOaConfigurationBootstrap(fileOperations),
+        )
 
         assertCode(BusinessOaConfigurationErrorCode.CONFIG_UNAVAILABLE) { loader.load(paths) }
         assertFalse(paths.desktopConfiguration.exists())
@@ -92,16 +83,19 @@ class BusinessOaConfigurationLoaderTest {
     }
 
     @Test
-    fun `move failure removes bootstrap temporary file`() {
+    fun `link install failure removes bootstrap temporary file`() {
         val paths = paths()
-        val loader = object : BusinessOaConfigurationLoader(
-            environment = emptyMap(),
-            bundledDefault = { ByteArrayInputStream(validProperties().toByteArray()) },
-        ) {
-            override fun moveTemporaryConfigurationIfAbsent(temporary: Path, target: Path): Boolean {
-                throw IOException("injected move failure")
+        val fileOperations = object : BusinessOaConfigurationBootstrapFileOperations by
+            NioBusinessOaConfigurationBootstrapFileOperations {
+            override fun createLink(target: Path, temporary: Path) {
+                throw IOException("injected link failure")
             }
         }
+        val loader = BusinessOaConfigurationLoader(
+            environment = emptyMap(),
+            bundledDefault = { ByteArrayInputStream(validProperties().toByteArray()) },
+            bootstrapInstaller = AtomicBusinessOaConfigurationBootstrap(fileOperations),
+        )
 
         assertCode(BusinessOaConfigurationErrorCode.CONFIG_UNAVAILABLE) { loader.load(paths) }
         assertFalse(paths.desktopConfiguration.exists())
