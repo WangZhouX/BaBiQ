@@ -57,7 +57,12 @@ class BusinessConversationController(
 
     /** 接受设置控制器已加载且通过连接代次校验的 Provider 快照，不发起第二次网络请求。 */
     fun acceptProviders(providers: List<BusinessProvider>) {
-        val authentication = usageGate.requireReady()
+        val authentication = usageGate.captureIfReady()
+        if (authentication == null && providers.isEmpty()) {
+            store.dispatch(BusinessDesktopEvent.ProvidersChanged(emptyList()))
+            return
+        }
+        authentication ?: throw AgentAuthenticationRequiredException()
         if (!usageGate.commitIfCurrent(authentication) {
                 store.dispatch(BusinessDesktopEvent.ProvidersChanged(providers))
             }

@@ -7,6 +7,8 @@ import com.wzx.huitai.action.model.ActionReplayPolicy
 import com.wzx.huitai.action.model.ReconciliationPolicy
 import com.wzx.huitai.action.port.ActionClock
 import com.wzx.huitai.agent.application.ApplicationActionRequestHandler
+import com.wzx.huitai.agent.application.ApplicationAuthenticationGate
+import com.wzx.huitai.agent.application.ApplicationAuthenticationSnapshot
 import com.wzx.huitai.agent.application.ApplicationCatalogClient
 import com.wzx.huitai.agent.application.ApplicationContextClient
 import com.wzx.huitai.agent.application.ApplicationIdentityClient
@@ -42,6 +44,7 @@ import com.wzx.huitai.desktop.auth.BusinessLoginMessage
 import com.wzx.huitai.desktop.auth.CoordinatorAgentRegistrationTransactionAdapter
 import com.wzx.huitai.desktop.auth.BusinessRegistrationWatermarks
 import com.wzx.huitai.desktop.auth.ReadyAgentUsageGate
+import com.wzx.huitai.desktop.auth.ReadyAuthenticatedHttpGate
 import com.wzx.huitai.desktop.auth.config.BusinessOaConfiguration
 import com.wzx.huitai.desktop.auth.config.BusinessOaConfigurationLoader
 import com.wzx.huitai.desktop.decision.ComposeActionDecisionCoordinator
@@ -408,6 +411,7 @@ class ProductionUiComponents internal constructor(
     val attachmentPicker: BusinessAttachmentPicker,
     val loginController: BusinessLoginController,
     internal val authenticationOrchestrator: BusinessAuthenticationOrchestrator,
+    val authenticatedHttpGate: ReadyAuthenticatedHttpGate,
     val authenticationGate: StateFlow<BusinessAccessGateState>,
     val authenticationError: StateFlow<BusinessLoginMessage?>,
     val identityRegistry: BusinessIdentityRegistry,
@@ -764,6 +768,25 @@ class ProductionBusinessDesktopCompositionFactory(
                 }
                 TrustedApplicationIdentity(active.actionScope(), active.permissions)
             },
+            authenticationGate = object : ApplicationAuthenticationGate {
+                override fun captureIfReady(): ApplicationAuthenticationSnapshot? =
+                    agentUsageGate.captureIfReady()?.let { ready ->
+                        ApplicationAuthenticationSnapshot(
+                            identity = TrustedApplicationIdentity(
+                                ready.identity.actionScope(),
+                                ready.identity.permissions,
+                            ),
+                            generation = ready.generation,
+                        )
+                    }
+
+                override fun isCurrent(snapshot: ApplicationAuthenticationSnapshot): Boolean {
+                    val current = agentUsageGate.captureIfReady() ?: return false
+                    return current.generation == snapshot.generation &&
+                        current.identity.actionScope() == snapshot.identity.scope &&
+                        current.identity.permissions == snapshot.identity.permissions
+                }
+            },
             nextSequence = ::nextSequence,
             now = Instant::now,
             scope = scope,
@@ -820,6 +843,11 @@ class ProductionBusinessDesktopCompositionFactory(
             desktopSessionId = this.child.identity.desktopSessionId,
             platformId = oaConfiguration.platformId,
         )
+        val authenticatedHttpGate = ReadyAuthenticatedHttpGate(
+            usageGate = agentUsageGate,
+            onAuthenticationExpired = orchestrator::onAuthenticationExpired,
+            onMembershipExpired = orchestrator::onMembershipExpired,
+        )
         loginController = BusinessLoginController(
             authentication = orchestrator,
             store = BusinessLoginCredentialStore(this.storage.secretStore),
@@ -861,6 +889,7 @@ class ProductionBusinessDesktopCompositionFactory(
             attachmentPicker = BusinessAttachmentPicker(idFactory = attachmentIdFactory),
             loginController = loginController,
             authenticationOrchestrator = orchestrator,
+            authenticatedHttpGate = authenticatedHttpGate,
             authenticationGate = identityRegistry.gate,
             authenticationError = orchestrator.lastError,
             identityRegistry = identityRegistry,

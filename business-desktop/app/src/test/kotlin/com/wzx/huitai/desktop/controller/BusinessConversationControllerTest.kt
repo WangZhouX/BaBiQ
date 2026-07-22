@@ -22,12 +22,14 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class BusinessConversationControllerTest {
     @Test
     fun `start turn forwards immutable attachment metadata to the gateway`() = runTest {
@@ -131,6 +133,20 @@ class BusinessConversationControllerTest {
         controller.close()
     }
 
+    @Test
+    fun `provider cleanup remains allowed after the ready gate closes`() = runTest {
+        val gateway = RecordingGateway()
+        val store = BusinessDesktopStore(BusinessDesktopReducer())
+        store.dispatch(BusinessDesktopEvent.ProvidersChanged(listOf(provider())))
+        val registry = BusinessIdentityRegistry().apply { transitionTo(BusinessAccessGateState.SIGNING_OUT) }
+        val controller = BusinessConversationController(gateway, store, ReadyAgentUsageGate(registry), this)
+
+        controller.acceptProviders(emptyList())
+
+        assertEquals(emptyList(), store.state.value.providers)
+        controller.close()
+    }
+
     private class RecordingGateway : BusinessConversationGateway {
         val mutableEvents = MutableSharedFlow<BusinessAgentEvent>(extraBufferCapacity = 8)
         override val events: Flow<BusinessAgentEvent> = mutableEvents
@@ -170,6 +186,17 @@ class BusinessConversationControllerTest {
         localPath = "C:/private/合同.pdf",
         sizeBytes = 5,
         displayType = "PDF",
+    )
+
+    private fun provider() = BusinessProvider(
+        id = "provider-1",
+        displayName = "Provider",
+        models = emptyList(),
+        authMode = "api_key",
+        hasApiKey = true,
+        active = true,
+        type = "OPENAI_COMPATIBLE",
+        model = "model-1",
     )
 
     private fun readyRegistry(identity: BusinessIdentity = identity()): BusinessIdentityRegistry =
