@@ -25,9 +25,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.io.IOException
 import java.net.ConnectException
@@ -39,7 +36,7 @@ import java.nio.channels.UnresolvedAddressException
  *
  * 构造参数由 app 层已经校验的配置拆开传入，避免 integration-core 依赖 app 模块。
  */
-class KtorOaAuthenticationGateway(
+internal class KtorOaAuthenticationGateway(
     baseUrl: String,
     apiPrefix: String,
     private val platformId: Int,
@@ -67,7 +64,10 @@ class KtorOaAuthenticationGateway(
             },
         )
         val candidates = (data as? JsonArray)?.map(::candidateFrom) ?: protocolError()
-        if (candidates.isEmpty() || candidates.map { it.userId to it.tenantId }.toSet().size != candidates.size) {
+        if (candidates.isEmpty()) {
+            throw OaAuthenticationException(OaAuthenticationError.ACCOUNT_NOT_FOUND)
+        }
+        if (candidates.map { it.userId to it.tenantId }.toSet().size != candidates.size) {
             protocolError()
         }
         candidates
@@ -131,10 +131,9 @@ class KtorOaAuthenticationGateway(
             protocolError()
         }
         val code = root["code"].scalar() ?: protocolError()
-        val message = root["msg"].scalar() ?: protocolError()
-        val data = root["data"]?.takeUnless { it is JsonNull } ?: protocolError()
+        val message = root.requiredString("msg")
         if (code != "200") throw OaAuthenticationException(businessError(code, message))
-        return data
+        return root["data"]?.takeUnless { it is JsonNull } ?: protocolError()
     }
 
     private fun candidateFrom(value: JsonElement): OaTenantCandidate {
@@ -163,12 +162,12 @@ class KtorOaAuthenticationGateway(
 
     private fun permissionFrom(value: JsonElement, expectedUserId: String): OaPermissionInfo {
         val source = value as? JsonObject ?: protocolError()
-        val user = source["user"]?.jsonObject ?: protocolError()
+        val user = source["user"] as? JsonObject ?: protocolError()
         val id = user.requiredString("id")
         if (id != expectedUserId) protocolError()
         val permissions = source.requiredStringSet("permissions")
         val roles = source.requiredStringSet("roles")
-        val menus = source["menus"]?.jsonArray?.toList() ?: protocolError()
+        val menus = (source["menus"] as? JsonArray)?.toList() ?: protocolError()
         return OaPermissionInfo(permissions, roles, OaPermissionUser(id, user.optionalString("name")), menus)
     }
 
@@ -188,18 +187,41 @@ class KtorOaAuthenticationGateway(
         throw OaAuthenticationException(OaAuthenticationError.REMOTE_UNAVAILABLE)
     } catch (_: IOException) {
         throw OaAuthenticationException(OaAuthenticationError.REMOTE_UNAVAILABLE)
+    } catch (error: Error) {
+        throw error
+    } catch (_: Throwable) {
+        throw OaAuthenticationException(OaAuthenticationError.REMOTE_PROTOCOL_ERROR)
     }
 
-    private fun JsonObject.requiredString(name: String): String = this[name].scalar()?.takeIf(String::isNotBlank) ?: protocolError()
+    private fun JsonObject.requiredString(name: String): String =
+        (this[name] as? JsonPrimitive)
+            ?.takeIf(JsonPrimitive::isString)
+            ?.contentOrNull
+            ?.takeIf(String::isNotBlank)
+            ?: protocolError()
 
-    private fun JsonObject.optionalString(name: String): String? = this[name]?.scalar()?.takeIf(String::isNotBlank)
+    private fun JsonObject.optionalString(name: String): String? {
+        val value = this[name] ?: return null
+        if (value is JsonNull) return null
+        return (value as? JsonPrimitive)
+            ?.takeIf(JsonPrimitive::isString)
+            ?.contentOrNull
+            ?.takeIf(String::isNotBlank)
+            ?: protocolError()
+    }
 
     private fun JsonObject.requiredInt(name: String): Int = this[name].scalar()?.toIntOrNull() ?: protocolError()
 
     private fun JsonObject.requiredLong(name: String): Long = this[name].scalar()?.toLongOrNull() ?: protocolError()
 
     private fun JsonObject.requiredStringSet(name: String): Set<String> =
-        (this[name] as? JsonArray)?.map { it.scalar()?.takeIf(String::isNotBlank) ?: protocolError() }?.toSet() ?: protocolError()
+        (this[name] as? JsonArray)?.map {
+            (it as? JsonPrimitive)
+                ?.takeIf(JsonPrimitive::isString)
+                ?.contentOrNull
+                ?.takeIf(String::isNotBlank)
+                ?: protocolError()
+        }?.toSet() ?: protocolError()
 
     private fun JsonElement?.scalar(): String? = (this as? JsonPrimitive)?.contentOrNull
 

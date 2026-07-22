@@ -6,7 +6,12 @@ import java.security.MessageDigest
 object OaPasswordEncoder {
     fun encode(password: CharArray): String {
         try {
-            if (password.size !in 8..16 || password.none { it.isAsciiLetter() } || password.none { it.isDigit() }) {
+            if (
+                password.size !in 8..16 ||
+                password.any { !it.isAsciiLetter() && !it.isAsciiDigit() } ||
+                password.none { it.isAsciiLetter() } ||
+                password.none { it.isAsciiDigit() }
+            ) {
                 throw OaAuthenticationException(OaAuthenticationError.INVALID_PASSWORD_FORMAT)
             }
             val passwordBytes = password.toUtf8Bytes()
@@ -43,6 +48,8 @@ object OaPasswordEncoder {
     }
 
     private fun Char.isAsciiLetter(): Boolean = this in 'a'..'z' || this in 'A'..'Z'
+
+    private fun Char.isAsciiDigit(): Boolean = this in '0'..'9'
 
     private fun ByteArray.toLowerHexChars(): CharArray {
         val result = CharArray(size * 2)
