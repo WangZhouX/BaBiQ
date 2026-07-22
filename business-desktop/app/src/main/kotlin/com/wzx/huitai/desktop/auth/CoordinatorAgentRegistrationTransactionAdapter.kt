@@ -8,11 +8,27 @@ import com.wzx.huitai.presentation.context.PageContextSnapshot
 /** Bridges authentication's two-phase contract to the desktop coordinator's owner-scoped transaction. */
 class CoordinatorAgentRegistrationTransactionAdapter(
     private val coordinator: BusinessDesktopCoordinator,
-    private val catalogEpoch: Long,
+    private val watermarks: () -> BusinessRegistrationWatermarks,
     private val initialPage: (BusinessIdentity) -> PageContextSnapshot,
 ) : BusinessAgentRegistrationTransactionPort {
+    constructor(
+        coordinator: BusinessDesktopCoordinator,
+        catalogEpoch: Long,
+        initialPage: (BusinessIdentity) -> PageContextSnapshot,
+    ) : this(
+        coordinator,
+        { BusinessRegistrationWatermarks(catalogEpoch, 1) },
+        initialPage,
+    )
+
     override suspend fun prepare(identity: BusinessIdentity): BusinessAgentRegistrationTransaction {
-        val delegate = coordinator.prepareRegistration(identity, catalogEpoch, initialPage(identity))
+        val watermarks = watermarks()
+        val delegate = coordinator.prepareRegistration(
+            identity,
+            watermarks.catalogEpoch,
+            initialPage(identity),
+            watermarks.contextSequence,
+        )
         return Transaction(delegate)
     }
 
@@ -28,5 +44,15 @@ class CoordinatorAgentRegistrationTransactionAdapter(
         override suspend fun registerInitialContext() = delegate.registerInitialContext()
         override suspend fun commit() = delegate.commit()
         override suspend fun rollback() = delegate.rollback()
+    }
+}
+
+data class BusinessRegistrationWatermarks(
+    val catalogEpoch: Long,
+    val contextSequence: Long,
+) {
+    init {
+        require(catalogEpoch > 0) { "catalogEpoch must be positive" }
+        require(contextSequence > 0) { "contextSequence must be positive" }
     }
 }

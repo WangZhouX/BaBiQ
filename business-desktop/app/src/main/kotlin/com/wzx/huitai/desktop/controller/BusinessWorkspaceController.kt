@@ -39,6 +39,7 @@ class BusinessWorkspaceController(
     private val store: BusinessDesktopStore,
     private val contextPublication: BusinessContextPublicationPort,
     private val actionPort: UserApplicationActionPort,
+    private val nextContextSequence: (() -> Long)? = null,
 ) {
     private val stateMutex = Mutex()
     private val publicationMutex = Mutex()
@@ -108,7 +109,7 @@ class BusinessWorkspaceController(
                 lifecycleGeneration = lifecycleGeneration,
                 identity = identity,
                 catalogEpoch = catalogEpoch,
-                contextSequence = contextSequence + 1,
+                contextSequence = nextContextSequence?.invoke() ?: contextSequence + 1,
                 key = key,
             )
         } ?: return@withLock false
@@ -147,6 +148,13 @@ class BusinessWorkspaceController(
         require(contextSequence > 0) { "contextSequence must be positive" }
         contextPublication.publish(identity, catalogEpoch, contextSequence, snapshot)
     }
+
+    suspend fun registrationSnapshot(identity: BusinessIdentity): BusinessWorkspaceRegistration? =
+        stateMutex.withLock {
+            if (activeIdentity != identity || catalogEpoch <= 0 || contextSequence <= 0) return@withLock null
+            val page = state.value.page ?: return@withLock null
+            BusinessWorkspaceRegistration(identity, catalogEpoch, contextSequence, page)
+        }
 
     suspend fun executeUserAction(
         executionId: String,
@@ -209,3 +217,10 @@ class BusinessWorkspaceController(
         val key: PublicationKey,
     )
 }
+
+data class BusinessWorkspaceRegistration(
+    val identity: BusinessIdentity,
+    val catalogEpoch: Long,
+    val contextSequence: Long,
+    val snapshot: PageContextSnapshot,
+)

@@ -89,8 +89,9 @@ class BusinessDesktopCoordinator(
         identity: BusinessIdentity,
         catalogEpoch: Long,
         initialPage: PageContextSnapshot,
+        initialContextSequence: Long = 1,
     ) {
-        val transaction = prepareRegistration(identity, catalogEpoch, initialPage)
+        val transaction = prepareRegistration(identity, catalogEpoch, initialPage, initialContextSequence)
         try {
             transaction.registerIdentity()
             transaction.registerCapabilityCatalog()
@@ -108,8 +109,10 @@ class BusinessDesktopCoordinator(
         identity: BusinessIdentity,
         catalogEpoch: Long,
         initialPage: PageContextSnapshot,
+        initialContextSequence: Long = 1,
     ): ProvisionalBusinessRegistrationTransaction {
         require(catalogEpoch > 0) { "catalogEpoch must be positive" }
+        require(initialContextSequence > 0) { "initialContextSequence must be positive" }
         val owner = Any()
         registrationMutex.lock(owner)
         return try {
@@ -117,7 +120,14 @@ class BusinessDesktopCoordinator(
                 check(!shutdown) { "Business desktop is shut down" }
                 ++identityGeneration
             }
-            CoordinatorRegistrationTransaction(owner, generation, identity, catalogEpoch, initialPage)
+            CoordinatorRegistrationTransaction(
+                owner,
+                generation,
+                identity,
+                catalogEpoch,
+                initialPage,
+                initialContextSequence,
+            )
         } catch (failure: Throwable) {
             registrationMutex.unlock(owner)
             throw failure
@@ -186,6 +196,7 @@ class BusinessDesktopCoordinator(
         private val identity: BusinessIdentity,
         private val catalogEpoch: Long,
         private val initialPage: PageContextSnapshot,
+        private val initialContextSequence: Long,
     ) : ProvisionalBusinessRegistrationTransaction {
         private val transactionMutex = Mutex()
         private var stage = RegistrationStage.PREPARED
@@ -210,7 +221,7 @@ class BusinessDesktopCoordinator(
         override suspend fun registerInitialContext() = transactionMutex.withLock {
             check(stage == RegistrationStage.CATALOG) { "context registration is out of order" }
             checkCurrent()
-            workspace.publishProvisionalPage(identity, catalogEpoch, initialPage)
+            workspace.publishProvisionalPage(identity, catalogEpoch, initialPage, initialContextSequence)
             checkCurrent()
             stage = RegistrationStage.CONTEXT
         }
@@ -224,7 +235,7 @@ class BusinessDesktopCoordinator(
                     catalogEpoch = catalogEpoch,
                     snapshot = initialPage,
                     lifecycleGeneration = generation,
-                    publishedContextSequence = 1,
+                    publishedContextSequence = initialContextSequence,
                 ),
             ) { "registration ownership changed before commit" }
             stage = RegistrationStage.COMMITTED

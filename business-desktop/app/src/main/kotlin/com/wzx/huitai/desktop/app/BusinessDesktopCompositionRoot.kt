@@ -40,6 +40,7 @@ import com.wzx.huitai.desktop.auth.BusinessIdentityRegistry
 import com.wzx.huitai.desktop.auth.BusinessLoginController
 import com.wzx.huitai.desktop.auth.BusinessLoginMessage
 import com.wzx.huitai.desktop.auth.CoordinatorAgentRegistrationTransactionAdapter
+import com.wzx.huitai.desktop.auth.BusinessRegistrationWatermarks
 import com.wzx.huitai.desktop.auth.config.BusinessOaConfiguration
 import com.wzx.huitai.desktop.auth.config.BusinessOaConfigurationLoader
 import com.wzx.huitai.desktop.decision.ComposeActionDecisionCoordinator
@@ -405,6 +406,7 @@ class ProductionUiComponents internal constructor(
     val clipboardImageAttachmentStore: ClipboardImageAttachmentStore,
     val attachmentPicker: BusinessAttachmentPicker,
     val loginController: BusinessLoginController,
+    internal val authenticationOrchestrator: BusinessAuthenticationOrchestrator,
     val authenticationGate: StateFlow<BusinessAccessGateState>,
     val authenticationError: StateFlow<BusinessLoginMessage?>,
     val identityRegistry: BusinessIdentityRegistry,
@@ -428,6 +430,7 @@ class ProductionBusinessDesktopCompositionFactory(
     private val scope = CoroutineScope(parentScope.coroutineContext.minusKey(Job) + scopeJob)
     private val envelopeSequence = AtomicLong(0)
     private val identityEpochSequence = AtomicLong(0)
+    private val registrationWatermarkSequence = AtomicLong(0)
     private lateinit var storage: ProductionStorageComponents
     private lateinit var child: BusinessAgentChildHandle
     private lateinit var agentConnection: BusinessAgentConnectionHandle
@@ -439,13 +442,14 @@ class ProductionBusinessDesktopCompositionFactory(
     private val identityRegistry = BusinessIdentityRegistry()
     private lateinit var oaConfiguration: BusinessOaConfiguration
     private var startupIdentitySnapshot: com.wzx.huitai.desktop.auth.BusinessIdentityRegistrySnapshot? = null
+    private var startupRegistrationWatermarks: BusinessRegistrationWatermarks? = null
     private var startupRegistrationConnectionId: String? = null
     private var lastRegisteredConnectionId: String? = null
     private val contextPublisherLock = Any()
-    private var contextPublisherConnectionId: String? = null
+    private var contextPublisherScope: ContextPublisherScope? = null
     private var pageContextPublisher: PageContextPublisher? = null
     private val registrationPublicationMutex = Mutex()
-    private val catalogEpoch = 1L
+    private lateinit var workspaceController: BusinessWorkspaceController
 
     init {
         // 路径准备本身不创建 logger；紧接着安装独立 appender，后续组件才允许获取 logger。
@@ -630,8 +634,10 @@ class ProductionBusinessDesktopCompositionFactory(
         val snapshot = identityRegistry.snapshot.value
         startupIdentitySnapshot = snapshot
         if (snapshot.gate == BusinessAccessGateState.READY && snapshot.identity != null) {
+            startupRegistrationWatermarks = nextRegistrationWatermarks()
             identityClient.bind(identityEnvelope(snapshot.identity))
         } else {
+            startupRegistrationWatermarks = null
             identityClient.update(signedOutIdentityEnvelope())
         }
         check(rpc.connectionId == connectionId) { "Agent connection changed during identity registration" }
@@ -647,7 +653,8 @@ class ProductionBusinessDesktopCompositionFactory(
             ?.identity
             ?: return
         check(rpc.connectionId == connectionId) { "Agent connection changed before catalog registration" }
-        catalogClient.register(catalogEnvelope(activeIdentity))
+        val watermarks = requireNotNull(startupRegistrationWatermarks)
+        catalogClient.register(catalogEnvelope(activeIdentity, watermarks.catalogEpoch, watermarks.contextSequence))
         check(rpc.connectionId == connectionId) { "Agent connection changed during catalog registration" }
     }
 
@@ -663,7 +670,15 @@ class ProductionBusinessDesktopCompositionFactory(
             return
         }
         check(rpc.connectionId == connectionId) { "Agent connection changed before context registration" }
-        contextClient.publish(contextEnvelope(activeIdentity, contextSequence = 1, storage.screen.pageContext()))
+        val watermarks = requireNotNull(startupRegistrationWatermarks)
+        contextClient.publish(
+            contextEnvelope(
+                activeIdentity,
+                watermarks.catalogEpoch,
+                watermarks.contextSequence,
+                storage.screen.pageContext(),
+            ),
+        )
         check(rpc.connectionId == connectionId) { "Agent connection changed during context registration" }
         lastRegisteredConnectionId = connectionId
     }
@@ -702,23 +717,25 @@ class ProductionBusinessDesktopCompositionFactory(
         )
         val workspace = BusinessWorkspaceController(
             store = this.storage.desktopStore,
-            contextPublication = BusinessContextPublicationPort { activeIdentity, _, contextSequence, snapshot ->
+            contextPublication = BusinessContextPublicationPort { activeIdentity, catalogEpoch, contextSequence, snapshot ->
                 registrationPublicationMutex.withLock {
                     check(lastRegisteredConnectionId == rpc.connectionId) {
                         "Agent connection is not fully registered"
                     }
-                    contextClient.publish(contextEnvelope(activeIdentity, contextSequence, snapshot))
+                    contextClient.publish(contextEnvelope(activeIdentity, catalogEpoch, contextSequence, snapshot))
                 }
             },
             actionPort = DirectUserApplicationActionPort(this.storage.actionBus),
+            nextContextSequence = registrationWatermarkSequence::incrementAndGet,
         )
+        workspaceController = workspace
         val registration = object : BusinessRegistrationPort {
             override suspend fun bindIdentity(identity: BusinessIdentity) {
                 identityClient.bind(identityEnvelope(identity))
             }
 
             override suspend fun registerCatalog(identity: BusinessIdentity, catalogEpoch: Long) {
-                catalogClient.register(catalogEnvelope(identity, catalogEpoch))
+                catalogClient.register(catalogEnvelope(identity, catalogEpoch, catalogEpoch))
             }
 
             override suspend fun publishSignedOut() {
@@ -752,12 +769,13 @@ class ProductionBusinessDesktopCompositionFactory(
             ?.takeIf { it.gate == BusinessAccessGateState.READY }
             ?.identity
             ?.let { activeIdentity ->
+            val watermarks = requireNotNull(startupRegistrationWatermarks)
             workspace.attachPublishedIdentity(
                 identity = activeIdentity,
-                catalogEpoch = catalogEpoch,
+                catalogEpoch = watermarks.catalogEpoch,
                 snapshot = this.storage.screen.pageContext(),
                 lifecycleGeneration = 1,
-                publishedContextSequence = 1,
+                publishedContextSequence = watermarks.contextSequence,
             )
         }
         desktopCoordinator.start()
@@ -774,7 +792,7 @@ class ProductionBusinessDesktopCompositionFactory(
         )
         val registrationTransaction = CoordinatorAgentRegistrationTransactionAdapter(
             coordinator = desktopCoordinator,
-            catalogEpoch = catalogEpoch,
+            watermarks = ::nextRegistrationWatermarks,
             initialPage = { this.storage.screen.pageContext() },
         )
         val orchestrator = BusinessAuthenticationOrchestrator(
@@ -837,6 +855,7 @@ class ProductionBusinessDesktopCompositionFactory(
             ),
             attachmentPicker = BusinessAttachmentPicker(idFactory = attachmentIdFactory),
             loginController = loginController,
+            authenticationOrchestrator = orchestrator,
             authenticationGate = identityRegistry.gate,
             authenticationError = orchestrator.lastError,
             identityRegistry = identityRegistry,
@@ -944,7 +963,8 @@ class ProductionBusinessDesktopCompositionFactory(
 
     private fun catalogEnvelope(
         value: BusinessIdentity,
-        epoch: Long = catalogEpoch,
+        epoch: Long,
+        contextSequence: Long,
     ): CatalogEnvelope {
         val payload = buildJsonObject {
             put("catalogRevision", "framework-demo-v1")
@@ -960,7 +980,7 @@ class ProductionBusinessDesktopCompositionFactory(
         return CatalogEnvelope(
             common = common(value),
             catalogEpoch = epoch,
-            contextSequence = 1,
+            contextSequence = contextSequence,
             payloadSize = payload.encodedSize(),
             payload = payload,
         )
@@ -968,12 +988,19 @@ class ProductionBusinessDesktopCompositionFactory(
 
     private fun contextEnvelope(
         activeIdentity: BusinessIdentity,
+        catalogEpoch: Long,
         contextSequence: Long,
         snapshot: com.wzx.huitai.presentation.context.PageContextSnapshot,
     ): ContextEnvelope {
         val connectionId = rpc.connectionId
         val published = synchronized(contextPublisherLock) {
-            val publisher = if (contextPublisherConnectionId == connectionId) {
+            val publisherScope = ContextPublisherScope(
+                connectionId,
+                activeIdentity.desktopInstanceId,
+                activeIdentity.authSessionId,
+                activeIdentity.identityEpoch,
+            )
+            val publisher = if (contextPublisherScope == publisherScope) {
                 requireNotNull(pageContextPublisher)
             } else {
                 PageContextPublisher(
@@ -984,7 +1011,7 @@ class ProductionBusinessDesktopCompositionFactory(
                     ),
                     sanitizer = PageContextSanitizer(),
                 ).also {
-                    contextPublisherConnectionId = connectionId
+                    contextPublisherScope = publisherScope
                     pageContextPublisher = it
                 }
             }
@@ -993,6 +1020,11 @@ class ProductionBusinessDesktopCompositionFactory(
         val encodedSnapshot = ApplicationProtocol.JSON.encodeToJsonElement(published.payload).jsonObject
         val payload = JsonObject(
             encodedSnapshot + mapOf(
+                "desktopInstanceId" to JsonPrimitive(published.desktopInstanceId),
+                "authSessionId" to JsonPrimitive(published.authSessionId),
+                "identityEpoch" to JsonPrimitive(published.identityEpoch),
+                "catalogEpoch" to JsonPrimitive(published.catalogEpoch),
+                "contextSequence" to JsonPrimitive(published.contextSequence),
                 "contextRevision" to JsonPrimitive(snapshot.revision),
                 "pageType" to JsonPrimitive("framework-demo"),
             ),
@@ -1022,6 +1054,11 @@ class ProductionBusinessDesktopCompositionFactory(
     private fun nextSequence(): Long = envelopeSequence.incrementAndGet()
 
     private fun nextIdentityEpoch(): Long = identityEpochSequence.incrementAndGet()
+
+    private fun nextRegistrationWatermarks(): BusinessRegistrationWatermarks {
+        val watermark = registrationWatermarkSequence.incrementAndGet()
+        return BusinessRegistrationWatermarks(watermark, watermark)
+    }
 
     private fun signedOutIdentityEnvelope(): IdentityEnvelope = IdentityEnvelope(
         common = CommonApplicationFields(
@@ -1053,18 +1090,31 @@ class ProductionBusinessDesktopCompositionFactory(
         }
         identityClient.bind(identityEnvelope(activeIdentity))
         check(rpc.connectionId == connectionId) { "Agent connection changed during identity registration" }
-        catalogClient.register(catalogEnvelope(activeIdentity))
+        val registration = requireNotNull(workspaceController.registrationSnapshot(activeIdentity)) {
+            "Authenticated workspace registration is not committed"
+        }
+        catalogClient.register(
+            catalogEnvelope(activeIdentity, registration.catalogEpoch, registration.contextSequence),
+        )
         check(rpc.connectionId == connectionId) { "Agent connection changed during catalog registration" }
         contextClient.publish(
             contextEnvelope(
                 activeIdentity = activeIdentity,
-                contextSequence = 1,
-                snapshot = storage.screen.pageContext(),
+                catalogEpoch = registration.catalogEpoch,
+                contextSequence = registration.contextSequence,
+                snapshot = registration.snapshot,
             ),
         )
         check(rpc.connectionId == connectionId) { "Agent connection changed during context registration" }
         lastRegisteredConnectionId = connectionId
     }
+
+    private data class ContextPublisherScope(
+        val connectionId: String,
+        val desktopInstanceId: String,
+        val authSessionId: String,
+        val identityEpoch: Long,
+    )
 
     suspend fun packagedSmokeEvidence(): PackagedSmokeEvidence {
         require(!configuration.frameworkDemoIdentity) { "packaged smoke must use signed-out identity" }
