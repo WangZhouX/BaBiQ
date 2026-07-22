@@ -95,12 +95,16 @@ internal fun buildPackagedSmokeUiReadiness(
     productName: String,
     decodeLogo: () -> Unit = { BusinessBrandResources.logoImageBitmap() },
     decodeMascot: () -> Unit = { BusinessBrandResources.mascotImageBitmap() },
-): PackagedSmokeUiReadiness = PackagedSmokeUiReadiness(
-    windowComposed = composition.windowComposed,
-    shellComposed = composition.shellComposed,
-    brandLogoDecoded = runCatching(decodeLogo).isSuccess,
-    mascotDecoded = runCatching(decodeMascot).isSuccess,
-    topNavigationComposed = composition.topNavigationComposed,
-    assistantInitiallyCollapsed = assistantInitiallyCollapsed,
-    productName = productName,
-)
+): PackagedSmokeUiReadiness {
+    decodeLogo()
+    decodeMascot()
+    return PackagedSmokeUiReadiness(
+        windowComposed = composition.windowComposed,
+        shellComposed = composition.shellComposed,
+        brandLogoDecoded = true,
+        mascotDecoded = true,
+        topNavigationComposed = composition.topNavigationComposed,
+        assistantInitiallyCollapsed = assistantInitiallyCollapsed,
+        productName = productName,
+    )
+}

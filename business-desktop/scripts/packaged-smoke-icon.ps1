@@ -7,8 +7,10 @@ function Get-NormalizedBitmapPixelDigest {
     )
     $sha256 = $null
     try {
-        $bytes = New-Object byte[] ($Bitmap.Width * $Bitmap.Height * 4)
-        $offset = 0
+        $bytes = New-Object byte[] (8 + ($Bitmap.Width * $Bitmap.Height * 4))
+        [Array]::Copy([BitConverter]::GetBytes([int]$Bitmap.Width), 0, $bytes, 0, 4)
+        [Array]::Copy([BitConverter]::GetBytes([int]$Bitmap.Height), 0, $bytes, 4, 4)
+        $offset = 8
         for ($y = 0; $y -lt $Bitmap.Height; $y++) {
             for ($x = 0; $x -lt $Bitmap.Width; $x++) {
                 $argb = $Bitmap.GetPixel($x, $y).ToArgb()
@@ -83,6 +85,10 @@ function Test-LauncherBrandIcon {
         $launcherBitmap = $launcherIcon.ToBitmap()
         $brandBitmap = Get-BrandIconFrameBitmap -BrandIconPath $BrandIconPath -Width $launcherIcon.Width -Height $launcherIcon.Height
         if ($null -eq $brandBitmap) { return $false }
+        if ($brandBitmap.Width -ne $launcherBitmap.Width -or
+            $brandBitmap.Height -ne $launcherBitmap.Height) {
+            return $false
+        }
         $launcherDigest = Get-NormalizedBitmapPixelDigest -Bitmap $launcherBitmap
         $brandDigest = Get-NormalizedBitmapPixelDigest -Bitmap $brandBitmap
         return $launcherDigest -eq $brandDigest

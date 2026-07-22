@@ -4,6 +4,8 @@ import java.nio.file.Path
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -29,13 +31,16 @@ class PackagedSmokeWindowCompositionTest {
             decodeMascot = {},
         )
         signals.markTopNavigationComposed()
-        val missingMascot = buildPackagedSmokeUiReadiness(
-            composition = signals.snapshot(),
-            assistantInitiallyCollapsed = true,
-            productName = PackagedSmokeUiReadiness.PRODUCT_NAME,
-            decodeLogo = {},
-            decodeMascot = { error("missing mascot") },
-        )
+        val mascotFailure = IllegalStateException("missing mascot")
+        val reportedFailure = assertFailsWith<IllegalStateException> {
+            buildPackagedSmokeUiReadiness(
+                composition = signals.snapshot(),
+                assistantInitiallyCollapsed = true,
+                productName = PackagedSmokeUiReadiness.PRODUCT_NAME,
+                decodeLogo = {},
+                decodeMascot = { throw mascotFailure },
+            )
+        }
 
         assertTrue(ready.windowComposed)
         assertTrue(ready.shellComposed)
@@ -43,8 +48,7 @@ class PackagedSmokeWindowCompositionTest {
         assertTrue(ready.mascotDecoded)
         assertFalse(ready.topNavigationComposed)
         assertTrue(ready.assistantInitiallyCollapsed)
-        assertTrue(missingMascot.topNavigationComposed)
-        assertFalse(missingMascot.mascotDecoded)
+        assertSame(mascotFailure, reportedFailure)
     }
 
     @Test
@@ -104,6 +108,8 @@ class PackagedSmokeWindowCompositionTest {
         assertTrue(source.contains("onTopNavigationComposed = smokeUiCompositionSignals::markTopNavigationComposed"))
         assertTrue(source.contains("compositionSignals = smokeUiCompositionSignals"))
         val effectBinding = source.substring(effectIndex, source.indexOf("when (val dialog", effectIndex))
+        assertTrue(effectBinding.contains("onFailure = { failure ->"))
+        assertTrue(effectBinding.contains(".error(") && effectBinding.contains("failure"))
         assertTrue(effectBinding.contains("closeBusinessDesktop("))
         assertTrue(effectBinding.indexOf("shutdown = { root.shutdown() }") < effectBinding.indexOf("exitApplication = ::exitApplication"))
     }

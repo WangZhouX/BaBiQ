@@ -8,6 +8,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.WindowPlacement
 import com.wzx.huitai.desktop.ui.brand.BusinessBrandResources
 import java.awt.Dimension
+import java.awt.Frame
 import java.io.ByteArrayInputStream
 import javax.imageio.ImageIO
 import kotlin.math.roundToInt
@@ -18,6 +19,7 @@ object BusinessDesktopWindowSpec {
     const val iconResourcePath: String = BusinessBrandResources.LOGO_PATH
 
     val initialPlacement: WindowPlacement = WindowPlacement.Maximized
+    val initialAwtExtendedState: Int = Frame.MAXIMIZED_BOTH
     val restoredWidth: Dp = 1440.dp
     val restoredHeight: Dp = 900.dp
     val minimumWidth: Dp = 1100.dp
@@ -39,5 +41,6 @@ object BusinessDesktopWindowSpec {
         window.iconImage = requireNotNull(
             ImageIO.read(ByteArrayInputStream(BusinessBrandResources.logoBytes())),
         ) { "Unable to decode the packaged Xiangniao window icon" }
+        window.extendedState = initialAwtExtendedState
     }
 }

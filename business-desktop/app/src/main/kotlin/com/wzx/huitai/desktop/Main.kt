@@ -404,9 +404,9 @@ fun main() {
                         compositionSignals = smokeUiCompositionSignals,
                         assistantInitiallyCollapsed = !assistantExpanded,
                         productName = BusinessDesktopWindowSpec.title,
-                        onFailure = {
+                        onFailure = { failure ->
                             LoggerFactory.getLogger("BusinessDesktopSmoke")
-                                .error("业务桌面安装包窗口烟测失败")
+                                .error("业务桌面安装包窗口烟测失败", failure)
                         },
                         onFinished = {
                             closeBusinessDesktop(

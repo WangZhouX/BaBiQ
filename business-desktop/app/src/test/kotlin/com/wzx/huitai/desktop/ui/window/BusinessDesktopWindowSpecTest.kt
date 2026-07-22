@@ -3,6 +3,7 @@ package com.wzx.huitai.desktop.ui.window
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.WindowPlacement
 import com.wzx.huitai.desktop.ui.brand.BusinessBrandResources
+import java.awt.Frame
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -12,6 +13,7 @@ class BusinessDesktopWindowSpecTest {
         assertEquals("翔鸟律智桌面端", BusinessDesktopWindowSpec.title)
         assertEquals(WindowPlacement.Maximized, BusinessDesktopWindowSpec.initialPlacement)
         assertEquals(BusinessBrandResources.LOGO_PATH, BusinessDesktopWindowSpec.iconResourcePath)
+        assertEquals(Frame.MAXIMIZED_BOTH, BusinessDesktopWindowSpec.initialAwtExtendedState)
     }
 
     @Test
