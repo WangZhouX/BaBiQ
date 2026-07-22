@@ -19,6 +19,7 @@ import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.pressKey
@@ -145,7 +146,7 @@ class BusinessAgentAttachmentWorkflowIT {
                 }
             }
             val paste = remember { BusinessClipboardPasteCoordinator(clipboard::hasImage) }
-            CompositionLocalProvider(LocalDensity provides Density(0.75f)) {
+            CompositionLocalProvider(LocalDensity provides Density(0.7f)) {
                 HuitaiBusinessTheme {
                     BusinessDesktopShell(
                         state = desktopState,
@@ -204,6 +205,7 @@ class BusinessAgentAttachmentWorkflowIT {
             }
         }
 
+        assertComposerActionsInsideViewport()
         rule.onNodeWithTag("agent-composer-attach").performClick()
         assertEquals(1, chooser.calls)
         listOf("A-BCDEFG", "private-contract-one.txt", "A-HJKLMN", "private-contract-two.txt").forEach {
@@ -259,6 +261,20 @@ class BusinessAgentAttachmentWorkflowIT {
             }.getOrDefault(false)
         }
         rule.onNodeWithTag("agent-composer-send").assertIsEnabled()
+    }
+
+    private fun assertComposerActionsInsideViewport() {
+        val viewport = rule.onRoot().fetchSemanticsNode().boundsInRoot
+        listOf("agent-composer-attach", "agent-composer-send").forEach { tag ->
+            val bounds = rule.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot
+            assertTrue(
+                bounds.left >= viewport.left &&
+                    bounds.top >= viewport.top &&
+                    bounds.right <= viewport.right &&
+                    bounds.bottom <= viewport.bottom,
+                "$tag bounds=$bounds must be fully inside root viewport=$viewport",
+            )
+        }
     }
 
     private fun assertPathVariantsNotDisplayed(path: Path) {
