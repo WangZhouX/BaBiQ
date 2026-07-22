@@ -16,42 +16,49 @@ class BusinessDesktopLayoutPolicyTest {
         assertEquals(720.dp, BusinessDesktopLayoutPolicy.maximumAssistantWidth)
         assertEquals(8.dp, BusinessDesktopLayoutPolicy.dividerWidth)
         assertEquals(460.dp, BusinessDesktopLayoutPolicy.defaultAssistantWidth)
-        assertEquals(124.dp, BusinessDesktopLayoutPolicy.collapsedAssistantWidth)
         assertEquals(1008.dp, BusinessDesktopLayoutPolicy.expandThreshold)
         assertEquals(1_048_576.dp, BusinessDesktopLayoutPolicy.maximumSupportedWidth)
     }
 
     @Test
-    fun `collapsed assistant reserves a control column and exactly conserves dock width`() {
+    fun `collapsed assistant leaves the full dock width to business content`() {
         listOf(124.dp, 900.dp, 1008.dp, 1600.dp, 1656.85046f.dp).forEach { availableWidth ->
             val layout = BusinessDesktopLayoutPolicy.resolveDocked(
                 availableWidth = availableWidth,
                 assistantExpanded = false,
             )
 
-            assertEquals(availableWidth - 124.dp, layout.businessWidth)
+            assertEquals(availableWidth, layout.businessWidth)
             assertEquals(0.dp, layout.dividerWidth)
-            assertEquals(124.dp, layout.assistantWidth)
+            assertEquals(0.dp, layout.assistantWidth)
             assertFalse(layout.assistantExpanded)
             assertTrue(layout.businessWidth >= 0.dp)
             assertTrue(layout.assistantWidth >= 0.dp)
-            assertEquals(layout.availableWidth, layout.businessWidth + layout.assistantWidth)
+            assertEquals(layout.availableWidth, layout.businessWidth)
+            assertEquals(
+                layout.availableWidth,
+                layout.businessWidth + layout.dividerWidth + layout.assistantWidth,
+            )
         }
     }
 
     @Test
-    fun `collapsed assistant clamps its control column to dock widths below 124 dp`() {
+    fun `collapsed assistant leaves even extremely narrow dock widths entirely to business content`() {
         listOf(0.dp, 1.dp, 123.5f.dp).forEach { availableWidth ->
             val layout = BusinessDesktopLayoutPolicy.resolveDocked(
                 availableWidth = availableWidth,
                 assistantExpanded = false,
             )
 
-            assertEquals(0.dp, layout.businessWidth)
+            assertEquals(availableWidth, layout.businessWidth)
             assertEquals(0.dp, layout.dividerWidth)
-            assertEquals(availableWidth, layout.assistantWidth)
+            assertEquals(0.dp, layout.assistantWidth)
             assertFalse(layout.assistantExpanded)
-            assertEquals(layout.availableWidth, layout.businessWidth + layout.assistantWidth)
+            assertEquals(layout.availableWidth, layout.businessWidth)
+            assertEquals(
+                layout.availableWidth,
+                layout.businessWidth + layout.dividerWidth + layout.assistantWidth,
+            )
         }
     }
 
@@ -215,20 +222,20 @@ class BusinessDesktopLayoutPolicyTest {
         )
 
         assertEquals(BusinessDesktopLayoutPolicy.maximumSupportedWidth, layout.availableWidth)
-        assertEquals(
-            BusinessDesktopLayoutPolicy.maximumSupportedWidth -
-                124.dp,
-            layout.businessWidth,
-        )
+        assertEquals(BusinessDesktopLayoutPolicy.maximumSupportedWidth, layout.businessWidth)
         assertEquals(0.dp, layout.dividerWidth)
-        assertEquals(124.dp, layout.assistantWidth)
+        assertEquals(0.dp, layout.assistantWidth)
         assertTrue(layout.canExpand)
         assertFalse(layout.assistantExpanded)
         assertTrue(layout.businessWidth.value.isFinite())
         assertTrue(layout.assistantWidth.value.isFinite())
         assertTrue(layout.businessWidth >= 0.dp)
         assertTrue(layout.assistantWidth >= 0.dp)
-        assertEquals(layout.availableWidth, layout.businessWidth + layout.assistantWidth)
+        assertEquals(layout.availableWidth, layout.businessWidth)
+        assertEquals(
+            layout.availableWidth,
+            layout.businessWidth + layout.dividerWidth + layout.assistantWidth,
+        )
     }
 
     @Test
@@ -240,10 +247,14 @@ class BusinessDesktopLayoutPolicyTest {
 
         assertFalse(layout.canExpand)
         assertFalse(layout.assistantExpanded)
-        assertEquals(883.dp, layout.businessWidth)
+        assertEquals(1007.dp, layout.businessWidth)
         assertEquals(0.dp, layout.dividerWidth)
-        assertEquals(124.dp, layout.assistantWidth)
-        assertEquals(layout.availableWidth, layout.businessWidth + layout.assistantWidth)
+        assertEquals(0.dp, layout.assistantWidth)
+        assertEquals(layout.availableWidth, layout.businessWidth)
+        assertEquals(
+            layout.availableWidth,
+            layout.businessWidth + layout.dividerWidth + layout.assistantWidth,
+        )
     }
 
     @Test
@@ -270,7 +281,11 @@ class BusinessDesktopLayoutPolicyTest {
             assertTrue(layout.assistantWidth.value.isFinite())
             assertTrue(layout.businessWidth >= 0.dp)
             assertTrue(layout.assistantWidth >= 0.dp)
-            assertEquals(layout.availableWidth, layout.businessWidth + layout.assistantWidth)
+            assertEquals(layout.availableWidth, layout.businessWidth)
+            assertEquals(
+                layout.availableWidth,
+                layout.businessWidth + layout.dividerWidth + layout.assistantWidth,
+            )
         }
     }
 

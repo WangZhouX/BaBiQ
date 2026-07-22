@@ -191,39 +191,33 @@ fun BusinessDesktopShell(
                                 },
                                 modifier = Modifier.width(layout.assistantWidth),
                             )
-                        } else {
-                            Box(
-                                modifier = Modifier
-                                    .width(layout.assistantWidth)
-                                    .fillMaxHeight()
-                                    .testTag(BusinessUiTags.COLLAPSED_ASSISTANT_CONTROL),
-                            ) {
-                                expansionMessage?.let {
-                                    Text(
-                                        text = it,
-                                        color = MaterialTheme.colorScheme.error,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        modifier = Modifier
-                                            .align(Alignment.BottomCenter)
-                                            .padding(horizontal = 4.dp)
-                                            .padding(bottom = 112.dp)
-                                            .testTag(BusinessUiTags.EXPAND_WIDTH_MESSAGE),
-                                    )
-                                }
-                                BusinessAssistantMascotButton(
-                                    expanded = false,
-                                    onToggle = {
-                                        if (layout.canExpand) {
-                                            expansionMessage = null
-                                            onAgentPanelExpandedChange(true)
-                                        } else {
-                                            expansionMessage = "窗口宽度不足，请先最大化或放大窗口"
-                                        }
-                                    },
-                                    modifier = Modifier.align(Alignment.BottomCenter),
-                                )
-                            }
                         }
+                    }
+                    if (!layout.assistantExpanded) {
+                        expansionMessage?.let {
+                            Text(
+                                text = it,
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .padding(horizontal = 4.dp)
+                                    .padding(bottom = 112.dp)
+                                    .testTag(BusinessUiTags.EXPAND_WIDTH_MESSAGE),
+                            )
+                        }
+                        BusinessAssistantMascotButton(
+                            expanded = false,
+                            onToggle = {
+                                if (layout.canExpand) {
+                                    expansionMessage = null
+                                    onAgentPanelExpandedChange(true)
+                                } else {
+                                    expansionMessage = "窗口宽度不足，请先最大化或放大窗口"
+                                }
+                            },
+                            modifier = Modifier.align(Alignment.BottomEnd),
+                        )
                     }
                     if (layout.assistantExpanded) {
                         BusinessAssistantResizeHandle(

@@ -69,7 +69,7 @@ class BusinessDesktopShellTest {
     }
 
     @Test
-    fun `collapsed shell uses top toolbar sidebar business region and assistant control without overlap`() {
+    fun `collapsed shell gives the full dock to business and floats only the mascot at bottom right`() {
         rule.setContent {
             CompositionLocalProvider(LocalDensity provides Density(1f)) {
                 HuitaiBusinessTheme {
@@ -85,15 +85,11 @@ class BusinessDesktopShellTest {
         }
 
         rule.onNodeWithTag(BusinessTopNavigationTags.ROOT).assertExists()
-        assertEquals(
-            "business-collapsed-assistant-control",
-            BusinessUiTags.COLLAPSED_ASSISTANT_CONTROL,
-        )
         rule.onNodeWithTag(BusinessSidebarTags.ROOT).assertWidthIsEqualTo(210.dp)
         rule.onNodeWithTag(BusinessSidebarTags.DATA_ENTRY).assertExists()
-        rule.onNodeWithTag(BusinessUiTags.BUSINESS_REGION).assertWidthIsEqualTo(866.dp)
-        rule.onNodeWithTag(BusinessUiTags.FORM_PANEL).assertWidthIsEqualTo(866.dp)
-        rule.onNodeWithTag(BusinessUiTags.COLLAPSED_ASSISTANT_CONTROL).assertWidthIsEqualTo(124.dp)
+        rule.onNodeWithTag(BusinessUiTags.BUSINESS_REGION).assertWidthIsEqualTo(990.dp)
+        rule.onNodeWithTag(BusinessUiTags.FORM_PANEL).assertWidthIsEqualTo(990.dp)
+        rule.onNodeWithTag(BusinessUiTags.COLLAPSED_ASSISTANT_CONTROL).assertDoesNotExist()
         rule.onNodeWithTag(BusinessAssistantChromeTags.MASCOT).assertExists()
         rule.onNodeWithTag("business-mascot-safe-area").assertDoesNotExist()
         rule.onNodeWithTag("business-agent-collapsed-rail").assertDoesNotExist()
@@ -103,20 +99,22 @@ class BusinessDesktopShellTest {
         val sidebar = bounds(BusinessSidebarTags.ROOT)
         val dock = bounds(BusinessUiTags.CONTENT)
         val business = bounds(BusinessUiTags.BUSINESS_REGION)
-        val control = bounds(BusinessUiTags.COLLAPSED_ASSISTANT_CONTROL)
         val mascot = bounds(BusinessAssistantChromeTags.MASCOT)
         assertApproximately(topToolbar.bottom, sidebar.top)
         assertApproximately(sidebar.right, dock.left)
         assertApproximately(dock.left, business.left)
-        assertApproximately(business.right, control.left)
-        assertApproximately(dock.right, control.right)
+        assertApproximately(dock.right, business.right)
         assertApproximately(dock.top, business.top)
         assertApproximately(dock.bottom, business.bottom)
-        assertApproximately(dock.top, control.top)
-        assertApproximately(dock.bottom, control.bottom)
-        assertApproximately(dock.width, business.width + control.width)
-        assertTrue(mascot.left >= control.left && mascot.right <= control.right)
-        assertApproximately(control.bottom, mascot.bottom)
+        assertApproximately(dock.width, business.width)
+        assertTrue(mascot.left >= business.left && mascot.right <= business.right)
+        assertTrue(mascot.top >= business.top && mascot.bottom <= business.bottom)
+        assertTrue(mascot.left > business.center.x)
+        assertTrue(mascot.top > business.center.y)
+        assertApproximately(business.right, mascot.right)
+        assertApproximately(business.bottom, mascot.bottom)
+        assertTrue(mascot.width < business.width)
+        assertTrue(mascot.height < business.height)
     }
 
     @Test
@@ -164,10 +162,10 @@ class BusinessDesktopShellTest {
         rule.onNodeWithContentDescription("收回小律智能助手").performClick()
         rule.onNodeWithTag(BusinessUiTags.AGENT_PANEL).assertDoesNotExist()
         rule.onNodeWithTag(BusinessUiTags.DIVIDER_SLOT).assertDoesNotExist()
-        rule.onNodeWithTag(BusinessUiTags.COLLAPSED_ASSISTANT_CONTROL).assertWidthIsEqualTo(124.dp)
+        rule.onNodeWithTag(BusinessUiTags.COLLAPSED_ASSISTANT_CONTROL).assertDoesNotExist()
         assertApproximately(
             bounds(BusinessUiTags.CONTENT).width,
-            bounds(BusinessUiTags.BUSINESS_REGION).width + bounds(BusinessUiTags.COLLAPSED_ASSISTANT_CONTROL).width,
+            bounds(BusinessUiTags.BUSINESS_REGION).width,
         )
         rule.onNodeWithContentDescription("打开小律智能助手").assertExists()
 
@@ -202,16 +200,19 @@ class BusinessDesktopShellTest {
         rule.runOnIdle { assertFalse(expanded.value) }
 
         val topToolbar = bounds(BusinessTopNavigationTags.ROOT)
+        val dock = bounds(BusinessUiTags.CONTENT)
         val business = bounds(BusinessUiTags.BUSINESS_REGION)
-        val control = bounds(BusinessUiTags.COLLAPSED_ASSISTANT_CONTROL)
         val message = bounds(BusinessUiTags.EXPAND_WIDTH_MESSAGE)
         val mascot = bounds(BusinessAssistantChromeTags.MASCOT)
-        assertTrue(message.left >= control.left && message.right <= control.right)
-        assertTrue(message.top >= control.top && message.bottom <= control.bottom)
+        rule.onNodeWithTag(BusinessUiTags.COLLAPSED_ASSISTANT_CONTROL).assertDoesNotExist()
+        assertApproximately(dock.width, business.width)
+        assertTrue(message.left >= business.left && message.right <= business.right)
+        assertTrue(message.top >= business.top && message.bottom <= business.bottom)
         assertTrue(message.bottom <= mascot.top + 0.5f)
         assertFalse(message.overlaps(mascot))
-        assertFalse(message.overlaps(business))
         assertFalse(message.overlaps(topToolbar))
+        assertTrue(mascot.left > business.center.x)
+        assertTrue(mascot.top > business.center.y)
 
         rule.runOnIdle { width.value = 1218.dp }
         rule.onNodeWithContentDescription("打开小律智能助手").performClick()
@@ -244,7 +245,11 @@ class BusinessDesktopShellTest {
 
         rule.runOnIdle { width.value = 1218.dp }
         rule.onNodeWithTag(BusinessUiTags.EXPAND_WIDTH_MESSAGE).assertDoesNotExist()
-        rule.onNodeWithTag(BusinessUiTags.COLLAPSED_ASSISTANT_CONTROL).assertWidthIsEqualTo(124.dp)
+        rule.onNodeWithTag(BusinessUiTags.COLLAPSED_ASSISTANT_CONTROL).assertDoesNotExist()
+        assertApproximately(
+            bounds(BusinessUiTags.CONTENT).width,
+            bounds(BusinessUiTags.BUSINESS_REGION).width,
+        )
         rule.runOnIdle { assertFalse(expanded.value) }
     }
 
@@ -424,7 +429,7 @@ class BusinessDesktopShellTest {
     }
 
     @Test
-    fun `collapsed mascot never intersects form save or submit actions`() {
+    fun `collapsed mascot is a local bottom-right overlay without a full-height control column`() {
         rule.setContent {
             CompositionLocalProvider(LocalDensity provides Density(0.75f)) {
                 HuitaiBusinessTheme {
@@ -442,13 +447,18 @@ class BusinessDesktopShellTest {
         rule.onNodeWithTag("business-mascot-safe-area").assertDoesNotExist()
         val form = bounds(BusinessUiTags.FORM_PANEL)
         val business = bounds(BusinessUiTags.BUSINESS_REGION)
-        val control = bounds(BusinessUiTags.COLLAPSED_ASSISTANT_CONTROL)
         val mascot = bounds(BusinessAssistantChromeTags.MASCOT)
-        assertApproximately(business.right, control.left)
+        rule.onNodeWithTag(BusinessUiTags.COLLAPSED_ASSISTANT_CONTROL).assertDoesNotExist()
+        assertApproximately(bounds(BusinessUiTags.CONTENT).width, business.width)
         assertTrue(form.right <= business.right + 0.5f)
-        assertTrue(mascot.left >= control.left && mascot.right <= control.right)
-        assertTrue(mascot.top >= control.top && mascot.bottom <= control.bottom)
-        assertApproximately(control.bottom, mascot.bottom)
+        assertTrue(mascot.left >= business.left && mascot.right <= business.right)
+        assertTrue(mascot.top >= business.top && mascot.bottom <= business.bottom)
+        assertTrue(mascot.left > business.center.x)
+        assertTrue(mascot.top > business.center.y)
+        assertApproximately(business.right, mascot.right)
+        assertApproximately(business.bottom, mascot.bottom)
+        assertTrue(mascot.width < business.width)
+        assertTrue(mascot.height < business.height)
         assertFalse(mascot.overlaps(bounds("save-draft-action")))
         assertFalse(mascot.overlaps(bounds("submit-action")))
     }

@@ -21,7 +21,6 @@ object BusinessDesktopLayoutPolicy {
     val maximumAssistantWidth: Dp = 720.dp
     val dividerWidth: Dp = 8.dp
     val defaultAssistantWidth: Dp = 460.dp
-    val collapsedAssistantWidth: Dp = 124.dp
     val expandThreshold: Dp = minimumBusinessWidth + dividerWidth + minimumAssistantWidth
 
     /**
@@ -106,17 +105,15 @@ object BusinessDesktopLayoutPolicy {
     private fun collapsedLayout(
         availableWidth: Dp,
         canExpand: Boolean,
-    ): BusinessDesktopDockLayout {
-        val assistantWidth = minOf(collapsedAssistantWidth, availableWidth)
-        return BusinessDesktopDockLayout(
+    ): BusinessDesktopDockLayout =
+        BusinessDesktopDockLayout(
             availableWidth = availableWidth,
-            businessWidth = availableWidth - assistantWidth,
+            businessWidth = availableWidth,
             dividerWidth = 0.dp,
-            assistantWidth = assistantWidth,
+            assistantWidth = 0.dp,
             canExpand = canExpand,
             assistantExpanded = false,
         )
-    }
 
     /** 只检查固定数量的相邻 Float 候选，不做不受控的 ULP 搜索。 */
     private fun exactAssistantWidth(
