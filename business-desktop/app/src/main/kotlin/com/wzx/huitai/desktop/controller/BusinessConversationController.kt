@@ -10,11 +10,15 @@ import com.wzx.huitai.agent.conversation.BusinessTurn
 import com.wzx.huitai.desktop.state.BusinessDesktopEvent
 import com.wzx.huitai.desktop.state.BusinessDesktopState
 import com.wzx.huitai.desktop.state.BusinessDesktopStore
+import com.wzx.huitai.desktop.auth.AgentAuthenticationRequiredException
+import com.wzx.huitai.desktop.auth.ReadyAgentUsageGate
+import com.wzx.huitai.desktop.auth.StaleAgentUsageException
 import java.io.Closeable
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
@@ -22,32 +26,51 @@ import kotlinx.coroutines.launch
 class BusinessConversationController(
     private val gateway: BusinessConversationGateway,
     private val store: BusinessDesktopStore,
+    private val usageGate: ReadyAgentUsageGate,
     scope: CoroutineScope,
 ) : Closeable {
     private val eventCollector: Job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
-        gateway.events.collect { store.dispatch(BusinessDesktopEvent.AgentEventReceived(it)) }
+        var scopedCollector: Job? = null
+        try {
+            usageGate.readySnapshots.collect { authentication ->
+                scopedCollector?.cancelAndJoin()
+                scopedCollector = authentication?.let {
+                    launch(start = CoroutineStart.UNDISPATCHED) {
+                        gateway.events.collect { event ->
+                            usageGate.commitIfCurrent(it) {
+                                store.dispatch(BusinessDesktopEvent.AgentEventReceived(event))
+                            }
+                        }
+                    }
+                }
+            }
+        } finally {
+            scopedCollector?.cancelAndJoin()
+        }
     }
 
     val state: StateFlow<BusinessDesktopState> = store.state
 
-    suspend fun refreshProviders(): List<BusinessProvider> = guarded("PROVIDER_LIST_FAILED") {
-        gateway.listProviders().also { store.dispatch(BusinessDesktopEvent.ProvidersChanged(it)) }
+    suspend fun refreshProviders(): List<BusinessProvider> = gated("PROVIDER_LIST_FAILED", gateway::listProviders) {
+        store.dispatch(BusinessDesktopEvent.ProvidersChanged(it))
     }
 
     /** 接受设置控制器已加载且通过连接代次校验的 Provider 快照，不发起第二次网络请求。 */
     fun acceptProviders(providers: List<BusinessProvider>) {
-        store.dispatch(BusinessDesktopEvent.ProvidersChanged(providers))
+        val authentication = usageGate.requireReady()
+        if (!usageGate.commitIfCurrent(authentication) {
+                store.dispatch(BusinessDesktopEvent.ProvidersChanged(providers))
+            }
+        ) throw StaleAgentUsageException()
     }
 
     suspend fun selectProvider(providerId: String, modelId: String? = null): BusinessProviderSelection =
-        guarded("PROVIDER_SELECTION_FAILED") {
-            gateway.setActiveProvider(providerId, modelId).also {
-                store.dispatch(BusinessDesktopEvent.ProviderSelected(it))
-            }
+        gated("PROVIDER_SELECTION_FAILED", { gateway.setActiveProvider(providerId, modelId) }) {
+            store.dispatch(BusinessDesktopEvent.ProviderSelected(it))
         }
 
-    suspend fun createThread(cwd: String): BusinessThread = guarded("THREAD_CREATE_FAILED") {
-        gateway.createThread(cwd).also { store.dispatch(BusinessDesktopEvent.ThreadChanged(it)) }
+    suspend fun createThread(cwd: String): BusinessThread = gated("THREAD_CREATE_FAILED", { gateway.createThread(cwd) }) {
+        store.dispatch(BusinessDesktopEvent.ThreadChanged(it))
     }
 
     suspend fun startTurn(
@@ -55,17 +78,17 @@ class BusinessConversationController(
         attachments: List<BusinessAttachmentDraft> = emptyList(),
         providerId: String? = state.value.activeProviderId,
     ): BusinessTurn =
-        guarded("TURN_START_FAILED") {
+        gated("TURN_START_FAILED", {
             val thread = requireNotNull(state.value.currentThread) { "No active business thread" }
-            gateway.startTurn(thread.id, text, attachments.toList(), providerId).also {
-                store.dispatch(BusinessDesktopEvent.TurnRequested(it))
-            }
+            gateway.startTurn(thread.id, text, attachments.toList(), providerId)
+        }) {
+            store.dispatch(BusinessDesktopEvent.TurnRequested(it))
         }
 
-    suspend fun cancelActiveTurn(): Boolean = guarded("TURN_CANCEL_FAILED") {
+    suspend fun cancelActiveTurn(): Boolean = gated("TURN_CANCEL_FAILED", {
         val turn = requireNotNull(state.value.activeTurn) { "No active business turn" }
         gateway.cancelTurn(turn.id)
-    }
+    }) { }
 
     override fun close() {
         eventCollector.cancel()
@@ -77,8 +100,20 @@ class BusinessConversationController(
     } catch (cancelled: CancellationException) {
         throw cancelled
     } catch (failure: Exception) {
+        if (failure is AgentAuthenticationRequiredException || failure is StaleAgentUsageException) throw failure
         store.dispatch(BusinessDesktopEvent.Failed(code, safeFailureMessage(failure)))
         throw failure
+    }
+
+    private suspend fun <T> gated(
+        code: String,
+        request: suspend () -> T,
+        commit: (T) -> Unit,
+    ): T {
+        val authentication = usageGate.requireReady()
+        val result = guarded(code, request)
+        if (!usageGate.commitIfCurrent(authentication) { commit(result) }) throw StaleAgentUsageException()
+        return result
     }
 }
 

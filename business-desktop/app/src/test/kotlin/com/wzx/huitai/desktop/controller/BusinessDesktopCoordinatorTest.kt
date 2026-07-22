@@ -25,6 +25,7 @@ import com.wzx.huitai.desktop.state.BusinessIdentity
 import com.wzx.huitai.desktop.auth.CoordinatorAgentRegistrationTransactionAdapter
 import com.wzx.huitai.desktop.auth.BusinessAccessGateState
 import com.wzx.huitai.desktop.auth.BusinessIdentityRegistry
+import com.wzx.huitai.desktop.auth.ReadyAgentUsageGate
 import com.wzx.huitai.presentation.context.PageContextSnapshot
 import com.wzx.huitai.presentation.context.PageMode
 import com.wzx.huitai.presentation.context.ValidationSummary
@@ -57,7 +58,8 @@ class BusinessDesktopCoordinatorTest {
         val store = BusinessDesktopStore(BusinessDesktopReducer())
         store.dispatch(com.wzx.huitai.desktop.state.BusinessDesktopEvent.IdentityAuthenticated(identity(1)))
         val gateway = FakeConversationGateway()
-        val controller = BusinessConversationController(gateway, store, this)
+        val identityRegistry = BusinessIdentityRegistry().also { check(it.publishReady(identity(1), 0)) }
+        val controller = BusinessConversationController(gateway, store, ReadyAgentUsageGate(identityRegistry), this)
 
         controller.refreshProviders()
         controller.selectProvider("provider-1", "model-1")

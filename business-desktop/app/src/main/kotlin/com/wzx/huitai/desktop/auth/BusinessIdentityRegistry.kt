@@ -18,6 +18,24 @@ class BusinessIdentityRegistry {
 
     fun currentGeneration(): Long = mutableSnapshot.value.generation
 
+    /** Runs a synchronous commit only while the exact READY publication is still current. */
+    internal fun commitIfCurrent(
+        expectedGeneration: Long,
+        expectedIdentity: BusinessIdentity,
+        commit: () -> Unit,
+    ): Boolean = synchronized(lock) {
+        val current = mutableSnapshot.value
+        if (
+            current.gate != BusinessAccessGateState.READY ||
+            current.generation != expectedGeneration ||
+            current.identity != expectedIdentity
+        ) {
+            return@synchronized false
+        }
+        commit()
+        true
+    }
+
     /** Non-ready transitions can never retain an identity. */
     fun transitionTo(targetGate: BusinessAccessGateState) = synchronized(lock) {
         require(targetGate != BusinessAccessGateState.READY) { "READY requires publishReady" }

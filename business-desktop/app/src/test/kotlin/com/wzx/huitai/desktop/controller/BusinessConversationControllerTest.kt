@@ -8,14 +8,24 @@ import com.wzx.huitai.agent.conversation.BusinessProvider
 import com.wzx.huitai.agent.conversation.BusinessProviderSelection
 import com.wzx.huitai.agent.conversation.BusinessThread
 import com.wzx.huitai.agent.conversation.BusinessTurn
+import com.wzx.huitai.desktop.auth.BusinessAccessGateState
+import com.wzx.huitai.desktop.auth.BusinessIdentityRegistry
+import com.wzx.huitai.desktop.auth.ReadyAgentUsageGate
+import com.wzx.huitai.desktop.auth.StaleAgentUsageException
 import com.wzx.huitai.desktop.state.BusinessDesktopEvent
 import com.wzx.huitai.desktop.state.BusinessDesktopReducer
 import com.wzx.huitai.desktop.state.BusinessDesktopStore
+import com.wzx.huitai.desktop.state.BusinessIdentity
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
+import kotlin.test.assertNull
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 
 class BusinessConversationControllerTest {
@@ -24,7 +34,7 @@ class BusinessConversationControllerTest {
         val gateway = RecordingGateway()
         val store = BusinessDesktopStore(BusinessDesktopReducer())
         store.dispatch(BusinessDesktopEvent.ThreadChanged(BusinessThread("thread-1", "demo", "C:/demo")))
-        val controller = BusinessConversationController(gateway, store, this)
+        val controller = BusinessConversationController(gateway, store, ReadyAgentUsageGate(readyRegistry()), this)
         val attachment = attachment()
 
         controller.startTurn("check", listOf(attachment), "provider-1")
@@ -46,7 +56,7 @@ class BusinessConversationControllerTest {
         }
         val store = BusinessDesktopStore(BusinessDesktopReducer())
         store.dispatch(BusinessDesktopEvent.ThreadChanged(BusinessThread("thread-1", "demo", "C:/demo")))
-        val controller = BusinessConversationController(gateway, store, this)
+        val controller = BusinessConversationController(gateway, store, ReadyAgentUsageGate(readyRegistry()), this)
 
         assertFailsWith<AgentJsonRpcException> {
             controller.startTurn("check", listOf(attachment()), "provider-1")
@@ -59,12 +69,78 @@ class BusinessConversationControllerTest {
         controller.close()
     }
 
+    @Test
+    fun `non ready authentication rejects turn before gateway send`() = runTest {
+        val gateway = RecordingGateway()
+        val store = BusinessDesktopStore(BusinessDesktopReducer())
+        store.dispatch(BusinessDesktopEvent.ThreadChanged(BusinessThread("thread-1", "demo", "C:/demo")))
+        val registry = BusinessIdentityRegistry().apply { transitionTo(BusinessAccessGateState.RESTORING) }
+        val controller = BusinessConversationController(gateway, store, ReadyAgentUsageGate(registry), this)
+
+        assertFailsWith<IllegalStateException> { controller.startTurn("must not send") }
+
+        assertEquals(0, gateway.startTurnCalls)
+        controller.close()
+    }
+
+    @Test
+    fun `late turn result from logged out identity is discarded after a new identity becomes ready`() = runTest {
+        val gateway = RecordingGateway()
+        val store = BusinessDesktopStore(BusinessDesktopReducer())
+        val oldIdentity = identity(epoch = 1, authSessionId = "old-session", userId = "old-user")
+        store.dispatch(BusinessDesktopEvent.IdentityAuthenticated(oldIdentity))
+        store.dispatch(BusinessDesktopEvent.ThreadChanged(BusinessThread("thread-1", "demo", "C:/demo")))
+        val registry = readyRegistry(oldIdentity)
+        val controller = BusinessConversationController(gateway, store, ReadyAgentUsageGate(registry), this)
+        gateway.startTurnResult = CompletableDeferred()
+
+        val pending = async { runCatching { controller.startTurn("old request") } }
+        gateway.startTurnEntered.await()
+        registry.invalidate(BusinessAccessGateState.SIGNING_OUT)
+        store.dispatch(BusinessDesktopEvent.SignedOut)
+        val newIdentity = identity(epoch = 2, authSessionId = "new-session", userId = "new-user")
+        store.dispatch(BusinessDesktopEvent.IdentityAuthenticated(newIdentity))
+        check(registry.publishReady(newIdentity, 1))
+        gateway.startTurnResult!!.complete(BusinessTurn("old-turn", "thread-1"))
+        runCurrent()
+
+        assertIs<StaleAgentUsageException>(pending.await().exceptionOrNull())
+        assertNull(store.state.value.activeTurn)
+        controller.close()
+    }
+
+    @Test
+    fun `events emitted for revoked session are not delivered to the next ready identity`() = runTest {
+        val gateway = RecordingGateway()
+        val store = BusinessDesktopStore(BusinessDesktopReducer())
+        val registry = readyRegistry(identity(epoch = 1, authSessionId = "old-session", userId = "old-user"))
+        val controller = BusinessConversationController(gateway, store, ReadyAgentUsageGate(registry), this)
+        runCurrent()
+
+        registry.invalidate(BusinessAccessGateState.SIGNING_OUT)
+        runCurrent()
+        gateway.mutableEvents.emit(BusinessAgentEvent.Unknown("old/session-event"))
+        runCurrent()
+        val newIdentity = identity(epoch = 2, authSessionId = "new-session", userId = "new-user")
+        check(registry.publishReady(newIdentity, 1))
+        runCurrent()
+        gateway.mutableEvents.emit(BusinessAgentEvent.Unknown("new/session-event"))
+        runCurrent()
+
+        assertEquals(1, store.state.value.unknownEventCount)
+        controller.close()
+    }
+
     private class RecordingGateway : BusinessConversationGateway {
-        override val events: Flow<BusinessAgentEvent> = emptyFlow()
+        val mutableEvents = MutableSharedFlow<BusinessAgentEvent>(extraBufferCapacity = 8)
+        override val events: Flow<BusinessAgentEvent> = mutableEvents
         var text: String? = null
         var attachments: List<BusinessAttachmentDraft>? = null
         var providerId: String? = null
         var failure: Exception? = null
+        var startTurnCalls: Int = 0
+        val startTurnEntered = CompletableDeferred<Unit>()
+        var startTurnResult: CompletableDeferred<BusinessTurn>? = null
         override suspend fun listProviders(): List<BusinessProvider> = emptyList()
         override suspend fun setActiveProvider(providerId: String, modelId: String?): BusinessProviderSelection =
             error("unused")
@@ -75,11 +151,13 @@ class BusinessConversationControllerTest {
             attachments: List<BusinessAttachmentDraft>,
             providerId: String?,
         ): BusinessTurn {
+            startTurnCalls += 1
+            startTurnEntered.complete(Unit)
             failure?.let { throw it }
             this.text = text
             this.attachments = attachments
             this.providerId = providerId
-            return BusinessTurn("turn-1", threadId)
+            return startTurnResult?.await() ?: BusinessTurn("turn-1", threadId)
         }
         override suspend fun cancelTurn(turnId: String): Boolean = false
         override fun close() = Unit
@@ -92,5 +170,24 @@ class BusinessConversationControllerTest {
         localPath = "C:/private/合同.pdf",
         sizeBytes = 5,
         displayType = "PDF",
+    )
+
+    private fun readyRegistry(identity: BusinessIdentity = identity()): BusinessIdentityRegistry =
+        BusinessIdentityRegistry().also { check(it.publishReady(identity, 0)) }
+
+    private fun identity(
+        epoch: Long = 1,
+        authSessionId: String = "auth-session-1",
+        userId: String = "user-1",
+    ) = BusinessIdentity(
+        desktopInstanceId = "desktop-1",
+        desktopSessionId = "desktop-session-1",
+        authSessionId = authSessionId,
+        identityEpoch = epoch,
+        userId = userId,
+        tenantId = "tenant-1",
+        platformId = "1",
+        roles = setOf("lawyer"),
+        permissions = setOf("case:read"),
     )
 }

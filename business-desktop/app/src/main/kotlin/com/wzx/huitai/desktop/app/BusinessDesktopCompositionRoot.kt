@@ -41,6 +41,7 @@ import com.wzx.huitai.desktop.auth.BusinessLoginController
 import com.wzx.huitai.desktop.auth.BusinessLoginMessage
 import com.wzx.huitai.desktop.auth.CoordinatorAgentRegistrationTransactionAdapter
 import com.wzx.huitai.desktop.auth.BusinessRegistrationWatermarks
+import com.wzx.huitai.desktop.auth.ReadyAgentUsageGate
 import com.wzx.huitai.desktop.auth.config.BusinessOaConfiguration
 import com.wzx.huitai.desktop.auth.config.BusinessOaConfigurationLoader
 import com.wzx.huitai.desktop.decision.ComposeActionDecisionCoordinator
@@ -698,7 +699,8 @@ class ProductionBusinessDesktopCompositionFactory(
         var loginController: BusinessLoginController? = null
         try {
         val businessAgentClient = BusinessAgentClient(rpc, scope)
-        conversation = BusinessConversationController(businessAgentClient, this.storage.desktopStore, scope)
+        val agentUsageGate = ReadyAgentUsageGate(identityRegistry)
+        conversation = BusinessConversationController(businessAgentClient, this.storage.desktopStore, agentUsageGate, scope)
         val lifecycle = RegisteredAgentConnectionLifecycle(
             source = connectionLifecycle,
             initialRegisteredConnectionId = requireNotNull(lastRegisteredConnectionId) {

@@ -40,6 +40,8 @@ import com.wzx.huitai.desktop.controller.BusinessComposerDraftState
 import com.wzx.huitai.desktop.controller.BusinessComposerSendCoordinator
 import com.wzx.huitai.desktop.controller.BusinessConversationController
 import com.wzx.huitai.desktop.controller.mergeBusinessComposerAttachments
+import com.wzx.huitai.desktop.auth.BusinessIdentityRegistry
+import com.wzx.huitai.desktop.auth.ReadyAgentUsageGate
 import com.wzx.huitai.desktop.runtime.BusinessAttachmentIdFactory
 import com.wzx.huitai.desktop.runtime.ClipboardImageAttachmentStore
 import com.wzx.huitai.desktop.runtime.ClipboardImageSource
@@ -95,7 +97,10 @@ class BusinessAgentAttachmentWorkflowIT {
         gateway = RecordingGateway()
         controllerScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         store = BusinessDesktopStore(BusinessDesktopReducer(), authenticatedState())
-        controller = BusinessConversationController(gateway, store, controllerScope)
+        val identityRegistry = BusinessIdentityRegistry().also {
+            check(it.publishReady(requireNotNull(store.state.value.identity), 0))
+        }
+        controller = BusinessConversationController(gateway, store, ReadyAgentUsageGate(identityRegistry), controllerScope)
     }
 
     @After
