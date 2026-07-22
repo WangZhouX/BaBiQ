@@ -2,7 +2,12 @@ package com.wzx.huitai.desktop.auth.config
 
 import com.wzx.huitai.desktop.runtime.BusinessDesktopRuntimePaths
 import java.io.ByteArrayInputStream
+import java.io.IOException
 import java.nio.file.Files
+import java.nio.file.Path
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.io.path.exists
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -35,7 +40,72 @@ class BusinessOaConfigurationLoaderTest {
         assertEquals("https://bundled.example.test", configuration.baseUrl)
         assertTrue(paths.desktopConfiguration.exists())
         assertEquals(validProperties(), Files.readString(paths.desktopConfiguration))
-        assertFalse(paths.desktopConfiguration.resolveSibling("business-desktop.properties.tmp").exists())
+        assertNoBootstrapTemporaryFiles(paths)
+    }
+
+    @Test
+    fun `configuration created after initial check wins bootstrap race and is not overwritten`() {
+        val paths = paths()
+        val moveReached = CountDownLatch(1)
+        val userConfigurationWritten = CountDownLatch(1)
+        val result = AtomicReference<BusinessOaConfiguration>()
+        val loader = object : BusinessOaConfigurationLoader(
+            environment = emptyMap(),
+            bundledDefault = { ByteArrayInputStream(validProperties().toByteArray()) },
+        ) {
+            override fun moveTemporaryConfigurationIfAbsent(temporary: Path, target: Path): Boolean {
+                moveReached.countDown()
+                assertTrue(userConfigurationWritten.await(5, TimeUnit.SECONDS))
+                return super.moveTemporaryConfigurationIfAbsent(temporary, target)
+            }
+        }
+
+        val bootstrap = Thread { result.set(loader.load(paths)) }
+        bootstrap.start()
+        assertTrue(moveReached.await(5, TimeUnit.SECONDS))
+        Files.writeString(paths.desktopConfiguration, validProperties(baseUrl = "https://user-won.example.test"))
+        userConfigurationWritten.countDown()
+        bootstrap.join(5_000)
+
+        assertFalse(bootstrap.isAlive)
+        assertEquals("https://user-won.example.test", result.get().baseUrl)
+        assertEquals("https://user-won.example.test", loader().load(paths).baseUrl)
+        assertNoBootstrapTemporaryFiles(paths)
+    }
+
+    @Test
+    fun `write failure removes bootstrap temporary file`() {
+        val paths = paths()
+        val loader = object : BusinessOaConfigurationLoader(
+            environment = emptyMap(),
+            bundledDefault = { ByteArrayInputStream(validProperties().toByteArray()) },
+        ) {
+            override fun writeTemporaryConfiguration(temporary: Path, source: java.io.InputStream) {
+                Files.writeString(temporary, "partial")
+                throw IOException("injected write failure")
+            }
+        }
+
+        assertCode(BusinessOaConfigurationErrorCode.CONFIG_UNAVAILABLE) { loader.load(paths) }
+        assertFalse(paths.desktopConfiguration.exists())
+        assertNoBootstrapTemporaryFiles(paths)
+    }
+
+    @Test
+    fun `move failure removes bootstrap temporary file`() {
+        val paths = paths()
+        val loader = object : BusinessOaConfigurationLoader(
+            environment = emptyMap(),
+            bundledDefault = { ByteArrayInputStream(validProperties().toByteArray()) },
+        ) {
+            override fun moveTemporaryConfigurationIfAbsent(temporary: Path, target: Path): Boolean {
+                throw IOException("injected move failure")
+            }
+        }
+
+        assertCode(BusinessOaConfigurationErrorCode.CONFIG_UNAVAILABLE) { loader.load(paths) }
+        assertFalse(paths.desktopConfiguration.exists())
+        assertNoBootstrapTemporaryFiles(paths)
     }
 
     @Test
@@ -76,6 +146,23 @@ class BusinessOaConfigurationLoaderTest {
             assertCode(BusinessOaConfigurationErrorCode.CONFIG_INVALID) {
                 loader(mapOf(CONFIG_ENV to link.toAbsolutePath().toString())).load(paths)
             }
+        }
+    }
+
+    @Test
+    fun `unsafe user configuration remains invalid instead of unavailable`() {
+        val directoryPaths = paths()
+        Files.createDirectory(directoryPaths.desktopConfiguration)
+        assertCode(BusinessOaConfigurationErrorCode.CONFIG_INVALID) { loader().load(directoryPaths) }
+
+        val linkedPaths = paths()
+        val target = Files.createTempFile("huitai-user-config-target", ".properties")
+        Files.writeString(target, validProperties())
+        val linkCreated = runCatching {
+            Files.createSymbolicLink(linkedPaths.desktopConfiguration, target)
+        }.isSuccess
+        if (linkCreated) {
+            assertCode(BusinessOaConfigurationErrorCode.CONFIG_INVALID) { loader().load(linkedPaths) }
         }
     }
 
@@ -147,6 +234,16 @@ class BusinessOaConfigurationLoaderTest {
         val error = assertFailsWith<BusinessOaConfigurationException>(block = block)
         assertEquals(code, error.code)
         assertEquals(code.name, error.message)
+    }
+
+    private fun assertNoBootstrapTemporaryFiles(paths: BusinessDesktopRuntimePaths) {
+        val temporaryFiles = Files.list(paths.desktopConfiguration.parent).use { entries ->
+            entries
+                .map { it.fileName.toString() }
+                .filter { it.startsWith("business-desktop-") && it.endsWith(".tmp") }
+                .toList()
+        }
+        assertTrue(temporaryFiles.isEmpty(), "bootstrap temporary files remain: $temporaryFiles")
     }
 
     private fun paths() = BusinessDesktopRuntimePaths.create(Files.createTempDirectory("huitai-config-home"))
