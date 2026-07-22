@@ -25,9 +25,9 @@ import androidx.compose.ui.unit.dp
 /** 左侧业务导航的稳定测试标记，不与顶部设置入口共用。 */
 object BusinessSidebarTags {
     const val ROOT = "business-sidebar"
-    const val WORKBENCH = "navigation-workbench"
-    const val DATA_ENTRY = "navigation-data_entry"
-    const val RUN_HISTORY = "navigation-run_history"
+    const val WORKBENCH = "business-sidebar-navigation-workbench"
+    const val DATA_ENTRY = "business-sidebar-navigation-data-entry"
+    const val RUN_HISTORY = "business-sidebar-navigation-run-history"
 }
 
 private val sidebarTags = mapOf(

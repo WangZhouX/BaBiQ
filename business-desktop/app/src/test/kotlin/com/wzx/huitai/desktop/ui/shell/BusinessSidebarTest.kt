@@ -27,6 +27,33 @@ class BusinessSidebarTest {
     val rule = createComposeRule()
 
     @Test
+    fun `sidebar destination tags are scoped away from legacy top navigation tags`() {
+        val sidebarTags = setOf(
+            BusinessSidebarTags.WORKBENCH,
+            BusinessSidebarTags.DATA_ENTRY,
+            BusinessSidebarTags.RUN_HISTORY,
+        )
+        val legacyTopNavigationTags = setOf(
+            BusinessTopNavigationTags.WORKBENCH,
+            BusinessTopNavigationTags.DATA_ENTRY,
+            BusinessTopNavigationTags.RUN_HISTORY,
+        )
+
+        assertEquals(
+            setOf(
+                "business-sidebar-navigation-workbench",
+                "business-sidebar-navigation-data-entry",
+                "business-sidebar-navigation-run-history",
+            ),
+            sidebarTags,
+        )
+        assertTrue(
+            sidebarTags.intersect(legacyTopNavigationTags).isEmpty(),
+            "sidebar selectors must not match legacy top-navigation selectors",
+        )
+    }
+
+    @Test
     fun `sidebar fills the parent 210dp slot and only exposes business destinations`() {
         rule.setContent {
             HuitaiBusinessTheme {
