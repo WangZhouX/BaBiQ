@@ -17,19 +17,32 @@ class BusinessLoginCredentialStoreTest {
     fun `remembered login replaces and returns a caller wipeable password copy`() {
         val password = "key-store-password".toCharArray()
         val loginPassword = "oa-password".toCharArray()
+        val replacementPassword = "replacement".toCharArray()
         val root = Files.createTempDirectory("business-remembered-login")
         try {
             JceksSecretStore(root.resolve("credentials.jceks"), password).use { secrets ->
                 val store = BusinessLoginCredentialStore(secrets)
                 store.saveOrReplace("account-1", loginPassword)
                 val first = requireNotNull(store.load())
-                assertEquals("account-1", first.account)
-                assertEquals("oa-password", first.password.concatToString())
-                first.password.fill('x')
-                assertEquals("oa-password", requireNotNull(store.load()).password.concatToString())
+                first.use {
+                    assertEquals("account-1", it.account)
+                    val firstCopy = it.copyPassword()
+                    try {
+                        assertEquals("oa-password", firstCopy.concatToString())
+                        firstCopy.fill('x')
+                        val secondCopy = it.copyPassword()
+                        try {
+                            assertEquals("oa-password", secondCopy.concatToString())
+                        } finally {
+                            secondCopy.fill('\u0000')
+                        }
+                    } finally {
+                        firstCopy.fill('\u0000')
+                    }
+                }
 
-                store.saveOrReplace("account-2", "replacement".toCharArray())
-                assertEquals("account-2", requireNotNull(store.load()).account)
+                store.saveOrReplace("account-2", replacementPassword)
+                requireNotNull(store.load()).use { assertEquals("account-2", it.account) }
                 store.clear()
                 store.clear()
                 assertNull(store.load())
@@ -47,7 +60,34 @@ class BusinessLoginCredentialStoreTest {
         } finally {
             password.fill('\u0000')
             loginPassword.fill('\u0000')
+            replacementPassword.fill('\u0000')
         }
+    }
+
+    @Test
+    fun `remembered login owns a defensive password copy and clears it idempotently`() {
+        val source = "owned-password".toCharArray()
+        val remembered = RememberedBusinessLogin("account-1", source)
+        source.fill('x')
+
+        val firstCopy = remembered.copyPassword()
+        try {
+            assertEquals("owned-password", firstCopy.concatToString())
+            firstCopy.fill('y')
+            val secondCopy = remembered.copyPassword()
+            try {
+                assertEquals("owned-password", secondCopy.concatToString())
+            } finally {
+                secondCopy.fill('\u0000')
+            }
+        } finally {
+            firstCopy.fill('\u0000')
+            remembered.clear()
+            remembered.clear()
+            source.fill('\u0000')
+        }
+        val failure = assertFailsWith<IllegalStateException> { remembered.copyPassword() }
+        assertFalse("owned-password" in failure.toString())
     }
 
     @Test

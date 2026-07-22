@@ -2,18 +2,35 @@ package com.wzx.huitai.desktop.security
 
 import com.wzx.huitai.security.secret.SecretRef
 import com.wzx.huitai.security.secret.SecretStore
-import com.wzx.huitai.security.secret.SecretStoreException
 import java.util.Arrays
 
-class RememberedBusinessLogin(
+class RememberedBusinessLogin internal constructor(
     val account: String,
     password: CharArray,
-) {
-    val password: CharArray = password
+) : AutoCloseable {
+    private val password: CharArray
+    private var cleared = false
+
     init {
         require(account.isNotBlank()) { "account must not be blank" }
         require(password.isNotEmpty()) { "password must not be empty" }
+        this.password = password.copyOf()
     }
+
+    @Synchronized
+    fun copyPassword(): CharArray {
+        check(!cleared) { "Remembered login is cleared" }
+        return password.copyOf()
+    }
+
+    @Synchronized
+    fun clear() {
+        if (cleared) return
+        Arrays.fill(password, '\u0000')
+        cleared = true
+    }
+
+    override fun close() = clear()
 
     override fun toString(): String = "RememberedBusinessLogin(account=[REDACTED], password=[REDACTED])"
 }
@@ -31,7 +48,7 @@ class BusinessLoginCredentialStore internal constructor(
     fun load(): RememberedBusinessLogin? {
         val stored = try {
             secretStore.load(entryRef)
-        } catch (failure: SecretStoreException) {
+        } catch (failure: IllegalStateException) {
             throw LocalCredentialStoreUnavailableException()
         } ?: return null
         try {
@@ -41,7 +58,7 @@ class BusinessLoginCredentialStore internal constructor(
                 val password = codec.decodeUtf8Chars(fields[1])
                 try {
                     require(password.isNotEmpty()) { "stored password must not be empty" }
-                    return RememberedBusinessLogin(account, password.copyOf())
+                    return RememberedBusinessLogin(account, password)
                 } finally {
                     Arrays.fill(password, '\u0000')
                 }
@@ -64,7 +81,7 @@ class BusinessLoginCredentialStore internal constructor(
         try {
             try {
                 secretStore.upsert(entryRef.value, encoded)
-            } catch (failure: SecretStoreException) {
+            } catch (failure: IllegalStateException) {
                 throw LocalCredentialStoreUnavailableException()
             }
         } finally {
@@ -75,7 +92,7 @@ class BusinessLoginCredentialStore internal constructor(
     fun clear() {
         try {
             secretStore.delete(entryRef)
-        } catch (failure: SecretStoreException) {
+        } catch (failure: IllegalStateException) {
             throw LocalCredentialStoreUnavailableException()
         }
     }
@@ -86,7 +103,7 @@ class BusinessLoginCredentialStore internal constructor(
     private fun invalidateRememberedLogin(): Nothing {
         try {
             secretStore.delete(entryRef)
-        } catch (failure: SecretStoreException) {
+        } catch (failure: IllegalStateException) {
             throw LocalCredentialStoreUnavailableException()
         }
         throw RememberedLoginInvalidException()

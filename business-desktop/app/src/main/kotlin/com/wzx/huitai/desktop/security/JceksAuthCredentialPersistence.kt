@@ -5,15 +5,18 @@ import com.wzx.huitai.integration.auth.AuthTokenSet
 import com.wzx.huitai.security.secret.SecretRef
 import com.wzx.huitai.security.secret.SecretStore
 import java.nio.ByteBuffer
-import java.nio.CharBuffer
-import java.nio.charset.CodingErrorAction
-import java.nio.charset.StandardCharsets
 import java.util.Arrays
 
-class JceksAuthCredentialPersistence(
+class JceksAuthCredentialPersistence internal constructor(
     private val secretStore: SecretStore,
-    private val entryRef: SecretRef = SecretRef.parse(DEFAULT_ALIAS),
+    private val entryRef: SecretRef,
+    private val secureEncoding: SecureJceksEncoding,
 ) : AuthCredentialPersistencePort {
+    constructor(
+        secretStore: SecretStore,
+        entryRef: SecretRef = SecretRef.parse(DEFAULT_ALIAS),
+    ) : this(secretStore, entryRef, SecureJceksEncoding())
+
     override suspend fun load(): AuthTokenSet? {
         val stored = secretStore.load(entryRef) ?: return null
         return try {
@@ -44,10 +47,12 @@ class JceksAuthCredentialPersistence(
         "JceksAuthCredentialPersistence(secretStore=[REDACTED], entryRef=[REDACTED])"
 
     private fun encode(tokens: AuthTokenSet): CharArray {
-        val accessBytes = tokens.accessToken.toByteArray(StandardCharsets.UTF_8)
-        val refreshBytes = tokens.refreshToken.toByteArray(StandardCharsets.UTF_8)
+        var accessBytes: ByteArray? = null
+        var refreshBytes: ByteArray? = null
         var payload: ByteArray? = null
         try {
+            accessBytes = secureEncoding.encodeUtf8(tokens.accessToken.toCharArray(), MAX_TOKEN_BYTES)
+            refreshBytes = secureEncoding.encodeUtf8(tokens.refreshToken.toCharArray(), MAX_TOKEN_BYTES)
             validateTokenLength(accessBytes.size)
             validateTokenLength(refreshBytes.size)
             val payloadSize = HEADER_SIZE + accessBytes.size + refreshBytes.size
@@ -60,16 +65,26 @@ class JceksAuthCredentialPersistence(
                 .put(accessBytes)
                 .putInt(refreshBytes.size)
                 .put(refreshBytes)
-            return encodeHex(payload)
+            return secureEncoding.encodeHex(payload)
+        } catch (failure: SecureJceksEncoding.Failure) {
+            throw if (failure.reason == SecureJceksEncoding.FailureReason.TOO_LARGE) {
+                credentialsTooLarge()
+            } else {
+                CredentialPersistenceException("Authentication credentials are invalid")
+            }
         } finally {
-            Arrays.fill(accessBytes, 0)
-            Arrays.fill(refreshBytes, 0)
-            payload?.let { Arrays.fill(it, 0) }
+            accessBytes?.let(secureEncoding::wipe)
+            refreshBytes?.let(secureEncoding::wipe)
+            payload?.let(secureEncoding::wipe)
         }
     }
 
     private fun decode(stored: CharArray): AuthTokenSet {
-        val payload = decodeHex(stored)
+        val payload = try {
+            secureEncoding.decodeHex(stored, MAX_PAYLOAD_BYTES)
+        } catch (failure: SecureJceksEncoding.Failure) {
+            throw invalidCredentials()
+        }
         var accessBytes: ByteArray? = null
         var refreshBytes: ByteArray? = null
         try {
@@ -84,8 +99,8 @@ class JceksAuthCredentialPersistence(
             validateStoredLength(refreshLength, buffer.remaining(), requiresTrailingLength = false)
             if (buffer.remaining() != refreshLength) throw invalidCredentials()
             refreshBytes = ByteArray(refreshLength).also(buffer::get)
-            val accessToken = decodeUtf8(accessBytes)
-            val refreshToken = decodeUtf8(refreshBytes)
+            val accessToken = secureEncoding.decodeUtf8(accessBytes, MAX_TOKEN_BYTES)
+            val refreshToken = secureEncoding.decodeUtf8(refreshBytes, MAX_TOKEN_BYTES)
             return try {
                 AuthTokenSet(accessToken, refreshToken)
             } catch (failure: IllegalArgumentException) {
@@ -96,47 +111,10 @@ class JceksAuthCredentialPersistence(
         } catch (failure: Exception) {
             throw invalidCredentials(failure)
         } finally {
-            accessBytes?.let { Arrays.fill(it, 0) }
-            refreshBytes?.let { Arrays.fill(it, 0) }
-            Arrays.fill(payload, 0)
+            accessBytes?.let(secureEncoding::wipe)
+            refreshBytes?.let(secureEncoding::wipe)
+            secureEncoding.wipe(payload)
         }
-    }
-
-    private fun decodeUtf8(bytes: ByteArray): String {
-        var chars: CharBuffer? = null
-        try {
-            chars = StandardCharsets.UTF_8.newDecoder()
-                .onMalformedInput(CodingErrorAction.REPORT)
-                .onUnmappableCharacter(CodingErrorAction.REPORT)
-                .decode(ByteBuffer.wrap(bytes))
-            return chars.toString()
-        } finally {
-            chars?.let {
-                if (it.hasArray()) Arrays.fill(it.array(), '\u0000')
-                it.clear()
-            }
-        }
-    }
-
-    private fun encodeHex(payload: ByteArray): CharArray = CharArray(payload.size * 2) { index ->
-        val value = payload[index / 2].toInt() and 0xff
-        HEX_DIGITS[if (index % 2 == 0) value ushr 4 else value and 0x0f]
-    }
-
-    private fun decodeHex(stored: CharArray): ByteArray {
-        if (stored.size % 2 != 0 || stored.size > MAX_PAYLOAD_BYTES * 2) throw invalidCredentials()
-        return ByteArray(stored.size / 2) { index ->
-            val high = hexValue(stored[index * 2])
-            val low = hexValue(stored[index * 2 + 1])
-            ((high shl 4) or low).toByte()
-        }
-    }
-
-    private fun hexValue(value: Char): Int = when (value) {
-        in '0'..'9' -> value - '0'
-        in 'a'..'f' -> value - 'a' + 10
-        in 'A'..'F' -> value - 'A' + 10
-        else -> throw invalidCredentials()
     }
 
     private fun validateTokenLength(length: Int) {
@@ -163,7 +141,6 @@ class JceksAuthCredentialPersistence(
         private const val MAX_TOKEN_BYTES = 64 * 1024
         private const val MAX_PAYLOAD_BYTES = 128 * 1024
         private const val INVALID_CREDENTIALS_MESSAGE = "Stored authentication credentials are invalid"
-        private const val HEX_DIGITS = "0123456789abcdef"
     }
 }
 

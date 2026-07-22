@@ -3,6 +3,7 @@ package com.wzx.huitai.desktop.security
 import com.wzx.huitai.integration.auth.AuthTokenSet
 import com.wzx.huitai.security.secret.JceksSecretStore
 import com.wzx.huitai.security.secret.SecretRef
+import com.wzx.huitai.security.secret.SecretStore
 import java.nio.ByteBuffer
 import java.nio.file.Files
 import kotlinx.coroutines.runBlocking
@@ -144,13 +145,14 @@ class BusinessAuthSessionMetadataStoreTest {
         val path = root.resolve("credentials.jceks")
         val correctPassword = "correct-password".toCharArray()
         val wrongPassword = "wrong-password".toCharArray()
+        val loginPassword = "login-password".toCharArray()
         try {
             JceksSecretStore(path, correctPassword).use { secrets ->
                 JceksAuthCredentialPersistence(secrets).replace(AuthTokenSet("access-token", "refresh-token"))
                 BusinessAuthSessionMetadataStore(secrets).saveOrReplace(
                     BusinessAuthSessionMetadata("user-1", "tenant-1", "100"),
                 )
-                BusinessLoginCredentialStore(secrets).saveOrReplace("account-1", "login-password".toCharArray())
+                BusinessLoginCredentialStore(secrets).saveOrReplace("account-1", loginPassword)
                 secrets.upsert(PROVIDER_ALIAS, "provider-secret".toCharArray())
             }
             val snapshot = path.readBytes()
@@ -169,17 +171,82 @@ class BusinessAuthSessionMetadataStoreTest {
                 assertEquals("access-token", JceksAuthCredentialPersistence(secrets).load()?.accessToken)
                 assertEquals("user-1", BusinessAuthSessionMetadataStore(secrets).load()?.userId)
                 val remembered = requireNotNull(BusinessLoginCredentialStore(secrets).load())
-                try {
+                remembered.use {
                     assertEquals("account-1", remembered.account)
-                    assertEquals("login-password", remembered.password.concatToString())
-                } finally {
-                    remembered.password.fill('\u0000')
+                    val passwordCopy = remembered.copyPassword()
+                    try {
+                        assertEquals("login-password", passwordCopy.concatToString())
+                    } finally {
+                        passwordCopy.fill('\u0000')
+                    }
                 }
                 assertSecretEquals(secrets, PROVIDER_ALIAS, "provider-secret", "wrong-password recovery")
             }
         } finally {
             correctPassword.fill('\u0000')
             wrongPassword.fill('\u0000')
+            loginPassword.fill('\u0000')
+        }
+    }
+
+    @Test
+    fun `closed real store maps all metadata and login boundaries without leaking implementation message`() {
+        val password = "key-store-password".toCharArray()
+        val savePassword = "save-password".toCharArray()
+        val secrets = JceksSecretStore(
+            Files.createTempDirectory("business-closed-store").resolve("credentials.jceks"),
+            password,
+        )
+        secrets.close()
+        try {
+            val operations = listOf<Pair<String, () -> Unit>>(
+                "metadata load" to { BusinessAuthSessionMetadataStore(secrets).load() },
+                "metadata save" to {
+                    BusinessAuthSessionMetadataStore(secrets).saveOrReplace(
+                        BusinessAuthSessionMetadata("user-1", "tenant-1", "100"),
+                    )
+                },
+                "metadata clear" to { BusinessAuthSessionMetadataStore(secrets).clear() },
+                "remembered load" to { BusinessLoginCredentialStore(secrets).load() },
+                "remembered save" to { BusinessLoginCredentialStore(secrets).saveOrReplace("account-1", savePassword) },
+                "remembered clear" to { BusinessLoginCredentialStore(secrets).clear() },
+            )
+            operations.forEach { (caseName, operation) ->
+                val failure = assertFailsWith<LocalCredentialStoreUnavailableException>(caseName, operation)
+                assertEquals("Local key store is unavailable", failure.message, caseName)
+                assertFalse("secret store is closed" in failure.toString(), caseName)
+            }
+            val invalidArgument = assertFailsWith<IllegalArgumentException> {
+                BusinessLoginCredentialStore(secrets).saveOrReplace("", savePassword)
+            }
+            assertEquals(IllegalArgumentException::class, invalidArgument::class)
+        } finally {
+            password.fill('\u0000')
+            savePassword.fill('\u0000')
+        }
+    }
+
+    @Test
+    fun `closed real store during remembered invalidation maps unavailable without leaking close message`() {
+        val password = "key-store-password".toCharArray()
+        val path = Files.createTempDirectory("business-closed-invalidate").resolve("credentials.jceks")
+        val delegate = JceksSecretStore(path, password)
+        val invalidEntry = "bad-entry".toCharArray()
+        try {
+            delegate.upsert(BusinessLoginCredentialStore.DEFAULT_ALIAS, invalidEntry)
+            val closingStore = object : SecretStore by delegate {
+                override fun load(ref: SecretRef): CharArray? = delegate.load(ref).also { delegate.close() }
+            }
+
+            val failure = assertFailsWith<LocalCredentialStoreUnavailableException> {
+                BusinessLoginCredentialStore(closingStore).load()
+            }
+            assertEquals("Local key store is unavailable", failure.message)
+            assertFalse("secret store is closed" in failure.toString())
+        } finally {
+            delegate.close()
+            password.fill('\u0000')
+            invalidEntry.fill('\u0000')
         }
     }
 
