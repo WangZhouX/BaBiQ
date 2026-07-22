@@ -678,6 +678,32 @@ class AuthSessionManagerTest {
     }
 
     @Test
+    fun `immediate authority block prevents an in flight login from republishing token`() = runTest {
+        val replaceStarted = CompletableDeferred<Unit>()
+        val replaceRelease = CompletableDeferred<Unit>()
+        val persistence = RecordingCredentialPersistence(
+            replaceStarted = replaceStarted,
+            replaceRelease = replaceRelease,
+        )
+        val manager = AuthSessionManager(persistence)
+        val tokenProvider: AuthTokenProvider = manager
+        val login = async {
+            manager.login(tokens = tokenSet("late"), identity = identityArguments)
+        }
+        replaceStarted.await()
+
+        manager.blockRequestAuthorityImmediately()
+        replaceRelease.complete(Unit)
+
+        assertFailsWith<AuthenticationAuthorityRevokedException> { login.await() }
+        assertNull(manager.identity.value)
+        assertNull(manager.requestIdentitySnapshot())
+        assertNull(tokenProvider.accessToken())
+        assertNull(tokenProvider.refreshToken())
+        assertEquals(AuthenticationState.SIGNED_OUT, manager.state.value)
+    }
+
+    @Test
     fun `conditional fail closed revoke cannot clear a replacement identity`() = runTest {
         val persistence = RecordingCredentialPersistence()
         val manager = AuthSessionManager(persistence)

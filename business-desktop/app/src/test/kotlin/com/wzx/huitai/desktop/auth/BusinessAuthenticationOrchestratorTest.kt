@@ -4,6 +4,9 @@ import com.wzx.huitai.action.model.ActionExecutionState
 import com.wzx.huitai.action.model.ActionIdentityScope
 import com.wzx.huitai.action.model.ActionResult
 import com.wzx.huitai.desktop.security.BusinessAuthSessionMetadata
+import com.wzx.huitai.desktop.security.BusinessAuthSessionMetadataStore
+import com.wzx.huitai.desktop.security.BusinessAuthRevocationMarkerPort
+import com.wzx.huitai.desktop.security.FileBusinessAuthRevocationMarkerStore
 import com.wzx.huitai.desktop.security.JceksAuthCredentialPersistence
 import com.wzx.huitai.desktop.security.LocalCredentialStoreUnavailableException
 import com.wzx.huitai.desktop.state.BusinessIdentity
@@ -417,9 +420,13 @@ class BusinessAuthenticationOrchestratorTest {
         fixture.metadata.saveStarted!!.await()
 
         val logout = async(Dispatchers.Default) { fixture.orchestrator.logout() }
-        fixture.metadata.clearObserved!!.await(500, TimeUnit.MILLISECONDS)
+        assertFalse(fixture.metadata.clearObserved!!.await(200, TimeUnit.MILLISECONDS))
+        assertEquals(BusinessAccessGateState.SIGNING_OUT, fixture.orchestrator.gate.value)
+        assertNull(fixture.registry.currentIdentity())
+        assertNull(fixture.sessionManager.identity.value)
+        assertNull(fixture.sessionManager.accessToken())
         fixture.metadata.saveRelease!!.countDown()
-        runCatching { login.await() }
+        assertFailsWith<CancellationException> { login.await() }
         logout.await()
 
         assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value)
@@ -499,6 +506,35 @@ class BusinessAuthenticationOrchestratorTest {
     }
 
     @Test
+    fun `every suspending cleanup adapter is bounded`() = runTest {
+        val fixture = Fixture(cleanupStepTimeoutMillis = 10).apply {
+            registration.failureStage = RegistrationFailureStage.CONTEXT
+            registration.rollbackNeverReturns = true
+            registration.publishSignedOutNeverReturns = true
+            registration.clearWorkspaceNeverReturns = true
+            actions.cancelNeverReturns = true
+            actions.detachNeverReturns = true
+            candidateGateway.logoutNeverReturns = true
+        }
+        fixture.verify()
+
+        val failure = assertFailsWith<BusinessAuthenticationException> {
+            fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+        }
+
+        assertEquals(BusinessLoginErrorCode.AGENT_REGISTRATION_FAILED, failure.code)
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value)
+        assertNull(fixture.registry.currentIdentity())
+        assertNull(fixture.sessionManager.identity.value)
+        assertEquals(1, fixture.actions.cancelCount)
+        assertEquals(1, fixture.actions.detachCount)
+        assertEquals(1, fixture.candidateGateway.logoutCount)
+        assertTrue("rollback" in fixture.registration.calls)
+        assertTrue("signed-out" in fixture.registration.calls)
+        assertTrue("clear-workspace" in fixture.registration.calls)
+    }
+
+    @Test
     fun `durable clear failure keeps gate signed out and fail closes in memory authority`() = runTest {
         val fixture = Fixture()
         fixture.orchestrator.findTenantCandidates("lawyer@example.com")
@@ -512,6 +548,83 @@ class BusinessAuthenticationOrchestratorTest {
         assertNull(fixture.registry.currentIdentity())
         assertNull(fixture.sessionManager.identity.value)
         assertEquals(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE, fixture.orchestrator.lastError.value?.code)
+        assertTrue(fixture.revocationMarker.revoked)
+    }
+
+    @Test
+    fun `revocation marker prevents a failed JCEKS clear from restoring after restart`() = runTest {
+        val root = Files.createTempDirectory("orchestrator-revocation-restart")
+        val keyStorePath = root.resolve("credentials.jceks")
+        val markerPath = root.resolve("auth-revoked-v1")
+        val password = "password".toCharArray()
+        val marker = FileBusinessAuthRevocationMarkerStore(markerPath)
+        JceksSecretStore(keyStorePath, password.copyOf()).use { secrets ->
+            val tokenDelegate = JceksAuthCredentialPersistence(secrets)
+            val metadataDelegate = BusinessAuthSessionMetadataStore(secrets)
+            val tokenPersistence = ClearFailingCredentialPersistence(tokenDelegate)
+            val metadataPersistence = ClearFailingMetadataPersistence(metadataDelegate)
+            val preAuth = FakePreAuthenticationGateway()
+            val orchestrator = BusinessAuthenticationOrchestrator(
+                preAuthentication = preAuth,
+                candidateAuthentication = FakeCandidateGateway(),
+                credentialPersistence = tokenPersistence,
+                authSessionManager = AuthSessionManager(tokenPersistence),
+                metadataPersistence = metadataPersistence,
+                revocationMarker = marker,
+                registration = FakeRegistrationPort(),
+                identityRegistry = BusinessIdentityRegistry(),
+                actions = FakeActions(),
+                desktopInstanceId = "desktop-instance-1",
+                desktopSessionId = "desktop-session-1",
+                platformId = 100,
+            )
+            orchestrator.findTenantCandidates("lawyer@example.com")
+            orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), candidate())
+
+            orchestrator.logout()
+
+            assertEquals(BusinessAccessGateState.SIGNED_OUT, orchestrator.gate.value)
+            assertTrue(marker.isRevoked())
+            assertEquals("refresh-secret", tokenDelegate.load()?.refreshToken)
+            assertEquals("user-1", metadataDelegate.load()?.userId)
+        }
+
+        val restartedPreAuth = FakePreAuthenticationGateway()
+        JceksSecretStore(keyStorePath, password.copyOf()).use { reopened ->
+            val tokenPersistence = JceksAuthCredentialPersistence(reopened)
+            val metadataPersistence = StoredBusinessAuthSessionMetadataPort(BusinessAuthSessionMetadataStore(reopened))
+            val orchestrator = BusinessAuthenticationOrchestrator(
+                preAuthentication = restartedPreAuth,
+                candidateAuthentication = FakeCandidateGateway(),
+                credentialPersistence = tokenPersistence,
+                authSessionManager = AuthSessionManager(tokenPersistence),
+                metadataPersistence = metadataPersistence,
+                revocationMarker = FileBusinessAuthRevocationMarkerStore(markerPath),
+                registration = FakeRegistrationPort(),
+                identityRegistry = BusinessIdentityRegistry(),
+                actions = FakeActions(),
+                desktopInstanceId = "desktop-instance-2",
+                desktopSessionId = "desktop-session-2",
+                platformId = 100,
+            )
+
+            orchestrator.restore()
+
+            assertEquals(BusinessAccessGateState.SIGNED_OUT, orchestrator.gate.value)
+            assertTrue(restartedPreAuth.refreshCalls.isEmpty())
+        }
+        password.fill('\u0000')
+    }
+
+    @Test
+    fun `only a completed explicit login clears an existing revocation marker`() = runTest {
+        val fixture = Fixture().apply { revocationMarker.revoked = true }
+        fixture.verify()
+
+        fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+
+        assertEquals(BusinessAccessGateState.READY, fixture.orchestrator.gate.value)
+        assertFalse(fixture.revocationMarker.revoked)
     }
 
     @Test
@@ -520,7 +633,7 @@ class BusinessAuthenticationOrchestratorTest {
         fixture.verify()
         fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
 
-        fixture.orchestrator.onLocalCredentialStoreUnavailable()
+        fixture.orchestrator.onLocalCredentialStoreFailure(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
 
         assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value)
         assertEquals(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE, fixture.orchestrator.lastError.value?.code)
@@ -564,6 +677,7 @@ class BusinessAuthenticationOrchestratorTest {
             credentialPersistence = persistence,
             authSessionManager = AuthSessionManager(persistence),
             metadataPersistence = metadata,
+            revocationMarker = FakeRevocationMarker(),
             registration = FakeRegistrationPort(),
             identityRegistry = BusinessIdentityRegistry(),
             actions = FakeActions(),
@@ -581,6 +695,8 @@ class BusinessAuthenticationOrchestratorTest {
 
     private class Fixture(
         remoteLogoutTimeoutMillis: Long = 2_000,
+        cleanupStepTimeoutMillis: Long = 2_000,
+        val revocationMarker: FakeRevocationMarker = FakeRevocationMarker(),
     ) {
         var candidate = candidate()
         val preAuth = FakePreAuthenticationGateway()
@@ -598,6 +714,7 @@ class BusinessAuthenticationOrchestratorTest {
             credentialPersistence = credentials,
             authSessionManager = sessionManager,
             metadataPersistence = metadata,
+            revocationMarker = revocationMarker,
             registration = registration,
             identityRegistry = registry,
             actions = actions,
@@ -606,12 +723,36 @@ class BusinessAuthenticationOrchestratorTest {
             platformId = 100,
             now = { Instant.parse("2026-07-22T00:00:00Z") },
             remoteLogoutTimeoutMillis = remoteLogoutTimeoutMillis,
+            cleanupStepTimeoutMillis = cleanupStepTimeoutMillis,
         )
 
         suspend fun verify(account: String = "lawyer@example.com") {
             preAuth.candidates = listOf(candidate)
             orchestrator.findTenantCandidates(account)
         }
+    }
+
+    private class FakeRevocationMarker : BusinessAuthRevocationMarkerPort {
+        var revoked = false
+        override fun isRevoked(): Boolean = revoked
+        override fun markRevoked() { revoked = true }
+        override fun clearAfterExplicitLogin() { revoked = false }
+    }
+
+    private class ClearFailingCredentialPersistence(
+        private val delegate: AuthCredentialPersistencePort,
+    ) : AuthCredentialPersistencePort {
+        override suspend fun load(): AuthTokenSet? = delegate.load()
+        override suspend fun replace(tokens: AuthTokenSet) = delegate.replace(tokens)
+        override suspend fun clear(): Unit = error("simulated token clear failure")
+    }
+
+    private class ClearFailingMetadataPersistence(
+        private val delegate: BusinessAuthSessionMetadataStore,
+    ) : BusinessAuthSessionMetadataPersistencePort {
+        override fun load(): BusinessAuthSessionMetadata? = delegate.load()
+        override fun saveOrReplace(metadata: BusinessAuthSessionMetadata) = delegate.saveOrReplace(metadata)
+        override fun clear(): Unit = error("simulated metadata clear failure")
     }
 
     private class FakePreAuthenticationGateway : OaPreAuthenticationGateway {
@@ -735,6 +876,9 @@ class BusinessAuthenticationOrchestratorTest {
         var ignoreCancellation = false
         var remainingGatedCommitCalls: Int? = null
         var rollbackMustSuspend = false
+        var rollbackNeverReturns = false
+        var publishSignedOutNeverReturns = false
+        var clearWorkspaceNeverReturns = false
         var rollbackCompleted = false
 
         override suspend fun prepare(identity: BusinessIdentity): BusinessAgentRegistrationTransaction {
@@ -764,14 +908,21 @@ class BusinessAuthenticationOrchestratorTest {
                 }
                 override suspend fun rollback() {
                     calls += "rollback"
+                    if (rollbackNeverReturns) CompletableDeferred<Unit>().await()
                     if (rollbackMustSuspend) yield()
                     rollbackCompleted = true
                 }
             }
         }
 
-        override suspend fun publishSignedOut() { calls += "signed-out" }
-        override suspend fun clearWorkspace() { calls += "clear-workspace" }
+        override suspend fun publishSignedOut() {
+            calls += "signed-out"
+            if (publishSignedOutNeverReturns) CompletableDeferred<Unit>().await()
+        }
+        override suspend fun clearWorkspace() {
+            calls += "clear-workspace"
+            if (clearWorkspaceNeverReturns) CompletableDeferred<Unit>().await()
+        }
         private fun fail(stage: RegistrationFailureStage) {
             if (failureStage == stage) error("registration secret failure")
         }
@@ -781,11 +932,21 @@ class BusinessAuthenticationOrchestratorTest {
         var cancelledScope: ActionIdentityScope? = null
         var cancelledStates: Set<ActionExecutionState>? = null
         var detachedScope: ActionIdentityScope? = null
+        var cancelNeverReturns = false
+        var detachNeverReturns = false
+        var cancelCount = 0
+        var detachCount = 0
         override suspend fun cancelPreExecution(identityScope: ActionIdentityScope, states: Set<ActionExecutionState>) {
+            cancelCount += 1
+            if (cancelNeverReturns) CompletableDeferred<Unit>().await()
             cancelledScope = identityScope
             cancelledStates = states
         }
-        override suspend fun detachExecutingForReconciliation(identityScope: ActionIdentityScope) { detachedScope = identityScope }
+        override suspend fun detachExecutingForReconciliation(identityScope: ActionIdentityScope) {
+            detachCount += 1
+            if (detachNeverReturns) CompletableDeferred<Unit>().await()
+            detachedScope = identityScope
+        }
         override suspend fun result(executionId: String, identityScope: ActionIdentityScope): ActionResult<JsonElement>? = null
     }
 

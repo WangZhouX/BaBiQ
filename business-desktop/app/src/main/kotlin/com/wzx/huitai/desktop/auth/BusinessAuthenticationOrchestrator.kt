@@ -3,6 +3,7 @@ package com.wzx.huitai.desktop.auth
 import com.wzx.huitai.action.model.ActionExecutionState
 import com.wzx.huitai.desktop.security.BusinessAuthSessionMetadata
 import com.wzx.huitai.desktop.security.BusinessAuthSessionMetadataStore
+import com.wzx.huitai.desktop.security.BusinessAuthRevocationMarkerPort
 import com.wzx.huitai.desktop.security.CredentialPersistenceException
 import com.wzx.huitai.desktop.security.LocalCredentialStoreUnavailableException
 import com.wzx.huitai.desktop.security.SessionMetadataPersistenceException
@@ -56,6 +57,7 @@ class BusinessAuthenticationOrchestrator(
     private val credentialPersistence: AuthCredentialPersistencePort,
     private val authSessionManager: AuthSessionManager,
     private val metadataPersistence: BusinessAuthSessionMetadataPersistencePort,
+    private val revocationMarker: BusinessAuthRevocationMarkerPort,
     private val registration: BusinessAgentRegistrationTransactionPort,
     private val identityRegistry: BusinessIdentityRegistry,
     private val actions: IdentityBoundaryActionPort,
@@ -64,9 +66,11 @@ class BusinessAuthenticationOrchestrator(
     private val platformId: Int,
     private val now: () -> Instant = Instant::now,
     private val remoteLogoutTimeoutMillis: Long = 2_000,
+    private val cleanupStepTimeoutMillis: Long = 2_000,
 ) : BusinessAuthenticationOperations {
     init {
         require(remoteLogoutTimeoutMillis > 0) { "remoteLogoutTimeoutMillis must be positive" }
+        require(cleanupStepTimeoutMillis > 0) { "cleanupStepTimeoutMillis must be positive" }
     }
 
     constructor(
@@ -75,6 +79,7 @@ class BusinessAuthenticationOrchestrator(
         credentialPersistence: AuthCredentialPersistencePort,
         authSessionManager: AuthSessionManager,
         metadataStore: BusinessAuthSessionMetadataStore,
+        revocationMarker: BusinessAuthRevocationMarkerPort,
         registration: BusinessAgentRegistrationTransactionPort,
         identityRegistry: BusinessIdentityRegistry,
         actions: IdentityBoundaryActionPort,
@@ -83,12 +88,14 @@ class BusinessAuthenticationOrchestrator(
         platformId: Int,
         now: () -> Instant = Instant::now,
         remoteLogoutTimeoutMillis: Long = 2_000,
+        cleanupStepTimeoutMillis: Long = 2_000,
     ) : this(
         preAuthentication,
         candidateAuthentication,
         credentialPersistence,
         authSessionManager,
         StoredBusinessAuthSessionMetadataPort(metadataStore),
+        revocationMarker,
         registration,
         identityRegistry,
         actions,
@@ -97,6 +104,7 @@ class BusinessAuthenticationOrchestrator(
         platformId,
         now,
         remoteLogoutTimeoutMillis,
+        cleanupStepTimeoutMillis,
     )
 
     private val operationLock = Any()
@@ -178,6 +186,7 @@ class BusinessAuthenticationOrchestrator(
             val permission = loadAndValidatePermission(candidate, tokens, resources.candidateAccess!!)
             commitLocalAuthentication(candidate, tokens, permission, operation, resources)
             finishRegistration(operation, resources)
+            clearRevocationMarkerAfterExplicitLogin(operation)
             commitReady(operation, resources)
         } catch (cancelled: CancellationException) {
             withContext(NonCancellable) { compensate(operation, resources, null) }
@@ -203,6 +212,13 @@ class BusinessAuthenticationOrchestrator(
         )
         val resources = OperationResources()
         try {
+            if (isDurablyRevoked()) {
+                authSessionManager.blockRequestAuthorityImmediately()
+                val clearFailed = clearCurrentLocalPair(operation)
+                val code = if (clearFailed) BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE else null
+                commitSignedOut(operation, code)
+                return
+            }
             when (val loaded = loadRestorePair()) {
                 RestoreLoad.Empty -> {
                     commitSignedOut(operation, null)
@@ -251,8 +267,15 @@ class BusinessAuthenticationOrchestrator(
     suspend fun onAuthenticationExpired() = revoke(RevocationReason.AUTH_EXPIRED, remoteLogout = true)
     suspend fun onMembershipExpired() = revoke(RevocationReason.MEMBERSHIP_EXPIRED, remoteLogout = true)
 
-    override suspend fun onLocalCredentialStoreUnavailable() =
-        revoke(RevocationReason.LOCAL_CREDENTIAL_STORE_UNAVAILABLE, remoteLogout = true)
+    override suspend fun onLocalCredentialStoreFailure(code: BusinessLoginErrorCode) =
+        revoke(
+            reason = if (code == BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE) {
+                RevocationReason.LOCAL_KEYSTORE_UNAVAILABLE
+            } else {
+                RevocationReason.LOCAL_CREDENTIAL_STORE_FAILED
+            },
+            remoteLogout = true,
+        )
 
     suspend fun close() {
         val shouldClose = synchronized(operationLock) {
@@ -366,7 +389,7 @@ class BusinessAuthenticationOrchestrator(
         resources: OperationResources,
         errorCode: BusinessLoginErrorCode?,
     ) {
-        bestEffort { resources.transaction?.rollback() }
+        boundedCleanup { resources.transaction?.rollback() }
         boundedCandidateLogout(resources.candidateAccess)
 
         authorityMutationMutex.withLock {
@@ -398,9 +421,14 @@ class BusinessAuthenticationOrchestrator(
 
             identityRegistry.invalidate()
             resources.identity?.let { revokeActionsBestEffort(it) }
-            bestEffort { registration.publishSignedOut() }
-            bestEffort { registration.clearWorkspace() }
+            boundedCleanup { registration.publishSignedOut() }
+            boundedCleanup { registration.clearWorkspace() }
             var durableFailure = false
+            try {
+                revocationMarker.markRevoked()
+            } catch (_: Throwable) {
+                durableFailure = true
+            }
             val owner = resources.authOwner
             try {
                 if (owner == null) {
@@ -436,25 +464,28 @@ class BusinessAuthenticationOrchestrator(
         remoteLogout: Boolean,
         allowClosed: Boolean = false,
     ) = withContext(NonCancellable) {
+        val revoked = synchronized(operationLock) {
+            if (!allowClosed) ensureOpenLocked()
+            operationEpoch += 1
+            val operation = activeOperation
+            activeOperation = null
+            verifiedSelection = null
+            mutableGate.value = BusinessAccessGateState.SIGNING_OUT
+            val identity = identityRegistry.invalidate()
+            val candidate = activeCandidate
+            activeCandidate = null
+            RevokedAuthority(operation?.job, identity, candidate)
+        }
+        authSessionManager.blockRequestAuthorityImmediately()
+        revoked.operationJob?.cancel(CancellationException("Authentication operation revoked"))
+
+        var durableFailure = false
         authorityMutationMutex.withLock {
-            val revoked = synchronized(operationLock) {
-                if (!allowClosed) ensureOpenLocked()
-                operationEpoch += 1
-                val operation = activeOperation
-                activeOperation = null
-                verifiedSelection = null
-                mutableGate.value = BusinessAccessGateState.SIGNING_OUT
-                val identity = identityRegistry.invalidate()
-                val candidate = activeCandidate
-                activeCandidate = null
-                RevokedAuthority(operation?.job, identity, candidate)
+            try {
+                revocationMarker.markRevoked()
+            } catch (_: Throwable) {
+                durableFailure = true
             }
-            revoked.operationJob?.cancel(CancellationException("Authentication operation revoked"))
-            revoked.identity?.let { revokeActionsBestEffort(it) }
-            bestEffort { registration.publishSignedOut() }
-            bestEffort { registration.clearWorkspace() }
-            if (remoteLogout) boundedCandidateLogout(revoked.candidate)
-            var durableFailure = false
             try {
                 authSessionManager.failClosedRevoke()
             } catch (_: Throwable) {
@@ -465,23 +496,34 @@ class BusinessAuthenticationOrchestrator(
             } catch (_: Throwable) {
                 durableFailure = true
             }
-            synchronized(operationLock) {
-                mutableLastError.value = when {
-                    durableFailure -> BusinessLoginMessage(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
-                    reason == RevocationReason.AUTH_EXPIRED -> BusinessLoginMessage(BusinessLoginErrorCode.AUTH_EXPIRED)
-                    reason == RevocationReason.MEMBERSHIP_EXPIRED -> BusinessLoginMessage(BusinessLoginErrorCode.MEMBERSHIP_EXPIRED)
-                    reason == RevocationReason.LOCAL_CREDENTIAL_STORE_UNAVAILABLE ->
-                        BusinessLoginMessage(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
-                    else -> null
-                }
-                mutableGate.value = BusinessAccessGateState.SIGNED_OUT
+        }
+        revoked.identity?.let { revokeActionsBestEffort(it) }
+        boundedCleanup { registration.publishSignedOut() }
+        boundedCleanup { registration.clearWorkspace() }
+        if (remoteLogout) boundedCandidateLogout(revoked.candidate)
+        synchronized(operationLock) {
+            mutableLastError.value = when {
+                durableFailure -> BusinessLoginMessage(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
+                reason == RevocationReason.AUTH_EXPIRED -> BusinessLoginMessage(BusinessLoginErrorCode.AUTH_EXPIRED)
+                reason == RevocationReason.MEMBERSHIP_EXPIRED -> BusinessLoginMessage(BusinessLoginErrorCode.MEMBERSHIP_EXPIRED)
+                reason == RevocationReason.LOCAL_KEYSTORE_UNAVAILABLE ->
+                    BusinessLoginMessage(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
+                reason == RevocationReason.LOCAL_CREDENTIAL_STORE_FAILED ->
+                    BusinessLoginMessage(BusinessLoginErrorCode.LOCAL_CREDENTIAL_STORE_FAILED)
+                else -> null
             }
+            mutableGate.value = BusinessAccessGateState.SIGNED_OUT
         }
     }
 
     private suspend fun clearCurrentLocalPair(operation: Operation): Boolean = authorityMutationMutex.withLock {
         checkCurrent(operation)
         var durableFailure = false
+        try {
+            revocationMarker.markRevoked()
+        } catch (_: Throwable) {
+            durableFailure = true
+        }
         try {
             authSessionManager.failClosedRevoke()
         } catch (_: Throwable) {
@@ -502,6 +544,23 @@ class BusinessAuthenticationOrchestrator(
         mutableLastError.value = code?.let(::BusinessLoginMessage)
         mutableGate.value = BusinessAccessGateState.SIGNED_OUT
     }
+
+    private fun isDurablyRevoked(): Boolean = try {
+        revocationMarker.isRevoked()
+    } catch (_: Throwable) {
+        throw BusinessAuthenticationException(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
+    }
+
+    private suspend fun clearRevocationMarkerAfterExplicitLogin(operation: Operation) =
+        authorityMutationMutex.withLock {
+            checkCurrent(operation)
+            try {
+                revocationMarker.clearAfterExplicitLogin()
+            } catch (_: Throwable) {
+                throw BusinessAuthenticationException(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
+            }
+            checkCurrent(operation)
+        }
 
     private suspend fun loadRestorePair(): RestoreLoad {
         var tokens: AuthTokenSet? = null
@@ -576,14 +635,32 @@ class BusinessAuthenticationOrchestrator(
     }
 
     private suspend fun revokeActionsBestEffort(identity: BusinessIdentity) {
-        bestEffort { actions.cancelPreExecution(identity.actionScope(), PRE_EXECUTION_STATES) }
-        bestEffort { actions.detachExecutingForReconciliation(identity.actionScope()) }
+        boundedCleanup { actions.cancelPreExecution(identity.actionScope(), PRE_EXECUTION_STATES) }
+        boundedCleanup { actions.detachExecutingForReconciliation(identity.actionScope()) }
     }
 
     private suspend fun boundedCandidateLogout(candidate: OaCandidateAccess?) {
         if (candidate == null) return
         withTimeoutOrNull(remoteLogoutTimeoutMillis) {
-            bestEffort { candidateAuthentication.logout(candidate) }
+            try {
+                candidateAuthentication.logout(candidate)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                // Remote logout never weakens mandatory local revocation.
+            }
+        }
+    }
+
+    private suspend fun boundedCleanup(block: suspend () -> Unit) {
+        withTimeoutOrNull(cleanupStepTimeoutMillis) {
+            try {
+                block()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                // Stable primary error and fail-closed local authority remain authoritative.
+            }
         }
     }
 
@@ -721,7 +798,8 @@ class BusinessAuthenticationOrchestrator(
         LOGOUT,
         AUTH_EXPIRED,
         MEMBERSHIP_EXPIRED,
-        LOCAL_CREDENTIAL_STORE_UNAVAILABLE,
+        LOCAL_KEYSTORE_UNAVAILABLE,
+        LOCAL_CREDENTIAL_STORE_FAILED,
         CLOSE,
     }
 

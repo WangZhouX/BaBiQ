@@ -37,6 +37,10 @@ class BusinessLoginControllerTest {
 
         assertEquals(BusinessSliderState.REQUESTED, controller.state.value.slider)
         assertTrue(authentication.calls.isEmpty())
+
+        controller.updateAccount("a".repeat(250) + "@x.com")
+        controller.submit()
+        assertEquals(BusinessLoginErrorCode.INVALID_ACCOUNT, controller.state.value.error?.code)
     }
 
     @Test
@@ -247,6 +251,33 @@ class BusinessLoginControllerTest {
         assertEquals(2, remembered.clearCount)
     }
 
+    @Test
+    fun `generic remembered save failure after ready revokes with local credential error`() = runTest {
+        val authentication = FakeAuthenticationOperations(candidates = listOf(candidate("tenant-1")))
+        val remembered = FakeRememberedLoginPort(saveFailure = IllegalArgumentException("oversized"))
+        val controller = validController(authentication, remembered)
+
+        controller.submit()
+        controller.completeSlider(true)
+
+        assertEquals(listOf(BusinessLoginErrorCode.LOCAL_CREDENTIAL_STORE_FAILED), authentication.localCredentialFailures)
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, authentication.gate.value)
+        assertEquals(BusinessLoginErrorCode.LOCAL_CREDENTIAL_STORE_FAILED, controller.state.value.error?.code)
+    }
+
+    @Test
+    fun `turning remember off while ready revokes on generic clear failure`() = runTest {
+        val authentication = FakeAuthenticationOperations().apply { gate.value = BusinessAccessGateState.READY }
+        val remembered = FakeRememberedLoginPort(clearFailureAt = 1, genericClearFailure = true)
+        val controller = BusinessLoginController(authentication, remembered)
+
+        controller.updateRemember(false)
+
+        assertEquals(listOf(BusinessLoginErrorCode.LOCAL_CREDENTIAL_STORE_FAILED), authentication.localCredentialFailures)
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, authentication.gate.value)
+        assertEquals(BusinessLoginErrorCode.LOCAL_CREDENTIAL_STORE_FAILED, controller.state.value.error?.code)
+    }
+
     private fun validController(
         authentication: FakeAuthenticationOperations,
         remembered: FakeRememberedLoginPort = FakeRememberedLoginPort(),
@@ -277,7 +308,8 @@ class BusinessLoginControllerTest {
         var authenticateStarted: CompletableDeferred<Unit>? = null
         var authenticateRelease: CompletableDeferred<Unit>? = null
         var ignoreAuthenticateCancellation = false
-        var localCredentialStoreUnavailableCount = 0
+        val localCredentialFailures = mutableListOf<BusinessLoginErrorCode>()
+        val localCredentialStoreUnavailableCount: Int get() = localCredentialFailures.size
 
         override suspend fun findTenantCandidates(account: String): List<OaTenantCandidate> {
             calls += "find"
@@ -320,8 +352,8 @@ class BusinessLoginControllerTest {
             }
         }
 
-        override suspend fun onLocalCredentialStoreUnavailable() {
-            localCredentialStoreUnavailableCount += 1
+        override suspend fun onLocalCredentialStoreFailure(code: BusinessLoginErrorCode) {
+            localCredentialFailures += code
             gate.value = BusinessAccessGateState.SIGNED_OUT
         }
     }
@@ -331,6 +363,7 @@ class BusinessLoginControllerTest {
         var loadFailure: Throwable? = null,
         var saveFailure: Throwable? = null,
         var clearFailureAt: Int? = null,
+        var genericClearFailure: Boolean = false,
     ) : BusinessRememberedLoginPort {
         val saved = mutableListOf<Pair<String, String>>()
         var clearCount = 0
@@ -347,7 +380,10 @@ class BusinessLoginControllerTest {
 
         override fun clear() {
             clearCount += 1
-            if (clearFailureAt == clearCount) throw LocalCredentialStoreUnavailableException()
+            if (clearFailureAt == clearCount) {
+                if (genericClearFailure) error("generic clear failure")
+                throw LocalCredentialStoreUnavailableException()
+            }
         }
     }
 }

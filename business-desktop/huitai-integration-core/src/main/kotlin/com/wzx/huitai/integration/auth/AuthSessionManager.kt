@@ -2,6 +2,8 @@ package com.wzx.huitai.integration.auth
 
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,6 +26,8 @@ class AuthSessionManager(
     }
 
     private val mutex = Mutex()
+    private val authorityPublicationLock = Any()
+    private val authorityBarrier = AtomicLong(0)
     private val mutableState = MutableStateFlow(AuthenticationState.SIGNED_OUT)
     private val mutableIdentity = MutableStateFlow<AuthIdentitySnapshot?>(null)
     // UI 事件采用有界合并缓冲；权威状态由 StateFlow 提供，持久历史由 durable audit 承担。
@@ -50,6 +54,7 @@ class AuthSessionManager(
         authenticatedAt: Instant,
         tokens: AuthTokenSet,
     ) = mutex.withLock {
+        val expectedAuthorityBarrier = authorityBarrier.get()
         val previousState = mutableState.value
         val previousIdentity = mutableIdentity.value
         val signingIn = stateMachine.transition(previousState, AuthenticationState.SIGNING_IN)
@@ -71,18 +76,25 @@ class AuthSessionManager(
         try {
             credentialPersistence.replace(tokens)
         } catch (failure: Throwable) {
-            credentialSnapshot = previousCredentialSnapshot
-            mutableState.value = previousState
+            if (authorityBarrier.get() == expectedAuthorityBarrier) {
+                credentialSnapshot = previousCredentialSnapshot
+                mutableState.value = previousState
+            }
             throw failure
         }
-        identityEpoch = nextEpoch
-        mutableIdentity.value = identity
-        mutableState.value = authenticated
-        credentialSnapshot = CredentialSnapshot(
-            tokens = tokens,
-            readable = true,
-            requestIdentity = identity.toRequestIdentity(tokens),
-        )
+        synchronized(authorityPublicationLock) {
+            if (authorityBarrier.get() != expectedAuthorityBarrier) {
+                throw AuthenticationAuthorityRevokedException()
+            }
+            identityEpoch = nextEpoch
+            mutableIdentity.value = identity
+            mutableState.value = authenticated
+            credentialSnapshot = CredentialSnapshot(
+                tokens = tokens,
+                readable = true,
+                requestIdentity = identity.toRequestIdentity(tokens),
+            )
+        }
         publishTransition(
             AuthIdentityTransition(
                 previousIdentity = previousIdentity,
@@ -142,6 +154,7 @@ class AuthSessionManager(
         authenticatedAt: Instant,
         tokens: AuthTokenSet,
     ) {
+        val expectedAuthorityBarrier = authorityBarrier.get()
         val previousState = mutableState.value
         val currentIdentity = checkNotNull(mutableIdentity.value) {
             "Authenticated identity is required for refresh"
@@ -173,18 +186,25 @@ class AuthSessionManager(
         try {
             credentialPersistence.replace(tokens)
         } catch (failure: Throwable) {
-            credentialSnapshot = previousCredentialSnapshot
-            mutableState.value = previousState
+            if (authorityBarrier.get() == expectedAuthorityBarrier) {
+                credentialSnapshot = previousCredentialSnapshot
+                mutableState.value = previousState
+            }
             throw failure
         }
-        identityEpoch = nextEpoch
-        mutableIdentity.value = refreshedIdentity
-        mutableState.value = authenticated
-        credentialSnapshot = CredentialSnapshot(
-            tokens = tokens,
-            readable = true,
-            requestIdentity = refreshedIdentity.toRequestIdentity(tokens),
-        )
+        synchronized(authorityPublicationLock) {
+            if (authorityBarrier.get() != expectedAuthorityBarrier) {
+                throw AuthenticationAuthorityRevokedException()
+            }
+            identityEpoch = nextEpoch
+            mutableIdentity.value = refreshedIdentity
+            mutableState.value = authenticated
+            credentialSnapshot = CredentialSnapshot(
+                tokens = tokens,
+                readable = true,
+                requestIdentity = refreshedIdentity.toRequestIdentity(tokens),
+            )
+        }
         publishTransition(
             AuthIdentityTransition(
                 previousIdentity = currentIdentity,
@@ -235,6 +255,14 @@ class AuthSessionManager(
         failClosedRevokeLocked()
     }
 
+    /** Immediately closes request authority without waiting for durable storage or the suspending session mutex. */
+    fun blockRequestAuthorityImmediately() = synchronized(authorityPublicationLock) {
+        authorityBarrier.incrementAndGet()
+        credentialSnapshot = CredentialSnapshot(tokens = null, readable = false, requestIdentity = null)
+        mutableState.value = AuthenticationState.SIGNED_OUT
+        mutableIdentity.value = null
+    }
+
     /** Revokes only the exact identity owned by a superseded authentication operation. */
     suspend fun failClosedRevokeIfCurrent(
         expectedAuthSessionId: String,
@@ -255,10 +283,8 @@ class AuthSessionManager(
         val previousState = mutableState.value
         val previousIdentity = mutableIdentity.value
         val nextEpoch = identityEpoch + 1
-        credentialSnapshot = CredentialSnapshot(tokens = null, readable = false, requestIdentity = null)
+        blockRequestAuthorityImmediately()
         identityEpoch = nextEpoch
-        mutableState.value = AuthenticationState.SIGNED_OUT
-        mutableIdentity.value = null
         if (previousIdentity != null || previousState != AuthenticationState.SIGNED_OUT) {
             publishTransition(
                 AuthIdentityTransition(
@@ -392,6 +418,8 @@ class AuthSessionManager(
             identityEpoch = identityEpoch,
         )
 }
+
+class AuthenticationAuthorityRevokedException : CancellationException("Authentication authority was revoked")
 
 /** 仅在 integration 模块内部原子传递认证请求边界。 */
 internal data class AuthenticatedRequestIdentity(

@@ -23,7 +23,7 @@ interface BusinessAuthenticationOperations {
     fun enterTenantSelection()
     fun cancelTenantSelection()
     suspend fun authenticate(account: String, password: CharArray, candidate: OaTenantCandidate)
-    suspend fun onLocalCredentialStoreUnavailable()
+    suspend fun onLocalCredentialStoreFailure(code: BusinessLoginErrorCode)
 }
 
 class RememberedLoginValue(
@@ -125,7 +125,7 @@ class BusinessLoginController(
     fun updatePassword(value: String) = updateIfOpen { copy(password = value, error = null, notice = null) }
     fun updateAgreement(value: Boolean) = updateIfOpen { copy(agreementAccepted = value, error = null, notice = null) }
 
-    fun updateRemember(value: Boolean) {
+    suspend fun updateRemember(value: Boolean) {
         val shouldClear = synchronized(requestLock) {
             if (closed.get()) return
             mutableState.value = mutableState.value.copy(remember = value, error = null, notice = null)
@@ -136,10 +136,12 @@ class BusinessLoginController(
                 synchronized(requestLock) {
                     if (!closed.get()) rememberedLogin.clear()
                 }
-            } catch (_: LocalCredentialStoreUnavailableException) {
-                failIfOpen(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
-            } catch (_: Throwable) {
-                failIfOpen(BusinessLoginErrorCode.LOCAL_CREDENTIAL_STORE_FAILED)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Throwable) {
+                val code = localCredentialFailureCode(failure)
+                revokeReadyAfterLocalCredentialFailure(code)
+                failIfOpen(code)
             }
         }
     }
@@ -272,18 +274,23 @@ class BusinessLoginController(
                 throw BusinessAuthenticationException(BusinessLoginErrorCode.AGENT_REGISTRATION_FAILED)
             }
             clearPasswordIfCurrent(request)
-            synchronized(requestLock) {
-                checkRequestCurrentLocked(request)
-                if (snapshot.remember) {
-                    rememberedLogin.saveOrReplace(snapshot.account, password)
-                } else {
-                    rememberedLogin.clear()
+            try {
+                synchronized(requestLock) {
+                    checkRequestCurrentLocked(request)
+                    if (snapshot.remember) {
+                        rememberedLogin.saveOrReplace(snapshot.account, password)
+                    } else {
+                        rememberedLogin.clear()
+                    }
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Throwable) {
+                val code = localCredentialFailureCode(failure)
+                revokeReadyAfterLocalCredentialFailure(code)
+                throw BusinessAuthenticationException(code)
             }
             updateIfCurrent(request) { copy(tenantCandidates = emptyList(), error = null, notice = null) }
-        } catch (failure: LocalCredentialStoreUnavailableException) {
-            revokeReadyAfterLocalCredentialFailure()
-            throw BusinessAuthenticationException(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
         } finally {
             Arrays.fill(authenticationPassword, '\u0000')
             Arrays.fill(password, '\u0000')
@@ -302,11 +309,11 @@ class BusinessLoginController(
         }
     }
 
-    private suspend fun revokeReadyAfterLocalCredentialFailure() {
+    private suspend fun revokeReadyAfterLocalCredentialFailure(code: BusinessLoginErrorCode) {
         if (authentication.gate.value != BusinessAccessGateState.READY) return
         withContext(NonCancellable) {
             try {
-                authentication.onLocalCredentialStoreUnavailable()
+                authentication.onLocalCredentialStoreFailure(code)
             } catch (_: Throwable) {
                 // The original stable local-store error remains authoritative.
             }
@@ -357,7 +364,15 @@ class BusinessLoginController(
         else -> null
     }
 
-    private fun isAccountValid(account: String): Boolean = MOBILE.matches(account) || EMAIL.matches(account)
+    private fun isAccountValid(account: String): Boolean =
+        account.length <= MAX_ACCOUNT_LENGTH && (MOBILE.matches(account) || EMAIL.matches(account))
+
+    private fun localCredentialFailureCode(failure: Throwable): BusinessLoginErrorCode =
+        if (failure is LocalCredentialStoreUnavailableException) {
+            BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE
+        } else {
+            BusinessLoginErrorCode.LOCAL_CREDENTIAL_STORE_FAILED
+        }
     private fun List<OaTenantCandidate>.toStates() = map {
         BusinessTenantCandidateState(it, it.tenantEnterStatus != 1 && it.tenantEnterStatus != 2)
     }
@@ -366,6 +381,7 @@ class BusinessLoginController(
         val MOBILE = Regex("^1[3-9][0-9]{9}$")
         val EMAIL = Regex("^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+$")
         val PASSWORD = Regex("^(?=.*[A-Za-z])(?=.*[0-9])[A-Za-z0-9]{8,16}$")
+        const val MAX_ACCOUNT_LENGTH = 254
     }
 
     private data class Request(val generation: Long, val job: Job)
