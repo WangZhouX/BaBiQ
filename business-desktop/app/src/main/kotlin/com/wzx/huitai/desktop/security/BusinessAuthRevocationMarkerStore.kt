@@ -75,6 +75,7 @@ class RedundantBusinessAuthRevocationMarkerStore(
 /** Non-sensitive fail-closed marker that survives credential deletion failures and process restarts. */
 class FileBusinessAuthRevocationMarkerStore(
     path: Path,
+    private val permissionApplier: (Path, Boolean) -> Unit = ::applyVerifiedOwnerOnlyPermissions,
     private val beforeLeafCreate: () -> Unit = {},
 ) : BusinessAuthRevocationMarkerPort {
     private val path = path.toAbsolutePath().normalize()
@@ -91,7 +92,7 @@ class FileBusinessAuthRevocationMarkerStore(
 
     override fun markRevoked() {
         SecureRuntimeFile.validateParent(path)
-        applyOwnerOnlyPermissions(path.parent, directory = true)
+        permissionApplier(path.parent, true)
         val parentIdentity = captureParentIdentity()
         try {
             beforeLeafCreate()
@@ -109,9 +110,9 @@ class FileBusinessAuthRevocationMarkerStore(
         } catch (_: FileAlreadyExistsException) {
             check(isRevoked()) { "authentication revocation marker disappeared" }
         }
-        applyOwnerOnlyPermissions(path, directory = false)
+        permissionApplier(path, false)
         SecureRuntimeFile.capture(path)
-        forceParentDirectoryBestEffort()
+        forceParentDirectory()
     }
 
     override fun clearAfterExplicitLogin() {
@@ -119,15 +120,16 @@ class FileBusinessAuthRevocationMarkerStore(
         SecureRuntimeFile.verifyUnchanged(identity)
         Files.deleteIfExists(path)
         check(!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) { "authentication revocation marker still exists" }
-        forceParentDirectoryBestEffort()
+        forceParentDirectory()
     }
 
     override fun toString(): String = "FileBusinessAuthRevocationMarkerStore(path=[REDACTED])"
 
-    private fun forceParentDirectoryBestEffort() {
-        // Some providers (notably Windows) do not expose directory fsync through FileChannel.
-        runCatching {
+    private fun forceParentDirectory() {
+        if (Files.getFileAttributeView(path.parent, PosixFileAttributeView::class.java) != null) {
             SecureRuntimeFile.openChannel(path.parent, StandardOpenOption.READ).use { it.force(true) }
+        } else {
+            // The JDK does not expose directory fsync on non-POSIX providers such as the Windows default provider.
         }
     }
 
@@ -151,32 +153,45 @@ class FileBusinessAuthRevocationMarkerStore(
         }
     }
 
-    private fun applyOwnerOnlyPermissions(target: Path, directory: Boolean) {
-        val posixApplied = runCatching {
-            if (Files.getFileAttributeView(target, PosixFileAttributeView::class.java) == null) return@runCatching false
-            val permissions = mutableSetOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE)
-            if (directory) permissions += PosixFilePermission.OWNER_EXECUTE
-            Files.setPosixFilePermissions(target, permissions)
-            true
-        }.getOrDefault(false)
-        if (posixApplied) return
-
-        runCatching {
-            val view = Files.getFileAttributeView(target, AclFileAttributeView::class.java) ?: return@runCatching
-            val owner = Files.getOwner(target)
-            view.acl = listOf(
-                AclEntry.newBuilder()
-                    .setType(AclEntryType.ALLOW)
-                    .setPrincipal(owner)
-                    .setPermissions(EnumSet.allOf(AclEntryPermission::class.java))
-                    .build(),
-            )
-        }
-    }
-
     private companion object {
         val MARKER_BYTES = "huitai-auth-revoked-v1\n".toByteArray(Charsets.US_ASCII)
     }
 
     private data class ParentIdentity(val fileKey: Any?, val creationMillis: Long)
+}
+
+private fun applyVerifiedOwnerOnlyPermissions(target: Path, directory: Boolean) {
+    val posixView = Files.getFileAttributeView(target, PosixFileAttributeView::class.java)
+    if (posixView != null) {
+        val expected = mutableSetOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE)
+        if (directory) expected += PosixFilePermission.OWNER_EXECUTE
+        Files.setPosixFilePermissions(target, expected)
+        require(posixView.readAttributes().permissions() == expected) {
+            "authentication revocation marker permissions were not applied"
+        }
+        return
+    }
+
+    val aclView = Files.getFileAttributeView(target, AclFileAttributeView::class.java)
+    if (aclView != null) {
+        val owner = Files.getOwner(target)
+        val permissions = EnumSet.allOf(AclEntryPermission::class.java)
+        aclView.acl = listOf(
+            AclEntry.newBuilder()
+                .setType(AclEntryType.ALLOW)
+                .setPrincipal(owner)
+                .setPermissions(permissions)
+                .build(),
+        )
+        val applied = aclView.acl
+        require(
+            applied.size == 1 &&
+                applied.single().type() == AclEntryType.ALLOW &&
+                applied.single().principal() == owner &&
+                applied.single().permissions() == permissions,
+        ) { "authentication revocation marker ACL was not applied" }
+        return
+    }
+
+    // A provider that explicitly exposes neither POSIX permissions nor ACLs has no portable hardening API.
 }

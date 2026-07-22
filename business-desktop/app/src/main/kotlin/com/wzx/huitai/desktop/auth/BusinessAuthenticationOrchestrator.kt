@@ -26,6 +26,7 @@ import java.util.Collections
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
@@ -34,6 +35,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -187,9 +189,8 @@ class BusinessAuthenticationOrchestrator(
             val permission = loadAndValidatePermission(candidate, tokens, resources.candidateAccess!!)
             commitLocalAuthentication(candidate, tokens, permission, operation, resources)
             finishRegistration(operation, resources)
-            installCommittedIdentity(operation, resources)
+            commitReady(operation, resources)
             clearRevocationMarkerAfterExplicitLogin(operation)
-            publishReady(operation)
         } catch (cancelled: CancellationException) {
             withContext(NonCancellable) { compensate(operation, resources, null) }
             throw cancelled
@@ -248,8 +249,7 @@ class BusinessAuthenticationOrchestrator(
                     val permission = loadAndValidatePermission(candidate, tokens, resources.candidateAccess!!)
                     commitLocalAuthentication(candidate, tokens, permission, operation, resources)
                     finishRegistration(operation, resources)
-                    installCommittedIdentity(operation, resources)
-                    publishReady(operation)
+                    commitReady(operation, resources)
                 }
             }
         } catch (cancelled: CancellationException) {
@@ -371,8 +371,8 @@ class BusinessAuthenticationOrchestrator(
         }
     }
 
-    /** Installs the committed identity while the business gate remains closed. */
-    private fun installCommittedIdentity(operation: Operation, resources: OperationResources) = synchronized(operationLock) {
+    /** Publishes registry ownership, reconnect candidate and READY as one synchronous commit point. */
+    private fun commitReady(operation: Operation, resources: OperationResources) = synchronized(operationLock) {
         checkCurrentLocked(operation)
         val identity = resources.identity
             ?: throw BusinessAuthenticationException(BusinessLoginErrorCode.AGENT_REGISTRATION_FAILED)
@@ -383,11 +383,6 @@ class BusinessAuthenticationOrchestrator(
             activeCandidate = null
             throw CancellationException("Authentication registry generation changed")
         }
-    }
-
-    /** Publishes READY only after every explicit-login durability barrier has completed. */
-    private fun publishReady(operation: Operation) = synchronized(operationLock) {
-        checkCurrentLocked(operation)
         mutableGate.value = BusinessAccessGateState.READY
         mutableLastError.value = null
     }
@@ -657,13 +652,16 @@ class BusinessAuthenticationOrchestrator(
         block: suspend () -> Unit,
     ) {
         withTimeoutOrNull(timeoutMillis) {
-            try {
-                block()
-            } catch (cancelled: CancellationException) {
-                if (!currentCoroutineContext().isActive) throw cancelled
-                // An adapter may proactively throw CancellationException while the cleanup owner remains active.
-            } catch (_: Throwable) {
-                // Stable primary error and fail-closed local authority remain authoritative.
+            supervisorScope {
+                val adapter = async { block() }
+                try {
+                    adapter.await()
+                } catch (cancelled: CancellationException) {
+                    if (!currentCoroutineContext().isActive) throw cancelled
+                    // Adapter cancellation is confined to its supervisor child.
+                } catch (_: Throwable) {
+                    // Stable primary error and fail-closed local authority remain authoritative.
+                }
             }
         }
     }

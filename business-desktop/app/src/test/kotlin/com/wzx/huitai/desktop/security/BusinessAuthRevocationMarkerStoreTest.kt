@@ -40,6 +40,25 @@ class BusinessAuthRevocationMarkerStoreTest {
     }
 
     @Test
+    fun `permission hardening failure fails that file copy while redundant fallback remains durable`() {
+        listOf(true, false).forEach { failDirectory ->
+            val path = Files.createTempDirectory("business-auth-marker-permission-failure")
+                .resolve("primary/marker")
+            val primary = FileBusinessAuthRevocationMarkerStore(
+                path = path,
+                permissionApplier = { _, directory ->
+                    if (directory == failDirectory) error("permission hardening failed")
+                },
+            )
+            val fallback = FakeMarker()
+
+            RedundantBusinessAuthRevocationMarkerStore(primary, fallback).markRevoked()
+
+            assertTrue(fallback.revoked)
+        }
+    }
+
+    @Test
     fun `redundant marker fails closed on unreadable copies and clears both explicitly`() {
         val primary = FakeMarker(failRead = true, failClear = true)
         val fallback = FakeMarker()

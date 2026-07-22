@@ -32,6 +32,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -636,35 +638,24 @@ class BusinessAuthenticationOrchestratorTest {
     }
 
     @Test
-    fun `explicit login installs registry behind closed gate before clearing revocation marker`() = runTest {
+    fun `explicit login publishes ready registry atomically before clearing revocation marker`() = runTest {
         val fixture = Fixture().apply {
             revocationMarker.revoked = true
-            revocationMarker.clearStarted = CountDownLatch(1)
-            revocationMarker.clearRelease = CountDownLatch(1)
+            revocationMarker.onClear = {
+                assertEquals(BusinessAccessGateState.READY, orchestrator.gate.value)
+                assertEquals("user-1", registry.currentIdentity()?.userId)
+            }
         }
         fixture.verify()
 
-        val login = async(Dispatchers.Default) {
-            fixture.orchestrator.authenticate(
-                "lawyer@example.com",
-                "password8".toCharArray(),
-                fixture.candidate,
-            )
-        }
-        assertTrue(fixture.revocationMarker.clearStarted!!.await(2, TimeUnit.SECONDS))
+        fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
 
-        assertEquals("user-1", fixture.registry.currentIdentity()?.userId)
-        assertEquals(BusinessAccessGateState.REGISTERING_AGENT, fixture.orchestrator.gate.value)
-        assertTrue(fixture.revocationMarker.revoked)
-
-        fixture.revocationMarker.clearRelease!!.countDown()
-        login.await()
         assertEquals(BusinessAccessGateState.READY, fixture.orchestrator.gate.value)
         assertFalse(fixture.revocationMarker.revoked)
     }
 
     @Test
-    fun `revocation marker clear failure compensates installed registry before exposing ready`() = runTest {
+    fun `revocation marker clear failure revokes the briefly ready identity and signs out`() = runTest {
         val fixture = Fixture().apply {
             revocationMarker.revoked = true
             revocationMarker.failClear = true
@@ -724,6 +715,36 @@ class BusinessAuthenticationOrchestratorTest {
             candidateGateway.logoutThrowsCancellation = true
             actions.cancelThrowsCancellation = true
             actions.detachThrowsCancellation = true
+        }
+        fixture.verify()
+
+        val failure = assertFailsWith<BusinessAuthenticationException> {
+            fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+        }
+
+        assertEquals(BusinessLoginErrorCode.AGENT_REGISTRATION_FAILED, failure.code)
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value)
+        assertNull(fixture.sessionManager.identity.value)
+        assertNull(fixture.credentials.tokens)
+        assertNull(fixture.metadata.value)
+        assertEquals(1, fixture.candidateGateway.logoutCount)
+        assertEquals(1, fixture.actions.cancelCount)
+        assertEquals(1, fixture.actions.detachCount)
+        assertTrue("rollback" in fixture.registration.calls)
+        assertTrue("signed-out" in fixture.registration.calls)
+        assertTrue("clear-workspace" in fixture.registration.calls)
+    }
+
+    @Test
+    fun `adapter child context cancellation cannot abort mandatory compensation cleanup`() = runTest {
+        val fixture = Fixture().apply {
+            registration.failureStage = RegistrationFailureStage.CONTEXT
+            registration.rollbackCancelsContext = true
+            registration.publishSignedOutCancelsContext = true
+            registration.clearWorkspaceCancelsContext = true
+            candidateGateway.logoutCancelsContext = true
+            actions.cancelCancelsContext = true
+            actions.detachCancelsContext = true
         }
         fixture.verify()
 
@@ -852,13 +873,11 @@ class BusinessAuthenticationOrchestratorTest {
     private class FakeRevocationMarker : BusinessAuthRevocationMarkerPort {
         var revoked = false
         var failClear = false
-        var clearStarted: CountDownLatch? = null
-        var clearRelease: CountDownLatch? = null
+        var onClear: (() -> Unit)? = null
         override fun isRevoked(): Boolean = revoked
         override fun markRevoked() { revoked = true }
         override fun clearAfterExplicitLogin() {
-            clearStarted?.countDown()
-            clearRelease?.await()
+            onClear?.invoke()
             if (failClear) error("marker clear failed")
             revoked = false
         }
@@ -923,6 +942,7 @@ class BusinessAuthenticationOrchestratorTest {
         var logoutFailure: Throwable? = null
         var logoutNeverReturns = false
         var logoutThrowsCancellation = false
+        var logoutCancelsContext = false
         val loaded = mutableListOf<OaCandidateAccess>()
         var logoutCount = 0
 
@@ -936,6 +956,10 @@ class BusinessAuthenticationOrchestratorTest {
             logoutCount += 1
             if (logoutNeverReturns) CompletableDeferred<Unit>().await()
             if (logoutThrowsCancellation) throw CancellationException("adapter self-cancelled")
+            if (logoutCancelsContext) {
+                currentCoroutineContext().cancel(CancellationException("adapter cancelled child context"))
+                yield()
+            }
             logoutFailure?.let { throw it }
         }
     }
@@ -1013,10 +1037,13 @@ class BusinessAuthenticationOrchestratorTest {
         var rollbackStarted: CompletableDeferred<Unit>? = null
         var rollbackRelease: CompletableDeferred<Unit>? = null
         var rollbackThrowsCancellation = false
+        var rollbackCancelsContext = false
         var publishSignedOutNeverReturns = false
         var publishSignedOutThrowsCancellation = false
+        var publishSignedOutCancelsContext = false
         var clearWorkspaceNeverReturns = false
         var clearWorkspaceThrowsCancellation = false
+        var clearWorkspaceCancelsContext = false
         var rollbackCompleted = false
 
         override suspend fun prepare(identity: BusinessIdentity): BusinessAgentRegistrationTransaction {
@@ -1050,6 +1077,10 @@ class BusinessAuthenticationOrchestratorTest {
                     rollbackRelease?.await()
                     if (rollbackNeverReturns) CompletableDeferred<Unit>().await()
                     if (rollbackThrowsCancellation) throw CancellationException("adapter self-cancelled")
+                    if (rollbackCancelsContext) {
+                        currentCoroutineContext().cancel(CancellationException("adapter cancelled child context"))
+                        yield()
+                    }
                     if (rollbackMustSuspend) yield()
                     rollbackCompleted = true
                 }
@@ -1060,11 +1091,19 @@ class BusinessAuthenticationOrchestratorTest {
             calls += "signed-out"
             if (publishSignedOutNeverReturns) CompletableDeferred<Unit>().await()
             if (publishSignedOutThrowsCancellation) throw CancellationException("adapter self-cancelled")
+            if (publishSignedOutCancelsContext) {
+                currentCoroutineContext().cancel(CancellationException("adapter cancelled child context"))
+                yield()
+            }
         }
         override suspend fun clearWorkspace() {
             calls += "clear-workspace"
             if (clearWorkspaceNeverReturns) CompletableDeferred<Unit>().await()
             if (clearWorkspaceThrowsCancellation) throw CancellationException("adapter self-cancelled")
+            if (clearWorkspaceCancelsContext) {
+                currentCoroutineContext().cancel(CancellationException("adapter cancelled child context"))
+                yield()
+            }
         }
         private fun fail(stage: RegistrationFailureStage) {
             if (failureStage == stage) error("registration secret failure")
@@ -1079,12 +1118,18 @@ class BusinessAuthenticationOrchestratorTest {
         var detachNeverReturns = false
         var cancelThrowsCancellation = false
         var detachThrowsCancellation = false
+        var cancelCancelsContext = false
+        var detachCancelsContext = false
         var cancelCount = 0
         var detachCount = 0
         override suspend fun cancelPreExecution(identityScope: ActionIdentityScope, states: Set<ActionExecutionState>) {
             cancelCount += 1
             if (cancelNeverReturns) CompletableDeferred<Unit>().await()
             if (cancelThrowsCancellation) throw CancellationException("adapter self-cancelled")
+            if (cancelCancelsContext) {
+                currentCoroutineContext().cancel(CancellationException("adapter cancelled child context"))
+                yield()
+            }
             cancelledScope = identityScope
             cancelledStates = states
         }
@@ -1092,6 +1137,10 @@ class BusinessAuthenticationOrchestratorTest {
             detachCount += 1
             if (detachNeverReturns) CompletableDeferred<Unit>().await()
             if (detachThrowsCancellation) throw CancellationException("adapter self-cancelled")
+            if (detachCancelsContext) {
+                currentCoroutineContext().cancel(CancellationException("adapter cancelled child context"))
+                yield()
+            }
             detachedScope = identityScope
         }
         override suspend fun result(executionId: String, identityScope: ActionIdentityScope): ActionResult<JsonElement>? = null
