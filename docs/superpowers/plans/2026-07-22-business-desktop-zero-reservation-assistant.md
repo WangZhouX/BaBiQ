@@ -19,6 +19,9 @@
 - `business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/ui/shell/BusinessSidebarTest.kt`：侧栏位置、唯一标签、点击与选中语义。
 - `business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/ui/shell/BusinessDesktopShell.kt`：全高左右壳层、业务内容、展开助手和收起吉祥物浮层。
 - `business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/ui/shell/BusinessDesktopShellTest.kt`：整体几何、导航、助手交互与状态保持。
+- `business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/smoke/PackagedSmokeWindowComposition.kt`：窗口、Shell 与真实侧栏导航组合信号。
+- `business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/smoke/PackagedSmokeProbe.kt`：安装包烟测 readiness 与 JSON 报告契约。
+- `business-desktop/scripts/smoke-packaged-distribution.ps1`：安装包外部烟测断言。
 - 删除 `BusinessTopNavigation.kt` 与 `BusinessTopNavigationTest.kt`：删除不再可达的 Compose 顶部工具栏。
 
 ## Chunk 1：零宽收起布局
@@ -95,12 +98,16 @@ git commit -m "fix(桌面): 收起助手不再占用业务宽度"
 
 ```kotlin
 rule.onNodeWithTag(BusinessSidebarTags.SETTINGS).assertExists()
-assertTrue(bounds(BusinessSidebarTags.SETTINGS).bottom <= bounds(BusinessSidebarTags.ROOT).bottom)
+assertEquals(
+    with(density) { 18.dp.toPx() },
+    bounds(BusinessSidebarTags.ROOT).bottom - bounds(BusinessSidebarTags.SETTINGS).bottom,
+    absoluteTolerance = with(density) { 0.5.dp.toPx() },
+)
 assertTrue(bounds(BusinessSidebarTags.SETTINGS).top > bounds(BusinessSidebarTags.RUN_HISTORY).bottom)
 rule.onAllNodes(hasClickAction()).assertCountEquals(4)
 ```
 
-同时覆盖设置点击回调和设置选中 Tab 语义。
+再把父容器高度从 600dp 改为 800dp，断言设置底边随父容器下移 200dp，而顶部三个业务入口位置不变。同时覆盖设置点击回调、设置选中 Tab 语义和 `onComposed` 真实回调。删除引用即将被移除 `BusinessTopNavigationTags` 的旧“标签隔离”测试。
 
 - [ ] **Step 2: 运行侧栏测试并确认 RED**
 
@@ -117,6 +124,7 @@ Expected: FAIL，侧栏当前不存在设置入口。
 - 在导航项之后加入 `Spacer(Modifier.weight(1f))`。
 - 用与业务入口一致的可选择语义渲染设置，但使用独立标签。
 - `businessSidebarDestinations` 仍只包含三个业务入口，设置单独渲染，避免破坏“顶部业务、底部全局设置”的结构。
+- 增加 `onComposed` 参数并通过 `SideEffect` 上报真实侧栏组合，供安装包烟测迁移使用。
 - 更新 `BusinessDesktopDestination.kt` 注释，移除“设置始终由顶部工具栏进入”的过期约束。
 
 - [ ] **Step 4: 运行侧栏测试并确认 GREEN**
@@ -132,7 +140,62 @@ git add -- business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/ui/shell/
 git commit -m "feat(桌面): 将设置固定到左侧导航底部"
 ```
 
-### Task 3：Shell 删除顶部工具栏
+### Task 3：安装包烟测迁移到真实侧栏导航
+
+**Files:**
+- Modify: `business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/smoke/PackagedSmokeWindowCompositionTest.kt`
+- Modify: `business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/smoke/PackagedSmokeProbeTest.kt`
+- Modify: `business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/smoke/PackagingScriptContractTest.kt`
+- Modify: `business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/smoke/PackagedSmokeWindowComposition.kt`
+- Modify: `business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/smoke/PackagedSmokeProbe.kt`
+- Modify: `business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/Main.kt`
+- Modify: `business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/ui/shell/BusinessDesktopShell.kt`
+- Modify: `business-desktop/scripts/smoke-packaged-distribution.ps1`
+
+- [ ] **Step 1: 写新烟测字段的失败测试**
+
+把测试契约从 `topNavigationComposed` 全部迁移为 `sidebarNavigationComposed`，并断言 `Main.kt` 真实连接：
+
+```kotlin
+assertTrue(source.contains("onSidebarNavigationComposed = smokeUiCompositionSignals::markSidebarNavigationComposed"))
+assertTrue(report.getValue("sidebarNavigationComposed").jsonPrimitive.boolean)
+assertFalse(report.containsKey("topNavigationComposed"))
+```
+
+PowerShell 契约测试必须要求 `sidebarNavigationComposed` 且禁止旧字段。
+
+- [ ] **Step 2: 运行烟测测试并确认 RED**
+
+Run:
+
+```powershell
+.\gradlew.bat :app:test --tests "*PackagedSmokeWindowCompositionTest" --tests "*PackagedSmokeProbeTest" --tests "*PackagingScriptContractTest" --no-daemon "-Pkotlin.compiler.execution.strategy=in-process"
+```
+
+Expected: FAIL 或测试编译失败，生产 readiness 仍只有旧顶部导航字段。
+
+- [ ] **Step 3: 迁移生产烟测契约**
+
+- 将 composition snapshot、signals、readiness 和序列化报告字段统一重命名为 `sidebarNavigationComposed`。
+- 将校验错误改为要求真实侧栏导航。
+- Shell 参数改为 `onSidebarNavigationComposed`，传给 `BusinessSidebar(onComposed = ...)`。
+- `Main.kt` 连接 `markSidebarNavigationComposed`。
+- PowerShell 外部断言同步使用新字段；仓库中 `rg "topNavigationComposed|TopNavigationComposed" business-desktop` 必须无命中。
+
+- [ ] **Step 4: 运行烟测测试并确认 GREEN**
+
+Run 同 Step 2。
+
+Expected: 指定测试全部通过，报告不再虚报已删除顶部组件。
+
+- [ ] **Step 5: 中文提交**
+
+```powershell
+git add -- business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/Main.kt business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/smoke business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/ui/shell/BusinessDesktopShell.kt business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/smoke business-desktop/scripts/smoke-packaged-distribution.ps1
+git commit -m "test(桌面): 烟测改为验证左侧导航组合"
+```
+
+### Task 4：Shell 删除顶部工具栏
 
 **Files:**
 - Modify: `business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/ui/shell/BusinessDesktopShellTest.kt`
@@ -145,12 +208,12 @@ git commit -m "feat(桌面): 将设置固定到左侧导航底部"
 在 Shell 测试中断言：
 
 ```kotlin
-rule.onNodeWithTag(BusinessTopNavigationTags.ROOT).assertDoesNotExist()
+rule.onNodeWithTag("business-top-navigation").assertDoesNotExist()
 assertEquals(0f, bounds(BusinessSidebarTags.ROOT).top)
 assertEquals(0f, bounds(BusinessUiTags.CONTENT).top)
 ```
 
-把原来的顶部设置点击测试改为点击 `BusinessSidebarTags.SETTINGS`。
+把原来的顶部设置点击测试改为点击 `BusinessSidebarTags.SETTINGS`。删除 Shell 测试中的所有 `BusinessTopNavigationTags` 引用，并断言全树中只有一个“设置”入口。
 
 - [ ] **Step 2: 运行 Shell 测试并确认 RED**
 
@@ -166,7 +229,8 @@ Expected: FAIL，当前 Shell 仍组合 52dp 顶部工具栏。
 
 - 将 Shell 根节点从 `Column(topBar + body)` 改为全高 `Row(sidebar + dock)`。
 - 删除 `BusinessTopNavigation` 调用和不可达组件文件。
-- 保留 `onTopNavigationComposed` 参数一个兼容周期时，不再触发它；若仓库调用点只用于测试则同步删除参数和调用点。
+- Shell 继续通过 Task 3 的 `onSidebarNavigationComposed` 上报真实侧栏组合，不保留或伪触发旧顶部信号。
+- 删除 `BusinessSidebarTest`、`BusinessDesktopShellTest` 中所有旧标签对象引用，确保删除文件后可持续编译。
 
 - [ ] **Step 4: 运行 Shell、侧栏及编译测试并确认 GREEN**
 
@@ -187,7 +251,7 @@ git commit -m "refactor(桌面): 移除多余顶部设置工具栏"
 
 ## Chunk 3：右下角局部悬浮吉祥物
 
-### Task 4：收起态仅绘制吉祥物自身
+### Task 5：收起态仅绘制吉祥物自身
 
 **Files:**
 - Modify: `business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/ui/shell/BusinessDesktopShellTest.kt`
@@ -241,7 +305,7 @@ git commit -m "fix(桌面): 吉祥物收起态改为右下角局部悬浮"
 
 ## Chunk 4：验收与同步
 
-### Task 5：回归、真实窗口与验收记录
+### Task 6：回归、真实窗口与验收记录
 
 **Files:**
 - Create: `docs/superpowers/plans/2026-07-22-business-desktop-zero-reservation-assistant-qa.md`
@@ -267,10 +331,10 @@ Expected: 全量通过；若仅出现已记录的 `BusinessDesktopFrameworkIT` �
 分别启动开发后端和前端，最大化窗口后检查：
 
 - 原生标题栏下方没有额外 Compose 顶栏。
-- 左侧底部显示设置。
+- 左侧底部显示设置；点击后进入 Provider 设置页并高亮设置，点击资料录入后返回业务表单。
 - 收起助手时业务区延伸到窗口右边缘，没有灰色占位条。
 - 吉祥物只有自身范围可见、可点击。
-- 展开助手后相邻分栏，拖动和收起有效。
+- 展开助手后相邻分栏，拖动和收起有效；展开/收起前后设置与业务导航仍可操作。
 
 - [ ] **Step 4: 写验收记录并中文提交**
 
