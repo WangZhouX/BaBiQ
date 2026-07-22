@@ -24,15 +24,17 @@
 - `business-desktop/scripts/smoke-packaged-distribution.ps1`：安装包外部烟测断言。
 - 删除 `BusinessTopNavigation.kt` 与 `BusinessTopNavigationTest.kt`：删除不再可达的 Compose 顶部工具栏。
 
-## Chunk 1：零宽收起布局
+## Chunk 1：零宽收起布局与局部吉祥物
 
-### Task 1：布局策略不再保留右侧控制列
+### Task 1：零宽收起态与右下角局部吉祥物同步落地
 
 **Files:**
 - Modify: `business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/ui/layout/BusinessDesktopLayoutPolicyTest.kt`
 - Modify: `business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/ui/layout/BusinessDesktopLayoutPolicy.kt`
+- Modify: `business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/ui/shell/BusinessDesktopShellTest.kt`
+- Modify: `business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/ui/shell/BusinessDesktopShell.kt`
 
-- [ ] **Step 1: 将收起布局测试改为零宽契约**
+- [ ] **Step 1: 将策略与 Shell 收起态测试同时改为零占位契约**
 
 把固定 124dp 的断言改为：
 
@@ -45,17 +47,30 @@ assertEquals(layout.availableWidth, layout.businessWidth)
 
 覆盖正常宽度、低于旧 124dp 的宽度、阈值下一像素、超大有限宽度、负数/NaN/Infinity。
 
+Shell 测试同时删除 124dp 控制列断言，改为：
+
+```kotlin
+rule.onNodeWithTag(BusinessUiTags.COLLAPSED_ASSISTANT_CONTROL).assertDoesNotExist()
+assertApproximately(dock.width, business.width)
+assertTrue(mascot.right <= business.right)
+assertTrue(mascot.bottom <= business.bottom)
+assertTrue(mascot.left > business.center.x)
+assertTrue(mascot.top > business.center.y)
+```
+
+展开后浮动吉祥物必须消失并出现相邻助手面板；Provider 编辑草稿状态保持测试继续保留。
+
 - [ ] **Step 2: 运行测试并确认 RED**
 
 Run:
 
 ```powershell
-.\gradlew.bat :app:test --tests "*BusinessDesktopLayoutPolicyTest" --no-daemon "-Pkotlin.compiler.execution.strategy=in-process"
+.\gradlew.bat :app:test --tests "*BusinessDesktopLayoutPolicyTest" --tests "*BusinessDesktopShellTest" --no-daemon "-Pkotlin.compiler.execution.strategy=in-process"
 ```
 
-Expected: FAIL，现有实现仍返回 `assistantWidth = 124.dp` 或占满窄窗口。
+Expected: FAIL，现有策略仍返回 124dp，Shell 仍渲染整高控制列。
 
-- [ ] **Step 3: 实现最小零宽收起布局**
+- [ ] **Step 3: 实现零宽策略与局部浮动入口**
 
 删除 `collapsedAssistantWidth`，将 `collapsedLayout` 改为：
 
@@ -70,17 +85,25 @@ return BusinessDesktopDockLayout(
 )
 ```
 
-- [ ] **Step 4: 运行策略测试并确认 GREEN**
+Shell 同步完成：
+
+- 删除收起态 `Box(width = layout.assistantWidth, fillMaxHeight)`。
+- 在停靠区最外层 `Box` 中，仅当 `!layout.assistantExpanded` 时渲染 `BusinessAssistantMascotButton(Modifier.align(Alignment.BottomEnd))`。
+- 宽度不足提示放在吉祥物上方，不参与 Row 宽度计算。
+- 展开分支继续使用分隔条、助手面板和 resize handle。
+- `BusinessContent` 保持单一组合位置。
+
+- [ ] **Step 4: 运行策略与 Shell 测试并确认 GREEN**
 
 Run 同 Step 2。
 
-Expected: `BusinessDesktopLayoutPolicyTest` 全部通过。
+Expected: 两组测试全部通过；测试套件不留待后续任务修复的 124dp 失败断言。
 
 - [ ] **Step 5: 中文提交**
 
 ```powershell
-git add -- business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/ui/layout/BusinessDesktopLayoutPolicy.kt business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/ui/layout/BusinessDesktopLayoutPolicyTest.kt
-git commit -m "fix(桌面): 收起助手不再占用业务宽度"
+git add -- business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/ui/layout/BusinessDesktopLayoutPolicy.kt business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/ui/layout/BusinessDesktopLayoutPolicyTest.kt business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/ui/shell/BusinessDesktopShell.kt business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/ui/shell/BusinessDesktopShellTest.kt
+git commit -m "fix(桌面): 收起助手改为零占位悬浮入口"
 ```
 
 ## Chunk 2：左下角设置与无顶部工具栏
@@ -146,6 +169,8 @@ git commit -m "feat(桌面): 将设置固定到左侧导航底部"
 - Modify: `business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/smoke/PackagedSmokeWindowCompositionTest.kt`
 - Modify: `business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/smoke/PackagedSmokeProbeTest.kt`
 - Modify: `business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/smoke/PackagingScriptContractTest.kt`
+- Modify: `business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/build/DistributionBuildLogicTest.kt`
+- Modify: `business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/ui/shell/BusinessDesktopShellTest.kt`
 - Modify: `business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/smoke/PackagedSmokeWindowComposition.kt`
 - Modify: `business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/smoke/PackagedSmokeProbe.kt`
 - Modify: `business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/Main.kt`
@@ -163,13 +188,14 @@ assertFalse(report.containsKey("topNavigationComposed"))
 ```
 
 PowerShell 契约测试必须要求 `sidebarNavigationComposed` 且禁止旧字段。
+Shell 的组合信号测试同步把命名参数和断言改为 `onSidebarNavigationComposed`，保证所有 test source 在生产改名后可编译。
 
 - [ ] **Step 2: 运行烟测测试并确认 RED**
 
 Run:
 
 ```powershell
-.\gradlew.bat :app:test --tests "*PackagedSmokeWindowCompositionTest" --tests "*PackagedSmokeProbeTest" --tests "*PackagingScriptContractTest" --no-daemon "-Pkotlin.compiler.execution.strategy=in-process"
+.\gradlew.bat :app:test --tests "*PackagedSmokeWindowCompositionTest" --tests "*PackagedSmokeProbeTest" --tests "*PackagingScriptContractTest" --tests "*DistributionBuildLogicTest" --tests "*BusinessDesktopShellTest" --no-daemon "-Pkotlin.compiler.execution.strategy=in-process"
 ```
 
 Expected: FAIL 或测试编译失败，生产 readiness 仍只有旧顶部导航字段。
@@ -191,7 +217,7 @@ Expected: 指定测试全部通过，报告不再虚报已删除顶部组件。
 - [ ] **Step 5: 中文提交**
 
 ```powershell
-git add -- business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/Main.kt business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/smoke business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/ui/shell/BusinessDesktopShell.kt business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/smoke business-desktop/scripts/smoke-packaged-distribution.ps1
+git add -- business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/Main.kt business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/smoke business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/ui/shell/BusinessDesktopShell.kt business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/smoke business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/build/DistributionBuildLogicTest.kt business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/ui/shell/BusinessDesktopShellTest.kt business-desktop/scripts/smoke-packaged-distribution.ps1
 git commit -m "test(桌面): 烟测改为验证左侧导航组合"
 ```
 
@@ -249,63 +275,9 @@ git add -A -- business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/ui/she
 git commit -m "refactor(桌面): 移除多余顶部设置工具栏"
 ```
 
-## Chunk 3：右下角局部悬浮吉祥物
+## Chunk 3：验收与同步
 
-### Task 5：收起态仅绘制吉祥物自身
-
-**Files:**
-- Modify: `business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/ui/shell/BusinessDesktopShellTest.kt`
-- Modify: `business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/ui/shell/BusinessDesktopShell.kt`
-
-- [ ] **Step 1: 写几何失败测试**
-
-删除 124dp 控制列断言，改为：
-
-```kotlin
-rule.onNodeWithTag(BusinessUiTags.COLLAPSED_ASSISTANT_CONTROL).assertDoesNotExist()
-assertApproximately(dock.width, business.width)
-assertTrue(mascot.right <= business.right)
-assertTrue(mascot.bottom <= business.bottom)
-assertTrue(mascot.left > business.center.x)
-assertTrue(mascot.top > business.center.y)
-```
-
-同时断言吉祥物自身没有 `fillMaxHeight`/整条背景语义，展开后浮动吉祥物消失并出现相邻助手面板。
-
-- [ ] **Step 2: 运行 Shell 测试并确认 RED**
-
-Run:
-
-```powershell
-.\gradlew.bat :app:test --tests "*BusinessDesktopShellTest" --no-daemon "-Pkotlin.compiler.execution.strategy=in-process"
-```
-
-Expected: FAIL，当前仍存在 `COLLAPSED_ASSISTANT_CONTROL` 整高容器。
-
-- [ ] **Step 3: 实现局部浮动入口**
-
-- 删除收起态 `Box(width = layout.assistantWidth, fillMaxHeight)`。
-- 在停靠区最外层 `Box` 中，仅当 `!layout.assistantExpanded` 时渲染 `BusinessAssistantMascotButton(Modifier.align(Alignment.BottomEnd))`。
-- 宽度不足提示以 `Modifier.align(Alignment.BottomEnd).padding(bottom = mascotHeight)` 放在吉祥物上方，不影响 Row 宽度。
-- 展开分支继续渲染分隔条、助手面板和 resize handle。
-- 保持 `BusinessContent` 只有一个组合调用位置。
-
-- [ ] **Step 4: 运行 Shell 测试并确认 GREEN**
-
-Run 同 Step 2。
-
-Expected: Shell 全部通过，包括展开、收起、拖动、宽度提示和 Provider 编辑草稿状态保持。
-
-- [ ] **Step 5: 中文提交**
-
-```powershell
-git add -- business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/ui/shell/BusinessDesktopShell.kt business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/ui/shell/BusinessDesktopShellTest.kt
-git commit -m "fix(桌面): 吉祥物收起态改为右下角局部悬浮"
-```
-
-## Chunk 4：验收与同步
-
-### Task 6：回归、真实窗口与验收记录
+### Task 5：回归、真实窗口与验收记录
 
 **Files:**
 - Create: `docs/superpowers/plans/2026-07-22-business-desktop-zero-reservation-assistant-qa.md`
