@@ -7,3 +7,10 @@ enum class BusinessDesktopDestination(val label: String, val compactLabel: Strin
     RUN_HISTORY("运行记录", "记录"),
     SETTINGS("设置"),
 }
+
+/** 左侧栏只承载业务目的地；设置始终由顶部工具栏进入。 */
+internal val businessSidebarDestinations = listOf(
+    BusinessDesktopDestination.WORKBENCH,
+    BusinessDesktopDestination.DATA_ENTRY,
+    BusinessDesktopDestination.RUN_HISTORY,
+)
