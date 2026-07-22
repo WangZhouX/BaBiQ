@@ -257,10 +257,19 @@ class AuthSessionManager(
 
     /** Immediately closes request authority without waiting for durable storage or the suspending session mutex. */
     fun blockRequestAuthorityImmediately() = synchronized(authorityPublicationLock) {
-        authorityBarrier.incrementAndGet()
-        credentialSnapshot = CredentialSnapshot(tokens = null, readable = false, requestIdentity = null)
-        mutableState.value = AuthenticationState.SIGNED_OUT
-        mutableIdentity.value = null
+        blockRequestAuthorityLocked()
+    }
+
+    /** Immediately closes authority only when the caller still owns the published identity. */
+    fun blockRequestAuthorityIfCurrent(
+        expectedAuthSessionId: String,
+        expectedIdentityEpoch: Long,
+    ): Boolean = synchronized(authorityPublicationLock) {
+        if (!requestIdentityMatches(expectedAuthSessionId, expectedIdentityEpoch)) {
+            return@synchronized false
+        }
+        blockRequestAuthorityLocked()
+        true
     }
 
     /** Revokes only the exact identity owned by a superseded authentication operation. */
@@ -280,12 +289,20 @@ class AuthSessionManager(
     }
 
     private suspend fun failClosedRevokeLocked() {
+        blockRequestAuthorityImmediately()
+        credentialPersistence.clear()
+    }
+
+    private fun blockRequestAuthorityLocked() {
         val previousState = mutableState.value
         val previousIdentity = mutableIdentity.value
-        val nextEpoch = identityEpoch + 1
-        blockRequestAuthorityImmediately()
-        identityEpoch = nextEpoch
+        authorityBarrier.incrementAndGet()
+        credentialSnapshot = CredentialSnapshot(tokens = null, readable = false, requestIdentity = null)
         if (previousIdentity != null || previousState != AuthenticationState.SIGNED_OUT) {
+            val nextEpoch = identityEpoch + 1
+            identityEpoch = nextEpoch
+            mutableState.value = AuthenticationState.SIGNED_OUT
+            mutableIdentity.value = null
             publishTransition(
                 AuthIdentityTransition(
                     previousIdentity = previousIdentity,
@@ -295,8 +312,10 @@ class AuthSessionManager(
                     toState = AuthenticationState.SIGNED_OUT,
                 ),
             )
+        } else {
+            mutableState.value = AuthenticationState.SIGNED_OUT
+            mutableIdentity.value = null
         }
-        credentialPersistence.clear()
     }
 
     suspend fun expireAuthentication() = expire(AuthenticationState.EXPIRED)

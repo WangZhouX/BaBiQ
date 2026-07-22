@@ -4,6 +4,8 @@ import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.CharBuffer
 import java.nio.channels.FileChannel
+import java.nio.channels.FileLock
+import java.nio.channels.OverlappingFileLockException
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.LinkOption
@@ -20,18 +22,30 @@ import java.security.KeyStore
 import java.util.Arrays
 import java.util.EnumSet
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
 import javax.crypto.spec.SecretKeySpec
-import kotlin.concurrent.withLock
 import com.wzx.huitai.security.path.SecureRuntimeFile
 
+/**
+ * Synchronous JCEKS storage with deadline-bounded in-process and cross-process lock acquisition.
+ *
+ * The JDK does not provide portable cancellation for ordinary filesystem reads, writes, or fsync. Those operations
+ * therefore stay synchronous on the calling thread (never continue as late background deletion); every explicit lock
+ * wait surrounding them has the configured finite deadline.
+ */
 class JceksSecretStore(
     storePath: Path,
     password: CharArray,
+    private val lockTimeoutMillis: Long = DEFAULT_LOCK_TIMEOUT_MILLIS,
     private val moveAtomically: (Path, Path) -> Unit = { source, target ->
         Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
     },
 ) : SecretStore {
+    init {
+        require(lockTimeoutMillis > 0) { "lockTimeoutMillis must be positive" }
+    }
+
     private val storePath = normalizeStorePath(storePath)
     private val lockPath = this.storePath.resolveSibling("${this.storePath.fileName}.lock")
     private val parent = this.storePath.parent
@@ -97,7 +111,7 @@ class JceksSecretStore(
     }
 
     override fun close() {
-        val releaseEntry = processLockEntry.lock.withLock {
+        val releaseEntry = withProcessLock {
             if (closed) {
                 false
             } else {
@@ -111,14 +125,14 @@ class JceksSecretStore(
 
     override fun toString(): String = "JceksSecretStore(path=[REDACTED], password=[REDACTED])"
 
-    private fun <T> withStoreLock(block: () -> T): T = processLockEntry.lock.withLock {
-        checkOpen()
+    private fun <T> withStoreLock(block: () -> T): T = withProcessLock {
         try {
+            checkOpen()
             val lockIdentity = SecureRuntimeFile.prepare(lockPath)
             SecureRuntimeFile.openChannel(lockPath, StandardOpenOption.WRITE).use { channel ->
                 SecureRuntimeFile.verifyUnchanged(lockIdentity)
                 applyBestEffortPermissions(lockPath)
-                channel.lock().use { block() }
+                acquireFileLock(channel).use { block() }
             }
         } catch (failure: SecretStoreException) {
             throw failure
@@ -128,6 +142,42 @@ class JceksSecretStore(
             throw failure
         } catch (failure: Exception) {
             throw storeFailure("Unable to lock local secret store", failure)
+        }
+    }
+
+    private fun <T> withProcessLock(block: () -> T): T {
+        var acquired = false
+        try {
+            acquired = processLockEntry.lock.tryLock(lockTimeoutMillis, TimeUnit.MILLISECONDS)
+            if (!acquired) throw storeFailure("Timed out waiting for local secret store process lock", null)
+            return block()
+        } catch (interrupted: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw storeFailure("Interrupted while waiting for local secret store process lock", interrupted)
+        } finally {
+            if (acquired) processLockEntry.lock.unlock()
+        }
+    }
+
+    private fun acquireFileLock(channel: FileChannel): FileLock {
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(lockTimeoutMillis)
+        while (true) {
+            val acquired = try {
+                channel.tryLock()
+            } catch (_: OverlappingFileLockException) {
+                null
+            }
+            if (acquired != null) return acquired
+            val remainingNanos = deadline - System.nanoTime()
+            if (remainingNanos <= 0) {
+                throw storeFailure("Timed out waiting for local secret store file lock", null)
+            }
+            try {
+                TimeUnit.NANOSECONDS.sleep(minOf(remainingNanos, FILE_LOCK_RETRY_NANOS))
+            } catch (interrupted: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw storeFailure("Interrupted while waiting for local secret store file lock", interrupted)
+            }
         }
     }
 
@@ -253,7 +303,7 @@ class JceksSecretStore(
         if (!aclApplied) runCatching { Files.setAttribute(path, "dos:hidden", true) }
     }
 
-    private fun storeFailure(message: String, cause: Throwable) = SecretStoreException(message, cause)
+    private fun storeFailure(message: String, cause: Throwable?) = SecretStoreException(message, cause)
 
     private class WipeableByteArrayOutputStream : ByteArrayOutputStream() {
         fun writeTo(channel: FileChannel) {
@@ -270,6 +320,8 @@ class JceksSecretStore(
     internal companion object {
         private const val STORE_TYPE = "JCEKS"
         private const val SECRET_ALGORITHM = "RAW"
+        private const val DEFAULT_LOCK_TIMEOUT_MILLIS = 5_000L
+        private val FILE_LOCK_RETRY_NANOS = TimeUnit.MILLISECONDS.toNanos(10)
         private val PROCESS_LOCKS = ConcurrentHashMap<Path, ProcessLockEntry>()
 
         private fun normalizeStorePath(path: Path): Path {

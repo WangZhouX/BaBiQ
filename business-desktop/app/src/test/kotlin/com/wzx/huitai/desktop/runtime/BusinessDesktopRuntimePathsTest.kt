@@ -41,6 +41,8 @@ class BusinessDesktopRuntimePathsTest {
             root.resolve("desktop/config/business-desktop.properties"),
             paths.desktopConfiguration,
         )
+        assertEquals(root.resolve("desktop/secrets/auth-revoked-v1"), paths.desktopAuthRevocationMarker)
+        assertEquals(root.resolve("desktop/data/auth-revoked-v1"), paths.desktopAuthRevocationFallbackMarker)
 
         assertTrue(paths.agentMemoryRoot.exists())
         assertTrue(paths.agentTeamRoot.exists())

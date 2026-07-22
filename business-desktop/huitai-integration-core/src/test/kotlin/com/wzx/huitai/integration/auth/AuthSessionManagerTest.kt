@@ -722,6 +722,46 @@ class AuthSessionManagerTest {
         assertEquals(AuthenticationState.AUTHENTICATED, manager.state.value)
     }
 
+    @Test
+    fun `owner aware immediate block cannot revoke a replacement identity`() = runTest {
+        val persistence = RecordingCredentialPersistence()
+        val manager = AuthSessionManager(persistence)
+        manager.login(tokens = tokenSet("old"), identity = identityArguments)
+        val old = assertNotNull(manager.identity.value)
+        refreshWith(manager, tokenSet("replacement"), identityArguments.copy(tenantId = "tenant-replacement"))
+        val replacement = assertNotNull(manager.identity.value)
+
+        assertFalse(manager.blockRequestAuthorityIfCurrent(old.authSessionId, old.identityEpoch))
+
+        assertEquals(replacement, manager.identity.value)
+        assertEquals("access-replacement", manager.accessToken())
+        assertEquals(AuthenticationState.AUTHENTICATED, manager.state.value)
+    }
+
+    @Test
+    fun `immediate owned block followed by durable fail closed publishes one signed out transition`() = runTest {
+        val persistence = RecordingCredentialPersistence()
+        val manager = AuthSessionManager(persistence)
+        manager.login(tokens = tokenSet("owned"), identity = identityArguments)
+        val owner = assertNotNull(manager.identity.value)
+        val transitions = mutableListOf<AuthIdentityTransition>()
+        val collector = launch(start = CoroutineStart.UNDISPATCHED) {
+            manager.identityTransitions.collect { transitions += it }
+        }
+
+        assertTrue(manager.blockRequestAuthorityIfCurrent(owner.authSessionId, owner.identityEpoch))
+        manager.failClosedRevoke()
+        runCurrent()
+        collector.cancel()
+
+        assertEquals(1, transitions.size)
+        assertEquals(owner, transitions.single().previousIdentity)
+        assertNull(transitions.single().currentIdentity)
+        assertEquals(AuthenticationState.SIGNED_OUT, transitions.single().toState)
+        assertNull(manager.requestIdentitySnapshot())
+        assertNull(manager.accessToken())
+    }
+
     private companion object {
         val identityArguments = IdentityArguments(
             userId = "user-1",

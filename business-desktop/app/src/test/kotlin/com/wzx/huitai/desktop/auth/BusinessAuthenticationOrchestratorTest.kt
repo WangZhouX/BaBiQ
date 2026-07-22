@@ -9,6 +9,7 @@ import com.wzx.huitai.desktop.security.BusinessAuthRevocationMarkerPort
 import com.wzx.huitai.desktop.security.FileBusinessAuthRevocationMarkerStore
 import com.wzx.huitai.desktop.security.JceksAuthCredentialPersistence
 import com.wzx.huitai.desktop.security.LocalCredentialStoreUnavailableException
+import com.wzx.huitai.desktop.security.RedundantBusinessAuthRevocationMarkerStore
 import com.wzx.huitai.desktop.state.BusinessIdentity
 import com.wzx.huitai.integration.auth.AuthCredentialPersistencePort
 import com.wzx.huitai.integration.auth.AuthSessionManager
@@ -552,12 +553,16 @@ class BusinessAuthenticationOrchestratorTest {
     }
 
     @Test
-    fun `revocation marker prevents a failed JCEKS clear from restoring after restart`() = runTest {
+    fun `fallback revocation marker survives primary and JCEKS clear failures across restart`() = runTest {
         val root = Files.createTempDirectory("orchestrator-revocation-restart")
         val keyStorePath = root.resolve("credentials.jceks")
         val markerPath = root.resolve("auth-revoked-v1")
         val password = "password".toCharArray()
-        val marker = FileBusinessAuthRevocationMarkerStore(markerPath)
+        val fallbackMarker = FileBusinessAuthRevocationMarkerStore(markerPath)
+        val marker = RedundantBusinessAuthRevocationMarkerStore(
+            primary = MarkFailingRevocationMarker(),
+            fallback = fallbackMarker,
+        )
         JceksSecretStore(keyStorePath, password.copyOf()).use { secrets ->
             val tokenDelegate = JceksAuthCredentialPersistence(secrets)
             val metadataDelegate = BusinessAuthSessionMetadataStore(secrets)
@@ -584,7 +589,7 @@ class BusinessAuthenticationOrchestratorTest {
             orchestrator.logout()
 
             assertEquals(BusinessAccessGateState.SIGNED_OUT, orchestrator.gate.value)
-            assertTrue(marker.isRevoked())
+            assertTrue(fallbackMarker.isRevoked())
             assertEquals("refresh-secret", tokenDelegate.load()?.refreshToken)
             assertEquals("user-1", metadataDelegate.load()?.userId)
         }
@@ -599,7 +604,10 @@ class BusinessAuthenticationOrchestratorTest {
                 credentialPersistence = tokenPersistence,
                 authSessionManager = AuthSessionManager(tokenPersistence),
                 metadataPersistence = metadataPersistence,
-                revocationMarker = FileBusinessAuthRevocationMarkerStore(markerPath),
+                revocationMarker = RedundantBusinessAuthRevocationMarkerStore(
+                    primary = FakeRevocationMarker(),
+                    fallback = FileBusinessAuthRevocationMarkerStore(markerPath),
+                ),
                 registration = FakeRegistrationPort(),
                 identityRegistry = BusinessIdentityRegistry(),
                 actions = FakeActions(),
@@ -625,6 +633,115 @@ class BusinessAuthenticationOrchestratorTest {
 
         assertEquals(BusinessAccessGateState.READY, fixture.orchestrator.gate.value)
         assertFalse(fixture.revocationMarker.revoked)
+    }
+
+    @Test
+    fun `explicit login installs registry behind closed gate before clearing revocation marker`() = runTest {
+        val fixture = Fixture().apply {
+            revocationMarker.revoked = true
+            revocationMarker.clearStarted = CountDownLatch(1)
+            revocationMarker.clearRelease = CountDownLatch(1)
+        }
+        fixture.verify()
+
+        val login = async(Dispatchers.Default) {
+            fixture.orchestrator.authenticate(
+                "lawyer@example.com",
+                "password8".toCharArray(),
+                fixture.candidate,
+            )
+        }
+        assertTrue(fixture.revocationMarker.clearStarted!!.await(2, TimeUnit.SECONDS))
+
+        assertEquals("user-1", fixture.registry.currentIdentity()?.userId)
+        assertEquals(BusinessAccessGateState.REGISTERING_AGENT, fixture.orchestrator.gate.value)
+        assertTrue(fixture.revocationMarker.revoked)
+
+        fixture.revocationMarker.clearRelease!!.countDown()
+        login.await()
+        assertEquals(BusinessAccessGateState.READY, fixture.orchestrator.gate.value)
+        assertFalse(fixture.revocationMarker.revoked)
+    }
+
+    @Test
+    fun `revocation marker clear failure compensates installed registry before exposing ready`() = runTest {
+        val fixture = Fixture().apply {
+            revocationMarker.revoked = true
+            revocationMarker.failClear = true
+        }
+        fixture.verify()
+
+        val failure = assertFailsWith<BusinessAuthenticationException> {
+            fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+        }
+
+        assertEquals(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE, failure.code)
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value)
+        assertNull(fixture.registry.currentIdentity())
+        assertNull(fixture.sessionManager.identity.value)
+        assertNull(fixture.credentials.tokens)
+        assertNull(fixture.metadata.value)
+        assertTrue(fixture.revocationMarker.revoked)
+        assertTrue("rollback" in fixture.registration.calls)
+    }
+
+    @Test
+    fun `compensation blocks owned authority before any suspending rollback`() = runTest {
+        val fixture = Fixture().apply {
+            registration.failureStage = RegistrationFailureStage.CONTEXT
+            registration.rollbackStarted = CompletableDeferred()
+            registration.rollbackRelease = CompletableDeferred()
+        }
+        fixture.verify()
+
+        val login = async(Dispatchers.Default) {
+            assertFailsWith<BusinessAuthenticationException> {
+                fixture.orchestrator.authenticate(
+                    "lawyer@example.com",
+                    "password8".toCharArray(),
+                    fixture.candidate,
+                )
+            }
+        }
+        fixture.registration.rollbackStarted!!.await()
+
+        assertNull(fixture.registry.currentIdentity())
+        assertNull(fixture.sessionManager.identity.value)
+        assertNull(fixture.sessionManager.accessToken())
+
+        fixture.registration.rollbackRelease!!.complete(Unit)
+        login.await()
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value)
+    }
+
+    @Test
+    fun `adapter cancellation exceptions cannot abort mandatory compensation cleanup`() = runTest {
+        val fixture = Fixture().apply {
+            registration.failureStage = RegistrationFailureStage.CONTEXT
+            registration.rollbackThrowsCancellation = true
+            registration.publishSignedOutThrowsCancellation = true
+            registration.clearWorkspaceThrowsCancellation = true
+            candidateGateway.logoutThrowsCancellation = true
+            actions.cancelThrowsCancellation = true
+            actions.detachThrowsCancellation = true
+        }
+        fixture.verify()
+
+        val failure = assertFailsWith<BusinessAuthenticationException> {
+            fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+        }
+
+        assertEquals(BusinessLoginErrorCode.AGENT_REGISTRATION_FAILED, failure.code)
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value)
+        assertNull(fixture.sessionManager.identity.value)
+        assertNull(fixture.credentials.tokens)
+        assertNull(fixture.metadata.value)
+        assertEquals(1, fixture.candidateGateway.logoutCount)
+        assertEquals(1, fixture.actions.cancelCount)
+        assertEquals(1, fixture.actions.detachCount)
+        assertTrue("rollback" in fixture.registration.calls)
+        assertTrue("signed-out" in fixture.registration.calls)
+        assertTrue("clear-workspace" in fixture.registration.calls)
     }
 
     @Test
@@ -734,9 +851,23 @@ class BusinessAuthenticationOrchestratorTest {
 
     private class FakeRevocationMarker : BusinessAuthRevocationMarkerPort {
         var revoked = false
+        var failClear = false
+        var clearStarted: CountDownLatch? = null
+        var clearRelease: CountDownLatch? = null
         override fun isRevoked(): Boolean = revoked
         override fun markRevoked() { revoked = true }
-        override fun clearAfterExplicitLogin() { revoked = false }
+        override fun clearAfterExplicitLogin() {
+            clearStarted?.countDown()
+            clearRelease?.await()
+            if (failClear) error("marker clear failed")
+            revoked = false
+        }
+    }
+
+    private class MarkFailingRevocationMarker : BusinessAuthRevocationMarkerPort {
+        override fun isRevoked(): Boolean = false
+        override fun markRevoked(): Unit = error("primary marker unavailable")
+        override fun clearAfterExplicitLogin() = Unit
     }
 
     private class ClearFailingCredentialPersistence(
@@ -791,6 +922,7 @@ class BusinessAuthenticationOrchestratorTest {
         var failure: Throwable? = null
         var logoutFailure: Throwable? = null
         var logoutNeverReturns = false
+        var logoutThrowsCancellation = false
         val loaded = mutableListOf<OaCandidateAccess>()
         var logoutCount = 0
 
@@ -803,6 +935,7 @@ class BusinessAuthenticationOrchestratorTest {
         override suspend fun logout(candidate: OaCandidateAccess) {
             logoutCount += 1
             if (logoutNeverReturns) CompletableDeferred<Unit>().await()
+            if (logoutThrowsCancellation) throw CancellationException("adapter self-cancelled")
             logoutFailure?.let { throw it }
         }
     }
@@ -877,8 +1010,13 @@ class BusinessAuthenticationOrchestratorTest {
         var remainingGatedCommitCalls: Int? = null
         var rollbackMustSuspend = false
         var rollbackNeverReturns = false
+        var rollbackStarted: CompletableDeferred<Unit>? = null
+        var rollbackRelease: CompletableDeferred<Unit>? = null
+        var rollbackThrowsCancellation = false
         var publishSignedOutNeverReturns = false
+        var publishSignedOutThrowsCancellation = false
         var clearWorkspaceNeverReturns = false
+        var clearWorkspaceThrowsCancellation = false
         var rollbackCompleted = false
 
         override suspend fun prepare(identity: BusinessIdentity): BusinessAgentRegistrationTransaction {
@@ -908,7 +1046,10 @@ class BusinessAuthenticationOrchestratorTest {
                 }
                 override suspend fun rollback() {
                     calls += "rollback"
+                    rollbackStarted?.complete(Unit)
+                    rollbackRelease?.await()
                     if (rollbackNeverReturns) CompletableDeferred<Unit>().await()
+                    if (rollbackThrowsCancellation) throw CancellationException("adapter self-cancelled")
                     if (rollbackMustSuspend) yield()
                     rollbackCompleted = true
                 }
@@ -918,10 +1059,12 @@ class BusinessAuthenticationOrchestratorTest {
         override suspend fun publishSignedOut() {
             calls += "signed-out"
             if (publishSignedOutNeverReturns) CompletableDeferred<Unit>().await()
+            if (publishSignedOutThrowsCancellation) throw CancellationException("adapter self-cancelled")
         }
         override suspend fun clearWorkspace() {
             calls += "clear-workspace"
             if (clearWorkspaceNeverReturns) CompletableDeferred<Unit>().await()
+            if (clearWorkspaceThrowsCancellation) throw CancellationException("adapter self-cancelled")
         }
         private fun fail(stage: RegistrationFailureStage) {
             if (failureStage == stage) error("registration secret failure")
@@ -934,17 +1077,21 @@ class BusinessAuthenticationOrchestratorTest {
         var detachedScope: ActionIdentityScope? = null
         var cancelNeverReturns = false
         var detachNeverReturns = false
+        var cancelThrowsCancellation = false
+        var detachThrowsCancellation = false
         var cancelCount = 0
         var detachCount = 0
         override suspend fun cancelPreExecution(identityScope: ActionIdentityScope, states: Set<ActionExecutionState>) {
             cancelCount += 1
             if (cancelNeverReturns) CompletableDeferred<Unit>().await()
+            if (cancelThrowsCancellation) throw CancellationException("adapter self-cancelled")
             cancelledScope = identityScope
             cancelledStates = states
         }
         override suspend fun detachExecutingForReconciliation(identityScope: ActionIdentityScope) {
             detachCount += 1
             if (detachNeverReturns) CompletableDeferred<Unit>().await()
+            if (detachThrowsCancellation) throw CancellationException("adapter self-cancelled")
             detachedScope = identityScope
         }
         override suspend fun result(executionId: String, identityScope: ActionIdentityScope): ActionResult<JsonElement>? = null

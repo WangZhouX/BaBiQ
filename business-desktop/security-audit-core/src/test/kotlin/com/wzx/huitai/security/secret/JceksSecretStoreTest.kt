@@ -2,7 +2,12 @@ package com.wzx.huitai.security.secret
 
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
+import java.nio.channels.FileChannel
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.async
@@ -16,6 +21,8 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.concurrent.thread
+import com.wzx.huitai.security.path.SecureRuntimeFile
 
 class JceksSecretStoreTest {
     @Test
@@ -215,6 +222,55 @@ class JceksSecretStoreTest {
 
         JceksSecretStore(path, password).use { reopened ->
             assertTrue(reopened.load(SecretRef.parse("shared.upsert"))?.concatToString() in values)
+        }
+    }
+
+    @Test
+    fun `process lock acquisition and close fail within the configured deadline`() {
+        val path = Files.createTempDirectory("jceks-process-lock-timeout").resolve("store.jceks")
+        val enteredMove = CountDownLatch(1)
+        val releaseMove = CountDownLatch(1)
+        val first = JceksSecretStore(
+            storePath = path,
+            password = "password".toCharArray(),
+            moveAtomically = { source, target ->
+                enteredMove.countDown()
+                releaseMove.await()
+                Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            },
+            lockTimeoutMillis = 2_000,
+        )
+        val second = JceksSecretStore(path, "password".toCharArray(), lockTimeoutMillis = 50)
+        var workerFailure: Throwable? = null
+        val worker = thread(start = true) {
+            runCatching { first.upsert("held.alias", "secret".toCharArray()) }
+                .onFailure { workerFailure = it }
+        }
+        assertTrue(enteredMove.await(2, TimeUnit.SECONDS))
+        try {
+            assertFailsWith<SecretStoreException> { second.load(SecretRef.parse("held.alias")) }
+            assertFailsWith<SecretStoreException> { second.close() }
+        } finally {
+            releaseMove.countDown()
+            worker.join(2_000)
+            second.close()
+            first.close()
+        }
+        assertNull(workerFailure)
+    }
+
+    @Test
+    fun `cross process file lock acquisition fails within the configured deadline`() {
+        val path = Files.createTempDirectory("jceks-file-lock-timeout").resolve("store.jceks")
+        val lockPath = path.resolveSibling("${path.fileName}.lock")
+        val identity = SecureRuntimeFile.prepare(lockPath)
+        FileChannel.open(lockPath, StandardOpenOption.WRITE).use { channel ->
+            SecureRuntimeFile.verifyUnchanged(identity)
+            channel.lock().use {
+                JceksSecretStore(path, "password".toCharArray(), lockTimeoutMillis = 50).use { store ->
+                    assertFailsWith<SecretStoreException> { store.load(SecretRef.parse("missing.alias")) }
+                }
+            }
         }
     }
 }

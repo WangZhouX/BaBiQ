@@ -33,6 +33,7 @@ class BusinessDesktopRuntimePaths private constructor(
     val desktopInstallationId: Path,
     val desktopConfiguration: Path,
     val desktopAuthRevocationMarker: Path,
+    val desktopAuthRevocationFallbackMarker: Path,
 ) {
     override fun toString(): String = "BusinessDesktopRuntimePaths(root=[REDACTED])"
 
@@ -68,6 +69,7 @@ class BusinessDesktopRuntimePaths private constructor(
                 desktopInstallationId = desktop.resolve("installation-id"),
                 desktopConfiguration = desktop.resolve("config/business-desktop.properties"),
                 desktopAuthRevocationMarker = desktop.resolve("secrets/auth-revoked-v1"),
+                desktopAuthRevocationFallbackMarker = desktop.resolve("data/auth-revoked-v1"),
             )
             result.prepareDirectories()
             return result
@@ -119,6 +121,7 @@ class BusinessDesktopRuntimePaths private constructor(
             desktopInstallationId,
             desktopConfiguration,
             desktopAuthRevocationMarker,
+            desktopAuthRevocationFallbackMarker,
         )
         rejectExistingLinks(directories + controlledLeaves)
         directories.forEach(Files::createDirectories)

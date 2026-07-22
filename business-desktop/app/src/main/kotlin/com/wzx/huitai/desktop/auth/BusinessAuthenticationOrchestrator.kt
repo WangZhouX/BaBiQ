@@ -28,6 +28,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -186,8 +187,9 @@ class BusinessAuthenticationOrchestrator(
             val permission = loadAndValidatePermission(candidate, tokens, resources.candidateAccess!!)
             commitLocalAuthentication(candidate, tokens, permission, operation, resources)
             finishRegistration(operation, resources)
+            installCommittedIdentity(operation, resources)
             clearRevocationMarkerAfterExplicitLogin(operation)
-            commitReady(operation, resources)
+            publishReady(operation)
         } catch (cancelled: CancellationException) {
             withContext(NonCancellable) { compensate(operation, resources, null) }
             throw cancelled
@@ -246,7 +248,8 @@ class BusinessAuthenticationOrchestrator(
                     val permission = loadAndValidatePermission(candidate, tokens, resources.candidateAccess!!)
                     commitLocalAuthentication(candidate, tokens, permission, operation, resources)
                     finishRegistration(operation, resources)
-                    commitReady(operation, resources)
+                    installCommittedIdentity(operation, resources)
+                    publishReady(operation)
                 }
             }
         } catch (cancelled: CancellationException) {
@@ -368,8 +371,8 @@ class BusinessAuthenticationOrchestrator(
         }
     }
 
-    /** Candidate ownership, reconnect identity and READY become visible under one operation lock. */
-    private fun commitReady(operation: Operation, resources: OperationResources) = synchronized(operationLock) {
+    /** Installs the committed identity while the business gate remains closed. */
+    private fun installCommittedIdentity(operation: Operation, resources: OperationResources) = synchronized(operationLock) {
         checkCurrentLocked(operation)
         val identity = resources.identity
             ?: throw BusinessAuthenticationException(BusinessLoginErrorCode.AGENT_REGISTRATION_FAILED)
@@ -380,6 +383,11 @@ class BusinessAuthenticationOrchestrator(
             activeCandidate = null
             throw CancellationException("Authentication registry generation changed")
         }
+    }
+
+    /** Publishes READY only after every explicit-login durability barrier has completed. */
+    private fun publishReady(operation: Operation) = synchronized(operationLock) {
+        checkCurrentLocked(operation)
         mutableGate.value = BusinessAccessGateState.READY
         mutableLastError.value = null
     }
@@ -389,53 +397,44 @@ class BusinessAuthenticationOrchestrator(
         resources: OperationResources,
         errorCode: BusinessLoginErrorCode?,
     ) {
-        boundedCleanup { resources.transaction?.rollback() }
-        boundedCandidateLogout(resources.candidateAccess)
-
+        val hasLocalEffects = resources.preexistingLocalPair ||
+            resources.metadataWritten ||
+            resources.authOwner != null ||
+            resources.transaction != null ||
+            resources.identity != null
+        var ownsAuthority = false
+        var durableFailure = false
         authorityMutationMutex.withLock {
             if (!isOperationAuthorityCurrent(operation)) {
                 resources.authOwner?.let { owner ->
-                    bestEffort {
-                        authSessionManager.failClosedRevokeIfCurrent(owner.authSessionId, owner.identityEpoch)
-                    }
+                    authSessionManager.blockRequestAuthorityIfCurrent(owner.authSessionId, owner.identityEpoch)
                 }
                 return@withLock
             }
-
-            val hasLocalEffects = resources.preexistingLocalPair ||
-                resources.metadataWritten ||
-                resources.authOwner != null ||
-                resources.transaction != null ||
-                resources.identity != null
-            if (!hasLocalEffects) {
-                synchronized(operationLock) {
-                    if (isOperationAuthorityCurrentLocked(operation)) {
-                        verifiedSelection = null
-                        activeCandidate = null
-                        mutableLastError.value = errorCode?.let(::BusinessLoginMessage)
-                        mutableGate.value = BusinessAccessGateState.SIGNED_OUT
-                    }
-                }
-                return@withLock
-            }
+            ownsAuthority = true
+            if (!hasLocalEffects) return@withLock
 
             identityRegistry.invalidate()
-            resources.identity?.let { revokeActionsBestEffort(it) }
-            boundedCleanup { registration.publishSignedOut() }
-            boundedCleanup { registration.clearWorkspace() }
-            var durableFailure = false
+            val owner = resources.authOwner
+            if (owner == null) {
+                authSessionManager.blockRequestAuthorityImmediately()
+            } else {
+                authSessionManager.blockRequestAuthorityIfCurrent(owner.authSessionId, owner.identityEpoch)
+            }
+            synchronized(operationLock) {
+                if (isOperationAuthorityCurrentLocked(operation)) {
+                    activeCandidate = null
+                    mutableGate.value = BusinessAccessGateState.SIGNING_OUT
+                }
+            }
+
             try {
                 revocationMarker.markRevoked()
             } catch (_: Throwable) {
                 durableFailure = true
             }
-            val owner = resources.authOwner
             try {
-                if (owner == null) {
-                    authSessionManager.failClosedRevoke()
-                } else {
-                    authSessionManager.failClosedRevokeIfCurrent(owner.authSessionId, owner.identityEpoch)
-                }
+                authSessionManager.failClosedRevoke()
             } catch (_: Throwable) {
                 durableFailure = true
             }
@@ -444,17 +443,26 @@ class BusinessAuthenticationOrchestrator(
             } catch (_: Throwable) {
                 durableFailure = true
             }
-            synchronized(operationLock) {
-                if (isOperationAuthorityCurrentLocked(operation)) {
-                    verifiedSelection = null
-                    activeCandidate = null
-                    mutableLastError.value = when {
-                        durableFailure -> BusinessLoginMessage(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
-                        errorCode != null -> BusinessLoginMessage(errorCode)
-                        else -> null
-                    }
-                    mutableGate.value = BusinessAccessGateState.SIGNED_OUT
+        }
+
+        boundedCleanup { resources.transaction?.rollback() }
+        boundedCandidateLogout(resources.candidateAccess)
+        if (!ownsAuthority) return
+        if (hasLocalEffects) {
+            resources.identity?.let { revokeActionsBestEffort(it) }
+            boundedCleanup { registration.publishSignedOut() }
+            boundedCleanup { registration.clearWorkspace() }
+        }
+        synchronized(operationLock) {
+            if (isOperationAuthorityCurrentLocked(operation)) {
+                verifiedSelection = null
+                activeCandidate = null
+                mutableLastError.value = when {
+                    durableFailure -> BusinessLoginMessage(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
+                    errorCode != null -> BusinessLoginMessage(errorCode)
+                    else -> null
                 }
+                mutableGate.value = BusinessAccessGateState.SIGNED_OUT
             }
         }
     }
@@ -641,23 +649,19 @@ class BusinessAuthenticationOrchestrator(
 
     private suspend fun boundedCandidateLogout(candidate: OaCandidateAccess?) {
         if (candidate == null) return
-        withTimeoutOrNull(remoteLogoutTimeoutMillis) {
-            try {
-                candidateAuthentication.logout(candidate)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Throwable) {
-                // Remote logout never weakens mandatory local revocation.
-            }
-        }
+        boundedCleanup(remoteLogoutTimeoutMillis) { candidateAuthentication.logout(candidate) }
     }
 
-    private suspend fun boundedCleanup(block: suspend () -> Unit) {
-        withTimeoutOrNull(cleanupStepTimeoutMillis) {
+    private suspend fun boundedCleanup(
+        timeoutMillis: Long = cleanupStepTimeoutMillis,
+        block: suspend () -> Unit,
+    ) {
+        withTimeoutOrNull(timeoutMillis) {
             try {
                 block()
             } catch (cancelled: CancellationException) {
-                throw cancelled
+                if (!currentCoroutineContext().isActive) throw cancelled
+                // An adapter may proactively throw CancellationException while the cleanup owner remains active.
             } catch (_: Throwable) {
                 // Stable primary error and fail-closed local authority remain authoritative.
             }
@@ -758,14 +762,6 @@ class BusinessAuthenticationOrchestrator(
         } else {
             BusinessLoginErrorCode.REMOTE_UNAVAILABLE
         }
-
-    private suspend fun bestEffort(block: suspend () -> Unit) {
-        try {
-            block()
-        } catch (_: Throwable) {
-            // The authoritative stable error and mandatory local revocation win over cleanup diagnostics.
-        }
-    }
 
     private data class Operation(val epoch: Long, val job: Job, val registryGeneration: Long)
     private data class VerifiedTenantSelection(
