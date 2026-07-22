@@ -24,6 +24,7 @@ import java.time.Instant
 import java.util.Arrays
 import java.util.Collections
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
@@ -117,6 +118,7 @@ class BusinessAuthenticationOrchestrator(
     private var activeOperation: Operation? = null
     private var verifiedSelection: VerifiedTenantSelection? = null
     private var activeCandidate: OaCandidateAccess? = null
+    private var activeRevocation: RevocationFlight? = null
     private var closed = false
 
     override val gate: StateFlow<BusinessAccessGateState> = identityRegistry.gate
@@ -278,15 +280,7 @@ class BusinessAuthenticationOrchestrator(
             remoteLogout = true,
         )
 
-    suspend fun close() {
-        val shouldClose = synchronized(operationLock) {
-            if (closed) false else {
-                closed = true
-                true
-            }
-        }
-        if (shouldClose) revoke(RevocationReason.CLOSE, remoteLogout = false, allowClosed = true)
-    }
+    suspend fun close() = revoke(RevocationReason.CLOSE, remoteLogout = false, allowClosed = true)
 
     override fun toString(): String =
         "BusinessAuthenticationOrchestrator(gate=${gate.value}, identity=[REDACTED], credentials=[REDACTED])"
@@ -478,8 +472,20 @@ class BusinessAuthenticationOrchestrator(
         remoteLogout: Boolean,
         allowClosed: Boolean = false,
     ) = withContext(NonCancellable) {
-        val revoked = synchronized(operationLock) {
+        val claim = synchronized(operationLock) {
+            val wasClosed = closed
+            if (reason == RevocationReason.CLOSE) closed = true
+            activeRevocation?.let { return@synchronized RevocationClaim(it, null) }
+            if (reason == RevocationReason.CLOSE && wasClosed) {
+                val completed = RevocationOutcome(visibleError = null, terminalFailure = null)
+                return@synchronized RevocationClaim(
+                    RevocationFlight(CompletableDeferred(completed)),
+                    null,
+                )
+            }
             if (!allowClosed) ensureOpenLocked()
+            val flight = RevocationFlight(CompletableDeferred())
+            activeRevocation = flight
             operationEpoch += 1
             val operation = activeOperation
             activeOperation = null
@@ -487,8 +493,37 @@ class BusinessAuthenticationOrchestrator(
             val identity = identityRegistry.invalidate(BusinessAccessGateState.SIGNING_OUT)
             val candidate = activeCandidate
             activeCandidate = null
-            RevokedAuthority(operation?.job, identity, candidate)
+            RevocationClaim(flight, RevokedAuthority(operation?.job, identity, candidate))
         }
+        val revoked = claim.revokedAuthority
+        if (revoked == null) {
+            claim.flight.completion.await().throwIfFailed()
+            return@withContext
+        }
+
+        val outcome = try {
+            performRevocation(revoked, reason, remoteLogout)
+        } catch (_: Throwable) {
+            RevocationOutcome(
+                visibleError = BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE,
+                terminalFailure = BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE,
+            )
+        }
+        synchronized(operationLock) {
+            check(activeRevocation === claim.flight) { "revocation ownership changed" }
+            mutableLastError.value = outcome.visibleError?.let(::BusinessLoginMessage)
+            identityRegistry.transitionTo(BusinessAccessGateState.SIGNED_OUT)
+            activeRevocation = null
+        }
+        claim.flight.completion.complete(outcome)
+        outcome.throwIfFailed()
+    }
+
+    private suspend fun performRevocation(
+        revoked: RevokedAuthority,
+        reason: RevocationReason,
+        remoteLogout: Boolean,
+    ): RevocationOutcome {
         authSessionManager.blockRequestAuthorityImmediately()
         revoked.operationJob?.cancel(CancellationException("Authentication operation revoked"))
 
@@ -502,44 +537,39 @@ class BusinessAuthenticationOrchestrator(
                 markerRevoked = true
             } catch (_: Throwable) {
                 persistenceFailure = true
-                // The local credential pair may still provide the durable revocation commit.
             }
             try {
                 authSessionManager.failClosedRevoke()
                 tokenRecordCleared = true
             } catch (_: Throwable) {
                 persistenceFailure = true
-                // Keep trying the remaining independent revocation records.
             }
             try {
                 metadataPersistence.clear()
                 metadataRecordCleared = true
             } catch (_: Throwable) {
                 persistenceFailure = true
-                // Keep the in-memory authority revoked even when persistence is unavailable.
             }
         }
-        val durableFailure = !markerRevoked && !(tokenRecordCleared && metadataRecordCleared)
         revoked.identity?.let { revokeActionsBestEffort(it) }
         boundedCleanup { registration.publishSignedOut() }
         boundedCleanup { registration.clearWorkspace() }
         if (remoteLogout) boundedCandidateLogout(revoked.candidate)
-        synchronized(operationLock) {
-            mutableLastError.value = when {
-                persistenceFailure -> BusinessLoginMessage(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
-                reason == RevocationReason.AUTH_EXPIRED -> BusinessLoginMessage(BusinessLoginErrorCode.AUTH_EXPIRED)
-                reason == RevocationReason.MEMBERSHIP_EXPIRED -> BusinessLoginMessage(BusinessLoginErrorCode.MEMBERSHIP_EXPIRED)
-                reason == RevocationReason.LOCAL_KEYSTORE_UNAVAILABLE ->
-                    BusinessLoginMessage(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
-                reason == RevocationReason.LOCAL_CREDENTIAL_STORE_FAILED ->
-                    BusinessLoginMessage(BusinessLoginErrorCode.LOCAL_CREDENTIAL_STORE_FAILED)
-                else -> null
-            }
-            identityRegistry.transitionTo(BusinessAccessGateState.SIGNED_OUT)
+
+        val durableFailure = !markerRevoked && !(tokenRecordCleared && metadataRecordCleared)
+        val visibleError = when {
+            persistenceFailure -> BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE
+            reason == RevocationReason.AUTH_EXPIRED -> BusinessLoginErrorCode.AUTH_EXPIRED
+            reason == RevocationReason.MEMBERSHIP_EXPIRED -> BusinessLoginErrorCode.MEMBERSHIP_EXPIRED
+            reason == RevocationReason.LOCAL_KEYSTORE_UNAVAILABLE -> BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE
+            reason == RevocationReason.LOCAL_CREDENTIAL_STORE_FAILED ->
+                BusinessLoginErrorCode.LOCAL_CREDENTIAL_STORE_FAILED
+            else -> null
         }
-        if (durableFailure) {
-            throw BusinessAuthenticationException(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
-        }
+        return RevocationOutcome(
+            visibleError = visibleError,
+            terminalFailure = BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE.takeIf { durableFailure },
+        )
     }
 
     private suspend fun clearCurrentLocalPair(operation: Operation): Boolean = authorityMutationMutex.withLock {
@@ -687,7 +717,7 @@ class BusinessAuthenticationOrchestrator(
         val job = context[Job] ?: error("Authentication operation requires a coroutine Job")
         return synchronized(operationLock) {
             ensureOpenLocked()
-            if (activeOperation?.job?.isActive == true || gate.value !in allowedSources) {
+            if (activeRevocation != null || activeOperation?.job?.isActive == true || gate.value !in allowedSources) {
                 throw BusinessAuthenticationException(BusinessLoginErrorCode.AUTHENTICATION_IN_PROGRESS)
             }
             operationEpoch += 1
@@ -712,6 +742,7 @@ class BusinessAuthenticationOrchestrator(
             val verified = verifiedSelection
             if (
                 activeOperation?.job?.isActive == true ||
+                activeRevocation != null ||
                 gate.value !in setOf(BusinessAccessGateState.VERIFYING, BusinessAccessGateState.SELECTING_TENANT) ||
                 verified == null ||
                 verified.account != account ||
@@ -793,6 +824,19 @@ class BusinessAuthenticationOrchestrator(
         val identity: BusinessIdentity?,
         val candidate: OaCandidateAccess?,
     )
+    private data class RevocationFlight(val completion: CompletableDeferred<RevocationOutcome>)
+    private data class RevocationClaim(
+        val flight: RevocationFlight,
+        val revokedAuthority: RevokedAuthority?,
+    )
+    private data class RevocationOutcome(
+        val visibleError: BusinessLoginErrorCode?,
+        val terminalFailure: BusinessLoginErrorCode?,
+    ) {
+        fun throwIfFailed() {
+            terminalFailure?.let { throw BusinessAuthenticationException(it) }
+        }
+    }
 
     private sealed interface RestoreLoad {
         data object Empty : RestoreLoad

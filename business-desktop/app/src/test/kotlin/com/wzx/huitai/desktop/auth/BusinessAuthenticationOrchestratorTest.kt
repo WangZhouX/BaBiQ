@@ -257,6 +257,121 @@ class BusinessAuthenticationOrchestratorTest {
     }
 
     @Test
+    fun `concurrent logout and expiry share one revocation and keep login closed until cleanup finishes`() = runTest {
+        val fixture = Fixture().apply {
+            registration.publishSignedOutStarted = CompletableDeferred()
+            registration.publishSignedOutRelease = CompletableDeferred()
+            registration.remainingGatedPublishSignedOutCalls = 1
+        }
+        fixture.verify()
+        fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+
+        val logout = async { fixture.orchestrator.logout() }
+        fixture.registration.publishSignedOutStarted!!.await()
+        val expiry = async { fixture.orchestrator.onAuthenticationExpired() }
+        try {
+            runCurrent()
+            assertFalse(expiry.isCompleted, "a concurrent revocation must wait for the owner")
+            assertEquals(BusinessAccessGateState.SIGNING_OUT, fixture.orchestrator.gate.value)
+            val rejected = assertFailsWith<BusinessAuthenticationException> {
+                fixture.orchestrator.findTenantCandidates("lawyer@example.com")
+            }
+            assertEquals(BusinessLoginErrorCode.AUTHENTICATION_IN_PROGRESS, rejected.code)
+        } finally {
+            fixture.registration.publishSignedOutRelease!!.complete(Unit)
+        }
+        logout.await()
+        expiry.await()
+
+        assertEquals(1, fixture.revocationMarker.markCount)
+        assertEquals(1, fixture.credentials.clearCount)
+        assertEquals(1, fixture.metadata.clearCount)
+        assertEquals(1, fixture.actions.cancelCount)
+        assertEquals(1, fixture.actions.detachCount)
+        assertEquals(1, fixture.registration.calls.count { it == "signed-out" })
+        assertEquals(1, fixture.registration.calls.count { it == "clear-workspace" })
+        assertEquals(1, fixture.candidateGateway.logoutCount)
+
+        fixture.verify()
+        fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+        runCurrent()
+        assertEquals(BusinessAccessGateState.READY, fixture.orchestrator.gate.value)
+        assertEquals("user-1", fixture.registry.currentIdentity()?.userId)
+        assertEquals(1, fixture.registration.calls.count { it == "signed-out" })
+        assertEquals(1, fixture.registration.calls.count { it == "clear-workspace" })
+    }
+
+    @Test
+    fun `close owner coalesces concurrent logout instead of rejecting or duplicating cleanup`() = runTest {
+        val fixture = Fixture().apply {
+            registration.publishSignedOutStarted = CompletableDeferred()
+            registration.publishSignedOutRelease = CompletableDeferred()
+            registration.remainingGatedPublishSignedOutCalls = 1
+        }
+        fixture.verify()
+        fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+
+        val close = async { fixture.orchestrator.close() }
+        fixture.registration.publishSignedOutStarted!!.await()
+        val logout = async { fixture.orchestrator.logout() }
+        try {
+            runCurrent()
+            assertFalse(logout.isCompleted, "logout must join an active close revocation")
+            assertEquals(BusinessAccessGateState.SIGNING_OUT, fixture.orchestrator.gate.value)
+        } finally {
+            fixture.registration.publishSignedOutRelease!!.complete(Unit)
+        }
+        close.await()
+        logout.await()
+
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value)
+        assertEquals(1, fixture.revocationMarker.markCount)
+        assertEquals(1, fixture.credentials.clearCount)
+        assertEquals(1, fixture.metadata.clearCount)
+        assertEquals(1, fixture.actions.cancelCount)
+        assertEquals(1, fixture.actions.detachCount)
+        assertEquals(1, fixture.registration.calls.count { it == "signed-out" })
+        assertEquals(1, fixture.registration.calls.count { it == "clear-workspace" })
+        assertEquals(0, fixture.candidateGateway.logoutCount, "close owner keeps close remote-logout semantics")
+    }
+
+    @Test
+    fun `coalesced revocation waiters receive the same stable durable failure`() = runTest {
+        val fixture = Fixture().apply {
+            registration.publishSignedOutStarted = CompletableDeferred()
+            registration.publishSignedOutRelease = CompletableDeferred()
+            registration.remainingGatedPublishSignedOutCalls = 1
+        }
+        fixture.verify()
+        fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+        fixture.revocationMarker.failMark = true
+        fixture.credentials.failClear = true
+        fixture.metadata.failClear = true
+
+        val owner = async {
+            assertFailsWith<BusinessAuthenticationException> { fixture.orchestrator.logout() }
+        }
+        fixture.registration.publishSignedOutStarted!!.await()
+        val waiter = async {
+            assertFailsWith<BusinessAuthenticationException> { fixture.orchestrator.onAuthenticationExpired() }
+        }
+        runCurrent()
+        assertFalse(waiter.isCompleted)
+        fixture.registration.publishSignedOutRelease!!.complete(Unit)
+
+        assertEquals(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE, owner.await().code)
+        assertEquals(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE, waiter.await().code)
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value)
+        assertNull(fixture.registry.currentIdentity())
+        assertNull(fixture.sessionManager.identity.value)
+        assertEquals(1, fixture.revocationMarker.markCount)
+        assertEquals(1, fixture.credentials.clearCount)
+        assertEquals(1, fixture.metadata.clearCount)
+        assertEquals(1, fixture.registration.calls.count { it == "signed-out" })
+        assertEquals(1, fixture.registration.calls.count { it == "clear-workspace" })
+    }
+
+    @Test
     fun `authentication and membership expiry share revocation path but expose distinct stable errors`() = runTest {
         val authentication = Fixture()
         authentication.verify()
@@ -954,6 +1069,7 @@ class BusinessAuthenticationOrchestratorTest {
 
     private class FakeRevocationMarker : BusinessAuthRevocationMarkerPort {
         var revoked = false
+        var markCount = 0
         var failMark = false
         var failClear = false
         var onClear: (() -> Unit)? = null
@@ -961,6 +1077,7 @@ class BusinessAuthenticationOrchestratorTest {
         var clearRelease: CountDownLatch? = null
         override fun isRevoked(): Boolean = revoked
         override fun markRevoked() {
+            markCount += 1
             if (failMark) error("marker revoke failed")
             revoked = true
         }
@@ -1129,6 +1246,9 @@ class BusinessAuthenticationOrchestratorTest {
         var rollbackThrowsCancellation = false
         var rollbackCancelsContext = false
         var publishSignedOutNeverReturns = false
+        var publishSignedOutStarted: CompletableDeferred<Unit>? = null
+        var publishSignedOutRelease: CompletableDeferred<Unit>? = null
+        var remainingGatedPublishSignedOutCalls: Int? = null
         var publishSignedOutThrowsCancellation = false
         var publishSignedOutCancelsContext = false
         var clearWorkspaceNeverReturns = false
@@ -1179,6 +1299,13 @@ class BusinessAuthenticationOrchestratorTest {
 
         override suspend fun publishSignedOut() {
             calls += "signed-out"
+            val remaining = remainingGatedPublishSignedOutCalls
+            val gated = publishSignedOutRelease != null && (remaining == null || remaining > 0)
+            if (remaining != null && remaining > 0) remainingGatedPublishSignedOutCalls = remaining - 1
+            if (gated) {
+                publishSignedOutStarted?.complete(Unit)
+                publishSignedOutRelease?.await()
+            }
             if (publishSignedOutNeverReturns) CompletableDeferred<Unit>().await()
             if (publishSignedOutThrowsCancellation) throw CancellationException("adapter self-cancelled")
             if (publishSignedOutCancelsContext) {
