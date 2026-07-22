@@ -1,5 +1,6 @@
 package com.wzx.huitai.desktop.auth
 
+import com.wzx.huitai.desktop.security.LocalCredentialStoreUnavailableException
 import com.wzx.huitai.integration.oa.auth.OaTenantCandidate
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
@@ -213,6 +214,39 @@ class BusinessLoginControllerTest {
         assertFalse(failure.toString().contains("password8"))
     }
 
+    @Test
+    fun `remembered save unavailable after ready revokes authentication before reporting error`() = runTest {
+        val authentication = FakeAuthenticationOperations(candidates = listOf(candidate("tenant-1")))
+        val remembered = FakeRememberedLoginPort(
+            saveFailure = LocalCredentialStoreUnavailableException(),
+        )
+        val controller = validController(authentication, remembered)
+
+        controller.submit()
+        controller.completeSlider(true)
+
+        assertEquals(1, authentication.localCredentialStoreUnavailableCount)
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, authentication.gate.value)
+        assertEquals(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE, controller.state.value.error?.code)
+        assertTrue(remembered.saved.isEmpty())
+    }
+
+    @Test
+    fun `remembered clear unavailable after ready revokes authentication before reporting error`() = runTest {
+        val authentication = FakeAuthenticationOperations(candidates = listOf(candidate("tenant-1")))
+        val remembered = FakeRememberedLoginPort(clearFailureAt = 2)
+        val controller = validController(authentication, remembered)
+        controller.updateRemember(false)
+
+        controller.submit()
+        controller.completeSlider(true)
+
+        assertEquals(1, authentication.localCredentialStoreUnavailableCount)
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, authentication.gate.value)
+        assertEquals(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE, controller.state.value.error?.code)
+        assertEquals(2, remembered.clearCount)
+    }
+
     private fun validController(
         authentication: FakeAuthenticationOperations,
         remembered: FakeRememberedLoginPort = FakeRememberedLoginPort(),
@@ -243,6 +277,7 @@ class BusinessLoginControllerTest {
         var authenticateStarted: CompletableDeferred<Unit>? = null
         var authenticateRelease: CompletableDeferred<Unit>? = null
         var ignoreAuthenticateCancellation = false
+        var localCredentialStoreUnavailableCount = 0
 
         override suspend fun findTenantCandidates(account: String): List<OaTenantCandidate> {
             calls += "find"
@@ -284,11 +319,18 @@ class BusinessLoginControllerTest {
                 password.fill('\u0000')
             }
         }
+
+        override suspend fun onLocalCredentialStoreUnavailable() {
+            localCredentialStoreUnavailableCount += 1
+            gate.value = BusinessAccessGateState.SIGNED_OUT
+        }
     }
 
     private class FakeRememberedLoginPort(
         var loaded: RememberedLoginValue? = null,
         var loadFailure: Throwable? = null,
+        var saveFailure: Throwable? = null,
+        var clearFailureAt: Int? = null,
     ) : BusinessRememberedLoginPort {
         val saved = mutableListOf<Pair<String, String>>()
         var clearCount = 0
@@ -299,11 +341,13 @@ class BusinessLoginControllerTest {
         }
 
         override fun saveOrReplace(account: String, password: CharArray) {
+            saveFailure?.let { throw it }
             saved += account to password.concatToString()
         }
 
         override fun clear() {
             clearCount += 1
+            if (clearFailureAt == clearCount) throw LocalCredentialStoreUnavailableException()
         }
     }
 }

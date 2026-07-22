@@ -4,6 +4,8 @@ import com.wzx.huitai.integration.auth.AuthSessionManager
 import com.wzx.huitai.integration.auth.AuthTokenSet
 import com.wzx.huitai.security.secret.JceksSecretStore
 import com.wzx.huitai.security.secret.SecretRef
+import com.wzx.huitai.security.secret.SecretStore
+import com.wzx.huitai.security.secret.SecretStoreException
 import java.nio.ByteBuffer
 import java.nio.file.Files
 import java.nio.file.Path
@@ -22,6 +24,37 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class JceksAuthCredentialPersistenceTest {
+    @Test
+    fun `closed production secret store maps load replace and clear to unavailable`() = runBlocking {
+        val password = "password".toCharArray()
+        val store = JceksSecretStore(
+            Files.createTempDirectory("jceks-auth-closed").resolve("credentials.jceks"),
+            password,
+        )
+        val persistence = JceksAuthCredentialPersistence(store)
+        store.close()
+        password.fill('\u0000')
+
+        assertFailsWith<LocalCredentialStoreUnavailableException> { persistence.load() }
+        assertFailsWith<LocalCredentialStoreUnavailableException> {
+            persistence.replace(AuthTokenSet("access", "refresh"))
+        }
+        assertFailsWith<LocalCredentialStoreUnavailableException> { persistence.clear() }
+        Unit
+    }
+
+    @Test
+    fun `secret store exception maps load replace and clear to unavailable`() = runBlocking {
+        val persistence = JceksAuthCredentialPersistence(FailingSecretStore())
+
+        assertFailsWith<LocalCredentialStoreUnavailableException> { persistence.load() }
+        assertFailsWith<LocalCredentialStoreUnavailableException> {
+            persistence.replace(AuthTokenSet("access", "refresh"))
+        }
+        assertFailsWith<LocalCredentialStoreUnavailableException> { persistence.clear() }
+        Unit
+    }
+
     @Test
     fun `credentials persist replace and clear without plaintext artifacts`() = runBlocking {
         val root = Files.createTempDirectory("jceks-auth-persistence")
@@ -293,5 +326,15 @@ class JceksAuthCredentialPersistenceTest {
             val value = bytes[index / 2].toInt() and 0xff
             digits[if (index % 2 == 0) value ushr 4 else value and 0xf]
         }
+    }
+
+    private class FailingSecretStore : SecretStore {
+        override fun save(alias: String, secret: CharArray): SecretRef = unavailable()
+        override fun upsert(alias: String, secret: CharArray): SecretRef = unavailable()
+        override fun load(ref: SecretRef): CharArray? = unavailable()
+        override fun replace(ref: SecretRef, secret: CharArray): Unit = unavailable()
+        override fun delete(ref: SecretRef): Boolean = unavailable()
+        override fun close() = Unit
+        private fun unavailable(): Nothing = throw SecretStoreException("sensitive unavailable context")
     }
 }

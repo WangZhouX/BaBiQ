@@ -18,7 +18,11 @@ class JceksAuthCredentialPersistence internal constructor(
     ) : this(secretStore, entryRef, SecureJceksEncoding())
 
     override suspend fun load(): AuthTokenSet? {
-        val stored = secretStore.load(entryRef) ?: return null
+        val stored = try {
+            secretStore.load(entryRef)
+        } catch (_: IllegalStateException) {
+            throw LocalCredentialStoreUnavailableException()
+        } ?: return null
         return try {
             decode(stored)
         } catch (failure: CredentialPersistenceException) {
@@ -33,14 +37,22 @@ class JceksAuthCredentialPersistence internal constructor(
     override suspend fun replace(tokens: AuthTokenSet) {
         val encoded = encode(tokens)
         try {
-            secretStore.upsert(entryRef.value, encoded)
+            try {
+                secretStore.upsert(entryRef.value, encoded)
+            } catch (_: IllegalStateException) {
+                throw LocalCredentialStoreUnavailableException()
+            }
         } finally {
             Arrays.fill(encoded, '\u0000')
         }
     }
 
     override suspend fun clear() {
-        secretStore.delete(entryRef)
+        try {
+            secretStore.delete(entryRef)
+        } catch (_: IllegalStateException) {
+            throw LocalCredentialStoreUnavailableException()
+        }
     }
 
     override fun toString(): String =

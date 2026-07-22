@@ -4,6 +4,7 @@ import com.wzx.huitai.action.model.ActionExecutionState
 import com.wzx.huitai.action.model.ActionIdentityScope
 import com.wzx.huitai.action.model.ActionResult
 import com.wzx.huitai.desktop.security.BusinessAuthSessionMetadata
+import com.wzx.huitai.desktop.security.JceksAuthCredentialPersistence
 import com.wzx.huitai.desktop.security.LocalCredentialStoreUnavailableException
 import com.wzx.huitai.desktop.state.BusinessIdentity
 import com.wzx.huitai.integration.auth.AuthCredentialPersistencePort
@@ -17,9 +18,14 @@ import com.wzx.huitai.integration.oa.auth.OaPermissionUser
 import com.wzx.huitai.integration.oa.auth.OaPreAuthenticationGateway
 import com.wzx.huitai.integration.oa.auth.OaTenantCandidate
 import com.wzx.huitai.integration.oa.auth.OaTokenBundle
+import com.wzx.huitai.security.secret.JceksSecretStore
+import java.nio.file.Files
 import java.time.Instant
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
@@ -394,6 +400,36 @@ class BusinessAuthenticationOrchestratorTest {
     }
 
     @Test
+    fun `logout serializes with delayed metadata commit and leaves no stale local pair`() = runTest {
+        val fixture = Fixture().apply {
+            metadata.saveStarted = CompletableDeferred()
+            metadata.saveRelease = CountDownLatch(1)
+            metadata.clearObserved = CountDownLatch(1)
+        }
+        fixture.verify()
+        val login = async(Dispatchers.Default) {
+            fixture.orchestrator.authenticate(
+                "lawyer@example.com",
+                "password8".toCharArray(),
+                fixture.candidate,
+            )
+        }
+        fixture.metadata.saveStarted!!.await()
+
+        val logout = async(Dispatchers.Default) { fixture.orchestrator.logout() }
+        fixture.metadata.clearObserved!!.await(500, TimeUnit.MILLISECONDS)
+        fixture.metadata.saveRelease!!.countDown()
+        runCatching { login.await() }
+        logout.await()
+
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value)
+        assertNull(fixture.registry.currentIdentity())
+        assertNull(fixture.sessionManager.identity.value)
+        assertNull(fixture.credentials.tokens)
+        assertNull(fixture.metadata.value)
+    }
+
+    @Test
     fun `cancellation completes suspending rollback in non cancellable cleanup`() = runTest {
         val fixture = Fixture().apply {
             registration.commitStarted = CompletableDeferred()
@@ -479,6 +515,25 @@ class BusinessAuthenticationOrchestratorTest {
     }
 
     @Test
+    fun `local remembered credential failure revokes ready registry and in memory authentication`() = runTest {
+        val fixture = Fixture()
+        fixture.verify()
+        fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+
+        fixture.orchestrator.onLocalCredentialStoreUnavailable()
+
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value)
+        assertEquals(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE, fixture.orchestrator.lastError.value?.code)
+        assertNull(fixture.registry.currentIdentity())
+        assertNull(fixture.sessionManager.identity.value)
+        assertNull(fixture.credentials.tokens)
+        assertNull(fixture.metadata.value)
+        assertTrue("signed-out" in fixture.registration.calls)
+        assertTrue("clear-workspace" in fixture.registration.calls)
+        assertEquals(1, fixture.candidateGateway.logoutCount)
+    }
+
+    @Test
     fun `restore classifies unavailable shared store without attempting destructive cleanup`() = runTest {
         val fixture = Fixture().apply {
             metadata.loadFailure = LocalCredentialStoreUnavailableException()
@@ -490,6 +545,38 @@ class BusinessAuthenticationOrchestratorTest {
         assertEquals(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE, fixture.orchestrator.lastError.value?.code)
         assertEquals(0, fixture.credentials.clearCount)
         assertEquals(0, fixture.metadata.clearCount)
+    }
+
+    @Test
+    fun `restore maps a closed production token store to local keystore unavailable`() = runTest {
+        val password = "password".toCharArray()
+        val store = JceksSecretStore(
+            Files.createTempDirectory("orchestrator-closed-token-store").resolve("credentials.jceks"),
+            password,
+        )
+        val persistence = JceksAuthCredentialPersistence(store)
+        store.close()
+        password.fill('\u0000')
+        val metadata = FakeMetadataPort()
+        val orchestrator = BusinessAuthenticationOrchestrator(
+            preAuthentication = FakePreAuthenticationGateway(),
+            candidateAuthentication = FakeCandidateGateway(),
+            credentialPersistence = persistence,
+            authSessionManager = AuthSessionManager(persistence),
+            metadataPersistence = metadata,
+            registration = FakeRegistrationPort(),
+            identityRegistry = BusinessIdentityRegistry(),
+            actions = FakeActions(),
+            desktopInstanceId = "desktop-instance-1",
+            desktopSessionId = "desktop-session-1",
+            platformId = 100,
+        )
+
+        orchestrator.restore()
+
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, orchestrator.gate.value)
+        assertEquals(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE, orchestrator.lastError.value?.code)
+        assertEquals(0, metadata.clearCount)
     }
 
     private class Fixture(
@@ -615,6 +702,9 @@ class BusinessAuthenticationOrchestratorTest {
         var failSave = false
         var failClear = false
         var clearCount = 0
+        var saveStarted: CompletableDeferred<Unit>? = null
+        var saveRelease: CountDownLatch? = null
+        var clearObserved: CountDownLatch? = null
 
         override fun load(): BusinessAuthSessionMetadata? {
             loadFailure?.let { throw it }
@@ -622,6 +712,8 @@ class BusinessAuthenticationOrchestratorTest {
         }
 
         override fun saveOrReplace(metadata: BusinessAuthSessionMetadata) {
+            saveStarted?.complete(Unit)
+            saveRelease?.await()
             value = metadata
             if (failSave) error("metadata persistence failed")
         }
@@ -630,6 +722,7 @@ class BusinessAuthenticationOrchestratorTest {
             clearCount += 1
             if (failClear) error("metadata clear failed")
             value = null
+            clearObserved?.countDown()
         }
     }
 

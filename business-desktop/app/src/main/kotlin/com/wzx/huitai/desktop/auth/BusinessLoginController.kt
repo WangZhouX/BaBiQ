@@ -8,12 +8,14 @@ import java.util.Arrays
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.withContext
 
 interface BusinessAuthenticationOperations {
     val gate: StateFlow<BusinessAccessGateState>
@@ -21,6 +23,7 @@ interface BusinessAuthenticationOperations {
     fun enterTenantSelection()
     fun cancelTenantSelection()
     suspend fun authenticate(account: String, password: CharArray, candidate: OaTenantCandidate)
+    suspend fun onLocalCredentialStoreUnavailable()
 }
 
 class RememberedLoginValue(
@@ -279,6 +282,7 @@ class BusinessLoginController(
             }
             updateIfCurrent(request) { copy(tenantCandidates = emptyList(), error = null, notice = null) }
         } catch (failure: LocalCredentialStoreUnavailableException) {
+            revokeReadyAfterLocalCredentialFailure()
             throw BusinessAuthenticationException(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
         } finally {
             Arrays.fill(authenticationPassword, '\u0000')
@@ -295,6 +299,17 @@ class BusinessLoginController(
             requestGeneration += 1
             activeRequestJob = job
             Request(requestGeneration, job)
+        }
+    }
+
+    private suspend fun revokeReadyAfterLocalCredentialFailure() {
+        if (authentication.gate.value != BusinessAccessGateState.READY) return
+        withContext(NonCancellable) {
+            try {
+                authentication.onLocalCredentialStoreUnavailable()
+            } catch (_: Throwable) {
+                // The original stable local-store error remains authoritative.
+            }
         }
     }
 

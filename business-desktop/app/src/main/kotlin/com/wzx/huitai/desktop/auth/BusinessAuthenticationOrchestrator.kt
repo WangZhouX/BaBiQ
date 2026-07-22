@@ -251,6 +251,9 @@ class BusinessAuthenticationOrchestrator(
     suspend fun onAuthenticationExpired() = revoke(RevocationReason.AUTH_EXPIRED, remoteLogout = true)
     suspend fun onMembershipExpired() = revoke(RevocationReason.MEMBERSHIP_EXPIRED, remoteLogout = true)
 
+    override suspend fun onLocalCredentialStoreUnavailable() =
+        revoke(RevocationReason.LOCAL_CREDENTIAL_STORE_UNAVAILABLE, remoteLogout = true)
+
     suspend fun close() {
         val shouldClose = synchronized(operationLock) {
             if (closed) false else {
@@ -271,46 +274,48 @@ class BusinessAuthenticationOrchestrator(
         operation: Operation,
         resources: OperationResources,
     ) {
-        checkCurrent(operation)
-        try {
-            resources.metadataWritten = true
-            metadataPersistence.saveOrReplace(
-                BusinessAuthSessionMetadata(candidate.userId, candidate.tenantId, candidate.platformId.toString()),
-            )
+        authorityMutationMutex.withLock {
             checkCurrent(operation)
-            authSessionManager.login(
-                userId = candidate.userId,
-                tenantId = candidate.tenantId,
-                platformId = candidate.platformId.toString(),
-                roles = permission.roles,
-                permissions = permission.permissions,
-                authenticatedAt = now(),
-                tokens = AuthTokenSet(tokens.accessToken, tokens.refreshToken),
+            try {
+                resources.metadataWritten = true
+                metadataPersistence.saveOrReplace(
+                    BusinessAuthSessionMetadata(candidate.userId, candidate.tenantId, candidate.platformId.toString()),
+                )
+                checkCurrent(operation)
+                authSessionManager.login(
+                    userId = candidate.userId,
+                    tenantId = candidate.tenantId,
+                    platformId = candidate.platformId.toString(),
+                    roles = permission.roles,
+                    permissions = permission.permissions,
+                    authenticatedAt = now(),
+                    tokens = AuthTokenSet(tokens.accessToken, tokens.refreshToken),
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: LocalCredentialStoreUnavailableException) {
+                throw BusinessAuthenticationException(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
+            } catch (_: Throwable) {
+                throw BusinessAuthenticationException(BusinessLoginErrorCode.LOCAL_CREDENTIAL_STORE_FAILED)
+            }
+            val snapshot = authSessionManager.identity.value
+                ?: throw BusinessAuthenticationException(BusinessLoginErrorCode.LOCAL_CREDENTIAL_STORE_FAILED)
+            resources.authOwner = AuthOwner(snapshot.authSessionId, snapshot.identityEpoch)
+            resources.identity = BusinessIdentity(
+                desktopInstanceId = desktopInstanceId,
+                desktopSessionId = desktopSessionId,
+                authSessionId = snapshot.authSessionId,
+                identityEpoch = snapshot.identityEpoch,
+                userId = snapshot.userId,
+                tenantId = snapshot.tenantId,
+                platformId = snapshot.platformId,
+                roles = snapshot.roles,
+                permissions = snapshot.permissions,
             )
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (_: LocalCredentialStoreUnavailableException) {
-            throw BusinessAuthenticationException(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
-        } catch (_: Throwable) {
-            throw BusinessAuthenticationException(BusinessLoginErrorCode.LOCAL_CREDENTIAL_STORE_FAILED)
-        }
-        val snapshot = authSessionManager.identity.value
-            ?: throw BusinessAuthenticationException(BusinessLoginErrorCode.LOCAL_CREDENTIAL_STORE_FAILED)
-        resources.authOwner = AuthOwner(snapshot.authSessionId, snapshot.identityEpoch)
-        resources.identity = BusinessIdentity(
-            desktopInstanceId = desktopInstanceId,
-            desktopSessionId = desktopSessionId,
-            authSessionId = snapshot.authSessionId,
-            identityEpoch = snapshot.identityEpoch,
-            userId = snapshot.userId,
-            tenantId = snapshot.tenantId,
-            platformId = snapshot.platformId,
-            roles = snapshot.roles,
-            permissions = snapshot.permissions,
-        )
-        synchronized(operationLock) {
-            checkCurrentLocked(operation)
-            mutableGate.value = BusinessAccessGateState.REGISTERING_AGENT
+            synchronized(operationLock) {
+                checkCurrentLocked(operation)
+                mutableGate.value = BusinessAccessGateState.REGISTERING_AGENT
+            }
         }
         resources.transaction = try {
             registration.prepare(resources.identity!!)
@@ -465,6 +470,8 @@ class BusinessAuthenticationOrchestrator(
                     durableFailure -> BusinessLoginMessage(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
                     reason == RevocationReason.AUTH_EXPIRED -> BusinessLoginMessage(BusinessLoginErrorCode.AUTH_EXPIRED)
                     reason == RevocationReason.MEMBERSHIP_EXPIRED -> BusinessLoginMessage(BusinessLoginErrorCode.MEMBERSHIP_EXPIRED)
+                    reason == RevocationReason.LOCAL_CREDENTIAL_STORE_UNAVAILABLE ->
+                        BusinessLoginMessage(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
                     else -> null
                 }
                 mutableGate.value = BusinessAccessGateState.SIGNED_OUT
@@ -710,7 +717,13 @@ class BusinessAuthenticationOrchestrator(
         data class Invalid(val code: BusinessLoginErrorCode, val safeToClear: Boolean) : RestoreLoad
     }
 
-    private enum class RevocationReason { LOGOUT, AUTH_EXPIRED, MEMBERSHIP_EXPIRED, CLOSE }
+    private enum class RevocationReason {
+        LOGOUT,
+        AUTH_EXPIRED,
+        MEMBERSHIP_EXPIRED,
+        LOCAL_CREDENTIAL_STORE_UNAVAILABLE,
+        CLOSE,
+    }
 
     private companion object {
         val PRE_EXECUTION_STATES = setOf(
