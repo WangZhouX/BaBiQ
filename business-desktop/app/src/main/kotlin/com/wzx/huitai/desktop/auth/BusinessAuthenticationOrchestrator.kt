@@ -374,26 +374,33 @@ class BusinessAuthenticationOrchestrator(
         authorizeExplicitLogin: Boolean,
     ) = authorityMutationMutex.withLock {
         checkCurrent(operation)
-        if (authorizeExplicitLogin) {
-            try {
-                revocationMarker.clearAfterExplicitLogin()
-            } catch (_: Throwable) {
-                throw BusinessAuthenticationException(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
+        val transaction = resources.transaction
+            ?: throw BusinessAuthenticationException(BusinessLoginErrorCode.AGENT_REGISTRATION_FAILED)
+        val published = transaction.publishReady {
+            checkCurrent(operation)
+            if (authorizeExplicitLogin) {
+                try {
+                    revocationMarker.clearAfterExplicitLogin()
+                } catch (_: Throwable) {
+                    throw BusinessAuthenticationException(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
+                }
+            }
+            checkCurrent(operation)
+            synchronized(operationLock) {
+                checkCurrentLocked(operation)
+                val identity = resources.identity
+                    ?: throw BusinessAuthenticationException(BusinessLoginErrorCode.AGENT_REGISTRATION_FAILED)
+                val candidate = resources.candidateAccess
+                    ?: throw BusinessAuthenticationException(BusinessLoginErrorCode.AGENT_REGISTRATION_FAILED)
+                activeCandidate = candidate
+                identityRegistry.publishReady(identity, operation.registryGeneration).also { ready ->
+                    if (!ready) activeCandidate = null
+                    if (ready) mutableLastError.value = null
+                }
             }
         }
-        checkCurrent(operation)
-        synchronized(operationLock) {
-            checkCurrentLocked(operation)
-            val identity = resources.identity
-                ?: throw BusinessAuthenticationException(BusinessLoginErrorCode.AGENT_REGISTRATION_FAILED)
-            val candidate = resources.candidateAccess
-                ?: throw BusinessAuthenticationException(BusinessLoginErrorCode.AGENT_REGISTRATION_FAILED)
-            activeCandidate = candidate
-            if (!identityRegistry.publishReady(identity, operation.registryGeneration)) {
-                activeCandidate = null
-                throw CancellationException("Authentication registry generation changed")
-            }
-            mutableLastError.value = null
+        if (!published) {
+            throw CancellationException("Authentication registry generation changed")
         }
     }
 

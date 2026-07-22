@@ -41,6 +41,8 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
@@ -75,6 +77,53 @@ class BusinessAuthenticationOrchestratorTest {
         assertEquals(BusinessAccessGateState.READY, fixture.orchestrator.gate.value)
         assertEquals("user-1", fixture.registry.currentIdentity()?.userId)
         assertEquals(listOf("prepare", "identity", "catalog", "context", "commit"), fixture.registration.calls)
+    }
+
+    @Test
+    fun `connection replacement after context registration rejects old ready publication and retry aligns agent identity`() = runTest {
+        val fixture = Fixture()
+        val publicationMutex = Mutex()
+        var connectionId = "connection-1"
+        var registeredAgentIdentity: BusinessIdentity? = null
+        var reconnectRegistrations = 0
+        fixture.registration.captureConnectionId = { connectionId }
+        fixture.registration.readyPublication = { expectedConnectionId, publish ->
+            publicationMutex.withLock {
+                check(connectionId == expectedConnectionId) { "registration connection changed" }
+                publish().also { published ->
+                    if (published) registeredAgentIdentity = fixture.registry.currentIdentity()
+                }
+            }
+        }
+        fixture.registration.afterContext = {
+            if (connectionId == "connection-1") {
+                connectionId = "connection-2"
+                publicationMutex.withLock {
+                    reconnectRegistrations += 1
+                    registeredAgentIdentity = fixture.registry.currentIdentity()
+                        ?.takeIf { fixture.registry.gate.value == BusinessAccessGateState.READY }
+                }
+            }
+        }
+        fixture.registration.onPublishSignedOut = { registeredAgentIdentity = null }
+        fixture.verify()
+
+        val staleLogin = assertFailsWith<BusinessAuthenticationException> {
+            fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+        }
+
+        assertEquals(BusinessLoginErrorCode.AGENT_REGISTRATION_FAILED, staleLogin.code)
+        assertEquals(1, reconnectRegistrations)
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value)
+        assertNull(fixture.registry.currentIdentity())
+        assertNull(registeredAgentIdentity)
+
+        fixture.verify()
+        fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+
+        assertEquals(BusinessAccessGateState.READY, fixture.orchestrator.gate.value)
+        assertEquals(fixture.registry.currentIdentity(), registeredAgentIdentity)
+        assertEquals("connection-2", fixture.registration.preparedConnectionIds.last())
     }
 
     @Test
@@ -1427,14 +1476,25 @@ class BusinessAuthenticationOrchestratorTest {
         var clearWorkspaceThrowsCancellation = false
         var clearWorkspaceCancelsContext = false
         var rollbackCompleted = false
+        var captureConnectionId: (() -> String)? = null
+        var afterContext: (suspend () -> Unit)? = null
+        var readyPublication: (suspend (String, () -> Boolean) -> Boolean)? = null
+        var onPublishSignedOut: (() -> Unit)? = null
+        val preparedConnectionIds = mutableListOf<String>()
 
         override suspend fun prepare(identity: BusinessIdentity): BusinessAgentRegistrationTransaction {
             calls += "prepare"
             fail(RegistrationFailureStage.PREPARE)
+            val preparedConnectionId = captureConnectionId?.invoke()
+            preparedConnectionId?.let(preparedConnectionIds::add)
             return object : BusinessAgentRegistrationTransaction {
                 override suspend fun registerIdentity() { calls += "identity"; fail(RegistrationFailureStage.IDENTITY) }
                 override suspend fun registerCapabilityCatalog() { calls += "catalog"; fail(RegistrationFailureStage.CATALOG) }
-                override suspend fun registerInitialContext() { calls += "context"; fail(RegistrationFailureStage.CONTEXT) }
+                override suspend fun registerInitialContext() {
+                    calls += "context"
+                    fail(RegistrationFailureStage.CONTEXT)
+                    afterContext?.invoke()
+                }
                 override suspend fun commit() {
                     calls += "commit"
                     val remaining = remainingGatedCommitCalls
@@ -1453,6 +1513,12 @@ class BusinessAuthenticationOrchestratorTest {
                     fail(RegistrationFailureStage.COMMIT)
                     onCommit?.invoke()
                 }
+                override suspend fun publishReady(publish: () -> Boolean): Boolean =
+                    if (preparedConnectionId == null) {
+                        publish()
+                    } else {
+                        readyPublication?.invoke(preparedConnectionId, publish) ?: publish()
+                    }
                 override suspend fun rollback() {
                     calls += "rollback"
                     rollbackStarted?.complete(Unit)
@@ -1472,6 +1538,7 @@ class BusinessAuthenticationOrchestratorTest {
 
         override suspend fun publishSignedOut() {
             calls += "signed-out"
+            onPublishSignedOut?.invoke()
             cleanupEvents?.add("global-signed-out")
             val remaining = remainingGatedPublishSignedOutCalls
             val gated = publishSignedOutRelease != null && (remaining == null || remaining > 0)

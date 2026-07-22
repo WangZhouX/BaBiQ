@@ -794,6 +794,8 @@ class ProductionBusinessDesktopCompositionFactory(
             coordinator = desktopCoordinator,
             watermarks = ::nextRegistrationWatermarks,
             initialPage = { this.storage.screen.pageContext() },
+            currentConnectionId = { rpc.connectionId },
+            readyPublicationMutex = registrationPublicationMutex,
         )
         val orchestrator = BusinessAuthenticationOrchestrator(
             preAuthentication = oaGateway.preAuthentication,

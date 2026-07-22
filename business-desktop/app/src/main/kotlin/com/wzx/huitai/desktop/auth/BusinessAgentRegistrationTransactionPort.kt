@@ -14,6 +14,14 @@ interface BusinessAgentRegistrationTransaction {
     suspend fun registerCapabilityCatalog()
     suspend fun registerInitialContext()
     suspend fun commit()
+
+    /**
+     * Publishes the final READY state inside the same ownership barrier used by connection
+     * registration. Production transactions override this to reject a connection replacement
+     * that happened after the provisional context was sent.
+     */
+    suspend fun publishReady(publish: () -> Boolean): Boolean = publish()
+
     suspend fun rollback()
 }
 

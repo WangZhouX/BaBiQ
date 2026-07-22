@@ -23,12 +23,15 @@ import com.wzx.huitai.desktop.state.BusinessDesktopStore
 import com.wzx.huitai.desktop.state.BusinessFieldSuggestion
 import com.wzx.huitai.desktop.state.BusinessIdentity
 import com.wzx.huitai.desktop.auth.CoordinatorAgentRegistrationTransactionAdapter
+import com.wzx.huitai.desktop.auth.BusinessAccessGateState
+import com.wzx.huitai.desktop.auth.BusinessIdentityRegistry
 import com.wzx.huitai.presentation.context.PageContextSnapshot
 import com.wzx.huitai.presentation.context.PageMode
 import com.wzx.huitai.presentation.context.ValidationSummary
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -40,6 +43,8 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -313,6 +318,81 @@ class BusinessDesktopCoordinatorTest {
 
         assertEquals(identity(2), store.state.value.identity)
         assertEquals(2, store.state.value.page?.revision)
+    }
+
+    @Test
+    fun `connection replacement after context blocks reconnect and rejects stale ready publication`() = runTest {
+        val store = BusinessDesktopStore(BusinessDesktopReducer())
+        val registry = BusinessIdentityRegistry().also {
+            it.transitionTo(BusinessAccessGateState.REGISTERING_AGENT)
+        }
+        val publicationMutex = Mutex()
+        var connectionId = "connection-1"
+        var agentIdentity: BusinessIdentity? = null
+        val registration = object : BusinessRegistrationPort {
+            override suspend fun bindIdentity(identity: BusinessIdentity) {
+                agentIdentity = identity
+            }
+            override suspend fun registerCatalog(identity: BusinessIdentity, catalogEpoch: Long) = Unit
+            override suspend fun publishSignedOut() {
+                agentIdentity = null
+            }
+        }
+        val workspace = BusinessWorkspaceController(
+            store,
+            BusinessContextPublicationPort { _, _, _, _ -> },
+            RecordingActionPort(),
+        )
+        val adapter = CoordinatorAgentRegistrationTransactionAdapter(
+            coordinator = BusinessDesktopCoordinator(
+                store,
+                FakeConnectionLifecycle(),
+                registration,
+                workspace,
+                this,
+            ),
+            watermarks = { com.wzx.huitai.desktop.auth.BusinessRegistrationWatermarks(1, 1) },
+            initialPage = { identity -> page(identity.identityEpoch) },
+            currentConnectionId = { connectionId },
+            readyPublicationMutex = publicationMutex,
+        )
+
+        val stale = adapter.prepare(identity(1))
+        stale.registerIdentity()
+        stale.registerCapabilityCatalog()
+        stale.registerInitialContext()
+        stale.commit()
+        connectionId = "connection-2"
+        val reconnectEntered = CompletableDeferred<Unit>()
+        val reconnect = async {
+            reconnectEntered.complete(Unit)
+            publicationMutex.withLock {
+                agentIdentity = registry.currentIdentity()
+                    ?.takeIf { registry.gate.value == BusinessAccessGateState.READY }
+            }
+        }
+        reconnectEntered.await()
+        runCurrent()
+        assertFalse(reconnect.isCompleted, "registerActiveConnection must wait for the login publication barrier")
+
+        assertFailsWith<IllegalStateException> {
+            stale.publishReady { registry.publishReady(identity(1), registry.currentGeneration()) }
+        }
+        assertEquals(BusinessAccessGateState.REGISTERING_AGENT, registry.gate.value)
+        stale.rollback()
+        reconnect.await()
+        assertNull(agentIdentity)
+
+        val current = adapter.prepare(identity(2))
+        current.registerIdentity()
+        current.registerCapabilityCatalog()
+        current.registerInitialContext()
+        current.commit()
+        assertTrue(current.publishReady { registry.publishReady(identity(2), registry.currentGeneration()) })
+
+        assertEquals(BusinessAccessGateState.READY, registry.gate.value)
+        assertEquals(registry.currentIdentity(), agentIdentity)
+        assertEquals(identity(2), store.state.value.identity)
     }
 
     @Test
