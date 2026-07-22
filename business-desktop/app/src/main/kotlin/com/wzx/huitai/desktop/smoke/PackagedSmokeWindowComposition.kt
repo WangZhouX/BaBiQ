@@ -9,14 +9,14 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal data class PackagedSmokeUiCompositionSnapshot(
     val windowComposed: Boolean,
     val shellComposed: Boolean,
-    val topNavigationComposed: Boolean,
+    val sidebarNavigationComposed: Boolean,
 )
 
-/** Signals emitted by the real Window, shell, and top-navigation composition paths. */
+/** Signals emitted by the real Window, shell, and sidebar-navigation composition paths. */
 class PackagedSmokeUiCompositionSignals {
     private val windowComposed = AtomicBoolean(false)
     private val shellComposed = AtomicBoolean(false)
-    private val topNavigationComposed = AtomicBoolean(false)
+    private val sidebarNavigationComposed = AtomicBoolean(false)
 
     fun markWindowComposed() {
         windowComposed.set(true)
@@ -26,14 +26,14 @@ class PackagedSmokeUiCompositionSignals {
         shellComposed.set(true)
     }
 
-    fun markTopNavigationComposed() {
-        topNavigationComposed.set(true)
+    fun markSidebarNavigationComposed() {
+        sidebarNavigationComposed.set(true)
     }
 
     internal fun snapshot(): PackagedSmokeUiCompositionSnapshot = PackagedSmokeUiCompositionSnapshot(
         windowComposed = windowComposed.get(),
         shellComposed = shellComposed.get(),
-        topNavigationComposed = topNavigationComposed.get(),
+        sidebarNavigationComposed = sidebarNavigationComposed.get(),
     )
 }
 
@@ -103,7 +103,7 @@ internal fun buildPackagedSmokeUiReadiness(
         shellComposed = composition.shellComposed,
         brandLogoDecoded = true,
         mascotDecoded = true,
-        topNavigationComposed = composition.topNavigationComposed,
+        sidebarNavigationComposed = composition.sidebarNavigationComposed,
         assistantInitiallyCollapsed = assistantInitiallyCollapsed,
         productName = productName,
     )

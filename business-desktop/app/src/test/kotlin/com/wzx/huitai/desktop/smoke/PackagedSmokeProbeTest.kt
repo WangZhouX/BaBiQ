@@ -59,7 +59,9 @@ class PackagedSmokeProbeTest {
         assertTrue(report.getValue("shellComposed").jsonPrimitive.boolean)
         assertTrue(report.getValue("brandLogoDecoded").jsonPrimitive.boolean)
         assertTrue(report.getValue("mascotDecoded").jsonPrimitive.boolean)
-        assertTrue(report.getValue("topNavigationComposed").jsonPrimitive.boolean)
+        assertTrue(report.getValue("sidebarNavigationComposed").jsonPrimitive.boolean)
+        val legacyNavigationField = "top" + "NavigationComposed"
+        assertFalse(report.containsKey(legacyNavigationField))
         assertTrue(report.getValue("assistantInitiallyCollapsed").jsonPrimitive.boolean)
         assertEquals("翔鸟律智桌面端", report.getValue("productName").jsonPrimitive.content)
         assertEquals(42_424, report.getValue("childPid").jsonPrimitive.content.toLong())
@@ -106,7 +108,6 @@ class PackagedSmokeProbeTest {
             ready.copy(shellComposed = false),
             ready.copy(brandLogoDecoded = false),
             ready.copy(mascotDecoded = false),
-            ready.copy(topNavigationComposed = false),
             ready.copy(assistantInitiallyCollapsed = false),
             ready.copy(productName = "wrong-product"),
         )
@@ -117,6 +118,15 @@ class PackagedSmokeProbeTest {
             }
             assertFalse(Files.exists(report))
         }
+
+        val missingSidebarReport = home.resolve("report-missing-sidebar.json")
+        val missingSidebarFailure = assertFailsWith<IllegalArgumentException> {
+            PackagedSmokeProbe(missingSidebarReport).write(
+                evidence.copy(uiReadiness = ready.copy(sidebarNavigationComposed = false)),
+            )
+        }
+        assertTrue(missingSidebarFailure.message.orEmpty().contains("sidebar navigation"))
+        assertFalse(Files.exists(missingSidebarReport))
     }
 
     @Test

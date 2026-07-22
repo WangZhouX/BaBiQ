@@ -225,7 +225,7 @@ try {
     Assert-Smoke ($report.shellComposed -eq $true) 'The business desktop shell was not composed.'
     Assert-Smoke ($report.brandLogoDecoded -eq $true) 'The packaged brand logo was not decoded.'
     Assert-Smoke ($report.mascotDecoded -eq $true) 'The packaged assistant mascot was not decoded.'
-    Assert-Smoke ($report.topNavigationComposed -eq $true) 'The top navigation was not composed.'
+    Assert-Smoke ($report.sidebarNavigationComposed -eq $true) 'The sidebar navigation was not composed.'
     Assert-Smoke ($report.assistantInitiallyCollapsed -eq $true) 'The assistant did not start collapsed.'
     Assert-Smoke ($report.productName -eq $expectedProductName) 'The composed product name is invalid.'
     Assert-Smoke ([long]$report.childPid -gt 0) 'Child PID is missing.'

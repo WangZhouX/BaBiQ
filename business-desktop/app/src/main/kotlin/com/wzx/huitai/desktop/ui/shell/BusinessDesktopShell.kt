@@ -89,7 +89,7 @@ fun BusinessDesktopShell(
     onAgentPanelExpandedChange: (Boolean) -> Unit = {},
     onRequestedAssistantWidthChange: (Dp) -> Unit = {},
     onShellComposed: () -> Unit = {},
-    onTopNavigationComposed: () -> Unit = {},
+    onSidebarNavigationComposed: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     SideEffect(onShellComposed)
@@ -102,7 +102,6 @@ fun BusinessDesktopShell(
         BusinessTopNavigation(
             selectedDestination = selectedDestination,
             onDestinationSelected = onDestinationSelected,
-            onComposed = onTopNavigationComposed,
         )
         Row(
             Modifier
@@ -113,6 +112,7 @@ fun BusinessDesktopShell(
             BusinessSidebar(
                 selected = selectedDestination,
                 onSelected = onDestinationSelected,
+                onComposed = onSidebarNavigationComposed,
                 modifier = Modifier.width(BusinessDesktopLayoutPolicy.navigationWidth),
             )
             BoxWithConstraints(

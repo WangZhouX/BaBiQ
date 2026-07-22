@@ -47,16 +47,18 @@ class BusinessDesktopShellTest {
     val rule = createComposeRule()
 
     @Test
-    fun `shell reports its own and top navigation committed composition`() {
+    fun `shell reports its own and sidebar navigation committed composition`() {
         var shellComposed = false
-        var topNavigationComposed = false
+        var sidebarNavigationComposed = false
+        assertFalse(shellComposed)
+        assertFalse(sidebarNavigationComposed)
         rule.setContent {
             HuitaiBusinessTheme {
                 BusinessDesktopShell(
                     state = BusinessDesktopState(),
                     formState = DemoFormState(),
                     onShellComposed = { shellComposed = true },
-                    onTopNavigationComposed = { topNavigationComposed = true },
+                    onSidebarNavigationComposed = { sidebarNavigationComposed = true },
                     modifier = Modifier.shellSize(1200.dp),
                 )
             }
@@ -64,7 +66,7 @@ class BusinessDesktopShellTest {
 
         rule.runOnIdle {
             assertTrue(shellComposed)
-            assertTrue(topNavigationComposed)
+            assertTrue(sidebarNavigationComposed)
         }
     }
 

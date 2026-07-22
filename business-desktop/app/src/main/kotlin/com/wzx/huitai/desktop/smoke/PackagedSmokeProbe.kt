@@ -45,7 +45,7 @@ data class PackagedSmokeUiReadiness(
     val shellComposed: Boolean,
     val brandLogoDecoded: Boolean,
     val mascotDecoded: Boolean,
-    val topNavigationComposed: Boolean,
+    val sidebarNavigationComposed: Boolean,
     val assistantInitiallyCollapsed: Boolean,
     val productName: String,
 ) {
@@ -57,7 +57,7 @@ data class PackagedSmokeUiReadiness(
             shellComposed = true,
             brandLogoDecoded = true,
             mascotDecoded = true,
-            topNavigationComposed = true,
+            sidebarNavigationComposed = true,
             assistantInitiallyCollapsed = true,
             productName = PRODUCT_NAME,
         )
@@ -67,7 +67,7 @@ data class PackagedSmokeUiReadiness(
             shellComposed = false,
             brandLogoDecoded = false,
             mascotDecoded = false,
-            topNavigationComposed = false,
+            sidebarNavigationComposed = false,
             assistantInitiallyCollapsed = false,
             productName = "",
         )
@@ -147,7 +147,7 @@ class PackagedSmokeProbe(reportPath: Path) {
         require(ui.shellComposed) { "packaged smoke requires the business desktop shell" }
         require(ui.brandLogoDecoded) { "packaged smoke requires the packaged brand logo" }
         require(ui.mascotDecoded) { "packaged smoke requires the packaged assistant mascot" }
-        require(ui.topNavigationComposed) { "packaged smoke requires the top navigation" }
+        require(ui.sidebarNavigationComposed) { "packaged smoke requires the sidebar navigation" }
         require(ui.assistantInitiallyCollapsed) { "packaged smoke requires the assistant to start collapsed" }
         require(ui.productName == PackagedSmokeUiReadiness.PRODUCT_NAME) {
             "packaged smoke requires the Xiangniao product name"
@@ -199,7 +199,7 @@ class PackagedSmokeProbe(reportPath: Path) {
             shellComposed = ui.shellComposed,
             brandLogoDecoded = ui.brandLogoDecoded,
             mascotDecoded = ui.mascotDecoded,
-            topNavigationComposed = ui.topNavigationComposed,
+            sidebarNavigationComposed = ui.sidebarNavigationComposed,
             assistantInitiallyCollapsed = ui.assistantInitiallyCollapsed,
             productName = ui.productName,
         )
@@ -243,7 +243,7 @@ private data class PackagedSmokeReport(
     val shellComposed: Boolean,
     val brandLogoDecoded: Boolean,
     val mascotDecoded: Boolean,
-    val topNavigationComposed: Boolean,
+    val sidebarNavigationComposed: Boolean,
     val assistantInitiallyCollapsed: Boolean,
     val productName: String,
 )

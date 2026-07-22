@@ -15,11 +15,11 @@ import kotlinx.coroutines.test.runTest
 
 class PackagedSmokeWindowCompositionTest {
     @Test
-    fun `readiness reflects only real window shell and top navigation composition signals`() {
+    fun `readiness reflects only real window shell and sidebar navigation composition signals`() {
         val signals = PackagedSmokeUiCompositionSignals()
         assertFalse(signals.snapshot().windowComposed)
         assertFalse(signals.snapshot().shellComposed)
-        assertFalse(signals.snapshot().topNavigationComposed)
+        assertFalse(signals.snapshot().sidebarNavigationComposed)
 
         signals.markWindowComposed()
         signals.markShellComposed()
@@ -30,7 +30,7 @@ class PackagedSmokeWindowCompositionTest {
             decodeLogo = {},
             decodeMascot = {},
         )
-        signals.markTopNavigationComposed()
+        signals.markSidebarNavigationComposed()
         val mascotFailure = IllegalStateException("missing mascot")
         val reportedFailure = assertFailsWith<IllegalStateException> {
             buildPackagedSmokeUiReadiness(
@@ -46,7 +46,7 @@ class PackagedSmokeWindowCompositionTest {
         assertTrue(ready.shellComposed)
         assertTrue(ready.brandLogoDecoded)
         assertTrue(ready.mascotDecoded)
-        assertFalse(ready.topNavigationComposed)
+        assertFalse(ready.sidebarNavigationComposed)
         assertTrue(ready.assistantInitiallyCollapsed)
         assertSame(mascotFailure, reportedFailure)
     }
@@ -79,7 +79,7 @@ class PackagedSmokeWindowCompositionTest {
 
         signals.markWindowComposed()
         signals.markShellComposed()
-        signals.markTopNavigationComposed()
+        signals.markSidebarNavigationComposed()
         frame.complete(Unit)
         publication.join()
 
@@ -105,7 +105,9 @@ class PackagedSmokeWindowCompositionTest {
         assertTrue(source.contains("assistantInitiallyCollapsed = !assistantExpanded"))
         assertTrue(source.contains("smokeUiCompositionSignals.markWindowComposed()"))
         assertTrue(source.contains("onShellComposed = smokeUiCompositionSignals::markShellComposed"))
-        assertTrue(source.contains("onTopNavigationComposed = smokeUiCompositionSignals::markTopNavigationComposed"))
+        assertTrue(source.contains("onSidebarNavigationComposed = smokeUiCompositionSignals::markSidebarNavigationComposed"))
+        val legacyConnection = "onTop" + "NavigationComposed = smokeUiCompositionSignals::markTop" + "NavigationComposed"
+        assertFalse(source.contains(legacyConnection))
         assertTrue(source.contains("compositionSignals = smokeUiCompositionSignals"))
         val effectBinding = source.substring(effectIndex, source.indexOf("when (val dialog", effectIndex))
         assertTrue(effectBinding.contains("onFailure = { failure ->"))

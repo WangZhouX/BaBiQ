@@ -4,6 +4,7 @@ import java.nio.file.Path
 import kotlin.io.path.readText
 import kotlin.test.Test
 import kotlin.test.assertContains
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class DistributionBuildLogicTest {
@@ -52,7 +53,8 @@ class DistributionBuildLogicTest {
         assertContains(source, "windowComposed")
         assertContains(source, "brandLogoDecoded")
         assertContains(source, "mascotDecoded")
-        assertContains(source, "topNavigationComposed")
+        assertContains(source, "sidebarNavigationComposed")
+        assertFalse(source.contains("top" + "NavigationComposed"))
         assertContains(source, "assistantInitiallyCollapsed")
         assertContains(source, "childPid")
     }
