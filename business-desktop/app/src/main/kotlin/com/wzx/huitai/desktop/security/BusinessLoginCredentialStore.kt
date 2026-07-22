@@ -18,10 +18,16 @@ class RememberedBusinessLogin(
     override fun toString(): String = "RememberedBusinessLogin(account=[REDACTED], password=[REDACTED])"
 }
 
-class BusinessLoginCredentialStore(
+class BusinessLoginCredentialStore internal constructor(
     private val secretStore: SecretStore,
-    private val entryRef: SecretRef = SecretRef.parse(DEFAULT_ALIAS),
+    private val entryRef: SecretRef,
+    private val codec: VersionedJceksCodec,
 ) {
+    constructor(
+        secretStore: SecretStore,
+        entryRef: SecretRef = SecretRef.parse(DEFAULT_ALIAS),
+    ) : this(secretStore, entryRef, VersionedJceksCodec())
+
     fun load(): RememberedBusinessLogin? {
         val stored = try {
             secretStore.load(entryRef)
@@ -29,10 +35,10 @@ class BusinessLoginCredentialStore(
             throw LocalCredentialStoreUnavailableException()
         } ?: return null
         try {
-            val fields = VersionedJceksCodec.decode(stored, MAGIC, 2)
+            val fields = codec.decode(stored, MAGIC, 2)
             try {
-                val account = VersionedJceksCodec.decodeUtf8(fields[0])
-                val password = VersionedJceksCodec.decodeUtf8Chars(fields[1])
+                val account = codec.decodeUtf8(fields[0])
+                val password = codec.decodeUtf8Chars(fields[1])
                 try {
                     require(password.isNotEmpty()) { "stored password must not be empty" }
                     return RememberedBusinessLogin(account, password.copyOf())
@@ -54,7 +60,7 @@ class BusinessLoginCredentialStore(
     fun saveOrReplace(account: String, password: CharArray) {
         require(account.isNotBlank()) { "account must not be blank" }
         require(password.isNotEmpty()) { "password must not be empty" }
-        val encoded = VersionedJceksCodec.encode(MAGIC, listOf(account.toCharArray(), password.copyOf()))
+        val encoded = codec.encode(MAGIC, listOf(account.toCharArray(), password.copyOf()))
         try {
             try {
                 secretStore.upsert(entryRef.value, encoded)

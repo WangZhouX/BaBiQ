@@ -1,6 +1,8 @@
 package com.wzx.huitai.desktop.security
 
+import com.wzx.huitai.integration.auth.AuthTokenSet
 import com.wzx.huitai.security.secret.JceksSecretStore
+import com.wzx.huitai.security.secret.SecretRef
 import java.nio.ByteBuffer
 import java.nio.file.Files
 import kotlinx.coroutines.runBlocking
@@ -11,6 +13,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class BusinessAuthSessionMetadataStoreTest {
     @Test
@@ -42,26 +45,107 @@ class BusinessAuthSessionMetadataStoreTest {
     }
 
     @Test
-    fun `corrupt metadata reports a redacted stable failure and preserves token entry`() = runBlocking {
+    fun `all malformed metadata forms report redacted failure and preserve other aliases`() = runBlocking {
         val password = "password".toCharArray()
         try {
             JceksSecretStore(Files.createTempDirectory("business-auth-session-corrupt").resolve("credentials.jceks"), password).use { secrets ->
                 val metadata = BusinessAuthSessionMetadataStore(secrets)
                 val tokens = JceksAuthCredentialPersistence(secrets)
-                tokens.replace(com.wzx.huitai.integration.auth.AuthTokenSet("access-token", "refresh-token"))
-                secrets.upsert(BusinessAuthSessionMetadataStore.DEFAULT_ALIAS, hex(ByteBuffer.allocate(12)
-                    .putInt(0x48534d44)
-                    .putInt(1)
-                    .putInt(128 * 1024)
-                    .array()))
+                tokens.replace(AuthTokenSet("access-token", "refresh-token"))
+                secrets.upsert(PROVIDER_ALIAS, "provider-secret".toCharArray())
 
-                val failure = assertFailsWith<SessionMetadataPersistenceException> { metadata.load() }
-                assertEquals("Stored authentication session metadata is invalid", failure.message)
-                assertFalse("access-token" in failure.toString())
-                assertEquals("access-token", tokens.load()?.accessToken)
+                malformedEntries(METADATA_MAGIC, 3).forEach { (caseName, corrupt) ->
+                    secrets.upsert(BusinessAuthSessionMetadataStore.DEFAULT_ALIAS, hex(corrupt))
+                    val failure = assertFailsWith<SessionMetadataPersistenceException>(caseName) { metadata.load() }
+                    assertEquals("Stored authentication session metadata is invalid", failure.message, caseName)
+                    assertFalse("access-token" in failure.toString(), caseName)
+                    assertEquals("access-token", tokens.load()?.accessToken, caseName)
+                    assertSecretEquals(secrets, PROVIDER_ALIAS, "provider-secret", caseName)
+                    val retainedMetadata = requireNotNull(
+                        secrets.load(SecretRef.parse(BusinessAuthSessionMetadataStore.DEFAULT_ALIAS)),
+                    ) { "$caseName must not delete metadata" }
+                    retainedMetadata.fill('\u0000')
+                }
             }
         } finally {
             password.fill('\u0000')
+        }
+    }
+
+    @Test
+    fun `codec wipes prior encoded fields when a later field has an illegal surrogate`() {
+        val wiped = mutableListOf<Any>()
+        val codec = VersionedJceksCodec { wiped += it }
+        val first = "prefix-secret".toCharArray()
+        val malformed = charArrayOf('\uD800')
+
+        assertFailsWith<IllegalArgumentException> { codec.encode(METADATA_MAGIC, listOf(first, malformed)) }
+
+        assertTrue(first.all { it == '\u0000' })
+        assertTrue(malformed.all { it == '\u0000' })
+        assertTrue(
+            wiped.filterIsInstance<ByteArray>().any { it.size == "prefix-secret".length && it.all { byte -> byte == 0.toByte() } },
+            "the already encoded field must be observed only after it is wiped",
+        )
+    }
+
+    @Test
+    fun `codec wipes partially decoded payload when hex becomes invalid midway`() {
+        val wiped = mutableListOf<Any>()
+        val codec = VersionedJceksCodec { wiped += it }
+
+        assertFailsWith<VersionedJceksCodec.InvalidEntryException> {
+            codec.decode("001122z0".toCharArray(), METADATA_MAGIC, 3)
+        }
+
+        assertTrue(
+            wiped.filterIsInstance<ByteArray>().any { it.size == 4 && it.all { byte -> byte == 0.toByte() } },
+            "the partially populated binary payload must be observed only after it is wiped",
+        )
+    }
+
+    @Test
+    fun `wrong keystore password leaves bytes unchanged and all aliases recoverable`() = runBlocking {
+        val root = Files.createTempDirectory("business-auth-session-wrong-password")
+        val path = root.resolve("credentials.jceks")
+        val correctPassword = "correct-password".toCharArray()
+        val wrongPassword = "wrong-password".toCharArray()
+        try {
+            JceksSecretStore(path, correctPassword).use { secrets ->
+                JceksAuthCredentialPersistence(secrets).replace(AuthTokenSet("access-token", "refresh-token"))
+                BusinessAuthSessionMetadataStore(secrets).saveOrReplace(
+                    BusinessAuthSessionMetadata("user-1", "tenant-1", "100"),
+                )
+                BusinessLoginCredentialStore(secrets).saveOrReplace("account-1", "login-password".toCharArray())
+                secrets.upsert(PROVIDER_ALIAS, "provider-secret".toCharArray())
+            }
+            val snapshot = path.readBytes()
+
+            JceksSecretStore(path, wrongPassword).use { secrets ->
+                assertFailsWith<LocalCredentialStoreUnavailableException> {
+                    BusinessAuthSessionMetadataStore(secrets).load()
+                }
+                assertFailsWith<LocalCredentialStoreUnavailableException> {
+                    BusinessLoginCredentialStore(secrets).load()
+                }
+            }
+            assertContentEquals(snapshot, path.readBytes())
+
+            JceksSecretStore(path, correctPassword).use { secrets ->
+                assertEquals("access-token", JceksAuthCredentialPersistence(secrets).load()?.accessToken)
+                assertEquals("user-1", BusinessAuthSessionMetadataStore(secrets).load()?.userId)
+                val remembered = requireNotNull(BusinessLoginCredentialStore(secrets).load())
+                try {
+                    assertEquals("account-1", remembered.account)
+                    assertEquals("login-password", remembered.password.concatToString())
+                } finally {
+                    remembered.password.fill('\u0000')
+                }
+                assertSecretEquals(secrets, PROVIDER_ALIAS, "provider-secret", "wrong-password recovery")
+            }
+        } finally {
+            correctPassword.fill('\u0000')
+            wrongPassword.fill('\u0000')
         }
     }
 
@@ -91,6 +175,60 @@ class BusinessAuthSessionMetadataStoreTest {
         return CharArray(bytes.size * 2) { index ->
             val value = bytes[index / 2].toInt() and 0xff
             digits[if (index % 2 == 0) value ushr 4 else value and 0xf]
+        }
+    }
+
+    companion object {
+        internal const val METADATA_MAGIC = 0x48534d44
+        internal const val REMEMBERED_MAGIC = 0x484c4f47
+        internal const val PROVIDER_ALIAS = "provider.sentinel"
+
+        internal fun malformedEntries(magic: Int, fieldCount: Int): List<Pair<String, ByteArray>> {
+            val fields = List(fieldCount) { index -> "field-$index".toByteArray() }
+            val valid = payload(magic, 1, fieldCount, fields)
+            return listOf(
+                "wrong magic" to valid.copyOf().also { ByteBuffer.wrap(it).putInt(magic xor 0x00ff00ff) },
+                "wrong version" to valid.copyOf().also { ByteBuffer.wrap(it).putInt(Int.SIZE_BYTES, 2) },
+                "wrong field count" to valid.copyOf().also { ByteBuffer.wrap(it).putInt(Int.SIZE_BYTES * 2, fieldCount + 1) },
+                "negative length" to lengthOnlyPayload(magic, fieldCount, -1),
+                "oversized length" to lengthOnlyPayload(magic, fieldCount, 64 * 1024 + 1),
+                "invalid utf8" to payload(magic, 1, fieldCount, listOf(byteArrayOf(0x80.toByte())) + fields.drop(1)),
+                "trailing bytes" to (valid + byteArrayOf(0x01)),
+            )
+        }
+
+        private fun payload(
+            magic: Int,
+            version: Int,
+            declaredFields: Int,
+            fields: List<ByteArray>,
+        ): ByteArray = ByteBuffer.allocate(Int.SIZE_BYTES * (3 + fields.size) + fields.sumOf { it.size })
+            .putInt(magic)
+            .putInt(version)
+            .putInt(declaredFields)
+            .also { buffer -> fields.forEach { buffer.putInt(it.size).put(it) } }
+            .array()
+
+        private fun lengthOnlyPayload(magic: Int, fieldCount: Int, length: Int): ByteArray =
+            ByteBuffer.allocate(Int.SIZE_BYTES * 4)
+                .putInt(magic)
+                .putInt(1)
+                .putInt(fieldCount)
+                .putInt(length)
+                .array()
+
+        internal fun assertSecretEquals(
+            secrets: JceksSecretStore,
+            alias: String,
+            expected: String,
+            caseName: String,
+        ) {
+            val loaded = requireNotNull(secrets.load(SecretRef.parse(alias))) { caseName }
+            try {
+                assertEquals(expected, loaded.concatToString(), caseName)
+            } finally {
+                loaded.fill('\u0000')
+            }
         }
     }
 }

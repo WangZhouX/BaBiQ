@@ -25,18 +25,24 @@ data class BusinessAuthSessionMetadata(
         "BusinessAuthSessionMetadata(userId=[REDACTED], tenantId=[REDACTED], platformId=[REDACTED])"
 }
 
-class BusinessAuthSessionMetadataStore(
+class BusinessAuthSessionMetadataStore internal constructor(
     private val secretStore: SecretStore,
-    private val entryRef: SecretRef = SecretRef.parse(DEFAULT_ALIAS),
+    private val entryRef: SecretRef,
+    private val codec: VersionedJceksCodec,
 ) {
+    constructor(
+        secretStore: SecretStore,
+        entryRef: SecretRef = SecretRef.parse(DEFAULT_ALIAS),
+    ) : this(secretStore, entryRef, VersionedJceksCodec())
+
     fun load(): BusinessAuthSessionMetadata? = loadStored()?.let { stored ->
         try {
-            val fields = VersionedJceksCodec.decode(stored, MAGIC, 3)
+            val fields = codec.decode(stored, MAGIC, 3)
             try {
                 BusinessAuthSessionMetadata(
-                    VersionedJceksCodec.decodeUtf8(fields[0]),
-                    VersionedJceksCodec.decodeUtf8(fields[1]),
-                    VersionedJceksCodec.decodeUtf8(fields[2]),
+                    codec.decodeUtf8(fields[0]),
+                    codec.decodeUtf8(fields[1]),
+                    codec.decodeUtf8(fields[2]),
                 )
             } finally {
                 fields.forEach { Arrays.fill(it, 0) }
@@ -51,7 +57,7 @@ class BusinessAuthSessionMetadataStore(
     }
 
     fun saveOrReplace(metadata: BusinessAuthSessionMetadata) {
-        val encoded = VersionedJceksCodec.encode(
+        val encoded = codec.encode(
             MAGIC,
             listOf(metadata.userId.toCharArray(), metadata.tenantId.toCharArray(), metadata.platformId.toCharArray()),
         )
@@ -101,17 +107,22 @@ class SessionMetadataPersistenceException(message: String) : IllegalStateExcepti
 /** 可由 UI 映射为 LOCAL_KEYSTORE_UNAVAILABLE，且不会保留底层异常中的敏感上下文。 */
 class LocalCredentialStoreUnavailableException : IllegalStateException("Local key store is unavailable")
 
-internal object VersionedJceksCodec {
-    private const val VERSION = 1
-    private const val HEADER_BYTES = Int.SIZE_BYTES * 3
-    private const val MAX_FIELD_BYTES = 64 * 1024
-    private const val MAX_PAYLOAD_BYTES = 192 * 1024
-    private const val HEX_DIGITS = "0123456789abcdef"
+internal class VersionedJceksCodec(
+    private val onWiped: (Any) -> Unit = {},
+) {
+    private companion object {
+        const val VERSION = 1
+        const val HEADER_BYTES = Int.SIZE_BYTES * 3
+        const val MAX_FIELD_BYTES = 64 * 1024
+        const val MAX_PAYLOAD_BYTES = 192 * 1024
+        const val HEX_DIGITS = "0123456789abcdef"
+    }
 
     fun encode(magic: Int, values: List<CharArray>): CharArray {
-        val bytes = values.map { encodeUtf8(it) }
+        val bytes = mutableListOf<ByteArray>()
         var payload: ByteArray? = null
         try {
+            values.forEach { bytes += encodeUtf8(it) }
             val size = HEADER_BYTES + bytes.sumOf { Int.SIZE_BYTES + it.size }
             if (size > MAX_PAYLOAD_BYTES || bytes.any { it.isEmpty() || it.size > MAX_FIELD_BYTES }) {
                 throw IllegalArgumentException("credential entry exceeds storage limits")
@@ -122,9 +133,9 @@ internal object VersionedJceksCodec {
             }
             return hex(payload)
         } finally {
-            bytes.forEach { Arrays.fill(it, 0) }
-            payload?.let { Arrays.fill(it, 0) }
-            values.forEach { Arrays.fill(it, '\u0000') }
+            bytes.forEach(::wipe)
+            payload?.let(::wipe)
+            values.forEach(::wipe)
         }
     }
 
@@ -144,13 +155,13 @@ internal object VersionedJceksCodec {
             if (buffer.hasRemaining()) throw InvalidEntryException()
             return fields
         } catch (failure: InvalidEntryException) {
-            fields.forEach { Arrays.fill(it, 0) }
+            fields.forEach(::wipe)
             throw failure
         } catch (failure: Exception) {
-            fields.forEach { Arrays.fill(it, 0) }
+            fields.forEach(::wipe)
             throw InvalidEntryException()
         } finally {
-            Arrays.fill(payload, 0)
+            wipe(payload)
         }
     }
 
@@ -159,7 +170,7 @@ internal object VersionedJceksCodec {
         try {
             return chars.concatToString().also { require(it.isNotBlank()) { "stored field must not be blank" } }
         } finally {
-            Arrays.fill(chars, '\u0000')
+            wipe(chars)
         }
     }
 
@@ -176,7 +187,7 @@ internal object VersionedJceksCodec {
             throw InvalidEntryException()
         } finally {
             chars?.let {
-                if (it.hasArray()) Arrays.fill(it.array(), '\u0000')
+                if (it.hasArray()) wipe(it.array())
                 it.clear()
             }
         }
@@ -192,9 +203,11 @@ internal object VersionedJceksCodec {
                 .onUnmappableCharacter(CodingErrorAction.REPORT)
                 .encode(chars)
             return ByteArray(encoded.remaining()).also(encoded::get)
+        } catch (failure: Exception) {
+            throw IllegalArgumentException("credential entry contains invalid UTF-8")
         } finally {
-            encoded?.let { if (it.hasArray()) Arrays.fill(it.array(), 0) }
-            Arrays.fill(copied, '\u0000')
+            encoded?.let { if (it.hasArray()) wipe(it.array()) }
+            wipe(copied)
             chars.clear()
         }
     }
@@ -206,10 +219,17 @@ internal object VersionedJceksCodec {
 
     private fun unhex(stored: CharArray): ByteArray {
         if (stored.size % 2 != 0 || stored.size > MAX_PAYLOAD_BYTES * 2) throw InvalidEntryException()
-        return ByteArray(stored.size / 2) { index ->
-            val high = hexValue(stored[index * 2])
-            val low = hexValue(stored[index * 2 + 1])
-            ((high shl 4) or low).toByte()
+        val payload = ByteArray(stored.size / 2)
+        try {
+            payload.indices.forEach { index ->
+                val high = hexValue(stored[index * 2])
+                val low = hexValue(stored[index * 2 + 1])
+                payload[index] = ((high shl 4) or low).toByte()
+            }
+            return payload
+        } catch (failure: Exception) {
+            wipe(payload)
+            throw failure
         }
     }
 
@@ -218,6 +238,16 @@ internal object VersionedJceksCodec {
         in 'a'..'f' -> value - 'a' + 10
         in 'A'..'F' -> value - 'A' + 10
         else -> throw InvalidEntryException()
+    }
+
+    private fun wipe(value: ByteArray) {
+        Arrays.fill(value, 0)
+        onWiped(value)
+    }
+
+    private fun wipe(value: CharArray) {
+        Arrays.fill(value, '\u0000')
+        onWiped(value)
     }
 
     class InvalidEntryException : IllegalArgumentException()

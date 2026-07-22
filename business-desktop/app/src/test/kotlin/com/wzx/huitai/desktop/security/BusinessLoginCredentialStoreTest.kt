@@ -2,7 +2,6 @@ package com.wzx.huitai.desktop.security
 
 import com.wzx.huitai.integration.auth.AuthTokenSet
 import com.wzx.huitai.security.secret.JceksSecretStore
-import java.nio.ByteBuffer
 import java.nio.file.Files
 import kotlin.io.path.readBytes
 import kotlinx.coroutines.runBlocking
@@ -52,7 +51,7 @@ class BusinessLoginCredentialStoreTest {
     }
 
     @Test
-    fun `invalid remembered login removes only its alias and exposes a stable redacted outcome`() = runBlocking {
+    fun `all malformed remembered login forms remove only remembered alias`() = runBlocking {
         val password = "key-store-password".toCharArray()
         try {
             JceksSecretStore(Files.createTempDirectory("business-remembered-login-invalid").resolve("credentials.jceks"), password).use { secrets ->
@@ -61,18 +60,26 @@ class BusinessLoginCredentialStoreTest {
                 val tokens = JceksAuthCredentialPersistence(secrets)
                 tokens.replace(AuthTokenSet("access-token", "refresh-token"))
                 metadata.saveOrReplace(BusinessAuthSessionMetadata("user-1", "tenant-1", "100"))
-                secrets.upsert(BusinessLoginCredentialStore.DEFAULT_ALIAS, hex(ByteBuffer.allocate(12)
-                    .putInt(0x484c4f47)
-                    .putInt(1)
-                    .putInt(128 * 1024)
-                    .array()))
+                secrets.upsert(BusinessAuthSessionMetadataStoreTest.PROVIDER_ALIAS, "provider-secret".toCharArray())
 
-                val failure = assertFailsWith<RememberedLoginInvalidException> { remembered.load() }
-                assertEquals("Remembered login is invalid", failure.message)
-                assertFalse("access-token" in failure.toString())
-                assertNull(remembered.load())
-                assertEquals("access-token", tokens.load()?.accessToken)
-                assertEquals("user-1", metadata.load()?.userId)
+                BusinessAuthSessionMetadataStoreTest.malformedEntries(
+                    BusinessAuthSessionMetadataStoreTest.REMEMBERED_MAGIC,
+                    2,
+                ).forEach { (caseName, corrupt) ->
+                    secrets.upsert(BusinessLoginCredentialStore.DEFAULT_ALIAS, hex(corrupt))
+                    val failure = assertFailsWith<RememberedLoginInvalidException>(caseName) { remembered.load() }
+                    assertEquals("Remembered login is invalid", failure.message, caseName)
+                    assertFalse("access-token" in failure.toString(), caseName)
+                    assertNull(remembered.load(), caseName)
+                    assertEquals("access-token", tokens.load()?.accessToken, caseName)
+                    assertEquals("user-1", metadata.load()?.userId, caseName)
+                    BusinessAuthSessionMetadataStoreTest.assertSecretEquals(
+                        secrets,
+                        BusinessAuthSessionMetadataStoreTest.PROVIDER_ALIAS,
+                        "provider-secret",
+                        caseName,
+                    )
+                }
             }
         } finally {
             password.fill('\u0000')
