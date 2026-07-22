@@ -90,6 +90,40 @@ class BusinessAuthSessionMetadataStoreTest {
     }
 
     @Test
+    fun `codec wipes current encoding staging buffer after sensitive prefix and illegal surrogate`() {
+        val wiped = mutableListOf<Any>()
+        val codec = VersionedJceksCodec { wiped += it }
+        val sensitivePrefix = "current-sensitive-prefix"
+        val malformed = (sensitivePrefix + '\uD800').toCharArray()
+
+        assertFailsWith<IllegalArgumentException> { codec.encode(METADATA_MAGIC, listOf(malformed)) }
+
+        assertTrue(
+            wiped.filterIsInstance<ByteArray>().any {
+                it.size >= sensitivePrefix.toByteArray().size && it.all { byte -> byte == 0.toByte() }
+            },
+            "the current field encoding staging buffer must be observed only after it is wiped",
+        )
+    }
+
+    @Test
+    fun `codec wipes current decoding staging buffer after sensitive prefix and illegal utf8`() {
+        val wiped = mutableListOf<Any>()
+        val codec = VersionedJceksCodec { wiped += it }
+        val sensitivePrefix = "current-sensitive-prefix"
+        val malformed = sensitivePrefix.toByteArray() + byteArrayOf(0x80.toByte())
+
+        assertFailsWith<VersionedJceksCodec.InvalidEntryException> { codec.decodeUtf8Chars(malformed) }
+
+        assertTrue(
+            wiped.filterIsInstance<CharArray>().any {
+                it.size >= sensitivePrefix.length && it.all { char -> char == '\u0000' }
+            },
+            "the current field decoding staging buffer must be observed only after it is wiped",
+        )
+    }
+
+    @Test
     fun `codec wipes partially decoded payload when hex becomes invalid midway`() {
         val wiped = mutableListOf<Any>()
         val codec = VersionedJceksCodec { wiped += it }

@@ -8,6 +8,7 @@ import java.nio.CharBuffer
 import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
 import java.util.Arrays
+import kotlin.math.ceil
 
 /** 与 token 分开保存、且不携带权限、角色或 token 的会话身份元数据。 */
 data class BusinessAuthSessionMetadata(
@@ -175,41 +176,63 @@ internal class VersionedJceksCodec(
     }
 
     fun decodeUtf8Chars(bytes: ByteArray): CharArray {
-        var chars: CharBuffer? = null
+        if (bytes.isEmpty() || bytes.size > MAX_FIELD_BYTES) throw InvalidEntryException()
+        val decoder = StandardCharsets.UTF_8.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT)
+        val stagingCapacity = boundedCapacity(bytes.size, decoder.maxCharsPerByte(), MAX_FIELD_BYTES)
+        val staging = CharBuffer.allocate(stagingCapacity)
         try {
-            chars = StandardCharsets.UTF_8.newDecoder()
-                .onMalformedInput(CodingErrorAction.REPORT)
-                .onUnmappableCharacter(CodingErrorAction.REPORT)
-                .decode(ByteBuffer.wrap(bytes))
-            if (!chars.hasRemaining()) throw InvalidEntryException()
-            return CharArray(chars.remaining()).also(chars::get)
-        } catch (failure: Exception) {
-            throw InvalidEntryException()
+            val decoded = decoder.decode(ByteBuffer.wrap(bytes), staging, true)
+            if (decoded.isError || decoded.isOverflow || !decoded.isUnderflow) throw InvalidEntryException()
+            val flushed = decoder.flush(staging)
+            if (flushed.isError || flushed.isOverflow || !flushed.isUnderflow) throw InvalidEntryException()
+            staging.flip()
+            if (!staging.hasRemaining()) throw InvalidEntryException()
+            return CharArray(staging.remaining()).also(staging::get)
         } finally {
-            chars?.let {
-                if (it.hasArray()) wipe(it.array())
-                it.clear()
-            }
+            wipe(staging.array())
+            staging.clear()
         }
     }
 
     private fun encodeUtf8(value: CharArray): ByteArray {
         val copied = value.copyOf()
         val chars = CharBuffer.wrap(copied)
-        var encoded: ByteBuffer? = null
+        val encoder = StandardCharsets.UTF_8.newEncoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT)
+        val stagingCapacity = boundedCapacity(copied.size, encoder.maxBytesPerChar(), MAX_FIELD_BYTES)
+        val staging = ByteBuffer.allocate(stagingCapacity)
         try {
-            encoded = StandardCharsets.UTF_8.newEncoder()
-                .onMalformedInput(CodingErrorAction.REPORT)
-                .onUnmappableCharacter(CodingErrorAction.REPORT)
-                .encode(chars)
-            return ByteArray(encoded.remaining()).also(encoded::get)
-        } catch (failure: Exception) {
-            throw IllegalArgumentException("credential entry contains invalid UTF-8")
+            val encoded = encoder.encode(chars, staging, true)
+            when {
+                encoded.isOverflow -> throw IllegalArgumentException("credential entry exceeds storage limits")
+                encoded.isError || !encoded.isUnderflow ->
+                    throw IllegalArgumentException("credential entry contains invalid UTF-8")
+            }
+            val flushed = encoder.flush(staging)
+            when {
+                flushed.isOverflow -> throw IllegalArgumentException("credential entry exceeds storage limits")
+                flushed.isError || !flushed.isUnderflow ->
+                    throw IllegalArgumentException("credential entry contains invalid UTF-8")
+            }
+            staging.flip()
+            return ByteArray(staging.remaining()).also(staging::get)
         } finally {
-            encoded?.let { if (it.hasArray()) wipe(it.array()) }
+            wipe(staging.array())
+            staging.clear()
             wipe(copied)
             chars.clear()
         }
+    }
+
+    private fun boundedCapacity(inputSize: Int, expansion: Float, limit: Int): Int {
+        val safeUpperBound = ceil(inputSize.toDouble() * expansion.toDouble())
+        if (!safeUpperBound.isFinite() || safeUpperBound > Long.MAX_VALUE.toDouble()) {
+            throw IllegalArgumentException("credential entry exceeds storage limits")
+        }
+        return safeUpperBound.coerceAtMost(limit.toDouble()).toInt().coerceAtLeast(1)
     }
 
     private fun hex(payload: ByteArray): CharArray = CharArray(payload.size * 2) { index ->
