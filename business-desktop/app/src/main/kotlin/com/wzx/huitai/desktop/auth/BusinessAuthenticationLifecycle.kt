@@ -5,28 +5,47 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /** Owns the one-shot startup restore job and deterministic local revocation on application close. */
 class BusinessAuthenticationLifecycle(
     private val orchestrator: BusinessAuthenticationOrchestrator,
     parentScope: CoroutineScope,
-) : AutoCloseable {
+) {
     private val started = AtomicBoolean(false)
     private val closed = AtomicBoolean(false)
     private val lifecycleJob = SupervisorJob(parentScope.coroutineContext[Job])
     private val scope = CoroutineScope(parentScope.coroutineContext + lifecycleJob)
+    private val shutdownMutex = Mutex()
+    private val lifecycleLock = Any()
+    private var restoreJob: Job? = null
 
     fun start() {
         if (closed.get() || !started.compareAndSet(false, true)) return
-        scope.launch { orchestrator.restore() }
+        synchronized(lifecycleLock) {
+            if (closed.get()) return
+            restoreJob = scope.launch { orchestrator.restore() }
+        }
     }
 
-    override fun close() {
-        if (!closed.compareAndSet(false, true)) return
-        runBlocking { orchestrator.close() }
-        scope.cancel()
+    suspend fun shutdown() = shutdownMutex.withLock {
+        if (!closed.compareAndSet(false, true)) return@withLock
+        val restoration = synchronized(lifecycleLock) {
+            restoreJob.also { restoreJob = null }
+        }
+        restoration?.cancelAndJoin()
+        withContext(NonCancellable) {
+            try {
+                orchestrator.close()
+            } finally {
+                scope.cancel()
+            }
+        }
     }
 
     override fun toString(): String = "BusinessAuthenticationLifecycle(started=${started.get()}, closed=${closed.get()})"

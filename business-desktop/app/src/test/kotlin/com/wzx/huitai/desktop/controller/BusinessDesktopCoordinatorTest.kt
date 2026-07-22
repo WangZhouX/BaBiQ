@@ -17,9 +17,12 @@ import com.wzx.huitai.agent.conversation.BusinessThreadItem
 import com.wzx.huitai.agent.conversation.BusinessTurn
 import com.wzx.huitai.desktop.state.BusinessAuthenticationStatus
 import com.wzx.huitai.desktop.state.BusinessConnectionStatus
+import com.wzx.huitai.desktop.state.BusinessDesktopEvent
 import com.wzx.huitai.desktop.state.BusinessDesktopReducer
 import com.wzx.huitai.desktop.state.BusinessDesktopStore
+import com.wzx.huitai.desktop.state.BusinessFieldSuggestion
 import com.wzx.huitai.desktop.state.BusinessIdentity
+import com.wzx.huitai.desktop.auth.CoordinatorAgentRegistrationTransactionAdapter
 import com.wzx.huitai.presentation.context.PageContextSnapshot
 import com.wzx.huitai.presentation.context.PageMode
 import com.wzx.huitai.presentation.context.ValidationSummary
@@ -38,6 +41,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.put
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -133,6 +137,147 @@ class BusinessDesktopCoordinatorTest {
         assertTrue(workspace.publishPage(page(8)))
         assertEquals(listOf("2:8"), calls)
         assertEquals(8, store.state.value.page?.revision)
+    }
+
+    @Test
+    fun `workspace ignores page and suggestion updates before an identity is committed`() = runTest {
+        val store = BusinessDesktopStore(BusinessDesktopReducer())
+        val workspace = BusinessWorkspaceController(
+            store,
+            BusinessContextPublicationPort { _, _, _, _ -> error("signed-out workspace must not publish context") },
+            RecordingActionPort(),
+        )
+
+        assertFalse(workspace.publishPage(page(1)))
+        workspace.updateSuggestions(
+            listOf(BusinessFieldSuggestion("name", JsonPrimitive("candidate"), "agent")),
+        )
+
+        assertNull(store.state.value.page)
+        assertTrue(store.state.value.suggestions.isEmpty())
+    }
+
+    @Test
+    fun `clear identity removes every identity scoped workspace value`() = runTest {
+        val store = BusinessDesktopStore(BusinessDesktopReducer())
+        val workspace = BusinessWorkspaceController(
+            store,
+            BusinessContextPublicationPort { _, _, _, _ -> },
+            RecordingActionPort(),
+        )
+        workspace.attachPublishedIdentity(identity(1), 1, page(1), 1, 1)
+        store.dispatch(BusinessDesktopEvent.ProvidersChanged(listOf(provider())))
+        store.dispatch(BusinessDesktopEvent.ProviderSelected(BusinessProviderSelection("provider-1", "model-1")))
+        store.dispatch(BusinessDesktopEvent.ThreadChanged(BusinessThread("thread-1", "demo", "C:/demo")))
+        workspace.updateSuggestions(
+            listOf(BusinessFieldSuggestion("name", JsonPrimitive("candidate"), "agent")),
+        )
+
+        workspace.clearIdentity(2)
+
+        val state = store.state.value
+        assertEquals(BusinessAuthenticationStatus.SIGNED_OUT, state.authenticationStatus)
+        assertNull(state.identity)
+        assertNull(state.page)
+        assertNull(state.currentThread)
+        assertTrue(state.suggestions.isEmpty())
+        assertTrue(state.providers.isEmpty())
+        assertNull(state.activeProviderId)
+    }
+
+    @Test
+    fun `coordinator registration transaction publishes remote stages before one local commit`() = runTest {
+        val calls = mutableListOf<String>()
+        val store = BusinessDesktopStore(BusinessDesktopReducer())
+        val registration = object : BusinessRegistrationPort {
+            override suspend fun bindIdentity(identity: BusinessIdentity) {
+                calls += "identity:${identity.identityEpoch}"
+            }
+
+            override suspend fun registerCatalog(identity: BusinessIdentity, catalogEpoch: Long) {
+                calls += "catalog:$catalogEpoch"
+            }
+
+            override suspend fun publishSignedOut() {
+                calls += "signed-out"
+            }
+        }
+        val workspace = BusinessWorkspaceController(
+            store,
+            BusinessContextPublicationPort { _, catalogEpoch, sequence, snapshot ->
+                calls += "context:$catalogEpoch:$sequence:${snapshot.revision}"
+            },
+            RecordingActionPort(),
+        )
+        val coordinator = BusinessDesktopCoordinator(
+            store,
+            FakeConnectionLifecycle(),
+            registration,
+            workspace,
+            this,
+        )
+        val adapter = CoordinatorAgentRegistrationTransactionAdapter(
+            coordinator = coordinator,
+            catalogEpoch = 7,
+            initialPage = { _ -> page(3) },
+        )
+
+        val transaction = adapter.prepare(identity(1))
+        transaction.registerIdentity()
+        transaction.registerCapabilityCatalog()
+        transaction.registerInitialContext()
+
+        assertEquals(listOf("identity:1", "catalog:7", "context:7:1:3"), calls)
+        assertNull(store.state.value.identity)
+        assertNull(store.state.value.page)
+
+        transaction.commit()
+
+        assertEquals(identity(1), store.state.value.identity)
+        assertEquals(3, store.state.value.page?.revision)
+    }
+
+    @Test
+    fun `late rollback is idempotent and cannot clear a newer committed registration`() = runTest {
+        val store = BusinessDesktopStore(BusinessDesktopReducer())
+        val registration = object : BusinessRegistrationPort {
+            override suspend fun bindIdentity(identity: BusinessIdentity) = Unit
+            override suspend fun registerCatalog(identity: BusinessIdentity, catalogEpoch: Long) = Unit
+            override suspend fun publishSignedOut() = Unit
+        }
+        val workspace = BusinessWorkspaceController(
+            store,
+            BusinessContextPublicationPort { _, _, _, _ -> },
+            RecordingActionPort(),
+        )
+        val adapter = CoordinatorAgentRegistrationTransactionAdapter(
+            coordinator = BusinessDesktopCoordinator(
+                store,
+                FakeConnectionLifecycle(),
+                registration,
+                workspace,
+                this,
+            ),
+            catalogEpoch = 1,
+            initialPage = { identity -> page(identity.identityEpoch) },
+        )
+
+        val first = adapter.prepare(identity(1))
+        first.registerIdentity()
+        first.registerCapabilityCatalog()
+        first.registerInitialContext()
+        first.commit()
+        val second = adapter.prepare(identity(2))
+        second.registerIdentity()
+        second.registerCapabilityCatalog()
+        second.registerInitialContext()
+        second.commit()
+
+        first.rollback()
+        first.rollback()
+
+        assertEquals(identity(2), store.state.value.identity)
+        assertEquals(2, store.state.value.page?.revision)
     }
 
     @Test
@@ -276,7 +421,7 @@ class BusinessDesktopCoordinatorTest {
         )
         val authentication = async { coordinator.onAuthenticated(identity(1), 1, page(1)) }
         publishEntered.await()
-        assertEquals(1, coordinator.state.value.identity?.identityEpoch)
+        assertNull(coordinator.state.value.identity)
 
         withTimeout(500) { coordinator.onAuthenticationExpired() }
         assertNull(coordinator.state.value.identity)
@@ -466,6 +611,15 @@ class BusinessDesktopCoordinatorTest {
         }
         override fun close() = Unit
     }
+
+    private fun provider() = BusinessProvider(
+        id = "provider-1",
+        displayName = "Provider One",
+        models = listOf(BusinessProviderModel("model-1", "Model One", true)),
+        authMode = "api_key",
+        hasApiKey = true,
+        active = true,
+    )
 
     private class RecordingActionPort : UserApplicationActionPort {
         var command: ActionCommand? = null

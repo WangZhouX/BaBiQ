@@ -29,6 +29,8 @@ import com.wzx.huitai.presentation.form.FormPatch
 import com.wzx.huitai.presentation.form.SourceReference
 import com.wzx.huitai.desktop.state.BusinessConnectionStatus
 import com.wzx.huitai.desktop.state.BusinessAuthenticationStatus
+import com.wzx.huitai.desktop.auth.BusinessAccessGateState
+import com.wzx.huitai.desktop.security.BusinessAuthSessionMetadataStore
 import com.wzx.huitai.security.approval.InMemoryApprovalPort
 import com.wzx.huitai.security.approval.InMemoryConfirmationPort
 import com.wzx.huitai.security.execution.InMemoryActionExecutionStore
@@ -46,6 +48,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
@@ -684,6 +687,22 @@ class BusinessDesktopCompositionRootTest {
         assertEquals(null, state.identity)
         assertFalse(requireNotNull(root.runtimeView).production.providerSettingsController.state.value.operationsEnabled)
         assertFalse(methods.contains("provider/list"))
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, requireNotNull(root.runtimeView).production.authenticationGate.value)
+        assertTrue(requireNotNull(root.runtimeView).production.loginController::class.simpleName == "BusinessLoginController")
+        val productionStorage = assertNotNull(root.productionStorage)
+        assertNull(productionStorage.credentialPersistence.load())
+        assertNull(BusinessAuthSessionMetadataStore(productionStorage.secretStore).load())
+
+        val beforeReconnect = connection.sent.size
+        requireNotNull(root.runtimeView).production.identityRegistry
+            .transitionTo(BusinessAccessGateState.AUTHENTICATING)
+        connection.emitSupervisorState(AgentSupervisorState.Reconnecting(1, 0))
+        connection.emitSupervisorState(AgentSupervisorState.Connected("production-test-connection-2"))
+        advanceUntilIdle()
+        val reconnectMethods = connection.sent.drop(beforeReconnect).mapNotNull { text ->
+            Json.parseToJsonElement(text).jsonObject["method"]?.jsonPrimitive?.content
+        }
+        assertEquals(listOf("application/identity/update"), reconnectMethods)
 
         root.shutdown()
     }

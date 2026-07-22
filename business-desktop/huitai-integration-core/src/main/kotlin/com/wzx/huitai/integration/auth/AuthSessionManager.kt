@@ -20,6 +20,7 @@ class AuthSessionManager(
     private val stateMachine: AuthenticationStateMachine = AuthenticationStateMachine(),
     private val authSessionIdFactory: () -> String = { UUID.randomUUID().toString() },
     internal val identityTransitionBufferCapacity: Int = 16,
+    private val identityEpochFactory: (() -> Long)? = null,
 ) : AuthTokenProvider {
     init {
         require(identityTransitionBufferCapacity > 0) { "identityTransitionBufferCapacity must be positive" }
@@ -59,7 +60,7 @@ class AuthSessionManager(
         val previousIdentity = mutableIdentity.value
         val signingIn = stateMachine.transition(previousState, AuthenticationState.SIGNING_IN)
         val authenticated = stateMachine.transition(signingIn, AuthenticationState.AUTHENTICATED)
-        val nextEpoch = identityEpoch + 1
+        val nextEpoch = nextIdentityEpoch()
         val identity = AuthIdentitySnapshot(
             authSessionId = authSessionIdFactory(),
             identityEpoch = nextEpoch,
@@ -221,7 +222,7 @@ class AuthSessionManager(
         val previousState = mutableState.value
         val previousIdentity = mutableIdentity.value
         val signedOut = stateMachine.transition(previousState, AuthenticationState.SIGNED_OUT)
-        val nextEpoch = identityEpoch + 1
+        val nextEpoch = nextIdentityEpoch()
         val transition = AuthIdentityTransition(
             previousIdentity = previousIdentity,
             currentIdentity = null,
@@ -299,7 +300,7 @@ class AuthSessionManager(
         authorityBarrier.incrementAndGet()
         credentialSnapshot = CredentialSnapshot(tokens = null, readable = false, requestIdentity = null)
         if (previousIdentity != null || previousState != AuthenticationState.SIGNED_OUT) {
-            val nextEpoch = identityEpoch + 1
+            val nextEpoch = nextIdentityEpoch()
             identityEpoch = nextEpoch
             mutableState.value = AuthenticationState.SIGNED_OUT
             mutableIdentity.value = null
@@ -365,7 +366,7 @@ class AuthSessionManager(
             previousState
         }
         val terminal = stateMachine.transition(transitionSource, targetState)
-        val nextEpoch = identityEpoch + 1
+        val nextEpoch = nextIdentityEpoch()
         val transition = AuthIdentityTransition(
             previousIdentity = previousIdentity,
             currentIdentity = null,
@@ -414,6 +415,13 @@ class AuthSessionManager(
         credentialSnapshot.requestIdentity?.let { identity ->
             identity.authSessionId == authSessionId && identity.identityEpoch == identityEpoch
         } == true
+
+    /** Allows an application protocol publisher to share the same strictly increasing epoch sequence. */
+    private fun nextIdentityEpoch(): Long {
+        val next = identityEpochFactory?.invoke() ?: (identityEpoch + 1)
+        check(next > identityEpoch) { "identityEpoch factory must be strictly increasing" }
+        return next
+    }
 
     /** 非阻塞发布身份事件，避免慢订阅者在认证互斥区内造成全局停顿。 */
     private fun publishTransition(transition: AuthIdentityTransition) {

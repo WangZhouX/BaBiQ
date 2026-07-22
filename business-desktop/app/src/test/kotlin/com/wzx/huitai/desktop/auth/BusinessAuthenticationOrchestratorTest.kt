@@ -532,7 +532,7 @@ class BusinessAuthenticationOrchestratorTest {
     }
 
     @Test
-    fun `lifecycle starts restore once and close cancels restore then performs idempotent local revocation`() = runTest {
+    fun `lifecycle starts restore once and suspend shutdown waits for cancellation compensation`() = runTest {
         val fixture = Fixture().apply {
             credentials.tokens = AuthTokenSet("old-access", "old-refresh")
             metadata.value = metadata()
@@ -543,10 +543,8 @@ class BusinessAuthenticationOrchestratorTest {
         lifecycle.start()
         lifecycle.start()
         fixture.preAuth.refreshStarted!!.await()
-        withContext(Dispatchers.Default) {
-            lifecycle.close()
-            lifecycle.close()
-        }
+        lifecycle.shutdown()
+        lifecycle.shutdown()
         runCurrent()
 
         assertEquals(1, fixture.preAuth.refreshCalls.size)

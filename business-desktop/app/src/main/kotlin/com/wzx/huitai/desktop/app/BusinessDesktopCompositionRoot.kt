@@ -33,6 +33,15 @@ import com.wzx.huitai.desktop.controller.BusinessProviderSettingsController
 import com.wzx.huitai.desktop.controller.BusinessRegistrationPort
 import com.wzx.huitai.desktop.controller.BusinessWorkspaceController
 import com.wzx.huitai.desktop.controller.DirectUserApplicationActionPort
+import com.wzx.huitai.desktop.auth.BusinessAccessGateState
+import com.wzx.huitai.desktop.auth.BusinessAuthenticationLifecycle
+import com.wzx.huitai.desktop.auth.BusinessAuthenticationOrchestrator
+import com.wzx.huitai.desktop.auth.BusinessIdentityRegistry
+import com.wzx.huitai.desktop.auth.BusinessLoginController
+import com.wzx.huitai.desktop.auth.BusinessLoginMessage
+import com.wzx.huitai.desktop.auth.CoordinatorAgentRegistrationTransactionAdapter
+import com.wzx.huitai.desktop.auth.config.BusinessOaConfiguration
+import com.wzx.huitai.desktop.auth.config.BusinessOaConfigurationLoader
 import com.wzx.huitai.desktop.decision.ComposeActionDecisionCoordinator
 import com.wzx.huitai.desktop.decision.ComposeApprovalPort
 import com.wzx.huitai.desktop.decision.ComposeConfirmationPort
@@ -52,6 +61,11 @@ import com.wzx.huitai.desktop.runtime.BusinessAgentLaunchRequest
 import com.wzx.huitai.desktop.runtime.ManagedBusinessAgentConnection
 import com.wzx.huitai.desktop.smoke.PackagedSmokeEvidence
 import com.wzx.huitai.desktop.security.JceksAuthCredentialPersistence
+import com.wzx.huitai.desktop.security.BusinessAuthSessionMetadataStore
+import com.wzx.huitai.desktop.security.BusinessLoginCredentialStore
+import com.wzx.huitai.desktop.security.FileBusinessAuthRevocationMarkerStore
+import com.wzx.huitai.desktop.security.ProductionIdentityBoundaryActionAdapter
+import com.wzx.huitai.desktop.security.RedundantBusinessAuthRevocationMarkerStore
 import com.wzx.huitai.desktop.state.BusinessDesktopReducer
 import com.wzx.huitai.desktop.state.BusinessDesktopState
 import com.wzx.huitai.desktop.state.BusinessDesktopStore
@@ -75,6 +89,9 @@ import com.wzx.huitai.security.execution.ActionExecutionPolicyResolver
 import com.wzx.huitai.security.instance.ProcessInstanceLock
 import com.wzx.huitai.security.risk.DefaultActionRiskPolicy
 import com.wzx.huitai.security.secret.JceksSecretStore
+import com.wzx.huitai.integration.auth.AuthSessionManager
+import com.wzx.huitai.integration.oa.auth.OaAuthenticationGatewayBundle
+import com.wzx.huitai.integration.oa.auth.OaAuthenticationGatewayFactory
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.websocket.WebSockets
@@ -139,6 +156,7 @@ class BusinessDesktopUiAssembly(
     val agentRequestActionBus: ApplicationActionBus,
     val resource: CompositionResource,
     val runtimeView: BusinessDesktopRuntimeView? = null,
+    internal val start: () -> Unit = {},
 )
 
 /**
@@ -216,7 +234,7 @@ class BusinessDesktopCompositionRoot private constructor(
                 check(ui.agentRequestActionBus === storage.applicationActionBus) {
                     "Agent action requests must use the one application action bus"
                 }
-                return BusinessDesktopCompositionRoot(
+                val root = BusinessDesktopCompositionRoot(
                     applicationActionBus = storage.applicationActionBus,
                     userActionBus = ui.userActionBus,
                     agentRequestActionBus = ui.agentRequestActionBus,
@@ -228,6 +246,8 @@ class BusinessDesktopCompositionRoot private constructor(
                     storage = storage.resource,
                     desktopLock = desktopLock,
                 )
+                ui.start()
+                return root
             } catch (failure: Throwable) {
                 val rollbackFailure = withContext(NonCancellable) {
                     closeAll(listOfNotNull(ui?.resource, connection, child, storage?.resource, desktopLock))
@@ -384,6 +404,10 @@ class ProductionUiComponents internal constructor(
     val agentClipboardAttachmentRoot: Path,
     val clipboardImageAttachmentStore: ClipboardImageAttachmentStore,
     val attachmentPicker: BusinessAttachmentPicker,
+    val loginController: BusinessLoginController,
+    val authenticationGate: StateFlow<BusinessAccessGateState>,
+    val authenticationError: StateFlow<BusinessLoginMessage?>,
+    val identityRegistry: BusinessIdentityRegistry,
 )
 
 /**
@@ -403,6 +427,7 @@ class ProductionBusinessDesktopCompositionFactory(
     private val scopeJob = SupervisorJob(parentScope.coroutineContext[Job])
     private val scope = CoroutineScope(parentScope.coroutineContext.minusKey(Job) + scopeJob)
     private val envelopeSequence = AtomicLong(0)
+    private val identityEpochSequence = AtomicLong(0)
     private lateinit var storage: ProductionStorageComponents
     private lateinit var child: BusinessAgentChildHandle
     private lateinit var agentConnection: BusinessAgentConnectionHandle
@@ -411,7 +436,9 @@ class ProductionBusinessDesktopCompositionFactory(
     private lateinit var catalogClient: ApplicationCatalogClient
     private lateinit var contextClient: ApplicationContextClient
     private lateinit var identityClient: ApplicationIdentityClient
-    private var identity: BusinessIdentity? = null
+    private val identityRegistry = BusinessIdentityRegistry()
+    private lateinit var oaConfiguration: BusinessOaConfiguration
+    private var startupIdentitySnapshot: com.wzx.huitai.desktop.auth.BusinessIdentityRegistrySnapshot? = null
     private var startupRegistrationConnectionId: String? = null
     private var lastRegisteredConnectionId: String? = null
     private val contextPublisherLock = Any()
@@ -442,6 +469,7 @@ class ProductionBusinessDesktopCompositionFactory(
     }
 
     override suspend fun openStorage(): BusinessDesktopStorageAssembly {
+        oaConfiguration = BusinessOaConfigurationLoader().load(paths)
         val database = BusinessDesktopDatabase(paths.desktopDatabase)
         var desktopPassword: CharArray? = null
         var backendPassword: CharArray? = null
@@ -563,20 +591,21 @@ class ProductionBusinessDesktopCompositionFactory(
             catalogClient = ApplicationCatalogClient(rpc, this.child.sequenceTracker)
             contextClient = ApplicationContextClient(rpc, this.child.sequenceTracker)
             identityClient = ApplicationIdentityClient(rpc, this.child.sequenceTracker, catalogClient, contextClient)
-            identity = if (configuration.frameworkDemoIdentity) {
-                BusinessIdentity(
-                    desktopInstanceId = this.child.identity.desktopInstanceId,
-                    desktopSessionId = this.child.identity.desktopSessionId,
-                    authSessionId = UUID.randomUUID().toString(),
-                    identityEpoch = 1,
-                    userId = "framework-demo-user",
-                    tenantId = "framework-demo-tenant",
-                    platformId = "framework-demo",
-                    roles = setOf("framework-demo"),
-                    permissions = setOf("demo.write", "demo.submit"),
+            if (configuration.frameworkDemoIdentity) {
+                identityRegistry.publishReady(
+                    BusinessIdentity(
+                        desktopInstanceId = this.child.identity.desktopInstanceId,
+                        desktopSessionId = this.child.identity.desktopSessionId,
+                        authSessionId = UUID.randomUUID().toString(),
+                        identityEpoch = nextIdentityEpoch(),
+                        userId = "framework-demo-user",
+                        tenantId = "framework-demo-tenant",
+                        platformId = "framework-demo",
+                        roles = setOf("framework-demo"),
+                        permissions = setOf("demo.write", "demo.submit"),
+                    ),
+                    expectedGeneration = identityRegistry.currentGeneration(),
                 )
-            } else {
-                null
             }
             return CompositionResource {
                 closeCompositionSteps(
@@ -598,8 +627,13 @@ class ProductionBusinessDesktopCompositionFactory(
 
     override suspend fun initializeIdentity(connection: CompositionResource) {
         val connectionId = rpc.connectionId
-        identity?.let { identityClient.bind(identityEnvelope(it)) }
-            ?: identityClient.update(signedOutIdentityEnvelope())
+        val snapshot = identityRegistry.snapshot.value
+        startupIdentitySnapshot = snapshot
+        if (snapshot.gate == BusinessAccessGateState.READY && snapshot.identity != null) {
+            identityClient.bind(identityEnvelope(snapshot.identity))
+        } else {
+            identityClient.update(signedOutIdentityEnvelope())
+        }
         check(rpc.connectionId == connectionId) { "Agent connection changed during identity registration" }
         startupRegistrationConnectionId = connectionId
     }
@@ -608,9 +642,12 @@ class ProductionBusinessDesktopCompositionFactory(
         val connectionId = requireNotNull(startupRegistrationConnectionId) {
             "identity registration must complete first"
         }
-        if (identity == null) return
+        val activeIdentity = startupIdentitySnapshot
+            ?.takeIf { it.gate == BusinessAccessGateState.READY }
+            ?.identity
+            ?: return
         check(rpc.connectionId == connectionId) { "Agent connection changed before catalog registration" }
-        catalogClient.register(catalogEnvelope(requireNotNull(identity)))
+        catalogClient.register(catalogEnvelope(activeIdentity))
         check(rpc.connectionId == connectionId) { "Agent connection changed during catalog registration" }
     }
 
@@ -618,12 +655,15 @@ class ProductionBusinessDesktopCompositionFactory(
         val connectionId = requireNotNull(startupRegistrationConnectionId) {
             "identity registration must complete first"
         }
-        if (identity == null) {
+        val activeIdentity = startupIdentitySnapshot
+            ?.takeIf { it.gate == BusinessAccessGateState.READY }
+            ?.identity
+        if (activeIdentity == null) {
             lastRegisteredConnectionId = connectionId
             return
         }
         check(rpc.connectionId == connectionId) { "Agent connection changed before context registration" }
-        contextClient.publish(contextEnvelope(contextSequence = 1, storage.screen.pageContext()))
+        contextClient.publish(contextEnvelope(activeIdentity, contextSequence = 1, storage.screen.pageContext()))
         check(rpc.connectionId == connectionId) { "Agent connection changed during context registration" }
         lastRegisteredConnectionId = connectionId
     }
@@ -638,6 +678,9 @@ class ProductionBusinessDesktopCompositionFactory(
         var actionHandler: ApplicationActionRequestHandler? = null
         var decisionConnectionObserver: Job? = null
         var suggestionObserver: Job? = null
+        var oaGateway: OaAuthenticationGatewayBundle? = null
+        var authenticationLifecycle: BusinessAuthenticationLifecycle? = null
+        var loginController: BusinessLoginController? = null
         try {
         val businessAgentClient = BusinessAgentClient(rpc, scope)
         conversation = BusinessConversationController(businessAgentClient, this.storage.desktopStore, scope)
@@ -658,12 +701,12 @@ class ProductionBusinessDesktopCompositionFactory(
         )
         val workspace = BusinessWorkspaceController(
             store = this.storage.desktopStore,
-            contextPublication = BusinessContextPublicationPort { _, _, contextSequence, snapshot ->
+            contextPublication = BusinessContextPublicationPort { activeIdentity, _, contextSequence, snapshot ->
                 registrationPublicationMutex.withLock {
                     check(lastRegisteredConnectionId == rpc.connectionId) {
                         "Agent connection is not fully registered"
                     }
-                    contextClient.publish(contextEnvelope(contextSequence, snapshot))
+                    contextClient.publish(contextEnvelope(activeIdentity, contextSequence, snapshot))
                 }
             },
             actionPort = DirectUserApplicationActionPort(this.storage.actionBus),
@@ -675,6 +718,10 @@ class ProductionBusinessDesktopCompositionFactory(
 
             override suspend fun registerCatalog(identity: BusinessIdentity, catalogEpoch: Long) {
                 catalogClient.register(catalogEnvelope(identity, catalogEpoch))
+            }
+
+            override suspend fun publishSignedOut() {
+                identityClient.update(signedOutIdentityEnvelope())
             }
         }
         desktopCoordinator = BusinessDesktopCoordinator(
@@ -690,7 +737,8 @@ class ProductionBusinessDesktopCompositionFactory(
             executionStore = this.storage.executionStore,
             scopedQuery = this.storage.executionStore,
             trustedIdentity = {
-                val active = requireNotNull(this.storage.desktopStore.state.value.identity) {
+                val snapshot = identityRegistry.snapshot.value
+                val active = requireNotNull(snapshot.identity?.takeIf { snapshot.gate == BusinessAccessGateState.READY }) {
                     "No authenticated business identity"
                 }
                 TrustedApplicationIdentity(active.actionScope(), active.permissions)
@@ -699,7 +747,10 @@ class ProductionBusinessDesktopCompositionFactory(
             now = Instant::now,
             scope = scope,
         )
-        identity?.let { activeIdentity ->
+        startupIdentitySnapshot
+            ?.takeIf { it.gate == BusinessAccessGateState.READY }
+            ?.identity
+            ?.let { activeIdentity ->
             workspace.attachPublishedIdentity(
                 identity = activeIdentity,
                 catalogEpoch = catalogEpoch,
@@ -709,6 +760,48 @@ class ProductionBusinessDesktopCompositionFactory(
             )
         }
         desktopCoordinator.start()
+
+        oaGateway = OaAuthenticationGatewayFactory.create(
+            baseUrl = oaConfiguration.baseUrl,
+            apiPrefix = oaConfiguration.apiPrefix,
+            platformId = oaConfiguration.platformId,
+            requestTimeoutMs = oaConfiguration.requestTimeoutMs,
+        )
+        val authSessionManager = AuthSessionManager(
+            credentialPersistence = this.storage.credentialPersistence,
+            identityEpochFactory = ::nextIdentityEpoch,
+        )
+        val registrationTransaction = CoordinatorAgentRegistrationTransactionAdapter(
+            coordinator = desktopCoordinator,
+            catalogEpoch = catalogEpoch,
+            initialPage = { this.storage.screen.pageContext() },
+        )
+        val orchestrator = BusinessAuthenticationOrchestrator(
+            preAuthentication = oaGateway.preAuthentication,
+            candidateAuthentication = oaGateway.candidateAuthentication,
+            credentialPersistence = this.storage.credentialPersistence,
+            authSessionManager = authSessionManager,
+            metadataStore = BusinessAuthSessionMetadataStore(this.storage.secretStore),
+            revocationMarker = RedundantBusinessAuthRevocationMarkerStore(
+                FileBusinessAuthRevocationMarkerStore(paths.desktopAuthRevocationMarker),
+                FileBusinessAuthRevocationMarkerStore(paths.desktopAuthRevocationFallbackMarker),
+            ),
+            registration = registrationTransaction,
+            identityRegistry = identityRegistry,
+            actions = ProductionIdentityBoundaryActionAdapter(
+                this.storage.executionStore,
+                this.storage.executionStore,
+            ),
+            desktopInstanceId = this.child.identity.desktopInstanceId,
+            desktopSessionId = this.child.identity.desktopSessionId,
+            platformId = oaConfiguration.platformId,
+        )
+        loginController = BusinessLoginController(
+            authentication = orchestrator,
+            store = BusinessLoginCredentialStore(this.storage.secretStore),
+        )
+        loginController.initialize()
+        authenticationLifecycle = BusinessAuthenticationLifecycle(orchestrator, scope)
         suggestionObserver = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             this@ProductionBusinessDesktopCompositionFactory.storage.screen.state
                 .map { state ->
@@ -742,6 +835,10 @@ class ProductionBusinessDesktopCompositionFactory(
                 idFactory = attachmentIdFactory,
             ),
             attachmentPicker = BusinessAttachmentPicker(idFactory = attachmentIdFactory),
+            loginController = loginController,
+            authenticationGate = identityRegistry.gate,
+            authenticationError = orchestrator.lastError,
+            identityRegistry = identityRegistry,
         )
         val view = BusinessDesktopRuntimeView(
             desktopState = this.storage.desktopStore.state,
@@ -761,7 +858,13 @@ class ProductionBusinessDesktopCompositionFactory(
                     providerSettings,
                     conversation,
                     actionHandler,
+                    loginController,
+                    authenticationLifecycle,
+                    oaGateway,
                 )
+            },
+            start = {
+                if (!configuration.frameworkDemoIdentity) authenticationLifecycle.start()
             },
         )
         } catch (failure: Throwable) {
@@ -774,6 +877,9 @@ class ProductionBusinessDesktopCompositionFactory(
                         providerSettings,
                         conversation,
                         actionHandler,
+                        loginController,
+                        authenticationLifecycle,
+                        oaGateway,
                     )
                 }.exceptionOrNull()
             }?.let(failure::addSuppressed)
@@ -789,6 +895,9 @@ class ProductionBusinessDesktopCompositionFactory(
         providerSettings: BusinessProviderSettingsController?,
         conversation: BusinessConversationController?,
         actionHandler: ApplicationActionRequestHandler?,
+        loginController: BusinessLoginController?,
+        authenticationLifecycle: BusinessAuthenticationLifecycle?,
+        oaGateway: OaAuthenticationGatewayBundle?,
     ) {
         var first: Throwable? = null
         suspend fun close(block: suspend () -> Unit) {
@@ -798,12 +907,15 @@ class ProductionBusinessDesktopCompositionFactory(
                 first?.addSuppressed(failure) ?: run { first = failure }
             }
         }
+        close { loginController?.close() }
+        close { authenticationLifecycle?.shutdown() }
         close { desktopCoordinator?.shutdown() }
         close { suggestionObserver?.cancelAndJoin() }
         close { decisionConnectionObserver?.cancelAndJoin() }
         close { providerSettings?.close() }
         close { conversation?.close() }
         close { actionHandler?.close() }
+        close { oaGateway?.close() }
         close { storage.decisions.shutdown() }
         first?.let { throw it }
     }
@@ -854,10 +966,10 @@ class ProductionBusinessDesktopCompositionFactory(
     }
 
     private fun contextEnvelope(
+        activeIdentity: BusinessIdentity,
         contextSequence: Long,
         snapshot: com.wzx.huitai.presentation.context.PageContextSnapshot,
     ): ContextEnvelope {
-        val activeIdentity = requireNotNull(identity) { "Page context requires authenticated business identity" }
         val connectionId = rpc.connectionId
         val published = synchronized(contextPublisherLock) {
             val publisher = if (contextPublisherConnectionId == connectionId) {
@@ -908,13 +1020,15 @@ class ProductionBusinessDesktopCompositionFactory(
 
     private fun nextSequence(): Long = envelopeSequence.incrementAndGet()
 
+    private fun nextIdentityEpoch(): Long = identityEpochSequence.incrementAndGet()
+
     private fun signedOutIdentityEnvelope(): IdentityEnvelope = IdentityEnvelope(
         common = CommonApplicationFields(
             protocolVersion = ApplicationProtocol.PROTOCOL_VERSION,
             desktopInstanceId = child.identity.desktopInstanceId,
             desktopSessionId = child.identity.desktopSessionId,
             authSessionId = null,
-            identityEpoch = 1,
+            identityEpoch = nextIdentityEpoch(),
             sequence = nextSequence(),
             generatedAt = Instant.now().toString(),
             userId = null,
@@ -928,7 +1042,8 @@ class ProductionBusinessDesktopCompositionFactory(
 
     private suspend fun registerActiveConnection(connectionId: String) = registrationPublicationMutex.withLock {
         check(rpc.connectionId == connectionId) { "Agent connection changed before identity registration" }
-        val activeIdentity = identity
+        val snapshot = identityRegistry.snapshot.value
+        val activeIdentity = snapshot.identity?.takeIf { snapshot.gate == BusinessAccessGateState.READY }
         if (activeIdentity == null) {
             identityClient.update(signedOutIdentityEnvelope())
             check(rpc.connectionId == connectionId) { "Agent connection changed during signed-out registration" }
@@ -941,6 +1056,7 @@ class ProductionBusinessDesktopCompositionFactory(
         check(rpc.connectionId == connectionId) { "Agent connection changed during catalog registration" }
         contextClient.publish(
             contextEnvelope(
+                activeIdentity = activeIdentity,
                 contextSequence = 1,
                 snapshot = storage.screen.pageContext(),
             ),
@@ -969,7 +1085,7 @@ class ProductionBusinessDesktopCompositionFactory(
             tokenFileDeleted = Files.notExists(paths.agentSessionToken, LinkOption.NOFOLLOW_LINKS),
             unauthorizedHandshakeRejected = unauthorizedRejected,
             authenticatedConnection = activeConnection.state.value == AgentConnectionState.Connected,
-            signedOutIdentityBound = identity == null &&
+            signedOutIdentityBound = identityRegistry.snapshot.value.gate != BusinessAccessGateState.READY &&
                 lastRegisteredConnectionId == rpc.connectionId &&
                 storage.desktopStore.state.value.authenticationStatus ==
                 com.wzx.huitai.desktop.state.BusinessAuthenticationStatus.SIGNED_OUT,

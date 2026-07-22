@@ -132,7 +132,20 @@ class BusinessWorkspaceController(
     }
 
     fun updateSuggestions(suggestions: List<BusinessFieldSuggestion>) {
+        if (activeIdentity == null) return
         store.dispatch(BusinessDesktopEvent.SuggestionsChanged(suggestions))
+    }
+
+    /** Publishes a candidate's first page without making that candidate locally authoritative. */
+    suspend fun publishProvisionalPage(
+        identity: BusinessIdentity,
+        catalogEpoch: Long,
+        snapshot: PageContextSnapshot,
+        contextSequence: Long = 1,
+    ) {
+        require(catalogEpoch > 0) { "catalogEpoch must be positive" }
+        require(contextSequence > 0) { "contextSequence must be positive" }
+        contextPublication.publish(identity, catalogEpoch, contextSequence, snapshot)
     }
 
     suspend fun executeUserAction(
@@ -167,7 +180,10 @@ class BusinessWorkspaceController(
         return actionPort.execute(command, context)
     }
 
-    suspend fun clearIdentity(lifecycleGeneration: Long) {
+    suspend fun clearIdentity(
+        lifecycleGeneration: Long,
+        clearEvent: BusinessDesktopEvent? = BusinessDesktopEvent.SignedOut,
+    ) {
         stateMutex.withLock {
             if (lifecycleGeneration < this.lifecycleGeneration) return
             this.lifecycleGeneration = lifecycleGeneration
@@ -175,6 +191,7 @@ class BusinessWorkspaceController(
             catalogEpoch = 0
             contextSequence = 0
             lastPublished = null
+            clearEvent?.let(store::dispatch)
         }
     }
 

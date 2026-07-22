@@ -90,9 +90,16 @@ class BusinessDesktopReducer {
         messages = emptyList(),
         plan = null,
         applicationActions = emptyMap(),
+        actionBindings = emptyMap(),
+        auditOnlyActions = emptyList(),
         turnSummary = null,
+        providers = emptyList(),
+        activeProviderId = null,
         activeTurn = null,
         turnStatus = null,
+        turnBindings = emptyMap(),
+        terminalTurnStatuses = emptyMap(),
+        latestObservedTurnId = null,
         error = error,
     )
 

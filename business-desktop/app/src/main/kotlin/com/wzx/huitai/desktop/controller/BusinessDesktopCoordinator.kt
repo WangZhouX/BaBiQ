@@ -38,6 +38,15 @@ class AgentConnectionLifecycleAdapter(
 interface BusinessRegistrationPort {
     suspend fun bindIdentity(identity: BusinessIdentity)
     suspend fun registerCatalog(identity: BusinessIdentity, catalogEpoch: Long)
+    suspend fun publishSignedOut() = Unit
+}
+
+interface ProvisionalBusinessRegistrationTransaction {
+    suspend fun registerIdentity()
+    suspend fun registerCapabilityCatalog()
+    suspend fun registerInitialContext()
+    suspend fun commit()
+    suspend fun rollback()
 }
 
 /** 仅编排 connection/identity 生命周期，不接管 chat 或 workspace 的内部逻辑。 */
@@ -80,21 +89,51 @@ class BusinessDesktopCoordinator(
         identity: BusinessIdentity,
         catalogEpoch: Long,
         initialPage: PageContextSnapshot,
-    ) = registrationMutex.withLock {
+    ) {
+        val transaction = prepareRegistration(identity, catalogEpoch, initialPage)
+        try {
+            transaction.registerIdentity()
+            transaction.registerCapabilityCatalog()
+            transaction.registerInitialContext()
+            transaction.commit()
+        } catch (_: RegistrationSupersededException) {
+            transaction.rollback()
+        } catch (failure: Throwable) {
+            transaction.rollback()
+            throw failure
+        }
+    }
+
+    suspend fun prepareRegistration(
+        identity: BusinessIdentity,
+        catalogEpoch: Long,
+        initialPage: PageContextSnapshot,
+    ): ProvisionalBusinessRegistrationTransaction {
+        require(catalogEpoch > 0) { "catalogEpoch must be positive" }
+        val owner = Any()
+        registrationMutex.lock(owner)
+        return try {
+            val generation = lifecycleMutex.withLock {
+                check(!shutdown) { "Business desktop is shut down" }
+                ++identityGeneration
+            }
+            CoordinatorRegistrationTransaction(owner, generation, identity, catalogEpoch, initialPage)
+        } catch (failure: Throwable) {
+            registrationMutex.unlock(owner)
+            throw failure
+        }
+    }
+
+    suspend fun publishSignedOutRegistration() = registrationMutex.withLock {
+        registration.publishSignedOut()
+    }
+
+    suspend fun clearWorkspace() {
         val generation = lifecycleMutex.withLock {
-            check(!shutdown) { "Business desktop is shut down" }
+            if (shutdown) return
             ++identityGeneration
         }
-        registration.bindIdentity(identity)
-        if (!isCurrentIdentityGeneration(generation)) return@withLock
-        registration.registerCatalog(identity, catalogEpoch)
-        val committed = lifecycleMutex.withLock {
-            if (shutdown || generation != identityGeneration) return@withLock false
-            store.dispatch(BusinessDesktopEvent.IdentityAuthenticated(identity))
-            true
-        }
-        if (!committed) return@withLock
-        workspace.activateIdentity(identity, catalogEpoch, initialPage, generation)
+        workspace.clearIdentity(generation)
     }
 
     suspend fun onMembershipExpired() = invalidateIdentity(BusinessDesktopEvent.MembershipExpired)
@@ -123,7 +162,7 @@ class BusinessDesktopCoordinator(
             ShutdownResources(observer, identityGeneration).also { observer = null }
         }
         resources.observer?.cancel()
-        workspace.clearIdentity(resources.identityGeneration)
+        workspace.clearIdentity(resources.identityGeneration, clearEvent = null)
         connection.shutdown()
     }
 
@@ -134,12 +173,99 @@ class BusinessDesktopCoordinator(
             store.dispatch(event)
             identityGeneration
         }
-        workspace.clearIdentity(generation)
+        workspace.clearIdentity(generation, clearEvent = null)
     }
 
     private suspend fun isCurrentIdentityGeneration(generation: Long): Boolean = lifecycleMutex.withLock {
         !shutdown && generation == identityGeneration
     }
+
+    private inner class CoordinatorRegistrationTransaction(
+        private val owner: Any,
+        private val generation: Long,
+        private val identity: BusinessIdentity,
+        private val catalogEpoch: Long,
+        private val initialPage: PageContextSnapshot,
+    ) : ProvisionalBusinessRegistrationTransaction {
+        private val transactionMutex = Mutex()
+        private var stage = RegistrationStage.PREPARED
+        private var lockReleased = false
+
+        override suspend fun registerIdentity() = transactionMutex.withLock {
+            check(stage == RegistrationStage.PREPARED) { "identity registration is out of order" }
+            checkCurrent()
+            registration.bindIdentity(identity)
+            checkCurrent()
+            stage = RegistrationStage.IDENTITY
+        }
+
+        override suspend fun registerCapabilityCatalog() = transactionMutex.withLock {
+            check(stage == RegistrationStage.IDENTITY) { "catalog registration is out of order" }
+            checkCurrent()
+            registration.registerCatalog(identity, catalogEpoch)
+            checkCurrent()
+            stage = RegistrationStage.CATALOG
+        }
+
+        override suspend fun registerInitialContext() = transactionMutex.withLock {
+            check(stage == RegistrationStage.CATALOG) { "context registration is out of order" }
+            checkCurrent()
+            workspace.publishProvisionalPage(identity, catalogEpoch, initialPage)
+            checkCurrent()
+            stage = RegistrationStage.CONTEXT
+        }
+
+        override suspend fun commit() = transactionMutex.withLock {
+            check(stage == RegistrationStage.CONTEXT) { "registration commit is out of order" }
+            checkCurrent()
+            check(
+                workspace.attachPublishedIdentity(
+                    identity = identity,
+                    catalogEpoch = catalogEpoch,
+                    snapshot = initialPage,
+                    lifecycleGeneration = generation,
+                    publishedContextSequence = 1,
+                ),
+            ) { "registration ownership changed before commit" }
+            stage = RegistrationStage.COMMITTED
+            releaseRegistrationLock()
+        }
+
+        override suspend fun rollback() = transactionMutex.withLock {
+            if (stage == RegistrationStage.ROLLED_BACK) return@withLock
+            try {
+                if (isCurrentIdentityGeneration(generation)) {
+                    registration.publishSignedOut()
+                    workspace.clearIdentity(generation)
+                }
+                stage = RegistrationStage.ROLLED_BACK
+            } finally {
+                releaseRegistrationLock()
+            }
+        }
+
+        private suspend fun checkCurrent() {
+            if (!isCurrentIdentityGeneration(generation)) throw RegistrationSupersededException()
+        }
+
+        private fun releaseRegistrationLock() {
+            if (!lockReleased) {
+                lockReleased = true
+                registrationMutex.unlock(owner)
+            }
+        }
+    }
+
+    private enum class RegistrationStage {
+        PREPARED,
+        IDENTITY,
+        CATALOG,
+        CONTEXT,
+        COMMITTED,
+        ROLLED_BACK,
+    }
+
+    private class RegistrationSupersededException : IllegalStateException("registration ownership changed")
 
     private data class ShutdownResources(
         val observer: Job?,
