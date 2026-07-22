@@ -12,6 +12,7 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHeightIsEqualTo
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -65,6 +66,7 @@ class BusinessTopNavigationTest {
         rule.onNodeWithTag(BusinessTopNavigationTags.WORKBENCH).assertDoesNotExist()
         rule.onNodeWithTag(BusinessTopNavigationTags.DATA_ENTRY).assertDoesNotExist()
         rule.onNodeWithTag(BusinessTopNavigationTags.RUN_HISTORY).assertDoesNotExist()
+        rule.onNodeWithContentDescription("翔鸟律智 Logo").assertDoesNotExist()
         rule.onNodeWithText("翔鸟律智桌面端").assertDoesNotExist()
 
         val interactiveDestinations = rule.onAllNodes(hasClickAction())

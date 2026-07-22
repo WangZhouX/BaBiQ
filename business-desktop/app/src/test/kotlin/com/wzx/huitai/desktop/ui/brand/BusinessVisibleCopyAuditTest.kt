@@ -6,7 +6,6 @@ import java.util.Locale
 import kotlin.io.path.extension
 import kotlin.io.path.isRegularFile
 import kotlin.io.path.readText
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -109,27 +108,6 @@ class BusinessVisibleCopyAuditTest {
             "发现仍会暴露给用户的旧品牌或 Agent 文案：\n${findings.joinToString("\n")}",
             findings.isEmpty(),
         )
-    }
-
-    @Test
-    fun `application shell and top toolbar do not duplicate native window brand`() {
-        val shellSources = listOf(
-            Path.of(
-                "src", "main", "kotlin", "com", "wzx", "huitai", "desktop", "ui", "shell",
-                "BusinessDesktopShell.kt",
-            ),
-            Path.of(
-                "src", "main", "kotlin", "com", "wzx", "huitai", "desktop", "ui", "shell",
-                "BusinessTopNavigation.kt",
-            ),
-        )
-
-        shellSources.forEach { sourcePath ->
-            assertTrue("找不到应用内容区源码：$sourcePath", sourcePath.isRegularFile())
-            val source = sourcePath.readText()
-            assertFalse("$sourcePath 不应再加载第二套品牌 Logo", source.contains("BusinessBrandResources.logoImageBitmap()"))
-            assertFalse("$sourcePath 不应再显示原生窗口产品名", source.contains("翔鸟律智桌面端"))
-        }
     }
 
     private fun textFilesUnder(root: Path): List<Path> = Files.walk(root).use { paths ->
