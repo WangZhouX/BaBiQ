@@ -8,6 +8,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'packaged-smoke-icon.ps1')
 
 function Assert-Smoke {
     param(
@@ -179,15 +180,8 @@ try {
     Assert-Smoke ($null -ne $desktopExe) ("{0} is missing from the extracted MSI." -f $desktopLauncherName)
     $launcherVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($desktopExe.FullName)
     Assert-Smoke ($launcherVersion.ProductName -eq $expectedProductName) 'Extracted launcher ProductName is invalid.'
-    Add-Type -AssemblyName System.Drawing
-    $associatedIcon = $null
-    try {
-        $associatedIcon = [Drawing.Icon]::ExtractAssociatedIcon($desktopExe.FullName)
-        Assert-Smoke ($null -ne $associatedIcon) 'The branded launcher has no associated Windows icon.'
-        Assert-Smoke ($associatedIcon.Width -ge 16 -and $associatedIcon.Height -ge 16) 'The launcher icon dimensions are invalid.'
-    } finally {
-        if ($null -ne $associatedIcon) { $associatedIcon.Dispose() }
-    }
+    $brandIconPath = Join-Path $repoRoot 'business-desktop\app\src\main\resources\brand\xiangniao.ico'
+    Assert-Smoke (Test-LauncherBrandIcon -LauncherPath $desktopExe.FullName -BrandIconPath $brandIconPath) 'The launcher associated icon does not match the Xiangniao brand.'
     $bundledJar = Get-ChildItem -LiteralPath $extractedRoot -Recurse -File -Filter 'babiq-server.jar' |
         Where-Object { $_.FullName -match '[\\/]backend[\\/]babiq-server\.jar$' } |
         Select-Object -First 1
@@ -228,6 +222,7 @@ try {
     Assert-Smoke ($report.authenticatedConnection -eq $true) 'Authenticated WebSocket connection was not proven.'
     Assert-Smoke ($report.signedOutIdentityBound -eq $true) 'Framework signed-out identity bind was not proven.'
     Assert-Smoke ($report.windowComposed -eq $true) 'The real Compose Window was not committed.'
+    Assert-Smoke ($report.shellComposed -eq $true) 'The business desktop shell was not composed.'
     Assert-Smoke ($report.brandLogoDecoded -eq $true) 'The packaged brand logo was not decoded.'
     Assert-Smoke ($report.mascotDecoded -eq $true) 'The packaged assistant mascot was not decoded.'
     Assert-Smoke ($report.topNavigationComposed -eq $true) 'The top navigation was not composed.'

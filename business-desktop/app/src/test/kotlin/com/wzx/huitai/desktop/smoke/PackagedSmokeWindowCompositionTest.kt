@@ -1,32 +1,85 @@
 package com.wzx.huitai.desktop.smoke
 
 import java.nio.file.Path
+import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 
 class PackagedSmokeWindowCompositionTest {
     @Test
-    fun `readiness reflects decoded brand resources and the collapsed initial assistant`() {
+    fun `readiness reflects only real window shell and top navigation composition signals`() {
+        val signals = PackagedSmokeUiCompositionSignals()
+        assertFalse(signals.snapshot().windowComposed)
+        assertFalse(signals.snapshot().shellComposed)
+        assertFalse(signals.snapshot().topNavigationComposed)
+
+        signals.markWindowComposed()
+        signals.markShellComposed()
         val ready = buildPackagedSmokeUiReadiness(
+            composition = signals.snapshot(),
             assistantInitiallyCollapsed = true,
-            productName = "翔鸟律智桌面端",
+            productName = PackagedSmokeUiReadiness.PRODUCT_NAME,
             decodeLogo = {},
             decodeMascot = {},
         )
+        signals.markTopNavigationComposed()
         val missingMascot = buildPackagedSmokeUiReadiness(
+            composition = signals.snapshot(),
             assistantInitiallyCollapsed = true,
-            productName = "翔鸟律智桌面端",
+            productName = PackagedSmokeUiReadiness.PRODUCT_NAME,
             decodeLogo = {},
             decodeMascot = { error("missing mascot") },
         )
 
         assertTrue(ready.windowComposed)
+        assertTrue(ready.shellComposed)
         assertTrue(ready.brandLogoDecoded)
         assertTrue(ready.mascotDecoded)
-        assertTrue(ready.topNavigationComposed)
+        assertFalse(ready.topNavigationComposed)
         assertTrue(ready.assistantInitiallyCollapsed)
+        assertTrue(missingMascot.topNavigationComposed)
         assertFalse(missingMascot.mascotDecoded)
+    }
+
+    @Test
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun `publication waits for a frame and all real composition paths`() = runTest {
+        val home = Files.createTempDirectory("packaged-smoke-frame")
+        val report = home.resolve("report.json")
+        val signals = PackagedSmokeUiCompositionSignals()
+        val frame = CompletableDeferred<Unit>()
+        val coordinator = PackagedSmokeCompositionCoordinator(
+            probe = PackagedSmokeProbe(report),
+            evidenceProvider = { validEvidence(home) },
+        )
+
+        val publication = launch {
+            publishPackagedSmokeAfterCommittedFrame(
+                coordinator = coordinator,
+                compositionSignals = signals,
+                assistantInitiallyCollapsed = true,
+                productName = PackagedSmokeUiReadiness.PRODUCT_NAME,
+                awaitFrame = { frame.await() },
+                decodeLogo = {},
+                decodeMascot = {},
+            )
+        }
+        runCurrent()
+        assertFalse(Files.exists(report), "the report must not publish before a rendered frame")
+
+        signals.markWindowComposed()
+        signals.markShellComposed()
+        signals.markTopNavigationComposed()
+        frame.complete(Unit)
+        publication.join()
+
+        assertTrue(Files.exists(report))
     }
 
     @Test
@@ -46,8 +99,36 @@ class PackagedSmokeWindowCompositionTest {
         assertFalse(source.substring(0, applicationIndex).contains("smokeProbe.write"))
         assertFalse(source.substring(0, applicationIndex).contains("packagedSmokeEvidence()"))
         assertTrue(source.contains("assistantInitiallyCollapsed = !assistantExpanded"))
+        assertTrue(source.contains("smokeUiCompositionSignals.markWindowComposed()"))
+        assertTrue(source.contains("onShellComposed = smokeUiCompositionSignals::markShellComposed"))
+        assertTrue(source.contains("onTopNavigationComposed = smokeUiCompositionSignals::markTopNavigationComposed"))
+        assertTrue(source.contains("compositionSignals = smokeUiCompositionSignals"))
         val effectBinding = source.substring(effectIndex, source.indexOf("when (val dialog", effectIndex))
         assertTrue(effectBinding.contains("closeBusinessDesktop("))
         assertTrue(effectBinding.indexOf("shutdown = { root.shutdown() }") < effectBinding.indexOf("exitApplication = ::exitApplication"))
+    }
+
+    private fun validEvidence(home: Path): PackagedSmokeEvidence {
+        val runtimeRoot = home.resolve(".huitai-agent-desktop")
+        val desktopRoot = runtimeRoot.resolve("desktop")
+        val agentRoot = runtimeRoot.resolve("agent")
+        return PackagedSmokeEvidence(
+            profile = "business-desktop",
+            address = "127.0.0.1",
+            port = 49_151,
+            runtimeRoot = runtimeRoot,
+            desktopRoot = desktopRoot,
+            agentRoot = agentRoot,
+            desktopDatabase = desktopRoot.resolve("data/business-desktop.db"),
+            agentDatabase = agentRoot.resolve("data/babiq-business.db"),
+            desktopKeyStore = desktopRoot.resolve("secrets/business-desktop.jceks"),
+            agentKeyStore = agentRoot.resolve("secrets/business-agent.jceks"),
+            tokenFile = agentRoot.resolve("session-token"),
+            tokenFileDeleted = true,
+            unauthorizedHandshakeRejected = true,
+            authenticatedConnection = true,
+            signedOutIdentityBound = true,
+            childPid = 42_424,
+        )
     }
 }

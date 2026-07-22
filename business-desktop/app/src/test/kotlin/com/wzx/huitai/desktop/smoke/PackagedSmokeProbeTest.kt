@@ -56,6 +56,7 @@ class PackagedSmokeProbeTest {
         assertTrue(report.getValue("authenticatedConnection").jsonPrimitive.boolean)
         assertTrue(report.getValue("signedOutIdentityBound").jsonPrimitive.boolean)
         assertTrue(report.getValue("windowComposed").jsonPrimitive.boolean)
+        assertTrue(report.getValue("shellComposed").jsonPrimitive.boolean)
         assertTrue(report.getValue("brandLogoDecoded").jsonPrimitive.boolean)
         assertTrue(report.getValue("mascotDecoded").jsonPrimitive.boolean)
         assertTrue(report.getValue("topNavigationComposed").jsonPrimitive.boolean)
@@ -102,6 +103,7 @@ class PackagedSmokeProbeTest {
         val ready = PackagedSmokeUiReadiness.ready()
         val invalidReadiness = listOf(
             ready.copy(windowComposed = false),
+            ready.copy(shellComposed = false),
             ready.copy(brandLogoDecoded = false),
             ready.copy(mascotDecoded = false),
             ready.copy(topNavigationComposed = false),

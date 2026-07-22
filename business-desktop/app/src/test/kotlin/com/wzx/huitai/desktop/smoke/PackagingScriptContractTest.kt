@@ -30,6 +30,7 @@ class PackagingScriptContractTest {
         assertTrue(script.contains("\$expectedInstallerDescription = \"Installer of \$expectedProductName\""))
         assertTrue(script.contains("\$packageExeVersion.FileDescription -eq \$expectedInstallerDescription"))
         assertTrue(script.contains("windowComposed"))
+        assertTrue(script.contains("shellComposed"))
         assertTrue(script.contains("brandLogoDecoded"))
         assertTrue(script.contains("mascotDecoded"))
         assertTrue(script.contains("topNavigationComposed"))

@@ -16,6 +16,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -88,8 +89,11 @@ fun BusinessDesktopShell(
     onProviderOAuthLogin: (String) -> Unit = {},
     onAgentPanelExpandedChange: (Boolean) -> Unit = {},
     onRequestedAssistantWidthChange: (Dp) -> Unit = {},
+    onShellComposed: () -> Unit = {},
+    onTopNavigationComposed: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    SideEffect(onShellComposed)
     var expansionMessage by remember { mutableStateOf<String?>(null) }
     var resizeAccumulator by remember { mutableStateOf(requestedAssistantWidth) }
     LaunchedEffect(requestedAssistantWidth) {
@@ -99,6 +103,7 @@ fun BusinessDesktopShell(
         BusinessTopNavigation(
             selectedDestination = selectedDestination,
             onDestinationSelected = onDestinationSelected,
+            onComposed = onTopNavigationComposed,
         )
         BoxWithConstraints(
             Modifier

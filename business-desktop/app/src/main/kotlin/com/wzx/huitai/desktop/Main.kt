@@ -6,6 +6,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
@@ -33,6 +34,7 @@ import com.wzx.huitai.desktop.ui.window.BusinessDesktopWindowSpec
 import com.wzx.huitai.desktop.smoke.PackagedSmokeProbe
 import com.wzx.huitai.desktop.smoke.PackagedSmokeCompositionCoordinator
 import com.wzx.huitai.desktop.smoke.PackagedSmokeWindowCompositionEffect
+import com.wzx.huitai.desktop.smoke.PackagedSmokeUiCompositionSignals
 import com.wzx.huitai.agent.protocol.ApplicationProtocol
 import com.wzx.huitai.presentation.form.FormPatch
 import java.util.UUID
@@ -84,6 +86,7 @@ fun main() {
             evidenceProvider = factory::packagedSmokeEvidence,
         )
     }
+    val smokeUiCompositionSignals = PackagedSmokeUiCompositionSignals()
     val view = requireNotNull(root.runtimeView)
     val storage = requireNotNull(root.productionStorage)
 
@@ -145,6 +148,9 @@ fun main() {
                 }
 
                 HuitaiBusinessTheme {
+                    SideEffect {
+                        smokeUiCompositionSignals.markWindowComposed()
+                    }
                     BusinessDesktopShell(
                         state = desktopState,
                         formState = formState,
@@ -390,9 +396,12 @@ fun main() {
                         onProviderOAuthLogin = { providerId ->
                             uiScope.launch { view.production.providerSettingsController.oauthLogin(providerId) }
                         },
+                        onShellComposed = smokeUiCompositionSignals::markShellComposed,
+                        onTopNavigationComposed = smokeUiCompositionSignals::markTopNavigationComposed,
                     )
                     PackagedSmokeWindowCompositionEffect(
                         coordinator = smokeCoordinator,
+                        compositionSignals = smokeUiCompositionSignals,
                         assistantInitiallyCollapsed = !assistantExpanded,
                         productName = BusinessDesktopWindowSpec.title,
                         onFailure = {

@@ -45,6 +45,28 @@ class BusinessDesktopShellTest {
     val rule = createComposeRule()
 
     @Test
+    fun `shell reports its own and top navigation committed composition`() {
+        var shellComposed = false
+        var topNavigationComposed = false
+        rule.setContent {
+            HuitaiBusinessTheme {
+                BusinessDesktopShell(
+                    state = BusinessDesktopState(),
+                    formState = DemoFormState(),
+                    onShellComposed = { shellComposed = true },
+                    onTopNavigationComposed = { topNavigationComposed = true },
+                    modifier = Modifier.shellSize(1200.dp),
+                )
+            }
+        }
+
+        rule.runOnIdle {
+            assertTrue(shellComposed)
+            assertTrue(topNavigationComposed)
+        }
+    }
+
+    @Test
     fun `collapsed shell uses top navigation full width business region and mascot without legacy chrome`() {
         rule.setContent {
             CompositionLocalProvider(LocalDensity provides Density(0.75f)) {
@@ -313,6 +335,12 @@ class BusinessDesktopShellTest {
         assertTrue(form.bottom <= safeArea.top + 0.5f)
         assertTrue(mascot.left >= safeArea.left && mascot.right <= safeArea.right)
         assertTrue(mascot.top >= safeArea.top && mascot.bottom <= safeArea.bottom)
+        assertEquals(
+            safeArea.right - 9f,
+            mascot.right,
+            0.5f,
+            "收起态吉祥物必须贴近 12dp 右侧安全边距，而不是落到左下角",
+        )
         assertFalse(mascot.overlaps(bounds("save-draft-action")))
         assertFalse(mascot.overlaps(bounds("submit-action")))
     }

@@ -42,6 +42,7 @@ data class PackagedSmokeEvidence(
 /** Non-sensitive evidence that the real packaged Compose window reached its first committed frame. */
 data class PackagedSmokeUiReadiness(
     val windowComposed: Boolean,
+    val shellComposed: Boolean,
     val brandLogoDecoded: Boolean,
     val mascotDecoded: Boolean,
     val topNavigationComposed: Boolean,
@@ -53,6 +54,7 @@ data class PackagedSmokeUiReadiness(
 
         fun ready(): PackagedSmokeUiReadiness = PackagedSmokeUiReadiness(
             windowComposed = true,
+            shellComposed = true,
             brandLogoDecoded = true,
             mascotDecoded = true,
             topNavigationComposed = true,
@@ -62,6 +64,7 @@ data class PackagedSmokeUiReadiness(
 
         fun notReady(): PackagedSmokeUiReadiness = PackagedSmokeUiReadiness(
             windowComposed = false,
+            shellComposed = false,
             brandLogoDecoded = false,
             mascotDecoded = false,
             topNavigationComposed = false,
@@ -141,6 +144,7 @@ class PackagedSmokeProbe(reportPath: Path) {
         require(source.signedOutIdentityBound) { "framework signed-out identity must be bound" }
         val ui = source.uiReadiness
         require(ui.windowComposed) { "packaged smoke requires a committed Compose window" }
+        require(ui.shellComposed) { "packaged smoke requires the business desktop shell" }
         require(ui.brandLogoDecoded) { "packaged smoke requires the packaged brand logo" }
         require(ui.mascotDecoded) { "packaged smoke requires the packaged assistant mascot" }
         require(ui.topNavigationComposed) { "packaged smoke requires the top navigation" }
@@ -192,6 +196,7 @@ class PackagedSmokeProbe(reportPath: Path) {
             signedOutIdentityBound = true,
             childPid = source.childPid,
             windowComposed = ui.windowComposed,
+            shellComposed = ui.shellComposed,
             brandLogoDecoded = ui.brandLogoDecoded,
             mascotDecoded = ui.mascotDecoded,
             topNavigationComposed = ui.topNavigationComposed,
@@ -235,6 +240,7 @@ private data class PackagedSmokeReport(
     val signedOutIdentityBound: Boolean,
     val childPid: Long,
     val windowComposed: Boolean,
+    val shellComposed: Boolean,
     val brandLogoDecoded: Boolean,
     val mascotDecoded: Boolean,
     val topNavigationComposed: Boolean,

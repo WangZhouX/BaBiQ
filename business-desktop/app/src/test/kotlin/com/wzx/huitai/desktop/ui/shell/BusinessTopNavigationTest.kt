@@ -30,6 +30,22 @@ class BusinessTopNavigationTest {
     val rule = createComposeRule()
 
     @Test
+    fun `top navigation reports its real committed composition`() {
+        var composed = false
+        rule.setContent {
+            HuitaiBusinessTheme {
+                BusinessTopNavigation(
+                    selectedDestination = BusinessDesktopDestination.DATA_ENTRY,
+                    onDestinationSelected = {},
+                    onComposed = { composed = true },
+                )
+            }
+        }
+
+        rule.runOnIdle { assertTrue(composed) }
+    }
+
+    @Test
     fun `wide top navigation shows brand routes every canonical destination and exposes selection`() {
         val selected = mutableStateOf(BusinessDesktopDestination.DATA_ENTRY)
         rule.setContent {
