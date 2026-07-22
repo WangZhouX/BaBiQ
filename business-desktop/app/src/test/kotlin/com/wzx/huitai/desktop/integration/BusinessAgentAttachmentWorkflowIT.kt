@@ -1,5 +1,7 @@
 package com.wzx.huitai.desktop.integration
 
+import androidx.compose.foundation.layout.requiredWidth
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -8,6 +10,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
@@ -19,6 +22,8 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.pressKey
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
 import com.wzx.huitai.agent.conversation.BusinessAgentEvent
 import com.wzx.huitai.agent.conversation.BusinessAttachmentDraft
 import com.wzx.huitai.agent.conversation.BusinessConversationGateway
@@ -140,60 +145,62 @@ class BusinessAgentAttachmentWorkflowIT {
                 }
             }
             val paste = remember { BusinessClipboardPasteCoordinator(clipboard::hasImage) }
-            HuitaiBusinessTheme {
-                BusinessDesktopShell(
-                    state = desktopState,
-                    formState = DemoFormState(),
-                    composerText = draft.text,
-                    composerAttachments = draft.attachments,
-                    composerSubmitting = submitting,
-                    agentPanelExpanded = true,
-                    onChooseFiles = {
-                        draft = draft.copy(
-                            attachments = mergeBusinessComposerAttachments(
-                                draft.attachments,
-                                picker.choose(currentDrafts = draft.attachments),
-                            ),
-                        )
-                    },
-                    onRemoveAttachment = { id ->
-                        draft = draft.copy(attachments = draft.attachments.filterNot { it.id == id })
-                    },
-                    onPasteImage = {
-                        paste.request { complete ->
-                            uiScope.launch {
-                                try {
-                                    clipboard.capture(
-                                        existingIds = draft.attachments.mapTo(hashSetOf()) { it.id },
-                                        existingDisplayIds = draft.attachments.mapTo(hashSetOf()) { it.displayId },
-                                    )?.let { screenshot ->
-                                        draft = draft.copy(
-                                            attachments = mergeBusinessComposerAttachments(
-                                                draft.attachments,
-                                                listOf(screenshot),
-                                            ),
-                                        )
+            CompositionLocalProvider(LocalDensity provides Density(0.75f)) {
+                HuitaiBusinessTheme {
+                    BusinessDesktopShell(
+                        state = desktopState,
+                        formState = DemoFormState(),
+                        composerText = draft.text,
+                        composerAttachments = draft.attachments,
+                        composerSubmitting = submitting,
+                        agentPanelExpanded = true,
+                        onChooseFiles = {
+                            draft = draft.copy(
+                                attachments = mergeBusinessComposerAttachments(
+                                    draft.attachments,
+                                    picker.choose(currentDrafts = draft.attachments),
+                                ),
+                            )
+                        },
+                        onRemoveAttachment = { id ->
+                            draft = draft.copy(attachments = draft.attachments.filterNot { it.id == id })
+                        },
+                        onPasteImage = {
+                            paste.request { complete ->
+                                uiScope.launch {
+                                    try {
+                                        clipboard.capture(
+                                            existingIds = draft.attachments.mapTo(hashSetOf()) { it.id },
+                                            existingDisplayIds = draft.attachments.mapTo(hashSetOf()) { it.displayId },
+                                        )?.let { screenshot ->
+                                            draft = draft.copy(
+                                                attachments = mergeBusinessComposerAttachments(
+                                                    draft.attachments,
+                                                    listOf(screenshot),
+                                                ),
+                                            )
+                                        }
+                                    } finally {
+                                        complete()
                                     }
-                                } finally {
-                                    complete()
                                 }
                             }
-                        }
-                    },
-                    onSend = {
-                        val captured = draft
-                        submitting = true
-                        uiScope.launch {
-                            try {
-                                val result = sender.submit(captured)
-                                draft = sender.reconcile(draft, captured, result)
-                            } finally {
-                                submitting = false
+                        },
+                        onSend = {
+                            val captured = draft
+                            submitting = true
+                            uiScope.launch {
+                                try {
+                                    val result = sender.submit(captured)
+                                    draft = sender.reconcile(draft, captured, result)
+                                } finally {
+                                    submitting = false
+                                }
                             }
-                        }
-                    },
-                    modifier = Modifier,
-                )
+                        },
+                        modifier = Modifier.requiredWidth(1400.dp),
+                    )
+                }
             }
         }
 
