@@ -15,6 +15,7 @@ import com.wzx.huitai.agent.conversation.BusinessProviderTestResult
 import com.wzx.huitai.agent.conversation.BusinessThread
 import com.wzx.huitai.agent.conversation.BusinessTurn
 import com.wzx.huitai.desktop.state.BusinessAuthenticationStatus
+import com.wzx.huitai.desktop.auth.BusinessAccessGateState
 import com.wzx.huitai.desktop.state.BusinessDesktopState
 import com.wzx.huitai.desktop.state.BusinessIdentity
 import java.util.concurrent.atomic.AtomicInteger
@@ -109,6 +110,53 @@ class BusinessProviderSettingsControllerTest {
         advanceUntilIdle()
         assertEquals(2, controller.state.value.connectionGeneration)
         assertEquals(2, gateway.calls.count { it == "list" })
+        controller.close()
+    }
+
+    @Test
+    fun `logout clears provider projections and sensitive oauth state`() = runTest {
+        val supervisor = MutableStateFlow<AgentSupervisorState>(AgentSupervisorState.Connected("connection-1"))
+        val desktop = MutableStateFlow(authenticatedState())
+        val gateway = FakeGateway()
+        val projectedProviders = mutableListOf<List<BusinessProvider>>()
+        val controller = controller(gateway, supervisor, desktop, onChanged = projectedProviders::add)
+        advanceUntilIdle()
+
+        controller.oauthStatus("claude")
+        assertTrue(controller.state.value.providers.isNotEmpty())
+        assertTrue(controller.state.value.oauthStatus.isNotEmpty())
+        assertTrue(controller.state.value.notice != null)
+
+        desktop.value = BusinessDesktopState()
+        advanceUntilIdle()
+
+        assertFalse(controller.state.value.operationsEnabled)
+        assertTrue(controller.state.value.providers.isEmpty())
+        assertTrue(controller.state.value.oauthStatus.isEmpty())
+        assertNull(controller.state.value.notice)
+        assertEquals(emptyList(), projectedProviders.last())
+        controller.close()
+    }
+
+    @Test
+    fun `provider commands stay closed until agent registration is ready`() = runTest {
+        val supervisor = MutableStateFlow<AgentSupervisorState>(AgentSupervisorState.Connected("connection-1"))
+        val desktop = MutableStateFlow(authenticatedState())
+        val accessGate = MutableStateFlow(BusinessAccessGateState.REGISTERING_AGENT)
+        val gateway = FakeGateway()
+        val controller = controller(gateway, supervisor, desktop, accessGate = accessGate)
+        advanceUntilIdle()
+
+        assertFalse(controller.state.value.operationsEnabled)
+        assertTrue(gateway.calls.isEmpty())
+        assertNull(controller.refresh())
+        assertTrue(gateway.calls.isEmpty())
+
+        accessGate.value = BusinessAccessGateState.READY
+        advanceUntilIdle()
+
+        assertTrue(controller.state.value.operationsEnabled)
+        assertEquals(listOf("list"), gateway.calls)
         controller.close()
     }
 
@@ -426,8 +474,9 @@ class BusinessProviderSettingsControllerTest {
         gateway: FakeGateway,
         supervisor: MutableStateFlow<AgentSupervisorState>,
         desktop: MutableStateFlow<BusinessDesktopState>,
+        accessGate: MutableStateFlow<BusinessAccessGateState> = MutableStateFlow(BusinessAccessGateState.READY),
         onChanged: (List<BusinessProvider>) -> Unit = {},
-    ) = BusinessProviderSettingsController(gateway, supervisor, desktop, this, onChanged)
+    ) = BusinessProviderSettingsController(gateway, supervisor, desktop, accessGate, this, onChanged)
 
     private fun provider(
         id: String,

@@ -9,6 +9,7 @@ import com.wzx.huitai.agent.conversation.BusinessProviderOAuthLoginResult
 import com.wzx.huitai.agent.conversation.BusinessProviderOAuthStatus
 import com.wzx.huitai.agent.conversation.BusinessProviderSelection
 import com.wzx.huitai.agent.conversation.BusinessProviderTestResult
+import com.wzx.huitai.desktop.auth.BusinessAccessGateState
 import com.wzx.huitai.desktop.state.BusinessAuthenticationStatus
 import com.wzx.huitai.desktop.state.BusinessDesktopState
 import java.io.Closeable
@@ -66,9 +67,15 @@ class BusinessProviderSettingsController(
     private val gateway: BusinessConversationGateway,
     private val supervisorState: StateFlow<AgentSupervisorState>,
     private val desktopState: StateFlow<BusinessDesktopState>,
+    private val accessGate: StateFlow<BusinessAccessGateState>,
     scope: CoroutineScope,
     private val onProvidersChanged: (List<BusinessProvider>) -> Unit,
 ) : Closeable {
+    private data class Availability(
+        val connectionId: String? = null,
+        val clearSensitiveState: Boolean = false,
+    )
+
     private data class OperationToken(
         val connectionId: String,
         val generation: Long,
@@ -86,8 +93,18 @@ class BusinessProviderSettingsController(
     private var currentToken: OperationToken? = null
     private var refreshJob: Job? = null
     private val availabilityObserver = controllerScope.launch(start = CoroutineStart.UNDISPATCHED) {
-        combine(supervisorState, desktopState) { supervisor, desktop ->
-            availableConnectionId(supervisor, desktop)
+        combine(supervisorState, desktopState, accessGate) { supervisor, desktop, gate ->
+            val authenticated = gate == BusinessAccessGateState.READY &&
+                desktop.authenticationStatus == BusinessAuthenticationStatus.AUTHENTICATED &&
+                desktop.identity != null
+            Availability(
+                connectionId = if (authenticated) {
+                    (supervisor as? AgentSupervisorState.Connected)?.connectionId
+                } else {
+                    null
+                },
+                clearSensitiveState = !authenticated,
+            )
         }.distinctUntilChanged().collect(::onAvailabilityChanged)
     }
 
@@ -282,20 +299,30 @@ class BusinessProviderSettingsController(
     }
 
     /** 新 finalized connection 自动刷新；任务同样属于 controller job。 */
-    private fun onAvailabilityChanged(connectionId: String?) {
+    private fun onAvailabilityChanged(availability: Availability) {
         if (closed.get()) return
         var refreshToken: OperationToken? = null
+        val connectionId = availability.connectionId
         synchronized(stateMonitor) {
             if (closed.get()) return
             operationGeneration += 1
             epochOperationMutex = Mutex()
             if (connectionId == null) {
                 currentToken = null
-                mutableState.value = mutableState.value.copy(
-                    operationsEnabled = false,
-                    loading = false,
-                    busyProviderId = null,
-                )
+                if (availability.clearSensitiveState) {
+                    lastFinalizedConnectionId = null
+                    mutableState.value = BusinessProviderSettingsState(
+                        operationsEnabled = false,
+                        connectionGeneration = mutableState.value.connectionGeneration,
+                    )
+                    onProvidersChanged(emptyList())
+                } else {
+                    mutableState.value = mutableState.value.copy(
+                        operationsEnabled = false,
+                        loading = false,
+                        busyProviderId = null,
+                    )
+                }
             } else {
                 val isNewConnection = lastFinalizedConnectionId != connectionId
                 if (isNewConnection) lastFinalizedConnectionId = connectionId
@@ -378,7 +405,7 @@ class BusinessProviderSettingsController(
     private fun isTokenCurrentLocked(token: OperationToken): Boolean =
         !closed.get() &&
             currentToken == token &&
-            availableConnectionId(supervisorState.value, desktopState.value) == token.connectionId &&
+            availableConnectionId(supervisorState.value, desktopState.value, accessGate.value) == token.connectionId &&
             mutableState.value.operationsEnabled
 
     private inline fun commitIfCurrent(
@@ -419,8 +446,11 @@ class BusinessProviderSettingsController(
 private fun availableConnectionId(
     supervisor: AgentSupervisorState,
     desktop: BusinessDesktopState,
+    gate: BusinessAccessGateState,
 ): String? = (supervisor as? AgentSupervisorState.Connected)?.connectionId?.takeIf {
-    desktop.authenticationStatus == BusinessAuthenticationStatus.AUTHENTICATED && desktop.identity != null
+    gate == BusinessAccessGateState.READY &&
+        desktop.authenticationStatus == BusinessAuthenticationStatus.AUTHENTICATED &&
+        desktop.identity != null
 }
 
 /** 用 mutation 返回的 active ID 校正列表，确保 Provider 与其配置模型的 active 状态一致。 */

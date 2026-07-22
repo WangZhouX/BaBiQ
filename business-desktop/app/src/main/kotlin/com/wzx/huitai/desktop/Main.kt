@@ -151,10 +151,6 @@ fun main() {
                     BusinessClipboardPasteCoordinator(view.production.clipboardImageAttachmentStore::hasImage)
                 }
 
-                LaunchedEffect(Unit) {
-                    runCatching { view.production.conversationController.refreshProviders() }
-                }
-
                 HuitaiBusinessTheme {
                     SideEffect {
                         smokeUiCompositionSignals.markWindowComposed()
