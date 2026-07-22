@@ -1,0 +1,484 @@
+package com.wzx.huitai.desktop.auth
+
+import com.wzx.huitai.action.model.ActionExecutionState
+import com.wzx.huitai.action.model.ActionIdentityScope
+import com.wzx.huitai.action.model.ActionResult
+import com.wzx.huitai.desktop.security.BusinessAuthSessionMetadata
+import com.wzx.huitai.desktop.state.BusinessIdentity
+import com.wzx.huitai.integration.auth.AuthCredentialPersistencePort
+import com.wzx.huitai.integration.auth.AuthSessionManager
+import com.wzx.huitai.integration.auth.AuthTokenSet
+import com.wzx.huitai.integration.identity.IdentityBoundaryActionPort
+import com.wzx.huitai.integration.oa.auth.OaCandidateAccess
+import com.wzx.huitai.integration.oa.auth.OaCandidateAuthenticationGateway
+import com.wzx.huitai.integration.oa.auth.OaPermissionInfo
+import com.wzx.huitai.integration.oa.auth.OaPermissionUser
+import com.wzx.huitai.integration.oa.auth.OaPreAuthenticationGateway
+import com.wzx.huitai.integration.oa.auth.OaTenantCandidate
+import com.wzx.huitai.integration.oa.auth.OaTokenBundle
+import java.time.Instant
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.NonCancellable
+import kotlinx.serialization.json.JsonElement
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class BusinessAuthenticationOrchestratorTest {
+    @Test
+    fun `login follows verifying authenticating registering ready and installs registry only after commit`() = runTest {
+        val fixture = Fixture()
+        assertEquals(listOf(fixture.candidate), fixture.orchestrator.findTenantCandidates("lawyer@example.com"))
+        assertEquals(BusinessAccessGateState.VERIFYING, fixture.orchestrator.gate.value)
+        fixture.orchestrator.enterTenantSelection()
+        assertEquals(BusinessAccessGateState.SELECTING_TENANT, fixture.orchestrator.gate.value)
+        fixture.preAuth.onLogin = {
+            assertEquals(BusinessAccessGateState.AUTHENTICATING, fixture.orchestrator.gate.value)
+        }
+        fixture.registration.onCommit = {
+            assertNull(fixture.registry.currentIdentity())
+            assertEquals(BusinessAccessGateState.REGISTERING_AGENT, fixture.orchestrator.gate.value)
+        }
+        fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+        runCurrent()
+
+        assertEquals(BusinessAccessGateState.READY, fixture.orchestrator.gate.value)
+        assertEquals("user-1", fixture.registry.currentIdentity()?.userId)
+        assertEquals(listOf("prepare", "identity", "catalog", "context", "commit"), fixture.registration.calls)
+    }
+
+    @Test
+    fun `candidate token permission and configured platform must agree before local persistence`() = runTest {
+        val cases = listOf<(Fixture) -> Unit>(
+            { it.preAuth.token = token(userId = "other-user") },
+            { it.candidateGateway.permission = permission(userId = "other-user") },
+            { it.candidate = it.candidate.copy(platformId = 200) },
+        )
+        cases.forEach { mutate ->
+            val fixture = Fixture()
+            mutate(fixture)
+            val failure = assertFailsWith<BusinessAuthenticationException> {
+                fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+            }
+            assertEquals(BusinessLoginErrorCode.PERMISSION_LOAD_FAILED, failure.code)
+            assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value)
+            assertNull(fixture.credentials.tokens)
+            assertNull(fixture.metadata.value)
+            assertNull(fixture.registry.currentIdentity())
+            assertEquals(1, fixture.candidateGateway.logoutCount)
+        }
+    }
+
+    @Test
+    fun `every registration partial failure rolls back signed out workspace and local authentication`() = runTest {
+        RegistrationFailureStage.entries.forEach { stage ->
+            val fixture = Fixture()
+            fixture.registration.failureStage = stage
+            val failure = assertFailsWith<BusinessAuthenticationException>(stage.name) {
+                fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+            }
+            assertEquals(BusinessLoginErrorCode.AGENT_REGISTRATION_FAILED, failure.code, stage.name)
+            if (stage != RegistrationFailureStage.PREPARE) {
+                assertTrue("rollback" in fixture.registration.calls, stage.name)
+            }
+            assertTrue("signed-out" in fixture.registration.calls, stage.name)
+            assertTrue("clear-workspace" in fixture.registration.calls, stage.name)
+            assertNull(fixture.registry.currentIdentity(), stage.name)
+            assertNull(fixture.credentials.tokens, stage.name)
+            assertNull(fixture.metadata.value, stage.name)
+            assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value, stage.name)
+        }
+    }
+
+    @Test
+    fun `metadata and token persistence failures compensate without exposing primary secrets`() = runTest {
+        val metadataFailure = Fixture().apply { metadata.failSave = true }
+        val first = assertFailsWith<BusinessAuthenticationException> {
+            metadataFailure.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), metadataFailure.candidate)
+        }
+        assertEquals(BusinessLoginErrorCode.LOCAL_CREDENTIAL_STORE_FAILED, first.code)
+        assertNull(metadataFailure.credentials.tokens)
+        assertEquals(1, metadataFailure.candidateGateway.logoutCount)
+
+        val tokenFailure = Fixture().apply { credentials.failReplace = true }
+        val second = assertFailsWith<BusinessAuthenticationException> {
+            tokenFailure.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), tokenFailure.candidate)
+        }
+        assertEquals(BusinessLoginErrorCode.LOCAL_CREDENTIAL_STORE_FAILED, second.code)
+        assertNull(tokenFailure.metadata.value)
+        assertNull(tokenFailure.registry.currentIdentity())
+        assertFalse(second.toString().contains("access-secret"))
+        assertFalse(second.toString().contains("refresh-secret"))
+    }
+
+    @Test
+    fun `restore with neither credential signs out while either half or invalid entry clears both`() = runTest {
+        val empty = Fixture()
+        empty.orchestrator.restore()
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, empty.orchestrator.gate.value)
+        assertTrue(empty.preAuth.refreshCalls.isEmpty())
+
+        val halves = listOf(
+            Fixture().apply { credentials.tokens = AuthTokenSet("old-access", "old-refresh") },
+            Fixture().apply { metadata.value = metadata() },
+            Fixture().apply {
+                credentials.tokens = AuthTokenSet("old-access", "old-refresh")
+                metadata.loadFailure = IllegalStateException("invalid local entry")
+            },
+        )
+        halves.forEach { fixture ->
+            fixture.orchestrator.restore()
+            assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value)
+            assertNull(fixture.credentials.tokens)
+            assertNull(fixture.metadata.value)
+            assertTrue(fixture.preAuth.refreshCalls.isEmpty())
+        }
+    }
+
+    @Test
+    fun `restore rotates refresh token reloads permission and uses normal registration transaction`() = runTest {
+        val fixture = Fixture().apply {
+            credentials.tokens = AuthTokenSet("old-access", "old-refresh")
+            metadata.value = metadata()
+            preAuth.token = token(access = "rotated-access", refresh = "rotated-refresh")
+        }
+
+        fixture.orchestrator.restore()
+
+        assertEquals(listOf("tenant-1" to "old-refresh"), fixture.preAuth.refreshCalls)
+        assertEquals("rotated-access", fixture.candidateGateway.loaded.single().accessToken)
+        assertEquals("rotated-refresh", fixture.credentials.tokens?.refreshToken)
+        assertEquals(BusinessAccessGateState.READY, fixture.orchestrator.gate.value)
+        assertEquals(listOf("prepare", "identity", "catalog", "context", "commit"), fixture.registration.calls)
+    }
+
+    @Test
+    fun `restore refresh permission or registration failure clears pair and requires login`() = runTest {
+        val fixtures = listOf(
+            Fixture().apply { preAuth.failure = IllegalStateException("refresh body secret") },
+            Fixture().apply { candidateGateway.failure = IllegalStateException("permission body secret") },
+            Fixture().apply { registration.failureStage = RegistrationFailureStage.CONTEXT },
+        )
+        fixtures.forEach { fixture ->
+            fixture.credentials.tokens = AuthTokenSet("old-access", "old-refresh")
+            fixture.metadata.value = metadata()
+            fixture.orchestrator.restore()
+            assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value)
+            assertNull(fixture.credentials.tokens)
+            assertNull(fixture.metadata.value)
+            assertNull(fixture.registry.currentIdentity())
+        }
+    }
+
+    @Test
+    fun `restore propagates cancellation from credential loading and remote refresh`() = runTest {
+        val loadCancelled = Fixture().apply {
+            credentials.loadFailure = CancellationException("cancelled-sensitive")
+        }
+        assertFailsWith<CancellationException> { loadCancelled.orchestrator.restore() }
+
+        val refreshCancelled = Fixture().apply {
+            credentials.tokens = AuthTokenSet("old-access", "old-refresh")
+            metadata.value = metadata()
+            preAuth.failure = CancellationException("cancelled-sensitive")
+        }
+        assertFailsWith<CancellationException> { refreshCancelled.orchestrator.restore() }
+    }
+
+    @Test
+    fun `restore preserves primary stable remote error after compensation`() = runTest {
+        val fixture = Fixture().apply {
+            credentials.tokens = AuthTokenSet("old-access", "old-refresh")
+            metadata.value = metadata()
+            preAuth.failure = IllegalStateException("remote-sensitive-body")
+        }
+
+        fixture.orchestrator.restore()
+
+        assertEquals(BusinessLoginErrorCode.REMOTE_UNAVAILABLE, fixture.orchestrator.lastError.value?.code)
+        assertFalse(fixture.orchestrator.lastError.value.toString().contains("remote-sensitive-body"))
+    }
+
+    @Test
+    fun `logout immediately invalidates registry then revokes full old scope and remote failure cannot block local sign out`() = runTest {
+        val fixture = Fixture()
+        fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+        val oldIdentity = requireNotNull(fixture.registry.currentIdentity())
+        fixture.candidateGateway.logoutFailure = IllegalStateException("remote token body")
+
+        fixture.orchestrator.logout()
+
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value)
+        assertNull(fixture.registry.currentIdentity())
+        assertEquals(oldIdentity.actionScope(), fixture.actions.cancelledScope)
+        assertEquals(
+            setOf(ActionExecutionState.RECEIVED, ActionExecutionState.VALIDATING, ActionExecutionState.PREVIEWED, ActionExecutionState.WAITING_APPROVAL),
+            fixture.actions.cancelledStates,
+        )
+        assertEquals(oldIdentity.actionScope(), fixture.actions.detachedScope)
+        assertTrue("signed-out" in fixture.registration.calls)
+        assertTrue("clear-workspace" in fixture.registration.calls)
+        assertNull(fixture.credentials.tokens)
+        assertNull(fixture.metadata.value)
+    }
+
+    @Test
+    fun `authentication and membership expiry share revocation path but expose distinct stable errors`() = runTest {
+        val authentication = Fixture()
+        authentication.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), authentication.candidate)
+        authentication.orchestrator.onAuthenticationExpired()
+        assertEquals(BusinessLoginErrorCode.AUTH_EXPIRED, authentication.orchestrator.lastError.value?.code)
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, authentication.orchestrator.gate.value)
+
+        val membership = Fixture()
+        membership.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), membership.candidate)
+        membership.orchestrator.onMembershipExpired()
+        assertEquals(BusinessLoginErrorCode.MEMBERSHIP_EXPIRED, membership.orchestrator.lastError.value?.code)
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, membership.orchestrator.gate.value)
+    }
+
+    @Test
+    fun `logout generation prevents cancellation ignoring late login from installing registry or ready`() = runTest {
+        val fixture = Fixture().apply {
+            registration.commitStarted = CompletableDeferred()
+            registration.commitRelease = CompletableDeferred()
+            registration.ignoreCancellation = true
+        }
+        val login = async {
+            fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+        }
+        fixture.registration.commitStarted!!.await()
+
+        fixture.orchestrator.logout()
+        fixture.registration.commitRelease!!.complete(Unit)
+        assertFailsWith<CancellationException> { login.await() }
+        advanceUntilIdle()
+        assertNull(fixture.registry.currentIdentity())
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value)
+    }
+
+    @Test
+    fun `lifecycle starts restore once and close cancels restore then performs idempotent local revocation`() = runTest {
+        val fixture = Fixture().apply {
+            credentials.tokens = AuthTokenSet("old-access", "old-refresh")
+            metadata.value = metadata()
+            preAuth.refreshStarted = CompletableDeferred()
+            preAuth.refreshRelease = CompletableDeferred()
+        }
+        val lifecycle = BusinessAuthenticationLifecycle(fixture.orchestrator, backgroundScope)
+        lifecycle.start()
+        lifecycle.start()
+        fixture.preAuth.refreshStarted!!.await()
+        lifecycle.close()
+        lifecycle.close()
+        runCurrent()
+
+        assertEquals(1, fixture.preAuth.refreshCalls.size)
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, fixture.orchestrator.gate.value)
+        assertNull(fixture.registry.currentIdentity())
+        assertNull(fixture.credentials.tokens)
+        assertNull(fixture.metadata.value)
+    }
+
+    private class Fixture {
+        var candidate = candidate()
+        val preAuth = FakePreAuthenticationGateway()
+        val candidateGateway = FakeCandidateGateway()
+        val credentials = FakeCredentialPersistence()
+        val metadata = FakeMetadataPort()
+        val registration = FakeRegistrationPort()
+        val registry = BusinessIdentityRegistry()
+        val actions = FakeActions()
+        val sessionManager = AuthSessionManager(credentials, authSessionIdFactory = { "auth-session-1" })
+        val orchestrator = BusinessAuthenticationOrchestrator(
+            preAuthentication = preAuth,
+            candidateAuthentication = candidateGateway,
+            credentialPersistence = credentials,
+            authSessionManager = sessionManager,
+            metadataPersistence = metadata,
+            registration = registration,
+            identityRegistry = registry,
+            actions = actions,
+            desktopInstanceId = "desktop-instance-1",
+            desktopSessionId = "desktop-session-1",
+            platformId = 100,
+            now = { Instant.parse("2026-07-22T00:00:00Z") },
+        )
+    }
+
+    private class FakePreAuthenticationGateway : OaPreAuthenticationGateway {
+        var candidates = listOf(candidate())
+        var token = token()
+        var failure: Throwable? = null
+        var onLogin: (() -> Unit)? = null
+        val refreshCalls = mutableListOf<Pair<String, String>>()
+        var refreshStarted: CompletableDeferred<Unit>? = null
+        var refreshRelease: CompletableDeferred<Unit>? = null
+
+        override suspend fun findTenantCandidates(mobile: String): List<OaTenantCandidate> {
+            failure?.let { throw it }
+            return candidates
+        }
+
+        override suspend fun login(mobileOrEmail: String, password: CharArray, tenantId: String): OaTokenBundle {
+            onLogin?.invoke()
+            failure?.let { throw it }
+            return token
+        }
+
+        override suspend fun refresh(tenantId: String, refreshToken: String): OaTokenBundle {
+            refreshCalls += tenantId to refreshToken
+            refreshStarted?.complete(Unit)
+            refreshRelease?.await()
+            failure?.let { throw it }
+            return token
+        }
+    }
+
+    private class FakeCandidateGateway : OaCandidateAuthenticationGateway {
+        var permission = permission()
+        var failure: Throwable? = null
+        var logoutFailure: Throwable? = null
+        val loaded = mutableListOf<OaCandidateAccess>()
+        var logoutCount = 0
+
+        override suspend fun loadPermissionInfo(candidate: OaCandidateAccess): OaPermissionInfo {
+            loaded += candidate
+            failure?.let { throw it }
+            return permission
+        }
+
+        override suspend fun logout(candidate: OaCandidateAccess) {
+            logoutCount += 1
+            logoutFailure?.let { throw it }
+        }
+    }
+
+    private class FakeCredentialPersistence : AuthCredentialPersistencePort {
+        var tokens: AuthTokenSet? = null
+        var failLoad = false
+        var loadFailure: Throwable? = null
+        var failReplace = false
+        var failClear = false
+
+        override suspend fun load(): AuthTokenSet? {
+            loadFailure?.let { throw it }
+            if (failLoad) error("invalid token entry")
+            return tokens
+        }
+
+        override suspend fun replace(tokens: AuthTokenSet) {
+            if (failReplace) error("token persistence failed")
+            this.tokens = tokens
+        }
+
+        override suspend fun clear() {
+            if (failClear) error("token clear failed")
+            tokens = null
+        }
+    }
+
+    private class FakeMetadataPort : BusinessAuthSessionMetadataPersistencePort {
+        var value: BusinessAuthSessionMetadata? = null
+        var loadFailure: Throwable? = null
+        var failSave = false
+        var failClear = false
+
+        override fun load(): BusinessAuthSessionMetadata? {
+            loadFailure?.let { throw it }
+            return value
+        }
+
+        override fun saveOrReplace(metadata: BusinessAuthSessionMetadata) {
+            if (failSave) error("metadata persistence failed")
+            value = metadata
+        }
+
+        override fun clear() {
+            if (failClear) error("metadata clear failed")
+            value = null
+        }
+    }
+
+    private class FakeRegistrationPort : BusinessAgentRegistrationTransactionPort {
+        val calls = mutableListOf<String>()
+        var failureStage: RegistrationFailureStage? = null
+        var onCommit: (() -> Unit)? = null
+        var commitStarted: CompletableDeferred<Unit>? = null
+        var commitRelease: CompletableDeferred<Unit>? = null
+        var ignoreCancellation = false
+
+        override suspend fun prepare(identity: BusinessIdentity): BusinessAgentRegistrationTransaction {
+            calls += "prepare"
+            fail(RegistrationFailureStage.PREPARE)
+            return object : BusinessAgentRegistrationTransaction {
+                override suspend fun registerIdentity() { calls += "identity"; fail(RegistrationFailureStage.IDENTITY) }
+                override suspend fun registerCapabilityCatalog() { calls += "catalog"; fail(RegistrationFailureStage.CATALOG) }
+                override suspend fun registerInitialContext() { calls += "context"; fail(RegistrationFailureStage.CONTEXT) }
+                override suspend fun commit() {
+                    calls += "commit"
+                    commitStarted?.complete(Unit)
+                    try {
+                        commitRelease?.await()
+                    } catch (cancelled: CancellationException) {
+                        if (!ignoreCancellation) throw cancelled
+                        withContext(NonCancellable) { commitRelease?.await() }
+                        throw cancelled
+                    }
+                    fail(RegistrationFailureStage.COMMIT)
+                    onCommit?.invoke()
+                }
+                override suspend fun rollback() { calls += "rollback" }
+            }
+        }
+
+        override suspend fun publishSignedOut() { calls += "signed-out" }
+        override suspend fun clearWorkspace() { calls += "clear-workspace" }
+        private fun fail(stage: RegistrationFailureStage) {
+            if (failureStage == stage) error("registration secret failure")
+        }
+    }
+
+    private class FakeActions : IdentityBoundaryActionPort {
+        var cancelledScope: ActionIdentityScope? = null
+        var cancelledStates: Set<ActionExecutionState>? = null
+        var detachedScope: ActionIdentityScope? = null
+        override suspend fun cancelPreExecution(identityScope: ActionIdentityScope, states: Set<ActionExecutionState>) {
+            cancelledScope = identityScope
+            cancelledStates = states
+        }
+        override suspend fun detachExecutingForReconciliation(identityScope: ActionIdentityScope) { detachedScope = identityScope }
+        override suspend fun result(executionId: String, identityScope: ActionIdentityScope): ActionResult<JsonElement>? = null
+    }
+
+    private enum class RegistrationFailureStage { PREPARE, IDENTITY, CATALOG, CONTEXT, COMMIT }
+
+    companion object {
+        private fun candidate() = OaTenantCandidate("user-1", "tenant-1", 100, "Tenant", 0)
+        private fun token(
+            userId: String = "user-1",
+            access: String = "access-secret",
+            refresh: String = "refresh-secret",
+        ) = OaTokenBundle(access, refresh, userId, 4_102_444_800_000)
+        private fun permission(userId: String = "user-1") = OaPermissionInfo(
+            permissions = setOf("case:read"),
+            roles = setOf("lawyer"),
+            user = OaPermissionUser(userId, "Lawyer"),
+            menus = emptyList(),
+        )
+        private fun metadata() = BusinessAuthSessionMetadata("user-1", "tenant-1", "100")
+    }
+}
