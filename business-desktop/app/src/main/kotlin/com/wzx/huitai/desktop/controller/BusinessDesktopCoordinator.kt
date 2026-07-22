@@ -244,15 +244,25 @@ class BusinessDesktopCoordinator(
 
         override suspend fun rollback() = transactionMutex.withLock {
             if (stage == RegistrationStage.ROLLED_BACK) return@withLock
-            try {
-                if (isCurrentIdentityGeneration(generation)) {
-                    registration.publishSignedOut()
-                    workspace.clearIdentity(generation)
+            if (lockReleased) {
+                registrationMutex.withLock {
+                    rollbackIfCurrent()
                 }
-                stage = RegistrationStage.ROLLED_BACK
-            } finally {
-                releaseRegistrationLock()
+            } else {
+                try {
+                    rollbackIfCurrent()
+                } finally {
+                    releaseRegistrationLock()
+                }
             }
+        }
+
+        private suspend fun rollbackIfCurrent() {
+            if (isCurrentIdentityGeneration(generation)) {
+                registration.publishSignedOut()
+                workspace.clearIdentity(generation)
+            }
+            stage = RegistrationStage.ROLLED_BACK
         }
 
         private suspend fun checkCurrent() {

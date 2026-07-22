@@ -401,6 +401,60 @@ class BusinessDesktopCoordinatorTest {
     }
 
     @Test
+    fun `late committed rollback cannot pass ownership check before a new registration`() = runTest {
+        val signedOutEntered = CompletableDeferred<Unit>()
+        val releaseSignedOut = CompletableDeferred<Unit>()
+        val calls = mutableListOf<String>()
+        val store = BusinessDesktopStore(BusinessDesktopReducer())
+        val registration = object : BusinessRegistrationPort {
+            override suspend fun bindIdentity(identity: BusinessIdentity) {
+                calls += "bind:${identity.identityEpoch}"
+            }
+
+            override suspend fun registerCatalog(identity: BusinessIdentity, catalogEpoch: Long) {
+                calls += "catalog:${identity.identityEpoch}"
+            }
+
+            override suspend fun publishSignedOut() {
+                calls += "signed-out"
+                signedOutEntered.complete(Unit)
+                releaseSignedOut.await()
+            }
+        }
+        val workspace = BusinessWorkspaceController(
+            store,
+            BusinessContextPublicationPort { identity, _, _, _ -> calls += "context:${identity.identityEpoch}" },
+            RecordingActionPort(),
+        )
+        val coordinator = BusinessDesktopCoordinator(store, FakeConnectionLifecycle(), registration, workspace, this)
+        val old = coordinator.prepareRegistration(identity(1), 1, page(1))
+        old.registerIdentity()
+        old.registerCapabilityCatalog()
+        old.registerInitialContext()
+        old.commit()
+
+        val rollback = async { old.rollback() }
+        signedOutEntered.await()
+        val newPrepare = async { coordinator.prepareRegistration(identity(2), 2, page(2)) }
+        runCurrent()
+
+        assertFalse(newPrepare.isCompleted)
+        releaseSignedOut.complete(Unit)
+        rollback.await()
+        val current = newPrepare.await()
+        current.registerIdentity()
+        current.registerCapabilityCatalog()
+        current.registerInitialContext()
+        current.commit()
+
+        assertEquals(identity(2), store.state.value.identity)
+        assertEquals(
+            listOf("bind:1", "catalog:1", "context:1", "signed-out", "bind:2", "catalog:2", "context:2"),
+            calls,
+        )
+    }
+
+    @Test
     fun `membership expiry invalidates blocked registration without waiting or restoring stale identity`() = runTest {
         val store = BusinessDesktopStore(BusinessDesktopReducer())
         val connection = FakeConnectionLifecycle()
