@@ -168,7 +168,7 @@ class AuthSessionManager(
         }
         val transitioning = stateMachine.transition(previousState, transitionState)
         val authenticated = stateMachine.transition(transitioning, AuthenticationState.AUTHENTICATED)
-        val nextEpoch = if (identityChanged) identityEpoch + 1 else identityEpoch
+        val nextEpoch = if (identityChanged) nextIdentityEpoch() else identityEpoch
         val refreshedIdentity = currentIdentity.copy(
             authSessionId = if (identityChanged) authSessionIdFactory() else currentIdentity.authSessionId,
             identityEpoch = if (identityChanged) nextEpoch else currentIdentity.identityEpoch,

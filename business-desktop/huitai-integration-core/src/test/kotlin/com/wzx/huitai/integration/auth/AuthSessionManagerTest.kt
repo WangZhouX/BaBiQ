@@ -1,6 +1,7 @@
 package com.wzx.huitai.integration.auth
 
 import java.time.Instant
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
@@ -154,6 +155,46 @@ class AuthSessionManagerTest {
             assertNotEquals(initialIdentity.authSessionId, refreshedIdentity.authSessionId)
             assertEquals(changedIdentity.userId, refreshedIdentity.userId)
             assertEquals(changedIdentity.tenantId, refreshedIdentity.tenantId)
+        }
+    }
+
+    @Test
+    fun `共享epoch工厂在身份切换后仍覆盖fail closed和logout边界`() = runTest {
+        val terminalBoundaries = listOf<suspend (AuthSessionManager) -> Unit>(
+            { manager -> manager.failClosedRevoke() },
+            { manager -> manager.logout() },
+        )
+
+        terminalBoundaries.forEach { terminate ->
+            val epochSequence = AtomicLong(0)
+            val persistence = RecordingCredentialPersistence()
+            val manager = AuthSessionManager(
+                credentialPersistence = persistence,
+                identityEpochFactory = epochSequence::incrementAndGet,
+            )
+            val transitions = mutableListOf<AuthIdentityTransition>()
+            val collector = launch(start = CoroutineStart.UNDISPATCHED) {
+                manager.identityTransitions.collect(transitions::add)
+            }
+            manager.login(tokens = tokenSet("initial-shared-epoch"), identity = identityArguments)
+            refreshWith(
+                manager,
+                tokens = tokenSet("switched-shared-epoch"),
+                identity = identityArguments.copy(tenantId = "tenant-2"),
+            )
+
+            terminate(manager)
+            runCurrent()
+            collector.cancel()
+
+            assertEquals(listOf(1L, 2L, 3L), transitions.map(AuthIdentityTransition::identityEpoch))
+            assertEquals(3L, epochSequence.get())
+            assertEquals(AuthenticationState.SIGNED_OUT, manager.state.value)
+            assertNull(manager.identity.value)
+            assertNull(manager.accessToken())
+            assertNull(manager.refreshToken())
+            assertNull(persistence.replaced)
+            assertEquals(1, persistence.clearCount)
         }
     }
 
@@ -846,6 +887,7 @@ private class RecordingCredentialPersistence(
         clearStarted?.complete(Unit)
         clearRelease?.await()
         clearCount += 1
+        replaced = null
         onClear()
     }
 }
