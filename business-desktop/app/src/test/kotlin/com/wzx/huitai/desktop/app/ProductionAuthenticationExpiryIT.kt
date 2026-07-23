@@ -9,6 +9,7 @@ import com.wzx.huitai.agent.client.AgentSupervisorState
 import com.wzx.huitai.agent.client.ApplicationSequenceTracker
 import com.wzx.huitai.agent.client.DesktopSessionIdentity
 import com.wzx.huitai.desktop.auth.BusinessAccessGateState
+import com.wzx.huitai.desktop.logging.DesktopLoggingBootstrap
 import com.wzx.huitai.desktop.runtime.ManagedBusinessAgentConnection
 import com.wzx.huitai.desktop.state.BusinessAuthenticationStatus
 import com.wzx.huitai.integration.http.HuitaiRequest
@@ -18,6 +19,7 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -35,6 +37,11 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 class ProductionAuthenticationExpiryIT {
+    @AfterTest
+    fun resetLogging() {
+        DesktopLoggingBootstrap.resetForTests()
+    }
+
     @Test
     fun `real production HTTP expiry revokes registry and workspace`() = runBlocking {
         LoopbackOaServer().use { oa ->
