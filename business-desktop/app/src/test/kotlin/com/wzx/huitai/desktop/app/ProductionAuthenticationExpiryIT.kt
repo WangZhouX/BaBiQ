@@ -17,7 +17,9 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.AfterTest
@@ -27,12 +29,16 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
@@ -53,7 +59,14 @@ class ProductionAuthenticationExpiryIT {
     fun `real production HTTP permission drift consumes response revokes actions and permits relogin`() =
         runExpiryScenario(RefreshBehavior.ADDED_PERMISSION)
 
-    private fun runExpiryScenario(refreshBehavior: RefreshBehavior) = runBlocking {
+    @Test
+    fun `canceled only HTTP waiter cannot leave permission drift owner ready`() =
+        runExpiryScenario(RefreshBehavior.BLOCKED_ADDED_PERMISSION, cancelHttpWaiter = true)
+
+    private fun runExpiryScenario(
+        refreshBehavior: RefreshBehavior,
+        cancelHttpWaiter: Boolean = false,
+    ) = runBlocking {
         LoopbackOaServer(refreshBehavior).use { oa ->
             val home = Files.createTempDirectory("huitai-production-auth-expiry")
             writeOaConfiguration(home, oa.baseUrl)
@@ -104,7 +117,7 @@ class ProductionAuthenticationExpiryIT {
                 assertTrue(production.workspaceController.hasActiveIdentity)
                 assertEquals(oldIdentity, view.desktopState.value.identity)
 
-                val response = withTimeout(5_000) {
+                val sendProtectedRequest: suspend () -> Any? = {
                     production.authenticatedHttpClient.send(
                         HuitaiRequest(
                             method = "GET",
@@ -118,12 +131,31 @@ class ProductionAuthenticationExpiryIT {
                         ),
                     )
                 }
+                val response = if (cancelHttpWaiter) {
+                    val waiter = async(start = CoroutineStart.UNDISPATCHED) { sendProtectedRequest() }
+                    try {
+                        assertTrue(
+                            withContext(Dispatchers.IO) { oa.awaitRefreshStarted() },
+                            "refresh owner must reach the blocked endpoint",
+                        )
+                        waiter.cancel()
+                        waiter.join()
+                    } finally {
+                        oa.releaseRefresh()
+                    }
+                    withTimeout(5_000) {
+                        production.authenticationGate.first { it == BusinessAccessGateState.SIGNED_OUT }
+                    }
+                    null
+                } else {
+                    withTimeout(5_000) { sendProtectedRequest() }
+                }
 
                 assertNull(response, "expiry callback must consume the stale response")
                 assertEquals(1, oa.protectedRequestCount.get())
                 assertEquals(1, oa.refreshRequestCount.get())
                 assertEquals(
-                    if (refreshBehavior == RefreshBehavior.ADDED_PERMISSION) 2 else 1,
+                    if (refreshBehavior == RefreshBehavior.FAILURE) 1 else 2,
                     oa.permissionRequestCount.get(),
                 )
                 assertTrue(oa.observedTenantHeaders.all { it == TENANT_ID })
@@ -194,6 +226,10 @@ class ProductionAuthenticationExpiryIT {
             0,
         )
         private val refreshed = AtomicBoolean(false)
+        private val refreshStarted = CountDownLatch(1)
+        private val refreshRelease = CountDownLatch(
+            if (refreshBehavior == RefreshBehavior.BLOCKED_ADDED_PERMISSION) 1 else 0,
+        )
         val protectedRequestCount = AtomicInteger()
         val refreshRequestCount = AtomicInteger()
         val permissionRequestCount = AtomicInteger()
@@ -232,6 +268,8 @@ class ProductionAuthenticationExpiryIT {
                 }
                 "/api/system/auth/refresh-token" -> {
                     refreshRequestCount.incrementAndGet()
+                    refreshStarted.countDown()
+                    check(refreshRelease.await(5, TimeUnit.SECONDS)) { "refresh release timed out" }
                     if (refreshBehavior == RefreshBehavior.FAILURE) {
                         respond(exchange, 500, """{"code":500,"msg":"refresh failed","data":{}}""")
                     } else {
@@ -261,7 +299,16 @@ class ProductionAuthenticationExpiryIT {
             exchange.responseBody.use { it.write(bytes) }
         }
 
-        override fun close() = server.stop(0)
+        fun awaitRefreshStarted(): Boolean = refreshStarted.await(5, TimeUnit.SECONDS)
+
+        fun releaseRefresh() {
+            refreshRelease.countDown()
+        }
+
+        override fun close() {
+            refreshRelease.countDown()
+            server.stop(0)
+        }
     }
 
     private class AutoRespondingAgentConnection : ManagedBusinessAgentConnection {
@@ -295,6 +342,7 @@ class ProductionAuthenticationExpiryIT {
     private enum class RefreshBehavior {
         FAILURE,
         ADDED_PERMISSION,
+        BLOCKED_ADDED_PERMISSION,
     }
 
     private companion object {

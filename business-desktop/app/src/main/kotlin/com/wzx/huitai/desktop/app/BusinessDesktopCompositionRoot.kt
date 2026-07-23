@@ -98,6 +98,7 @@ import com.wzx.huitai.security.risk.DefaultActionRiskPolicy
 import com.wzx.huitai.security.secret.JceksSecretStore
 import com.wzx.huitai.integration.auth.AuthSessionManager
 import com.wzx.huitai.integration.auth.TokenRefreshCoordinator
+import com.wzx.huitai.integration.auth.TokenRefreshResult
 import com.wzx.huitai.integration.http.CommonResultDecoder
 import com.wzx.huitai.integration.http.HuitaiHttpClient
 import com.wzx.huitai.integration.http.KtorHuitaiTransport
@@ -880,6 +881,16 @@ class ProductionBusinessDesktopCompositionFactory(
         val refreshCoordinator = TokenRefreshCoordinator(
             sessionManager = authSessionManager,
             refreshScope = scope,
+            terminalStateApplied = { result ->
+                when (result) {
+                    TokenRefreshResult.AuthenticationExpired -> orchestrator.onAuthenticationExpired()
+                    TokenRefreshResult.MembershipExpired -> orchestrator.onMembershipExpired()
+                    is TokenRefreshResult.Refreshed,
+                    TokenRefreshResult.Stale,
+                    TokenRefreshResult.CredentialsAlreadyRefreshed,
+                    -> Unit
+                }
+            },
             refreshOperation = refreshAdapter::refresh,
         )
         val businessHttpTransportClient = createBusinessHttpTransportClient(oaConfiguration.requestTimeoutMs)

@@ -432,6 +432,43 @@ class TokenRefreshCoordinatorTest {
     }
 
     @Test
+    fun `canceled only waiter cannot suppress one terminal callback from shared refresh owner`() = runTest {
+        val manager = authenticatedManager(RefreshCredentialPersistence())
+        val operationStarted = CompletableDeferred<Unit>()
+        val operationRelease = CompletableDeferred<Unit>()
+        val callbackCompleted = CompletableDeferred<TokenRefreshResult>()
+        val callbackCalls = AtomicInteger()
+        val coordinator = TokenRefreshCoordinator(
+            sessionManager = manager,
+            refreshScope = backgroundScope,
+            refreshOperation = { _, _ ->
+                operationStarted.complete(Unit)
+                operationRelease.await()
+                TokenRefreshResult.AuthenticationExpired
+            },
+            terminalStateApplied = { result ->
+                callbackCalls.incrementAndGet()
+                callbackCompleted.complete(result)
+            },
+        )
+        val canceledWaiter = async { coordinator.refreshOnce() }
+        operationStarted.await()
+
+        canceledWaiter.cancel()
+        canceledWaiter.join()
+        operationRelease.complete(Unit)
+
+        assertSame(
+            TokenRefreshResult.AuthenticationExpired,
+            withTimeout(1_000) { callbackCompleted.await() },
+        )
+        assertEquals(AuthenticationState.EXPIRED, manager.state.value)
+        assertEquals(1, callbackCalls.get())
+        assertSame(TokenRefreshResult.AuthenticationExpired, coordinator.refreshOnce())
+        assertEquals(1, callbackCalls.get(), "terminal callback belongs only to the applied shared owner")
+    }
+
+    @Test
     fun `operation cancellation does not expire session and clears in-flight`() = runTest {
         val manager = authenticatedManager(RefreshCredentialPersistence())
         val calls = AtomicInteger()
