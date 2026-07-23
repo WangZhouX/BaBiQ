@@ -76,7 +76,7 @@ object BusinessLoginTags {
     const val TENANT_DIALOG = "business-login-tenant-dialog"
     const val TENANT_CANCEL = "business-login-tenant-cancel"
 
-    fun tenantOption(tenantId: String): String = "business-login-tenant-$tenantId"
+    fun tenantOption(index: Int): String = "business-login-tenant-option-$index"
 }
 
 @Composable
@@ -379,7 +379,7 @@ private fun TenantSelectionDialog(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                candidates.forEach { option ->
+                candidates.forEachIndexed { index, option ->
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
                         tonalElevation = 1.dp,
@@ -389,7 +389,7 @@ private fun TenantSelectionDialog(
                             enabled = option.enabled,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .testTag(BusinessLoginTags.tenantOption(option.candidate.tenantId)),
+                                .testTag(BusinessLoginTags.tenantOption(index)),
                         ) {
                             Column(
                                 modifier = Modifier.fillMaxWidth(),
@@ -423,7 +423,13 @@ private fun TenantSelectionDialog(
 
 private fun tenantLabel(candidate: OaTenantCandidate): String =
     candidate.tenantName?.trim()?.takeIf(String::isNotEmpty)
-        ?: "租户 ****${candidate.tenantId.takeLast(MASKED_TENANT_SUFFIX_LENGTH)}"
+        ?: candidate.tenantId.let { tenantId ->
+            if (tenantId.length <= MASKED_TENANT_SUFFIX_LENGTH) {
+                "租户 ****"
+            } else {
+                "租户 ****${tenantId.takeLast(MASKED_TENANT_SUFFIX_LENGTH)}"
+            }
+        }
 
 private object BusinessLoginAssets {
     val background: ImageBitmap by lazy { decode("/brand/login_bg.png") }

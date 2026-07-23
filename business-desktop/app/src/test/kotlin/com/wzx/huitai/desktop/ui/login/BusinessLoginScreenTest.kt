@@ -8,6 +8,7 @@ import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsOn
@@ -33,6 +34,7 @@ import com.wzx.huitai.desktop.ui.theme.HuitaiBusinessTheme
 import com.wzx.huitai.integration.oa.auth.OaTenantCandidate
 import java.net.URI
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.test.assertFailsWith
@@ -241,17 +243,65 @@ class BusinessLoginScreenTest {
         }
 
         rule.onNodeWithTag(BusinessLoginTags.TENANT_DIALOG).assertExists()
-        rule.onNodeWithTag(BusinessLoginTags.tenantOption(enabled.tenantId)).assertIsEnabled()
-        rule.onNodeWithTag(BusinessLoginTags.tenantOption(pending.tenantId)).assertIsNotEnabled()
+        rule.onNodeWithTag(BusinessLoginTags.tenantOption(0)).assertIsEnabled()
+        rule.onNodeWithTag(BusinessLoginTags.tenantOption(1)).assertIsNotEnabled()
         rule.onNodeWithText("租户 ****5678").assertExists()
         rule.onNodeWithText(pending.tenantId).assertDoesNotExist()
         rule.onNodeWithText("入驻中，暂不可选择").assertExists()
-        rule.onNodeWithTag(BusinessLoginTags.tenantOption(pending.tenantId)).performClick()
+        rule.onNodeWithTag(BusinessLoginTags.tenantOption(1)).performClick()
         rule.runOnIdle { assertTrue(selected.isEmpty()) }
-        rule.onNodeWithTag(BusinessLoginTags.tenantOption(enabled.tenantId)).performClick()
+        rule.onNodeWithTag(BusinessLoginTags.tenantOption(0)).performClick()
         rule.runOnIdle { assertEquals(listOf(enabled), selected) }
         rule.onNodeWithTag(BusinessLoginTags.TENANT_CANCEL).performClick()
         rule.runOnIdle { assertTrue(cancelled) }
+    }
+
+    @Test
+    fun `tenant identifiers never enter merged or unmerged semantics`() {
+        val tenantId = "tenant-sensitive-2026"
+        val candidate = tenant(tenantId, null, status = 0)
+        rule.setContent {
+            HuitaiBusinessTheme {
+                BusinessLoginScreen(
+                    state = completeState(
+                        tenantCandidates = listOf(
+                            BusinessTenantCandidateState(candidate, enabled = true),
+                        ),
+                    ),
+                    serviceAgreementUrl = SERVICE_URL,
+                    privacyPolicyUrl = PRIVACY_URL,
+                    modifier = Modifier.requiredSize(900.dp, 700.dp),
+                )
+            }
+        }
+
+        assertSemanticsDoesNotContain(tenantId, useUnmergedTree = false)
+        assertSemanticsDoesNotContain(tenantId, useUnmergedTree = true)
+    }
+
+    @Test
+    fun `short unnamed tenant identifier is never rendered in full`() {
+        val tenantId = "A9"
+        val candidate = tenant(tenantId, null, status = 0)
+        rule.setContent {
+            HuitaiBusinessTheme {
+                BusinessLoginScreen(
+                    state = completeState(
+                        tenantCandidates = listOf(
+                            BusinessTenantCandidateState(candidate, enabled = true),
+                        ),
+                    ),
+                    serviceAgreementUrl = SERVICE_URL,
+                    privacyPolicyUrl = PRIVACY_URL,
+                    modifier = Modifier.requiredSize(900.dp, 700.dp),
+                )
+            }
+        }
+
+        rule.onNodeWithText("租户 ****").assertExists()
+        rule.onNodeWithText(tenantId, substring = true).assertDoesNotExist()
+        assertSemanticsDoesNotContain(tenantId, useUnmergedTree = false)
+        assertSemanticsDoesNotContain(tenantId, useUnmergedTree = true)
     }
 
     @Test
@@ -333,6 +383,19 @@ class BusinessLoginScreenTest {
         tenantName = tenantName,
         tenantEnterStatus = status,
     )
+
+    private fun assertSemanticsDoesNotContain(
+        sensitiveValue: String,
+        useUnmergedTree: Boolean,
+    ) {
+        val exposed = rule.onAllNodes(
+            matcher = SemanticsMatcher("all nodes") { true },
+            useUnmergedTree = useUnmergedTree,
+        ).fetchSemanticsNodes().any { node ->
+            node.config.toString().contains(sensitiveValue)
+        }
+        assertFalse(exposed, "tenant identifier leaked through Compose semantics")
+    }
 
     private companion object {
         const val SERVICE_URL = "https://huitaikeji.cn/agreement.html"
