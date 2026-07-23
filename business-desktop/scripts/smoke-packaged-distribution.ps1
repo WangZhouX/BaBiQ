@@ -199,7 +199,6 @@ try {
         HUITAI_DESKTOP_HOME = $smokeHome
         HUITAI_DESKTOP_SMOKE_REPORT = $reportPath
         HUITAI_DESKTOP_KEYSTORE_PASSWORD = $secretMarker
-        HUITAI_DESKTOP_FRAMEWORK_DEMO_IDENTITY = '0'
     }
 
     $desktopProcess = Start-Process -FilePath $desktopExe.FullName -WorkingDirectory $desktopExe.DirectoryName -PassThru -WindowStyle Hidden
@@ -222,11 +221,9 @@ try {
     Assert-Smoke ($report.authenticatedConnection -eq $true) 'Authenticated WebSocket connection was not proven.'
     Assert-Smoke ($report.signedOutIdentityBound -eq $true) 'Framework signed-out identity bind was not proven.'
     Assert-Smoke ($report.windowComposed -eq $true) 'The real Compose Window was not committed.'
-    Assert-Smoke ($report.shellComposed -eq $true) 'The business desktop shell was not composed.'
+    Assert-Smoke ($report.loginGateComposed -eq $true) 'The signed-out login gate was not composed.'
+    Assert-Smoke ($report.businessShellHiddenWhileSignedOut -eq $true) 'The business shell was visible while signed out.'
     Assert-Smoke ($report.brandLogoDecoded -eq $true) 'The packaged brand logo was not decoded.'
-    Assert-Smoke ($report.mascotDecoded -eq $true) 'The packaged assistant mascot was not decoded.'
-    Assert-Smoke ($report.sidebarNavigationComposed -eq $true) 'The sidebar navigation was not composed.'
-    Assert-Smoke ($report.assistantInitiallyCollapsed -eq $true) 'The assistant did not start collapsed.'
     Assert-Smoke ($report.productName -eq $expectedProductName) 'The composed product name is invalid.'
     Assert-Smoke ([long]$report.childPid -gt 0) 'Child PID is missing.'
     $reportedChildPid = [int]$report.childPid

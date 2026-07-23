@@ -15,6 +15,7 @@ import com.wzx.huitai.desktop.app.BusinessAgentLaunchMode
 import com.wzx.huitai.desktop.app.BusinessDesktopCompositionRoot
 import com.wzx.huitai.desktop.app.BusinessDesktopProductionConfiguration
 import com.wzx.huitai.desktop.app.ProductionBusinessDesktopCompositionFactory
+import com.wzx.huitai.desktop.auth.BusinessAccessGateState
 import com.wzx.huitai.desktop.decision.ConfirmationDecisionDialogState
 import com.wzx.huitai.desktop.decision.HighRiskApprovalDialogState
 import com.wzx.huitai.desktop.controller.BusinessComposerSessionState
@@ -31,6 +32,11 @@ import com.wzx.huitai.desktop.ui.shell.BusinessDesktopDestination
 import com.wzx.huitai.desktop.ui.shell.BusinessDesktopShell
 import com.wzx.huitai.desktop.ui.theme.HuitaiBusinessTheme
 import com.wzx.huitai.desktop.ui.layout.BusinessDesktopLayoutPolicy
+import com.wzx.huitai.desktop.ui.login.BusinessBootstrapFailureCode
+import com.wzx.huitai.desktop.ui.login.BusinessBootstrapFailureScreen
+import com.wzx.huitai.desktop.ui.login.BusinessLoginGate
+import com.wzx.huitai.desktop.ui.login.BusinessLoginScreen
+import com.wzx.huitai.desktop.ui.login.classifyBusinessBootstrapFailure
 import com.wzx.huitai.desktop.ui.window.BusinessDesktopWindowSpec
 import com.wzx.huitai.desktop.smoke.PackagedSmokeProbe
 import com.wzx.huitai.desktop.smoke.PackagedSmokeCompositionCoordinator
@@ -64,7 +70,6 @@ fun main() {
             configuration = BusinessDesktopProductionConfiguration(
                 home = BusinessDesktopProductionConfiguration.resolveHome(),
                 backendJar = BusinessDesktopProductionConfiguration.resolveBundledBackendJar(),
-                frameworkDemoIdentity = System.getenv("HUITAI_DESKTOP_FRAMEWORK_DEMO_IDENTITY") == "1",
                 agentLaunchMode = agentLaunchMode,
             ),
             parentScope = runtimeScope,
@@ -74,7 +79,13 @@ fun main() {
             factory = factory,
             smokeProbe = smokeProbe,
         )
-    } catch (_: Exception) {
+    } catch (failure: Exception) {
+        val bootstrapFailure = classifyBusinessBootstrapFailure(failure)
+        if (bootstrapFailure != null) {
+            runtimeScope.cancel()
+            openBusinessBootstrapFailureWindow(bootstrapFailure)
+            return
+        }
         val message = if (agentLaunchMode == BusinessAgentLaunchMode.ExternalDevelopment) {
             "业务桌面前端连接失败，请先启动并保持运行 Business Backend（后端）"
         } else {
@@ -126,6 +137,8 @@ fun main() {
                 val formState by view.formState.collectAsState()
                 val decisionState by view.decisions.state.collectAsState()
                 val providerSettingsState by view.production.providerSettingsController.state.collectAsState()
+                val gate by view.production.authenticationGate.collectAsState()
+                val loginState by view.production.loginController.state.collectAsState()
                 var selectedDestination by remember { mutableStateOf(BusinessDesktopDestination.DATA_ENTRY) }
                 val composerIdentityScope = desktopState.identity?.toComposerIdentityScope()
                 var composerSession by remember(composerIdentityScope) {
@@ -150,265 +163,328 @@ fun main() {
                 val clipboardPasteCoordinator = remember(view.production.clipboardImageAttachmentStore) {
                     BusinessClipboardPasteCoordinator(view.production.clipboardImageAttachmentStore::hasImage)
                 }
+                var previousGate by remember { mutableStateOf(gate) }
+                LaunchedEffect(gate) {
+                    if (previousGate == BusinessAccessGateState.READY && gate != BusinessAccessGateState.READY) {
+                        view.production.loginController.clearSensitiveInput()
+                    }
+                    previousGate = gate
+                }
 
                 HuitaiBusinessTheme {
                     SideEffect {
                         smokeUiCompositionSignals.markWindowComposed()
                     }
-                    BusinessDesktopShell(
-                        state = desktopState,
-                        formState = formState,
-                        providerSettingsState = providerSettingsState,
-                        selectedDestination = selectedDestination,
-                        composerText = composerDraft.text,
-                        composerAttachments = composerDraft.attachments,
-                        attachmentError = composerAttachmentError?.let { "${it.code}: ${it.message}" },
-                        composerSubmitting = composerSubmitting,
-                        agentPanelExpanded = assistantExpanded,
-                        requestedAssistantWidth = requestedAssistantWidth,
-                        onDestinationSelected = { selectedDestination = it },
-                        onAgentPanelExpandedChange = { assistantExpanded = it },
-                        onRequestedAssistantWidthChange = { requestedAssistantWidth = it },
-                        onFieldEdited = { fieldId, value ->
-                            storage.screen.dispatch(DemoFormEvent.EditField(fieldId, value))
-                            uiScope.launch {
-                                view.production.workspaceController.publishPage(storage.screen.pageContext())
-                            }
-                        },
-                        onSuggestionsChanged = { suggestions ->
-                            uiScope.launch {
-                                view.production.workspaceController.updateSuggestions(suggestions.values.toList())
-                            }
-                        },
-                        onAcceptSuggestion = { fieldId, baseRevision ->
-                            val installed = storage.screen.state.value.suggestionPatch
-                            val change = installed?.changes?.singleOrNull { it.fieldId == fieldId }
-                            if (installed?.baseRevision == baseRevision && change != null) {
-                                val patch = FormPatch(installed.pageId, installed.baseRevision, listOf(change))
-                                uiScope.launch {
-                                    val executionId = UUID.randomUUID().toString()
-                                    view.production.workspaceController.executeUserAction(
-                                        executionId = executionId,
-                                        actionId = "form.apply_patch",
-                                        actionVersion = 1,
-                                        input = actionInput(executionId, patch),
-                                    )
-                                    view.production.workspaceController.publishPage(storage.screen.pageContext())
+                    BusinessLoginGate(
+                        gate = gate,
+                        login = {
+                            SideEffect {
+                                smokeUiCompositionSignals.markLoginGateComposed()
+                                if (gate == BusinessAccessGateState.SIGNED_OUT) {
+                                    smokeUiCompositionSignals.markBusinessShellHiddenWhileSignedOut()
                                 }
                             }
-                        },
-                        onAcceptAllSuggestions = { baseRevision ->
-                            val patch = storage.screen.state.value.suggestionPatch
-                            if (patch?.baseRevision == baseRevision) {
-                                uiScope.launch {
-                                    val executionId = UUID.randomUUID().toString()
-                                    view.production.workspaceController.executeUserAction(
-                                        executionId = executionId,
-                                        actionId = "form.apply_patch",
-                                        actionVersion = 1,
-                                        input = actionInput(executionId, patch),
-                                    )
-                                    view.production.workspaceController.publishPage(storage.screen.pageContext())
-                                }
-                            }
-                        },
-                        onSaveDraft = {
-                            uiScope.launch {
-                                val executionId = UUID.randomUUID().toString()
-                                view.production.workspaceController.executeUserAction(
-                                    executionId = executionId,
-                                    actionId = "demo.save_draft",
-                                    actionVersion = 1,
-                                    input = buildJsonObject { put("executionId", executionId) },
-                                )
-                            }
-                        },
-                        onSubmit = {
-                            uiScope.launch {
-                                val executionId = UUID.randomUUID().toString()
-                                view.production.workspaceController.executeUserAction(
-                                    executionId = executionId,
-                                    actionId = "demo.submit",
-                                    actionVersion = 1,
-                                    input = buildJsonObject { put("executionId", executionId) },
-                                )
-                            }
-                        },
-                        onComposerTextChanged = {
-                            composerSession = activeComposerSession.copy(
-                                draft = composerDraft.copy(text = it),
+                            BusinessLoginScreen(
+                                state = loginState,
+                                serviceAgreementUrl = view.production.serviceAgreementUrl,
+                                privacyPolicyUrl = view.production.privacyPolicyUrl,
+                                onAccountChange = view.production.loginController::updateAccount,
+                                onPasswordChange = view.production.loginController::updatePassword,
+                                onRememberChange = { remember ->
+                                    uiScope.launch {
+                                        view.production.loginController.updateRemember(remember)
+                                    }
+                                },
+                                onAgreementChange = view.production.loginController::updateAgreement,
+                                onSubmit = {
+                                    uiScope.launch { view.production.loginController.submit() }
+                                },
+                                onSliderCompleted = {
+                                    uiScope.launch {
+                                        view.production.loginController.completeSlider(success = true)
+                                    }
+                                },
+                                onSliderDismissed = view.production.loginController::dismissSlider,
+                                onTenantSelected = { tenant ->
+                                    uiScope.launch {
+                                        view.production.loginController.selectTenant(tenant)
+                                    }
+                                },
+                                onTenantSelectionCancelled =
+                                    view.production.loginController::cancelTenantSelection,
                             )
                         },
-                        onChooseFiles = {
-                            try {
-                                val historyAttachments = desktopState.messages
-                                    .filterIsInstance<com.wzx.huitai.agent.conversation.BusinessThreadItem.UserMessage>()
-                                    .flatMap { it.attachments }
-                                val additions = view.production.attachmentPicker.choose(
-                                    currentDrafts = composerDraft.attachments,
-                                    existingIds = historyAttachments.mapTo(hashSetOf()) { it.id },
-                                    existingDisplayIds = historyAttachments.mapTo(hashSetOf()) { it.displayId },
-                                )
-                                val mergedAttachments = if (additions.isEmpty()) {
-                                    composerDraft.attachments
-                                } else {
-                                    mergeBusinessComposerAttachments(composerDraft.attachments, additions)
-                                }
-                                composerSession = activeComposerSession.copy(
-                                    draft = composerDraft.copy(attachments = mergedAttachments),
-                                    attachmentError = null,
-                                )
-                            } catch (failure: BusinessAttachmentSelectionException) {
-                                composerSession = activeComposerSession.copy(
-                                    attachmentError = safeComposerAttachmentError(failure.code, failure.message),
-                                )
-                            } catch (failure: Exception) {
-                                composerSession = activeComposerSession.copy(
-                                    attachmentError = safeComposerAttachmentError(failure),
-                                )
-                            }
-                        },
-                        onPasteImage = {
-                            clipboardPasteCoordinator.request { captureComplete ->
-                                val requestedIdentityScope = composerIdentityScope
-                                val historyAttachments = desktopState.messages
-                                    .filterIsInstance<com.wzx.huitai.agent.conversation.BusinessThreadItem.UserMessage>()
-                                    .flatMap { it.attachments }
-                                val existingIds = historyAttachments.mapTo(hashSetOf()) { it.id }.apply {
-                                    addAll(composerDraft.attachments.map { it.id })
-                                }
-                                val existingDisplayIds = historyAttachments.mapTo(hashSetOf()) { it.displayId }.apply {
-                                    addAll(composerDraft.attachments.map { it.displayId })
-                                }
-                                uiScope.launch {
+                        ready = {
+                            BusinessDesktopShell(
+                                state = desktopState,
+                                formState = formState,
+                                providerSettingsState = providerSettingsState,
+                                selectedDestination = selectedDestination,
+                                composerText = composerDraft.text,
+                                composerAttachments = composerDraft.attachments,
+                                attachmentError = composerAttachmentError?.let { "${it.code}: ${it.message}" },
+                                composerSubmitting = composerSubmitting,
+                                agentPanelExpanded = assistantExpanded,
+                                requestedAssistantWidth = requestedAssistantWidth,
+                                onDestinationSelected = { selectedDestination = it },
+                                onAgentPanelExpandedChange = { assistantExpanded = it },
+                                onRequestedAssistantWidthChange = { requestedAssistantWidth = it },
+                                onFieldEdited = { fieldId, value ->
+                                    storage.screen.dispatch(DemoFormEvent.EditField(fieldId, value))
+                                    uiScope.launch {
+                                        view.production.workspaceController.publishPage(storage.screen.pageContext())
+                                    }
+                                },
+                                onSuggestionsChanged = { suggestions ->
+                                    uiScope.launch {
+                                        view.production.workspaceController.updateSuggestions(suggestions.values.toList())
+                                    }
+                                },
+                                onAcceptSuggestion = { fieldId, baseRevision ->
+                                    val installed = storage.screen.state.value.suggestionPatch
+                                    val change = installed?.changes?.singleOrNull { it.fieldId == fieldId }
+                                    if (installed?.baseRevision == baseRevision && change != null) {
+                                        val patch = FormPatch(installed.pageId, installed.baseRevision, listOf(change))
+                                        uiScope.launch {
+                                            val executionId = UUID.randomUUID().toString()
+                                            view.production.workspaceController.executeUserAction(
+                                                executionId = executionId,
+                                                actionId = "form.apply_patch",
+                                                actionVersion = 1,
+                                                input = actionInput(executionId, patch),
+                                            )
+                                            view.production.workspaceController.publishPage(storage.screen.pageContext())
+                                        }
+                                    }
+                                },
+                                onAcceptAllSuggestions = { baseRevision ->
+                                    val patch = storage.screen.state.value.suggestionPatch
+                                    if (patch?.baseRevision == baseRevision) {
+                                        uiScope.launch {
+                                            val executionId = UUID.randomUUID().toString()
+                                            view.production.workspaceController.executeUserAction(
+                                                executionId = executionId,
+                                                actionId = "form.apply_patch",
+                                                actionVersion = 1,
+                                                input = actionInput(executionId, patch),
+                                            )
+                                            view.production.workspaceController.publishPage(storage.screen.pageContext())
+                                        }
+                                    }
+                                },
+                                onSaveDraft = {
+                                    uiScope.launch {
+                                        val executionId = UUID.randomUUID().toString()
+                                        view.production.workspaceController.executeUserAction(
+                                            executionId = executionId,
+                                            actionId = "demo.save_draft",
+                                            actionVersion = 1,
+                                            input = buildJsonObject { put("executionId", executionId) },
+                                        )
+                                    }
+                                },
+                                onSubmit = {
+                                    uiScope.launch {
+                                        val executionId = UUID.randomUUID().toString()
+                                        view.production.workspaceController.executeUserAction(
+                                            executionId = executionId,
+                                            actionId = "demo.submit",
+                                            actionVersion = 1,
+                                            input = buildJsonObject { put("executionId", executionId) },
+                                        )
+                                    }
+                                },
+                                onComposerTextChanged = {
+                                    composerSession = activeComposerSession.copy(
+                                        draft = composerDraft.copy(text = it),
+                                    )
+                                },
+                                onChooseFiles = {
                                     try {
-                                        val captured = withContext(Dispatchers.IO) {
-                                            view.production.clipboardImageAttachmentStore.capture(
-                                                existingIds = existingIds,
-                                                existingDisplayIds = existingDisplayIds,
-                                            )
+                                        val historyAttachments = desktopState.messages
+                                            .filterIsInstance<com.wzx.huitai.agent.conversation.BusinessThreadItem.UserMessage>()
+                                            .flatMap { it.attachments }
+                                        val additions = view.production.attachmentPicker.choose(
+                                            currentDrafts = composerDraft.attachments,
+                                            existingIds = historyAttachments.mapTo(hashSetOf()) { it.id },
+                                            existingDisplayIds = historyAttachments.mapTo(hashSetOf()) { it.displayId },
+                                        )
+                                        val mergedAttachments = if (additions.isEmpty()) {
+                                            composerDraft.attachments
+                                        } else {
+                                            mergeBusinessComposerAttachments(composerDraft.attachments, additions)
                                         }
-                                        val latestIdentityScope =
-                                            view.desktopState.value.identity?.toComposerIdentityScope()
-                                        if (captured != null && latestIdentityScope == requestedIdentityScope) {
-                                            val currentSession = composerSession.forIdentity(latestIdentityScope)
-                                            composerSession = currentSession.copy(
-                                                draft = currentSession.draft.copy(
-                                                    attachments = mergeBusinessComposerAttachments(
-                                                        currentSession.draft.attachments,
-                                                        listOf(captured),
-                                                    ),
-                                                ),
-                                                attachmentError = null,
-                                            )
-                                        }
-                                    } catch (failure: BusinessLocalAttachmentException) {
-                                        val latestIdentityScope =
-                                            view.desktopState.value.identity?.toComposerIdentityScope()
-                                        if (latestIdentityScope == requestedIdentityScope) {
-                                            composerSession = composerSession
-                                                .forIdentity(latestIdentityScope)
-                                                .copy(
-                                                    attachmentError = safeComposerAttachmentError(
-                                                        failure.code,
-                                                        failure.message,
-                                                    ),
-                                                )
-                                        }
+                                        composerSession = activeComposerSession.copy(
+                                            draft = composerDraft.copy(attachments = mergedAttachments),
+                                            attachmentError = null,
+                                        )
+                                    } catch (failure: BusinessAttachmentSelectionException) {
+                                        composerSession = activeComposerSession.copy(
+                                            attachmentError = safeComposerAttachmentError(failure.code, failure.message),
+                                        )
                                     } catch (failure: Exception) {
-                                        val latestIdentityScope =
-                                            view.desktopState.value.identity?.toComposerIdentityScope()
-                                        if (latestIdentityScope == requestedIdentityScope) {
-                                            composerSession = composerSession
-                                                .forIdentity(latestIdentityScope)
-                                                .copy(attachmentError = safeComposerAttachmentError(failure))
-                                        }
-                                    } finally {
-                                        captureComplete()
+                                        composerSession = activeComposerSession.copy(
+                                            attachmentError = safeComposerAttachmentError(failure),
+                                        )
                                     }
-                                }
-                            }
-                        },
-                        onRemoveAttachment = { attachmentId ->
-                            composerSession = activeComposerSession.copy(
-                                draft = composerDraft.copy(
-                                    attachments = composerDraft.attachments.filterNot { it.id == attachmentId },
-                                ),
-                                attachmentError = null,
+                                },
+                                onPasteImage = {
+                                    clipboardPasteCoordinator.request { captureComplete ->
+                                        val requestedIdentityScope = composerIdentityScope
+                                        val historyAttachments = desktopState.messages
+                                            .filterIsInstance<com.wzx.huitai.agent.conversation.BusinessThreadItem.UserMessage>()
+                                            .flatMap { it.attachments }
+                                        val existingIds = historyAttachments.mapTo(hashSetOf()) { it.id }.apply {
+                                            addAll(composerDraft.attachments.map { it.id })
+                                        }
+                                        val existingDisplayIds = historyAttachments.mapTo(hashSetOf()) { it.displayId }.apply {
+                                            addAll(composerDraft.attachments.map { it.displayId })
+                                        }
+                                        uiScope.launch {
+                                            try {
+                                                val captured = withContext(Dispatchers.IO) {
+                                                    view.production.clipboardImageAttachmentStore.capture(
+                                                        existingIds = existingIds,
+                                                        existingDisplayIds = existingDisplayIds,
+                                                    )
+                                                }
+                                                val latestIdentityScope =
+                                                    view.desktopState.value.identity?.toComposerIdentityScope()
+                                                if (captured != null && latestIdentityScope == requestedIdentityScope) {
+                                                    val currentSession = composerSession.forIdentity(latestIdentityScope)
+                                                    composerSession = currentSession.copy(
+                                                        draft = currentSession.draft.copy(
+                                                            attachments = mergeBusinessComposerAttachments(
+                                                                currentSession.draft.attachments,
+                                                                listOf(captured),
+                                                            ),
+                                                        ),
+                                                        attachmentError = null,
+                                                    )
+                                                }
+                                            } catch (failure: BusinessLocalAttachmentException) {
+                                                val latestIdentityScope =
+                                                    view.desktopState.value.identity?.toComposerIdentityScope()
+                                                if (latestIdentityScope == requestedIdentityScope) {
+                                                    composerSession = composerSession
+                                                        .forIdentity(latestIdentityScope)
+                                                        .copy(
+                                                            attachmentError = safeComposerAttachmentError(
+                                                                failure.code,
+                                                                failure.message,
+                                                            ),
+                                                        )
+                                                }
+                                            } catch (failure: Exception) {
+                                                val latestIdentityScope =
+                                                    view.desktopState.value.identity?.toComposerIdentityScope()
+                                                if (latestIdentityScope == requestedIdentityScope) {
+                                                    composerSession = composerSession
+                                                        .forIdentity(latestIdentityScope)
+                                                        .copy(attachmentError = safeComposerAttachmentError(failure))
+                                                }
+                                            } finally {
+                                                captureComplete()
+                                            }
+                                        }
+                                    }
+                                },
+                                onRemoveAttachment = { attachmentId ->
+                                    composerSession = activeComposerSession.copy(
+                                        draft = composerDraft.copy(
+                                            attachments = composerDraft.attachments.filterNot { it.id == attachmentId },
+                                        ),
+                                        attachmentError = null,
+                                    )
+                                },
+                                onSend = {
+                                    val captured = composerDraft
+                                    val capturedIdentityScope = composerIdentityScope
+                                    if (!composerSubmitting &&
+                                        (captured.text.isNotBlank() || captured.attachments.isNotEmpty())
+                                    ) {
+                                        composerSubmitting = true
+                                        uiScope.launch {
+                                            try {
+                                                val result = sendCoordinator.submit(captured)
+                                                val latestIdentityScope =
+                                                    view.desktopState.value.identity?.toComposerIdentityScope()
+                                                if (result.accepted && latestIdentityScope == capturedIdentityScope) {
+                                                    val currentSession = composerSession.forIdentity(latestIdentityScope)
+                                                    composerSession = currentSession.copy(
+                                                        draft = sendCoordinator.reconcile(
+                                                            current = currentSession.draft,
+                                                            captured = captured,
+                                                            result = result,
+                                                        ),
+                                                        attachmentError = if (result.succeeded) {
+                                                            null
+                                                        } else {
+                                                            currentSession.attachmentError
+                                                        },
+                                                    )
+                                                }
+                                            } finally {
+                                                composerSubmitting = false
+                                            }
+                                        }
+                                    }
+                                },
+                                onProviderSelected = { providerId, modelId ->
+                                    uiScope.launch {
+                                        view.production.conversationController.selectProvider(providerId, modelId)
+                                    }
+                                },
+                                onReconnect = {
+                                    uiScope.launch { view.production.desktopCoordinator.manualRetry() }
+                                },
+                                onProviderRefresh = {
+                                    uiScope.launch { view.production.providerSettingsController.refresh() }
+                                },
+                                onProviderCreate = { draft ->
+                                    view.production.providerSettingsController.create(draft) != null
+                                },
+                                onProviderUpdate = { draft ->
+                                    view.production.providerSettingsController.update(draft) != null
+                                },
+                                onProviderDelete = { providerId ->
+                                    uiScope.launch { view.production.providerSettingsController.delete(providerId) }
+                                },
+                                onProviderTest = { providerId ->
+                                    uiScope.launch { view.production.providerSettingsController.test(providerId) }
+                                },
+                                onProviderActivated = { providerId, modelId ->
+                                    uiScope.launch { view.production.providerSettingsController.setActive(providerId, modelId) }
+                                },
+                                onProviderOAuthStatus = { providerId ->
+                                    uiScope.launch { view.production.providerSettingsController.oauthStatus(providerId) }
+                                },
+                                onProviderOAuthLogin = { providerId ->
+                                    uiScope.launch { view.production.providerSettingsController.oauthLogin(providerId) }
+                                },
+                                onLogout = {
+                                    uiScope.launch { view.production.logoutController.logout() }
+                                },
                             )
-                        },
-                        onSend = {
-                            val captured = composerDraft
-                            val capturedIdentityScope = composerIdentityScope
-                            if (!composerSubmitting &&
-                                (captured.text.isNotBlank() || captured.attachments.isNotEmpty())
-                            ) {
-                                composerSubmitting = true
-                                uiScope.launch {
-                                    try {
-                                        val result = sendCoordinator.submit(captured)
-                                        val latestIdentityScope =
-                                            view.desktopState.value.identity?.toComposerIdentityScope()
-                                        if (result.accepted && latestIdentityScope == capturedIdentityScope) {
-                                            val currentSession = composerSession.forIdentity(latestIdentityScope)
-                                            composerSession = currentSession.copy(
-                                                draft = sendCoordinator.reconcile(
-                                                    current = currentSession.draft,
-                                                    captured = captured,
-                                                    result = result,
-                                                ),
-                                                attachmentError = if (result.succeeded) {
-                                                    null
-                                                } else {
-                                                    currentSession.attachmentError
-                                                },
-                                            )
-                                        }
-                                    } finally {
-                                        composerSubmitting = false
-                                    }
-                                }
+                            when (val dialog = decisionState.activeDialog) {
+                                is ConfirmationDecisionDialogState -> ActionPreviewDialog(
+                                    state = dialog,
+                                    onConfirm = { view.decisions.accept(dialog.executionId) },
+                                    onCancel = { view.decisions.reject(dialog.executionId) },
+                                )
+                                is HighRiskApprovalDialogState -> HighRiskApprovalDialog(
+                                    state = dialog,
+                                    onApprove = { view.decisions.approve(dialog.executionId) },
+                                    onDeny = { view.decisions.deny(dialog.executionId) },
+                                )
+                                null -> Unit
                             }
                         },
-                        onProviderSelected = { providerId, modelId ->
-                            uiScope.launch {
-                                view.production.conversationController.selectProvider(providerId, modelId)
-                            }
-                        },
-                        onReconnect = {
-                            uiScope.launch { view.production.desktopCoordinator.manualRetry() }
-                        },
-                        onProviderRefresh = {
-                            uiScope.launch { view.production.providerSettingsController.refresh() }
-                        },
-                        onProviderCreate = { draft ->
-                            view.production.providerSettingsController.create(draft) != null
-                        },
-                        onProviderUpdate = { draft ->
-                            view.production.providerSettingsController.update(draft) != null
-                        },
-                        onProviderDelete = { providerId ->
-                            uiScope.launch { view.production.providerSettingsController.delete(providerId) }
-                        },
-                        onProviderTest = { providerId ->
-                            uiScope.launch { view.production.providerSettingsController.test(providerId) }
-                        },
-                        onProviderActivated = { providerId, modelId ->
-                            uiScope.launch { view.production.providerSettingsController.setActive(providerId, modelId) }
-                        },
-                        onProviderOAuthStatus = { providerId ->
-                            uiScope.launch { view.production.providerSettingsController.oauthStatus(providerId) }
-                        },
-                        onProviderOAuthLogin = { providerId ->
-                            uiScope.launch { view.production.providerSettingsController.oauthLogin(providerId) }
-                        },
-                        onShellComposed = smokeUiCompositionSignals::markShellComposed,
-                        onSidebarNavigationComposed = smokeUiCompositionSignals::markSidebarNavigationComposed,
                     )
                     PackagedSmokeWindowCompositionEffect(
                         coordinator = smokeCoordinator,
                         compositionSignals = smokeUiCompositionSignals,
-                        assistantInitiallyCollapsed = !assistantExpanded,
+                        enabled = gate == BusinessAccessGateState.SIGNED_OUT,
                         productName = BusinessDesktopWindowSpec.title,
                         onFailure = { failure ->
                             LoggerFactory.getLogger("BusinessDesktopSmoke")
@@ -425,20 +501,6 @@ fun main() {
                             }
                         },
                     )
-
-                    when (val dialog = decisionState.activeDialog) {
-                        is ConfirmationDecisionDialogState -> ActionPreviewDialog(
-                            state = dialog,
-                            onConfirm = { view.decisions.accept(dialog.executionId) },
-                            onCancel = { view.decisions.reject(dialog.executionId) },
-                        )
-                        is HighRiskApprovalDialogState -> HighRiskApprovalDialog(
-                            state = dialog,
-                            onApprove = { view.decisions.approve(dialog.executionId) },
-                            onDeny = { view.decisions.deny(dialog.executionId) },
-                        )
-                        null -> Unit
-                    }
                 }
             }
         }
@@ -447,6 +509,20 @@ fun main() {
             runBlocking { root.shutdown() }
         } finally {
             runtimeScope.cancel()
+        }
+    }
+}
+
+private fun openBusinessBootstrapFailureWindow(code: BusinessBootstrapFailureCode) {
+    application {
+        Window(
+            title = BusinessDesktopWindowSpec.title,
+            icon = BusinessDesktopWindowSpec.iconPainter(),
+            onCloseRequest = ::exitApplication,
+        ) {
+            HuitaiBusinessTheme {
+                BusinessBootstrapFailureScreen(code)
+            }
         }
     }
 }

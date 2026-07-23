@@ -15,40 +15,34 @@ import kotlinx.coroutines.test.runTest
 
 class PackagedSmokeWindowCompositionTest {
     @Test
-    fun `readiness reflects only real window shell and sidebar navigation composition signals`() {
+    fun `readiness reflects only the signed out login gate composition signals`() {
         val signals = PackagedSmokeUiCompositionSignals()
         assertFalse(signals.snapshot().windowComposed)
-        assertFalse(signals.snapshot().shellComposed)
-        assertFalse(signals.snapshot().sidebarNavigationComposed)
+        assertFalse(signals.snapshot().loginGateComposed)
+        assertFalse(signals.snapshot().businessShellHiddenWhileSignedOut)
 
         signals.markWindowComposed()
-        signals.markShellComposed()
+        signals.markLoginGateComposed()
+        signals.markBusinessShellHiddenWhileSignedOut()
         val ready = buildPackagedSmokeUiReadiness(
             composition = signals.snapshot(),
-            assistantInitiallyCollapsed = true,
             productName = PackagedSmokeUiReadiness.PRODUCT_NAME,
             decodeLogo = {},
-            decodeMascot = {},
         )
-        signals.markSidebarNavigationComposed()
-        val mascotFailure = IllegalStateException("missing mascot")
+        val logoFailure = IllegalStateException("missing logo")
         val reportedFailure = assertFailsWith<IllegalStateException> {
             buildPackagedSmokeUiReadiness(
                 composition = signals.snapshot(),
-                assistantInitiallyCollapsed = true,
                 productName = PackagedSmokeUiReadiness.PRODUCT_NAME,
-                decodeLogo = {},
-                decodeMascot = { throw mascotFailure },
+                decodeLogo = { throw logoFailure },
             )
         }
 
         assertTrue(ready.windowComposed)
-        assertTrue(ready.shellComposed)
+        assertTrue(ready.loginGateComposed)
+        assertTrue(ready.businessShellHiddenWhileSignedOut)
         assertTrue(ready.brandLogoDecoded)
-        assertTrue(ready.mascotDecoded)
-        assertFalse(ready.sidebarNavigationComposed)
-        assertTrue(ready.assistantInitiallyCollapsed)
-        assertSame(mascotFailure, reportedFailure)
+        assertSame(logoFailure, reportedFailure)
     }
 
     @Test
@@ -67,19 +61,17 @@ class PackagedSmokeWindowCompositionTest {
             publishPackagedSmokeAfterCommittedFrame(
                 coordinator = coordinator,
                 compositionSignals = signals,
-                assistantInitiallyCollapsed = true,
                 productName = PackagedSmokeUiReadiness.PRODUCT_NAME,
                 awaitFrame = { frame.await() },
                 decodeLogo = {},
-                decodeMascot = {},
             )
         }
         runCurrent()
         assertFalse(Files.exists(report), "the report must not publish before a rendered frame")
 
         signals.markWindowComposed()
-        signals.markShellComposed()
-        signals.markSidebarNavigationComposed()
+        signals.markLoginGateComposed()
+        signals.markBusinessShellHiddenWhileSignedOut()
         frame.complete(Unit)
         publication.join()
 
@@ -93,23 +85,32 @@ class PackagedSmokeWindowCompositionTest {
             .readText()
         val applicationIndex = source.indexOf("application {")
         val windowIndex = source.indexOf("Window(", applicationIndex)
-        val shellIndex = source.indexOf("BusinessDesktopShell(", windowIndex)
-        val effectIndex = source.indexOf("PackagedSmokeWindowCompositionEffect(", shellIndex)
+        val gateIndex = source.indexOf("BusinessLoginGate(", windowIndex)
+        val loginIndex = source.indexOf("login = {", gateIndex)
+        val readyIndex = source.indexOf("ready = {", loginIndex)
+        val shellIndex = source.indexOf("BusinessDesktopShell(", readyIndex)
+        val decisionIndex = source.indexOf("when (val dialog = decisionState.activeDialog)", shellIndex)
+        val effectIndex = source.indexOf("PackagedSmokeWindowCompositionEffect(", gateIndex)
 
         assertTrue(applicationIndex >= 0)
         assertTrue(windowIndex > applicationIndex)
-        assertTrue(shellIndex > windowIndex)
-        assertTrue(effectIndex > shellIndex)
+        assertTrue(gateIndex > windowIndex)
+        assertTrue(loginIndex > gateIndex)
+        assertTrue(readyIndex > loginIndex)
+        assertTrue(shellIndex > readyIndex)
+        assertTrue(decisionIndex > shellIndex)
+        assertTrue(effectIndex > decisionIndex)
         assertFalse(source.substring(0, applicationIndex).contains("smokeProbe.write"))
         assertFalse(source.substring(0, applicationIndex).contains("packagedSmokeEvidence()"))
-        assertTrue(source.contains("assistantInitiallyCollapsed = !assistantExpanded"))
         assertTrue(source.contains("smokeUiCompositionSignals.markWindowComposed()"))
-        assertTrue(source.contains("onShellComposed = smokeUiCompositionSignals::markShellComposed"))
-        assertTrue(source.contains("onSidebarNavigationComposed = smokeUiCompositionSignals::markSidebarNavigationComposed"))
-        val legacyConnection = "onTop" + "NavigationComposed = smokeUiCompositionSignals::markTop" + "NavigationComposed"
-        assertFalse(source.contains(legacyConnection))
+        assertTrue(source.contains("smokeUiCompositionSignals.markLoginGateComposed()"))
+        assertTrue(source.contains("smokeUiCompositionSignals.markBusinessShellHiddenWhileSignedOut()"))
+        assertTrue(source.contains("enabled = gate == BusinessAccessGateState.SIGNED_OUT"))
+        assertFalse(source.contains("HUITAI_DESKTOP_FRAMEWORK_DEMO_IDENTITY"))
+        assertTrue(source.contains("view.production.logoutController.logout()"))
+        assertFalse(source.contains("authenticationOrchestrator.logout()"))
         assertTrue(source.contains("compositionSignals = smokeUiCompositionSignals"))
-        val effectBinding = source.substring(effectIndex, source.indexOf("when (val dialog", effectIndex))
+        val effectBinding = source.substring(effectIndex, source.indexOf("    } finally", effectIndex))
         assertTrue(effectBinding.contains("onFailure = { failure ->"))
         assertTrue(effectBinding.contains(".error(") && effectBinding.contains("failure"))
         assertTrue(effectBinding.contains("closeBusinessDesktop("))

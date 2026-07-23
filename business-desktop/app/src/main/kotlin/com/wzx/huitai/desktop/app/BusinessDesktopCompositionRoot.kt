@@ -40,6 +40,7 @@ import com.wzx.huitai.desktop.auth.BusinessAuthenticationLifecycle
 import com.wzx.huitai.desktop.auth.BusinessAuthenticationOrchestrator
 import com.wzx.huitai.desktop.auth.BusinessIdentityRegistry
 import com.wzx.huitai.desktop.auth.BusinessLoginController
+import com.wzx.huitai.desktop.auth.BusinessLogoutController
 import com.wzx.huitai.desktop.auth.BusinessLoginMessage
 import com.wzx.huitai.desktop.auth.CoordinatorAgentRegistrationTransactionAdapter
 import com.wzx.huitai.desktop.auth.BusinessRegistrationWatermarks
@@ -68,6 +69,7 @@ import com.wzx.huitai.desktop.runtime.BusinessAgentLaunchRequest
 import com.wzx.huitai.desktop.runtime.ManagedBusinessAgentConnection
 import com.wzx.huitai.desktop.smoke.PackagedSmokeEvidence
 import com.wzx.huitai.desktop.security.JceksAuthCredentialPersistence
+import com.wzx.huitai.desktop.security.LocalCredentialStoreUnavailableException
 import com.wzx.huitai.desktop.security.BusinessAuthSessionMetadataStore
 import com.wzx.huitai.desktop.security.BusinessLoginCredentialStore
 import com.wzx.huitai.desktop.security.FileBusinessAuthRevocationMarkerStore
@@ -296,7 +298,7 @@ class EnvironmentDesktopSecretBootstrap(
 ) : DesktopSecretBootstrap {
     override fun load(): CharArray {
         val value = environment()[ENV_NAME]
-        require(!value.isNullOrBlank()) { "$ENV_NAME is required" }
+        if (value.isNullOrBlank()) throw LocalCredentialStoreUnavailableException()
         return value.toCharArray()
     }
 
@@ -418,12 +420,15 @@ class ProductionUiComponents internal constructor(
     val clipboardImageAttachmentStore: ClipboardImageAttachmentStore,
     val attachmentPicker: BusinessAttachmentPicker,
     val loginController: BusinessLoginController,
+    val logoutController: BusinessLogoutController,
     internal val authenticationOrchestrator: BusinessAuthenticationOrchestrator,
     val authenticatedHttpGate: ReadyAuthenticatedHttpGate,
     val authenticatedHttpClient: ReadyAuthenticatedHuitaiClient,
     val authenticationGate: StateFlow<BusinessAccessGateState>,
     val authenticationError: StateFlow<BusinessLoginMessage?>,
     val identityRegistry: BusinessIdentityRegistry,
+    val serviceAgreementUrl: String,
+    val privacyPolicyUrl: String,
 )
 
 /**
@@ -954,12 +959,18 @@ class ProductionBusinessDesktopCompositionFactory(
             ),
             attachmentPicker = BusinessAttachmentPicker(idFactory = attachmentIdFactory),
             loginController = loginController,
+            logoutController = BusinessLogoutController(
+                logout = orchestrator::logout,
+                clearSensitiveInput = loginController::clearSensitiveInput,
+            ),
             authenticationOrchestrator = orchestrator,
             authenticatedHttpGate = authenticatedHttpGate,
             authenticatedHttpClient = authenticatedHttpClient,
             authenticationGate = identityRegistry.gate,
             authenticationError = orchestrator.lastError,
             identityRegistry = identityRegistry,
+            serviceAgreementUrl = oaConfiguration.serviceAgreementUrl,
+            privacyPolicyUrl = oaConfiguration.privacyPolicyUrl,
         )
         val view = BusinessDesktopRuntimeView(
             desktopState = this.storage.desktopStore.state,

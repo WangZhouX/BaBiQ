@@ -579,7 +579,7 @@ class BusinessDesktopCompositionRootTest {
 
     @Test
     fun `production secret bootstrap fails closed and bundled backend path is resource-root relative`() {
-        assertFailsWith<IllegalArgumentException> {
+        assertFailsWith<com.wzx.huitai.desktop.security.LocalCredentialStoreUnavailableException> {
             EnvironmentDesktopSecretBootstrap { emptyMap() }.load()
         }
         val root = Files.createTempDirectory("huitai-resources")

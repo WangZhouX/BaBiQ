@@ -56,13 +56,13 @@ class PackagedSmokeProbeTest {
         assertTrue(report.getValue("authenticatedConnection").jsonPrimitive.boolean)
         assertTrue(report.getValue("signedOutIdentityBound").jsonPrimitive.boolean)
         assertTrue(report.getValue("windowComposed").jsonPrimitive.boolean)
-        assertTrue(report.getValue("shellComposed").jsonPrimitive.boolean)
+        assertTrue(report.getValue("loginGateComposed").jsonPrimitive.boolean)
+        assertTrue(report.getValue("businessShellHiddenWhileSignedOut").jsonPrimitive.boolean)
         assertTrue(report.getValue("brandLogoDecoded").jsonPrimitive.boolean)
-        assertTrue(report.getValue("mascotDecoded").jsonPrimitive.boolean)
-        assertTrue(report.getValue("sidebarNavigationComposed").jsonPrimitive.boolean)
-        val legacyNavigationField = "top" + "NavigationComposed"
-        assertFalse(report.containsKey(legacyNavigationField))
-        assertTrue(report.getValue("assistantInitiallyCollapsed").jsonPrimitive.boolean)
+        assertFalse(report.containsKey("shellComposed"))
+        assertFalse(report.containsKey("mascotDecoded"))
+        assertFalse(report.containsKey("sidebarNavigationComposed"))
+        assertFalse(report.containsKey("assistantInitiallyCollapsed"))
         assertEquals("翔鸟律智桌面端", report.getValue("productName").jsonPrimitive.content)
         assertEquals(42_424, report.getValue("childPid").jsonPrimitive.content.toLong())
         assertEquals(runtimeRoot.toAbsolutePath().normalize().toString(), report.getValue("runtimeRoot").jsonPrimitive.content)
@@ -105,10 +105,9 @@ class PackagedSmokeProbeTest {
         val ready = PackagedSmokeUiReadiness.ready()
         val invalidReadiness = listOf(
             ready.copy(windowComposed = false),
-            ready.copy(shellComposed = false),
+            ready.copy(loginGateComposed = false),
+            ready.copy(businessShellHiddenWhileSignedOut = false),
             ready.copy(brandLogoDecoded = false),
-            ready.copy(mascotDecoded = false),
-            ready.copy(assistantInitiallyCollapsed = false),
             ready.copy(productName = "wrong-product"),
         )
         invalidReadiness.forEachIndexed { index, readiness ->
@@ -119,14 +118,6 @@ class PackagedSmokeProbeTest {
             assertFalse(Files.exists(report))
         }
 
-        val missingSidebarReport = home.resolve("report-missing-sidebar.json")
-        val missingSidebarFailure = assertFailsWith<IllegalArgumentException> {
-            PackagedSmokeProbe(missingSidebarReport).write(
-                evidence.copy(uiReadiness = ready.copy(sidebarNavigationComposed = false)),
-            )
-        }
-        assertTrue(missingSidebarFailure.message.orEmpty().contains("sidebar navigation"))
-        assertFalse(Files.exists(missingSidebarReport))
     }
 
     @Test

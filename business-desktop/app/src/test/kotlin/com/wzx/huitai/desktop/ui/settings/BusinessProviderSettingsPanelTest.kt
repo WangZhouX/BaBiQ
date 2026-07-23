@@ -31,6 +31,22 @@ class BusinessProviderSettingsPanelTest {
     val rule = createComposeRule()
 
     @Test
+    fun `settings exposes an explicit logout action`() {
+        var logoutCount = 0
+        rule.setContent {
+            HuitaiBusinessTheme {
+                BusinessProviderSettingsPanel(
+                    state = state(),
+                    onLogout = { logoutCount += 1 },
+                )
+            }
+        }
+
+        rule.onNodeWithTag("business-logout-action").performClick()
+        rule.runOnIdle { assertEquals(1, logoutCount) }
+    }
+
+    @Test
     fun `panel renders only safe provider fields active state and key status`() {
         val marker = "sk-never-render-this-marker"
         rule.setContent {

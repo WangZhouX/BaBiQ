@@ -3,10 +3,12 @@
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.material3.Text
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertTextContains
@@ -30,12 +32,15 @@ import com.wzx.huitai.agent.conversation.BusinessAttachmentDraft
 import com.wzx.huitai.agent.conversation.BusinessThreadItem
 import com.wzx.huitai.demo.model.DemoFormState
 import com.wzx.huitai.desktop.controller.BusinessProviderSettingsState
+import com.wzx.huitai.desktop.auth.BusinessAccessGateState
 import com.wzx.huitai.desktop.state.BusinessAuthenticationStatus
 import com.wzx.huitai.desktop.state.BusinessConnectionStatus
 import com.wzx.huitai.desktop.state.BusinessDesktopState
 import com.wzx.huitai.desktop.state.BusinessIdentity
 import com.wzx.huitai.desktop.ui.agent.BusinessAssistantChromeTags
 import com.wzx.huitai.desktop.ui.layout.BusinessDesktopLayoutPolicy
+import com.wzx.huitai.desktop.ui.login.BusinessLoginGate
+import com.wzx.huitai.desktop.ui.login.BusinessLoginGateTags
 import com.wzx.huitai.desktop.ui.theme.HuitaiBusinessTheme
 import kotlin.math.abs
 import kotlin.test.assertEquals
@@ -47,6 +52,82 @@ import org.junit.Test
 class BusinessDesktopShellTest {
     @get:Rule
     val rule = createComposeRule()
+
+    @Test
+    fun `login gate never composes business shell before ready and removes it on logout`() {
+        val gate = mutableStateOf(BusinessAccessGateState.STARTING)
+        rule.setContent {
+            HuitaiBusinessTheme {
+                BusinessLoginGate(
+                    gate = gate.value,
+                    login = { Text("登录页", Modifier.testTag("login-content")) },
+                    ready = { Text("业务桌面", Modifier.testTag("ready-content")) },
+                )
+            }
+        }
+
+        rule.onNodeWithTag(BusinessLoginGateTags.RECOVERY_PROGRESS).assertExists()
+        rule.onNodeWithTag("login-content").assertDoesNotExist()
+        rule.onNodeWithTag("ready-content").assertDoesNotExist()
+
+        rule.runOnIdle { gate.value = BusinessAccessGateState.RESTORING }
+        rule.onNodeWithTag(BusinessLoginGateTags.RECOVERY_PROGRESS).assertExists()
+        rule.onNodeWithTag("ready-content").assertDoesNotExist()
+
+        rule.runOnIdle { gate.value = BusinessAccessGateState.SIGNED_OUT }
+        rule.onNodeWithTag("login-content").assertExists()
+        rule.onNodeWithTag("ready-content").assertDoesNotExist()
+
+        rule.runOnIdle { gate.value = BusinessAccessGateState.AUTHENTICATING }
+        rule.onNodeWithTag("login-content").assertExists()
+        rule.onNodeWithTag("ready-content").assertDoesNotExist()
+
+        rule.runOnIdle { gate.value = BusinessAccessGateState.READY }
+        rule.onNodeWithTag("login-content").assertDoesNotExist()
+        rule.onNodeWithTag("ready-content").assertExists()
+
+        rule.runOnIdle { gate.value = BusinessAccessGateState.SIGNING_OUT }
+        rule.onNodeWithTag(BusinessLoginGateTags.SIGNING_OUT_PROGRESS).assertExists()
+        rule.onNodeWithTag("login-content").assertDoesNotExist()
+        rule.onNodeWithTag("ready-content").assertDoesNotExist()
+
+        rule.runOnIdle { gate.value = BusinessAccessGateState.SIGNED_OUT }
+        rule.onNodeWithTag("login-content").assertExists()
+        rule.onNodeWithTag("ready-content").assertDoesNotExist()
+    }
+
+    @Test
+    fun `settings logout immediately removes shell and clears sensitive login input`() {
+        val gate = mutableStateOf(BusinessAccessGateState.READY)
+        val password = mutableStateOf("golden-secret")
+        rule.setContent {
+            HuitaiBusinessTheme {
+                BusinessLoginGate(
+                    gate = gate.value,
+                    login = { Text("登录页", Modifier.testTag("login-content")) },
+                    ready = {
+                        BusinessDesktopShell(
+                            state = authenticatedShellState(),
+                            formState = DemoFormState(),
+                            providerSettingsState = BusinessProviderSettingsState(operationsEnabled = true),
+                            selectedDestination = BusinessDesktopDestination.SETTINGS,
+                            onLogout = {
+                                password.value = ""
+                                gate.value = BusinessAccessGateState.SIGNING_OUT
+                            },
+                            modifier = Modifier.shellSize(1200.dp, 700.dp),
+                        )
+                    },
+                )
+            }
+        }
+
+        rule.onNodeWithTag(BusinessSidebarTags.ROOT).assertExists()
+        rule.onNodeWithTag("business-logout-action").performClick()
+        rule.onNodeWithTag(BusinessSidebarTags.ROOT).assertDoesNotExist()
+        rule.onNodeWithTag(BusinessLoginGateTags.SIGNING_OUT_PROGRESS).assertExists()
+        rule.runOnIdle { assertEquals("", password.value) }
+    }
 
     @Test
     fun `shell reports its own and sidebar navigation committed composition`() {

@@ -84,6 +84,7 @@ fun BusinessDesktopShell(
     onProviderActivated: (providerId: String, modelId: String?) -> Unit = { _, _ -> },
     onProviderOAuthStatus: (String) -> Unit = {},
     onProviderOAuthLogin: (String) -> Unit = {},
+    onLogout: () -> Unit = {},
     onAgentPanelExpandedChange: (Boolean) -> Unit = {},
     onRequestedAssistantWidthChange: (Dp) -> Unit = {},
     onShellComposed: () -> Unit = {},
@@ -146,6 +147,7 @@ fun BusinessDesktopShell(
                                 onProviderActivated = onProviderActivated,
                                 onProviderOAuthStatus = onProviderOAuthStatus,
                                 onProviderOAuthLogin = onProviderOAuthLogin,
+                                onLogout = onLogout,
                                 modifier = Modifier.fillMaxSize(),
                             )
                         }
@@ -249,6 +251,7 @@ private fun BusinessContent(
     onProviderActivated: (String, String?) -> Unit,
     onProviderOAuthStatus: (String) -> Unit,
     onProviderOAuthLogin: (String) -> Unit,
+    onLogout: () -> Unit,
     modifier: Modifier,
 ) {
     when (destination) {
@@ -275,6 +278,7 @@ private fun BusinessContent(
             onSetActive = onProviderActivated,
             onOAuthStatus = onProviderOAuthStatus,
             onOAuthLogin = onProviderOAuthLogin,
+            onLogout = onLogout,
             modifier = modifier,
         )
     }
@@ -316,6 +320,7 @@ private fun ProviderSettingsForShell(
     onSetActive: (String, String?) -> Unit,
     onOAuthStatus: (String) -> Unit,
     onOAuthLogin: (String) -> Unit,
+    onLogout: () -> Unit,
     modifier: Modifier,
 ) {
     BusinessProviderSettingsPanel(
@@ -328,6 +333,7 @@ private fun ProviderSettingsForShell(
         onSetActive = onSetActive,
         onOAuthStatus = onOAuthStatus,
         onOAuthLogin = onOAuthLogin,
+        onLogout = onLogout,
         modifier = modifier,
     )
 }

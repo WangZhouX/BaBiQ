@@ -45,6 +45,7 @@ fun BusinessProviderSettingsPanel(
     onSetActive: (providerId: String, modelId: String?) -> Unit = { _, _ -> },
     onOAuthStatus: (String) -> Unit = {},
     onOAuthLogin: (String) -> Unit = {},
+    onLogout: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     var editor by remember { mutableStateOf<BusinessProviderEditorSession?>(null) }
@@ -65,6 +66,10 @@ fun BusinessProviderSettingsPanel(
                 Text("配置模型端点、认证方式和当前 Provider；密钥不会回显。", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = onLogout,
+                    modifier = Modifier.testTag("business-logout-action"),
+                ) { Text("退出登录") }
                 OutlinedButton(
                     enabled = state.operationsEnabled && !state.loading,
                     onClick = onRefresh,

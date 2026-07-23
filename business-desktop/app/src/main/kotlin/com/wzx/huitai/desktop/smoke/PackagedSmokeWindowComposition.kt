@@ -8,32 +8,32 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 internal data class PackagedSmokeUiCompositionSnapshot(
     val windowComposed: Boolean,
-    val shellComposed: Boolean,
-    val sidebarNavigationComposed: Boolean,
+    val loginGateComposed: Boolean,
+    val businessShellHiddenWhileSignedOut: Boolean,
 )
 
-/** Signals emitted by the real Window, shell, and sidebar-navigation composition paths. */
+/** Signals emitted by the real signed-out Window and login-gate composition paths. */
 class PackagedSmokeUiCompositionSignals {
     private val windowComposed = AtomicBoolean(false)
-    private val shellComposed = AtomicBoolean(false)
-    private val sidebarNavigationComposed = AtomicBoolean(false)
+    private val loginGateComposed = AtomicBoolean(false)
+    private val businessShellHiddenWhileSignedOut = AtomicBoolean(false)
 
     fun markWindowComposed() {
         windowComposed.set(true)
     }
 
-    fun markShellComposed() {
-        shellComposed.set(true)
+    fun markLoginGateComposed() {
+        loginGateComposed.set(true)
     }
 
-    fun markSidebarNavigationComposed() {
-        sidebarNavigationComposed.set(true)
+    fun markBusinessShellHiddenWhileSignedOut() {
+        businessShellHiddenWhileSignedOut.set(true)
     }
 
     internal fun snapshot(): PackagedSmokeUiCompositionSnapshot = PackagedSmokeUiCompositionSnapshot(
         windowComposed = windowComposed.get(),
-        shellComposed = shellComposed.get(),
-        sidebarNavigationComposed = sidebarNavigationComposed.get(),
+        loginGateComposed = loginGateComposed.get(),
+        businessShellHiddenWhileSignedOut = businessShellHiddenWhileSignedOut.get(),
     )
 }
 
@@ -45,18 +45,17 @@ class PackagedSmokeUiCompositionSignals {
 fun PackagedSmokeWindowCompositionEffect(
     coordinator: PackagedSmokeCompositionCoordinator?,
     compositionSignals: PackagedSmokeUiCompositionSignals,
-    assistantInitiallyCollapsed: Boolean,
+    enabled: Boolean,
     productName: String,
     onFailure: (Throwable) -> Unit,
     onFinished: () -> Unit,
 ) {
-    LaunchedEffect(coordinator) {
-        if (coordinator == null) return@LaunchedEffect
+    LaunchedEffect(coordinator, enabled) {
+        if (coordinator == null || !enabled) return@LaunchedEffect
         try {
             publishPackagedSmokeAfterCommittedFrame(
                 coordinator = coordinator,
                 compositionSignals = compositionSignals,
-                assistantInitiallyCollapsed = assistantInitiallyCollapsed,
                 productName = productName,
                 awaitFrame = { withFrameNanos { } },
             )
@@ -71,40 +70,31 @@ fun PackagedSmokeWindowCompositionEffect(
 internal suspend fun publishPackagedSmokeAfterCommittedFrame(
     coordinator: PackagedSmokeCompositionCoordinator,
     compositionSignals: PackagedSmokeUiCompositionSignals,
-    assistantInitiallyCollapsed: Boolean,
     productName: String,
     awaitFrame: suspend () -> Unit,
     decodeLogo: () -> Unit = { BusinessBrandResources.logoImageBitmap() },
-    decodeMascot: () -> Unit = { BusinessBrandResources.mascotImageBitmap() },
 ): Boolean {
     awaitFrame()
     return coordinator.onWindowCompositionCommitted(
         buildPackagedSmokeUiReadiness(
             composition = compositionSignals.snapshot(),
-            assistantInitiallyCollapsed = assistantInitiallyCollapsed,
             productName = productName,
             decodeLogo = decodeLogo,
-            decodeMascot = decodeMascot,
         ),
     )
 }
 
 internal fun buildPackagedSmokeUiReadiness(
     composition: PackagedSmokeUiCompositionSnapshot,
-    assistantInitiallyCollapsed: Boolean,
     productName: String,
     decodeLogo: () -> Unit = { BusinessBrandResources.logoImageBitmap() },
-    decodeMascot: () -> Unit = { BusinessBrandResources.mascotImageBitmap() },
 ): PackagedSmokeUiReadiness {
     decodeLogo()
-    decodeMascot()
     return PackagedSmokeUiReadiness(
         windowComposed = composition.windowComposed,
-        shellComposed = composition.shellComposed,
+        loginGateComposed = composition.loginGateComposed,
+        businessShellHiddenWhileSignedOut = composition.businessShellHiddenWhileSignedOut,
         brandLogoDecoded = true,
-        mascotDecoded = true,
-        sidebarNavigationComposed = composition.sidebarNavigationComposed,
-        assistantInitiallyCollapsed = assistantInitiallyCollapsed,
         productName = productName,
     )
 }

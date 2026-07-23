@@ -42,11 +42,9 @@ data class PackagedSmokeEvidence(
 /** Non-sensitive evidence that the real packaged Compose window reached its first committed frame. */
 data class PackagedSmokeUiReadiness(
     val windowComposed: Boolean,
-    val shellComposed: Boolean,
+    val loginGateComposed: Boolean,
+    val businessShellHiddenWhileSignedOut: Boolean,
     val brandLogoDecoded: Boolean,
-    val mascotDecoded: Boolean,
-    val sidebarNavigationComposed: Boolean,
-    val assistantInitiallyCollapsed: Boolean,
     val productName: String,
 ) {
     companion object {
@@ -54,21 +52,17 @@ data class PackagedSmokeUiReadiness(
 
         fun ready(): PackagedSmokeUiReadiness = PackagedSmokeUiReadiness(
             windowComposed = true,
-            shellComposed = true,
+            loginGateComposed = true,
+            businessShellHiddenWhileSignedOut = true,
             brandLogoDecoded = true,
-            mascotDecoded = true,
-            sidebarNavigationComposed = true,
-            assistantInitiallyCollapsed = true,
             productName = PRODUCT_NAME,
         )
 
         fun notReady(): PackagedSmokeUiReadiness = PackagedSmokeUiReadiness(
             windowComposed = false,
-            shellComposed = false,
+            loginGateComposed = false,
+            businessShellHiddenWhileSignedOut = false,
             brandLogoDecoded = false,
-            mascotDecoded = false,
-            sidebarNavigationComposed = false,
-            assistantInitiallyCollapsed = false,
             productName = "",
         )
     }
@@ -144,11 +138,11 @@ class PackagedSmokeProbe(reportPath: Path) {
         require(source.signedOutIdentityBound) { "framework signed-out identity must be bound" }
         val ui = source.uiReadiness
         require(ui.windowComposed) { "packaged smoke requires a committed Compose window" }
-        require(ui.shellComposed) { "packaged smoke requires the business desktop shell" }
+        require(ui.loginGateComposed) { "packaged smoke requires the signed-out login gate" }
+        require(ui.businessShellHiddenWhileSignedOut) {
+            "packaged smoke requires the business shell to remain hidden while signed out"
+        }
         require(ui.brandLogoDecoded) { "packaged smoke requires the packaged brand logo" }
-        require(ui.mascotDecoded) { "packaged smoke requires the packaged assistant mascot" }
-        require(ui.sidebarNavigationComposed) { "packaged smoke requires the sidebar navigation" }
-        require(ui.assistantInitiallyCollapsed) { "packaged smoke requires the assistant to start collapsed" }
         require(ui.productName == PackagedSmokeUiReadiness.PRODUCT_NAME) {
             "packaged smoke requires the Xiangniao product name"
         }
@@ -196,11 +190,9 @@ class PackagedSmokeProbe(reportPath: Path) {
             signedOutIdentityBound = true,
             childPid = source.childPid,
             windowComposed = ui.windowComposed,
-            shellComposed = ui.shellComposed,
+            loginGateComposed = ui.loginGateComposed,
+            businessShellHiddenWhileSignedOut = ui.businessShellHiddenWhileSignedOut,
             brandLogoDecoded = ui.brandLogoDecoded,
-            mascotDecoded = ui.mascotDecoded,
-            sidebarNavigationComposed = ui.sidebarNavigationComposed,
-            assistantInitiallyCollapsed = ui.assistantInitiallyCollapsed,
             productName = ui.productName,
         )
     }
@@ -240,11 +232,9 @@ private data class PackagedSmokeReport(
     val signedOutIdentityBound: Boolean,
     val childPid: Long,
     val windowComposed: Boolean,
-    val shellComposed: Boolean,
+    val loginGateComposed: Boolean,
+    val businessShellHiddenWhileSignedOut: Boolean,
     val brandLogoDecoded: Boolean,
-    val mascotDecoded: Boolean,
-    val sidebarNavigationComposed: Boolean,
-    val assistantInitiallyCollapsed: Boolean,
     val productName: String,
 )
 

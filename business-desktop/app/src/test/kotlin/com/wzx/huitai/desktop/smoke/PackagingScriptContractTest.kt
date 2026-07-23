@@ -30,14 +30,37 @@ class PackagingScriptContractTest {
         assertTrue(script.contains("\$expectedInstallerDescription = \"Installer of \$expectedProductName\""))
         assertTrue(script.contains("\$packageExeVersion.FileDescription -eq \$expectedInstallerDescription"))
         assertTrue(script.contains("windowComposed"))
-        assertTrue(script.contains("shellComposed"))
+        assertTrue(script.contains("loginGateComposed"))
+        assertTrue(script.contains("businessShellHiddenWhileSignedOut"))
         assertTrue(script.contains("brandLogoDecoded"))
-        assertTrue(script.contains("mascotDecoded"))
-        assertTrue(script.contains("sidebarNavigationComposed"))
-        assertFalse(script.contains("top" + "NavigationComposed"))
-        assertTrue(script.contains("assistantInitiallyCollapsed"))
+        assertFalse(script.contains("shellComposed"))
+        assertFalse(script.contains("mascotDecoded"))
+        assertFalse(script.contains("sidebarNavigationComposed"))
+        assertFalse(script.contains("assistantInitiallyCollapsed"))
+        assertFalse(script.contains("HUITAI_DESKTOP_FRAMEWORK_DEMO_IDENTITY"))
         assertTrue(script.contains("\$child.WaitForExit(30000)"))
         assertFalse(script.contains("HuitaiBusinessDesktop.exe"))
         assertFalse(script.any { it.code > 0x7f }, "Windows PowerShell 5 smoke script must remain ASCII-decodable")
+    }
+
+    @Test
+    fun `idea run configurations start backend and frontend independently without demo identity`() {
+        val root = Path.of("..", "..")
+        val backend = root.resolve(".run/Business Backend.run.xml").toFile().readText()
+        val frontend = root.resolve(".run/Business Frontend.run.xml").toFile().readText()
+
+        assertTrue(backend.contains(":app:runBusinessBackendDevelopment"))
+        assertFalse(backend.contains("runBusinessFrontendDevelopment"))
+        assertTrue(frontend.contains(":app:runBusinessFrontendDevelopment"))
+        assertFalse(frontend.contains("runBusinessBackendDevelopment"))
+        assertTrue(frontend.contains("HUITAI_DESKTOP_EXTERNAL_BACKEND"))
+        assertTrue(frontend.contains("HUITAI_DESKTOP_CONFIG_FILE"))
+        assertTrue(
+            frontend.contains(
+                "\$PROJECT_DIR\$/business-desktop/config/business-desktop-development.properties",
+            ),
+        )
+        assertFalse(backend.contains("HUITAI_DESKTOP_FRAMEWORK_DEMO_IDENTITY"))
+        assertFalse(frontend.contains("HUITAI_DESKTOP_FRAMEWORK_DEMO_IDENTITY"))
     }
 }
