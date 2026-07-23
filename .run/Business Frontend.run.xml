@@ -10,7 +10,7 @@
       <option name="executionName" />
       <option name="externalProjectPath" value="$PROJECT_DIR$/business-desktop" />
       <option name="externalSystemIdString" value="GRADLE" />
-      <option name="scriptParameters" value="--no-daemon --max-workers=1" />
+      <option name="scriptParameters" value="--no-daemon --max-workers=1 --no-parallel --no-build-cache -Pkotlin.incremental=false -Pkotlin.compiler.execution.strategy=in-process" />
       <option name="taskDescriptions">
         <list />
       </option>

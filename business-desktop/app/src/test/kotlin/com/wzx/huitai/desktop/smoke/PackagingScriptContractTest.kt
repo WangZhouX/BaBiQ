@@ -48,6 +48,12 @@ class PackagingScriptContractTest {
         val root = Path.of("..", "..")
         val backend = root.resolve(".run/Business Backend.run.xml").toFile().readText()
         val frontend = root.resolve(".run/Business Frontend.run.xml").toFile().readText()
+        val stableBuildParameters = listOf(
+            "--no-parallel",
+            "--no-build-cache",
+            "-Pkotlin.incremental=false",
+            "-Pkotlin.compiler.execution.strategy=in-process",
+        )
 
         assertTrue(backend.contains(":app:runBusinessBackendDevelopment"))
         assertFalse(backend.contains("runBusinessFrontendDevelopment"))
@@ -62,5 +68,9 @@ class PackagingScriptContractTest {
         )
         assertFalse(backend.contains("HUITAI_DESKTOP_FRAMEWORK_DEMO_IDENTITY"))
         assertFalse(frontend.contains("HUITAI_DESKTOP_FRAMEWORK_DEMO_IDENTITY"))
+        stableBuildParameters.forEach { parameter ->
+            assertTrue(backend.contains(parameter), "backend run configuration must contain $parameter")
+            assertTrue(frontend.contains(parameter), "frontend run configuration must contain $parameter")
+        }
     }
 }
