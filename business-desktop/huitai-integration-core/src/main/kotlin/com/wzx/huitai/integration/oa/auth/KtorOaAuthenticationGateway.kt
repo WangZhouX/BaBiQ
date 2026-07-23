@@ -139,8 +139,10 @@ internal class KtorOaAuthenticationGateway(
             protocolError()
         }
         val code = root["code"].scalar() ?: protocolError()
-        val message = root.requiredString("msg")
-        if (code != "200") throw OaAuthenticationException(businessError(code, message))
+        if (code !in SUCCESS_CODES) {
+            val message = root.requiredString("msg")
+            throw OaAuthenticationException(businessError(code, message))
+        }
         return root["data"]?.takeUnless { it is JsonNull } ?: protocolError()
     }
 
@@ -255,6 +257,7 @@ internal class KtorOaAuthenticationGateway(
     }
 
     private companion object {
+        val SUCCESS_CODES = setOf("0", "200")
         const val TENANT_HEADER = "tenant-id"
     }
 }

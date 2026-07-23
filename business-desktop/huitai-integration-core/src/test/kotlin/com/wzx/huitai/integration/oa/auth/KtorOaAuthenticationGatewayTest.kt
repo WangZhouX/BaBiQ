@@ -139,6 +139,34 @@ class KtorOaAuthenticationGatewayTest {
     }
 
     @Test
+    fun `accepts live OA zero success code with blank message`() = runBlocking {
+        val gateway = gateway(MockEngine {
+            respondJson(
+                """{"code":0,"msg":"","data":[{"userId":"u-1","tenantId":"t-1","platformId":7,"tenantName":"总部","tenantEnterStatus":1}]}""",
+            )
+        })
+
+        val candidate = gateway.findTenantCandidates("13800138000").single()
+
+        assertEquals("u-1", candidate.userId)
+        assertEquals("t-1", candidate.tenantId)
+        assertEquals("总部", candidate.tenantName)
+    }
+
+    @Test
+    fun `maps live OA zero success empty tenant list to account not found`() = runBlocking {
+        val gateway = gateway(MockEngine {
+            respondJson("""{"code":0,"msg":"","data":[]}""")
+        })
+
+        val failure = authFailure {
+            gateway.findTenantCandidates("__babiq_contract_probe__")
+        }
+
+        assertEquals(OaAuthenticationError.ACCOUNT_NOT_FOUND, failure.error)
+    }
+
+    @Test
     fun `maps null data missing fields illegal JSON and wrong top level types to protocol error`() = runBlocking {
         val bodies = listOf(
             """{"code":200,"msg":"ok","data":null}""",
