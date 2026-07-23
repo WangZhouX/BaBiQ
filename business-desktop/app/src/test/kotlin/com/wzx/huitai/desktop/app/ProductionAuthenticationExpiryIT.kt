@@ -18,11 +18,13 @@ import java.net.InetSocketAddress
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.channels.Channel
@@ -33,6 +35,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
@@ -43,8 +46,15 @@ class ProductionAuthenticationExpiryIT {
     }
 
     @Test
-    fun `real production HTTP expiry revokes registry and workspace`() = runBlocking {
-        LoopbackOaServer().use { oa ->
+    fun `real production HTTP refresh failure revokes registry and workspace`() =
+        runExpiryScenario(RefreshBehavior.FAILURE)
+
+    @Test
+    fun `real production HTTP permission drift consumes response revokes actions and permits relogin`() =
+        runExpiryScenario(RefreshBehavior.ADDED_PERMISSION)
+
+    private fun runExpiryScenario(refreshBehavior: RefreshBehavior) = runBlocking {
+        LoopbackOaServer(refreshBehavior).use { oa ->
             val home = Files.createTempDirectory("huitai-production-auth-expiry")
             writeOaConfiguration(home, oa.baseUrl)
             val connection = AutoRespondingAgentConnection()
@@ -85,12 +95,7 @@ class ProductionAuthenticationExpiryIT {
                     production.authenticationGate.first { it == BusinessAccessGateState.SIGNED_OUT }
                 }
 
-                production.loginController.updateAccount(MOBILE)
-                production.loginController.updatePassword("password8")
-                production.loginController.updateAgreement(true)
-                production.loginController.updateRemember(false)
-                production.loginController.submit()
-                production.loginController.completeSlider(success = true)
+                login(production)
 
                 val ready = withTimeout(5_000) {
                     production.identityRegistry.snapshot.first { it.gate == BusinessAccessGateState.READY }
@@ -99,22 +104,28 @@ class ProductionAuthenticationExpiryIT {
                 assertTrue(production.workspaceController.hasActiveIdentity)
                 assertEquals(oldIdentity, view.desktopState.value.identity)
 
-                val response = production.authenticatedHttpClient.send(
-                    HuitaiRequest(
-                        method = "GET",
-                        relativePath = "/business/protected",
-                        headers = emptyMap(),
-                        body = ByteArray(0),
-                        replayPolicy = ActionReplayPolicy.SAFE,
-                        executionId = null,
-                        idempotencyHeaderName = null,
-                        reconciliationPolicy = ReconciliationPolicy.NONE,
-                    ),
-                )
+                val response = withTimeout(5_000) {
+                    production.authenticatedHttpClient.send(
+                        HuitaiRequest(
+                            method = "GET",
+                            relativePath = "/business/protected",
+                            headers = emptyMap(),
+                            body = ByteArray(0),
+                            replayPolicy = ActionReplayPolicy.SAFE,
+                            executionId = null,
+                            idempotencyHeaderName = null,
+                            reconciliationPolicy = ReconciliationPolicy.NONE,
+                        ),
+                    )
+                }
 
                 assertNull(response, "expiry callback must consume the stale response")
                 assertEquals(1, oa.protectedRequestCount.get())
                 assertEquals(1, oa.refreshRequestCount.get())
+                assertEquals(
+                    if (refreshBehavior == RefreshBehavior.ADDED_PERMISSION) 2 else 1,
+                    oa.permissionRequestCount.get(),
+                )
                 assertTrue(oa.observedTenantHeaders.all { it == TENANT_ID })
                 assertEquals(BusinessAccessGateState.SIGNED_OUT, production.authenticationGate.value)
                 assertNull(production.identityRegistry.snapshot.value.identity)
@@ -122,10 +133,40 @@ class ProductionAuthenticationExpiryIT {
                 assertNull(view.desktopState.value.identity)
                 assertNull(view.desktopState.value.page)
                 assertEquals(BusinessAuthenticationStatus.SIGNED_OUT, view.desktopState.value.authenticationStatus)
+
+                val actionFailure = runCatching {
+                    withTimeout(1_000) {
+                        production.workspaceController.executeUserAction(
+                            executionId = "execution-after-expiry",
+                            actionId = "save_form_draft",
+                            actionVersion = 1,
+                            input = buildJsonObject { },
+                        )
+                    }
+                }.exceptionOrNull()
+                assertIs<IllegalArgumentException>(actionFailure)
+
+                login(production)
+                val relogged = withTimeout(5_000) {
+                    production.identityRegistry.snapshot.first {
+                        it.gate == BusinessAccessGateState.READY &&
+                            it.identity?.authSessionId != oldIdentity.authSessionId
+                    }
+                }
+                assertEquals(USER_ID, relogged.identity?.userId)
             } finally {
                 root.shutdown()
             }
         }
+    }
+
+    private suspend fun login(production: ProductionUiComponents) {
+        production.loginController.updateAccount(MOBILE)
+        production.loginController.updatePassword("password8")
+        production.loginController.updateAgreement(true)
+        production.loginController.updateRemember(false)
+        production.loginController.submit()
+        production.loginController.completeSlider(success = true)
     }
 
     private fun writeOaConfiguration(home: java.nio.file.Path, baseUrl: String) {
@@ -145,13 +186,17 @@ class ProductionAuthenticationExpiryIT {
         )
     }
 
-    private class LoopbackOaServer : AutoCloseable {
+    private class LoopbackOaServer(
+        private val refreshBehavior: RefreshBehavior,
+    ) : AutoCloseable {
         private val server = HttpServer.create(
             InetSocketAddress(InetAddress.getLoopbackAddress(), 0),
             0,
         )
+        private val refreshed = AtomicBoolean(false)
         val protectedRequestCount = AtomicInteger()
         val refreshRequestCount = AtomicInteger()
+        val permissionRequestCount = AtomicInteger()
         val observedTenantHeaders = CopyOnWriteArrayList<String?>()
         val baseUrl: String get() = "http://127.0.0.1:${server.address.port}"
 
@@ -173,13 +218,29 @@ class ProductionAuthenticationExpiryIT {
                     exchange,
                     """{"accessToken":"access-old","refreshToken":"refresh-old","userId":"$USER_ID","expiresTime":4102444800000}""",
                 )
-                "/api/system/auth/get-permission-info" -> success(
-                    exchange,
-                    """{"permissions":["demo.write","demo.submit"],"roles":["lawyer"],"user":{"id":"$USER_ID","name":"测试律师"},"menus":[]}""",
-                )
+                "/api/system/auth/get-permission-info" -> {
+                    permissionRequestCount.incrementAndGet()
+                    val permissions = if (refreshed.get()) {
+                        """["demo.write","demo.submit","demo.admin"]"""
+                    } else {
+                        """["demo.write","demo.submit"]"""
+                    }
+                    success(
+                        exchange,
+                        """{"permissions":$permissions,"roles":["lawyer"],"user":{"id":"$USER_ID","name":"测试律师"},"menus":[]}""",
+                    )
+                }
                 "/api/system/auth/refresh-token" -> {
                     refreshRequestCount.incrementAndGet()
-                    respond(exchange, 500, """{"code":500,"msg":"refresh failed","data":{}}""")
+                    if (refreshBehavior == RefreshBehavior.FAILURE) {
+                        respond(exchange, 500, """{"code":500,"msg":"refresh failed","data":{}}""")
+                    } else {
+                        refreshed.set(true)
+                        success(
+                            exchange,
+                            """{"accessToken":"access-new","refreshToken":"refresh-new","userId":"$USER_ID","expiresTime":4102444800000}""",
+                        )
+                    }
                 }
                 "/api/system/auth/logout" -> success(exchange, "{}")
                 "/api/business/protected" -> {
@@ -229,6 +290,11 @@ class ProductionAuthenticationExpiryIT {
         }
         override suspend fun manualRetry(): Boolean = true
         override suspend fun reconnect(expectedConnectionId: String): Boolean = expectedConnectionId == connectionId
+    }
+
+    private enum class RefreshBehavior {
+        FAILURE,
+        ADDED_PERMISSION,
     }
 
     private companion object {

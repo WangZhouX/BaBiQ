@@ -35,6 +35,9 @@ internal class OaTokenRefreshAdapter(
                 accessToken = tokens.accessToken,
             ),
         )
+        if (permission.roles != current.roles || permission.permissions != current.permissions) {
+            return TokenRefreshResult.AuthenticationExpired
+        }
         return TokenRefreshResult.Refreshed(
             userId = tokens.userId,
             tenantId = tenantId,
