@@ -19,12 +19,17 @@ class PackagedSmokeWindowCompositionTest {
         val signals = PackagedSmokeUiCompositionSignals()
         assertFalse(signals.snapshot().windowComposed)
         assertFalse(signals.snapshot().loginGateComposed)
-        assertFalse(signals.snapshot().businessShellHiddenWhileSignedOut)
+        assertFalse(signals.snapshot().shellComposed)
 
         signals.markWindowComposed()
         signals.markLoginGateComposed()
-        signals.markBusinessShellHiddenWhileSignedOut()
         val ready = buildPackagedSmokeUiReadiness(
+            composition = signals.snapshot(),
+            productName = PackagedSmokeUiReadiness.PRODUCT_NAME,
+            decodeLogo = {},
+        )
+        signals.markShellComposed()
+        val leakedShell = buildPackagedSmokeUiReadiness(
             composition = signals.snapshot(),
             productName = PackagedSmokeUiReadiness.PRODUCT_NAME,
             decodeLogo = {},
@@ -41,6 +46,7 @@ class PackagedSmokeWindowCompositionTest {
         assertTrue(ready.windowComposed)
         assertTrue(ready.loginGateComposed)
         assertTrue(ready.businessShellHiddenWhileSignedOut)
+        assertFalse(leakedShell.businessShellHiddenWhileSignedOut)
         assertTrue(ready.brandLogoDecoded)
         assertSame(logoFailure, reportedFailure)
     }
@@ -71,7 +77,6 @@ class PackagedSmokeWindowCompositionTest {
 
         signals.markWindowComposed()
         signals.markLoginGateComposed()
-        signals.markBusinessShellHiddenWhileSignedOut()
         frame.complete(Unit)
         publication.join()
 
@@ -104,7 +109,9 @@ class PackagedSmokeWindowCompositionTest {
         assertFalse(source.substring(0, applicationIndex).contains("packagedSmokeEvidence()"))
         assertTrue(source.contains("smokeUiCompositionSignals.markWindowComposed()"))
         assertTrue(source.contains("smokeUiCompositionSignals.markLoginGateComposed()"))
-        assertTrue(source.contains("smokeUiCompositionSignals.markBusinessShellHiddenWhileSignedOut()"))
+        assertTrue(source.contains("onShellComposed = smokeUiCompositionSignals::markShellComposed"))
+        assertFalse(source.contains("markBusinessShellHiddenWhileSignedOut"))
+        assertTrue(Regex("""BusinessDesktopShell\(""").findAll(source).count() == 1)
         assertTrue(source.contains("enabled = gate == BusinessAccessGateState.SIGNED_OUT"))
         assertFalse(source.contains("HUITAI_DESKTOP_FRAMEWORK_DEMO_IDENTITY"))
         assertTrue(source.contains("view.production.logoutController.logout()"))

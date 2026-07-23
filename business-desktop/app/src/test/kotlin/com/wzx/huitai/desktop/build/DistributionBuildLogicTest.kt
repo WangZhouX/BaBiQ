@@ -51,11 +51,13 @@ class DistributionBuildLogicTest {
         assertContains(source, "authenticatedConnection")
         assertContains(source, "signedOutIdentityBound")
         assertContains(source, "windowComposed")
+        assertContains(source, "loginGateComposed")
+        assertContains(source, "businessShellHiddenWhileSignedOut")
         assertContains(source, "brandLogoDecoded")
-        assertContains(source, "mascotDecoded")
-        assertContains(source, "sidebarNavigationComposed")
-        assertFalse(source.contains("top" + "NavigationComposed"))
-        assertContains(source, "assistantInitiallyCollapsed")
+        assertFalse(source.contains("shellComposed"))
+        assertFalse(source.contains("mascotDecoded"))
+        assertFalse(source.contains("sidebarNavigationComposed"))
+        assertFalse(source.contains("assistantInitiallyCollapsed"))
         assertContains(source, "childPid")
     }
 }

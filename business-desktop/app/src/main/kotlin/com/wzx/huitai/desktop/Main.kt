@@ -180,9 +180,6 @@ fun main() {
                         login = {
                             SideEffect {
                                 smokeUiCompositionSignals.markLoginGateComposed()
-                                if (gate == BusinessAccessGateState.SIGNED_OUT) {
-                                    smokeUiCompositionSignals.markBusinessShellHiddenWhileSignedOut()
-                                }
                             }
                             BusinessLoginScreen(
                                 state = loginState,
@@ -465,6 +462,7 @@ fun main() {
                                 onLogout = {
                                     uiScope.launch { view.production.logoutController.logout() }
                                 },
+                                onShellComposed = smokeUiCompositionSignals::markShellComposed,
                             )
                             when (val dialog = decisionState.activeDialog) {
                                 is ConfirmationDecisionDialogState -> ActionPreviewDialog(

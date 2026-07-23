@@ -9,14 +9,14 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal data class PackagedSmokeUiCompositionSnapshot(
     val windowComposed: Boolean,
     val loginGateComposed: Boolean,
-    val businessShellHiddenWhileSignedOut: Boolean,
+    val shellComposed: Boolean,
 )
 
 /** Signals emitted by the real signed-out Window and login-gate composition paths. */
 class PackagedSmokeUiCompositionSignals {
     private val windowComposed = AtomicBoolean(false)
     private val loginGateComposed = AtomicBoolean(false)
-    private val businessShellHiddenWhileSignedOut = AtomicBoolean(false)
+    private val shellComposed = AtomicBoolean(false)
 
     fun markWindowComposed() {
         windowComposed.set(true)
@@ -26,14 +26,14 @@ class PackagedSmokeUiCompositionSignals {
         loginGateComposed.set(true)
     }
 
-    fun markBusinessShellHiddenWhileSignedOut() {
-        businessShellHiddenWhileSignedOut.set(true)
+    fun markShellComposed() {
+        shellComposed.set(true)
     }
 
     internal fun snapshot(): PackagedSmokeUiCompositionSnapshot = PackagedSmokeUiCompositionSnapshot(
         windowComposed = windowComposed.get(),
         loginGateComposed = loginGateComposed.get(),
-        businessShellHiddenWhileSignedOut = businessShellHiddenWhileSignedOut.get(),
+        shellComposed = shellComposed.get(),
     )
 }
 
@@ -93,7 +93,7 @@ internal fun buildPackagedSmokeUiReadiness(
     return PackagedSmokeUiReadiness(
         windowComposed = composition.windowComposed,
         loginGateComposed = composition.loginGateComposed,
-        businessShellHiddenWhileSignedOut = composition.businessShellHiddenWhileSignedOut,
+        businessShellHiddenWhileSignedOut = composition.loginGateComposed && !composition.shellComposed,
         brandLogoDecoded = true,
         productName = productName,
     )
