@@ -324,7 +324,7 @@ class BusinessAgentAttachmentWorkflowIT {
         private val mutableEvents = MutableSharedFlow<BusinessAgentEvent>(extraBufferCapacity = 16)
         override val events: Flow<BusinessAgentEvent> = mutableEvents
         override val ingressEvents: Flow<BusinessAgentIngressEvent> = mutableEvents.map {
-            BusinessAgentIngressEvent(it, authenticationGeneration = 0)
+            BusinessAgentIngressEvent(it, authSessionId = "auth-attachment-it", identityEpoch = 1)
         }
         val starts = CopyOnWriteArrayList<Start>()
         @Volatile

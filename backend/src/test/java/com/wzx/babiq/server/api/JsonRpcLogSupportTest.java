@@ -18,6 +18,21 @@ class JsonRpcLogSupportTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Test
+    void auth_session_id_should_remain_on_wire_but_be_masked_in_logs() {
+        ObjectNode params = objectMapper.createObjectNode()
+                .put("authSessionId", "auth-sensitive-session")
+                .put("identityEpoch", 7);
+
+        String summary = JsonRpcLogSupport.paramsSummary(params);
+
+        assertThat(summary)
+                .contains("\"authSessionId\":\"***\"")
+                .contains("\"identityEpoch\":7")
+                .doesNotContain("auth-sensitive-session");
+        assertThat(params.path("authSessionId").asText()).isEqualTo("auth-sensitive-session");
+    }
+
+    @Test
     @DisplayName("参数摘要会隐藏敏感字段并截断长文本")
     void params_summary_should_mask_sensitive_fields_and_truncate_long_text() {
         ObjectNode params = objectMapper.createObjectNode();

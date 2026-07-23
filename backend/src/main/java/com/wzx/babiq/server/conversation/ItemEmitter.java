@@ -1,7 +1,10 @@
 package com.wzx.babiq.server.conversation;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.wzx.babiq.server.agent.ApprovalRequestPayload;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
 import com.wzx.babiq.server.api.JsonRpcLogSupport;
 import com.wzx.babiq.server.api.JsonRpcMessage;
 import com.wzx.babiq.server.conversation.items.ThreadItem;
@@ -34,6 +37,7 @@ public class ItemEmitter {
     private final String turnId;
     /** 可选持久化记录器；生产环境先写 SQLite，再发 WebSocket，单元测试可为空。 */
     private final ConversationEventRecorder recorder;
+    private final BusinessIdentityScope businessIdentityScope;
 
     /**
      * 创建绑定当前 WebSocket session 的发射器。
@@ -44,7 +48,7 @@ public class ItemEmitter {
      * @param turnId 当前 Turn 标识
      */
     public ItemEmitter(WebSocketSession session, ObjectMapper objectMapper, String threadId, String turnId) {
-        this(session, objectMapper, threadId, turnId, null);
+        this(session, objectMapper, threadId, turnId, null, BusinessIdentityScope.UNSCOPED);
     }
 
     /**
@@ -61,11 +65,23 @@ public class ItemEmitter {
                        String threadId,
                        String turnId,
                        ConversationEventRecorder recorder) {
+        this(session, objectMapper, threadId, turnId, recorder, BusinessIdentityScope.UNSCOPED);
+    }
+
+    public ItemEmitter(WebSocketSession session,
+                       ObjectMapper objectMapper,
+                       String threadId,
+                       String turnId,
+                       ConversationEventRecorder recorder,
+                       BusinessIdentityScope businessIdentityScope) {
         this.session = session;
         this.objectMapper = objectMapper;
         this.threadId = threadId;
         this.turnId = turnId;
         this.recorder = recorder;
+        this.businessIdentityScope = businessIdentityScope == null
+                ? BusinessIdentityScope.UNSCOPED
+                : businessIdentityScope;
     }
 
     /**
@@ -246,7 +262,15 @@ public class ItemEmitter {
      * 序列化并发送 JSON-RPC notification。
      */
     private void sendNotification(String method, Object params) throws IOException {
-        JsonRpcMessage.Notification notification = JsonRpcMessage.Notification.of(method, params);
+        JsonNode wireParams = objectMapper.valueToTree(params);
+        if (businessIdentityScope.scoped()) {
+            if (!(wireParams instanceof ObjectNode objectParams)) {
+                throw new IllegalArgumentException("scoped notification params must be an object");
+            }
+            objectParams.put("authSessionId", businessIdentityScope.authSessionId());
+            objectParams.put("identityEpoch", businessIdentityScope.identityEpoch());
+        }
+        JsonRpcMessage.Notification notification = JsonRpcMessage.Notification.of(method, wireParams);
         String payload = objectMapper.writeValueAsString(notification);
 
         // Spring WebSocket 的 sendMessage 不是并发写安全的;异步 item 流和同步响应会共享同一 session。
@@ -258,7 +282,7 @@ public class ItemEmitter {
                 method,
                 threadId,
                 turnId,
-                JsonRpcLogSupport.paramsSummary(objectMapper.valueToTree(params)));
+                JsonRpcLogSupport.paramsSummary(wireParams));
     }
 
     private String databaseTurnStatus(String protocolStatus) {

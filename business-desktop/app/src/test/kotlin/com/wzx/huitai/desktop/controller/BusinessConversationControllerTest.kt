@@ -12,6 +12,7 @@ import com.wzx.huitai.agent.conversation.BusinessConversationGateway
 import com.wzx.huitai.agent.conversation.BusinessProvider
 import com.wzx.huitai.agent.conversation.BusinessProviderSelection
 import com.wzx.huitai.agent.conversation.BusinessThread
+import com.wzx.huitai.agent.conversation.BusinessThreadItem
 import com.wzx.huitai.agent.conversation.BusinessTurn
 import com.wzx.huitai.desktop.auth.BusinessAccessGateState
 import com.wzx.huitai.desktop.auth.BusinessIdentityRegistry
@@ -34,9 +35,10 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -166,7 +168,8 @@ class BusinessConversationControllerTest {
         val newIdentity = identity(epoch = 2, authSessionId = "new-session", userId = "new-user")
         check(registry.publishReady(newIdentity, 1))
         runCurrent()
-        gateway.eventGeneration = 1
+        gateway.eventAuthSessionId = "new-session"
+        gateway.eventIdentityEpoch = 2
         gateway.mutableEvents.emit(BusinessAgentEvent.Unknown("new/session-event"))
         runCurrent()
 
@@ -175,37 +178,51 @@ class BusinessConversationControllerTest {
     }
 
     @Test
-    fun `real business agent channel keeps ingress generation when collection is delayed until next identity`() = runTest {
+    fun `real business agent channel preserves producing identity when old notification arrives after switch`() = runTest {
         val connection = NotificationConnection()
-        val store = BusinessDesktopStore(BusinessDesktopReducer())
         val oldIdentity = identity(epoch = 1, authSessionId = "old-session", userId = "old-user")
         val registry = readyRegistry(oldIdentity)
-        val ingressCaptured = CompletableDeferred<Long?>()
-        val rpc = AgentJsonRpcClient(
-            connection = connection,
-            scope = this,
-            notificationAuthenticationGeneration = {
-                registry.snapshot.value
-                    .takeIf { it.gate == BusinessAccessGateState.READY }
-                    ?.generation
-                    .also(ingressCaptured::complete)
-            },
-        )
+        val rpc = AgentJsonRpcClient(connection = connection, scope = this)
         val client = BusinessAgentClient(rpc, this)
-
-        connection.serverNotify("old/session-event")
-        assertEquals(0L, ingressCaptured.await())
+        val ingress = async { client.ingressEvents.first() }
         registry.invalidate(BusinessAccessGateState.SIGNING_OUT)
         val newIdentity = identity(epoch = 2, authSessionId = "new-session", userId = "new-user")
         check(registry.publishReady(newIdentity, 1))
-        val consumed = CompletableDeferred<BusinessAgentIngressEvent>()
-        val gateway = object : BusinessConversationGateway by client {
-            override val ingressEvents: Flow<BusinessAgentIngressEvent> = client.ingressEvents.onEach(consumed::complete)
-        }
-        val controller = BusinessConversationController(gateway, store, ReadyAgentUsageGate(registry), this)
+        connection.serverNotify("old/session-event", authSessionId = "old-session", identityEpoch = 1)
 
-        assertEquals(0L, consumed.await().authenticationGeneration)
-        assertEquals(0, store.state.value.unknownEventCount)
+        val received = ingress.await()
+        assertEquals("old-session", received.authSessionId)
+        assertEquals(1, received.identityEpoch)
+        rpc.close()
+    }
+
+    @Test
+    fun `real channel controller rejects delayed old notification and stores new notification after relogin`() = runTest {
+        val connection = NotificationConnection()
+        val store = BusinessDesktopStore(BusinessDesktopReducer())
+        val oldIdentity = identity(epoch = 1, authSessionId = "old-session", userId = "old-user")
+        store.dispatch(BusinessDesktopEvent.IdentityAuthenticated(oldIdentity))
+        store.dispatch(BusinessDesktopEvent.ThreadChanged(BusinessThread("thread-1", "demo", "C:/demo")))
+        val registry = readyRegistry(oldIdentity)
+        val rpc = AgentJsonRpcClient(connection = connection, scope = this)
+        val client = BusinessAgentClient(rpc, this)
+        val controller = BusinessConversationController(client, store, ReadyAgentUsageGate(registry), this)
+
+        registry.invalidate(BusinessAccessGateState.SIGNING_OUT)
+        store.dispatch(BusinessDesktopEvent.SignedOut)
+        val newIdentity = identity(epoch = 2, authSessionId = "new-session", userId = "new-user")
+        check(registry.publishReady(newIdentity, 1))
+        store.dispatch(BusinessDesktopEvent.IdentityAuthenticated(newIdentity))
+        store.dispatch(BusinessDesktopEvent.ThreadChanged(BusinessThread("thread-1", "demo", "C:/demo")))
+        connection.serverNotifyTurn("old-turn", authSessionId = "old-session", identityEpoch = 1)
+        connection.serverNotifyItem("old-item", "old-turn", authSessionId = "old-session", identityEpoch = 1)
+        connection.serverNotifyTurn("new-turn", authSessionId = "new-session", identityEpoch = 2)
+        connection.serverNotifyItem("new-item", "new-turn", authSessionId = "new-session", identityEpoch = 2)
+
+        val completed = withTimeout(1_000) {
+            store.state.first { state -> state.messages.any { it.id == "new-item" } }
+        }
+        assertEquals(listOf("new-item"), completed.messages.map(BusinessThreadItem::id))
         controller.close()
         rpc.close()
     }
@@ -228,9 +245,14 @@ class BusinessConversationControllerTest {
         val mutableEvents = MutableSharedFlow<BusinessAgentEvent>(extraBufferCapacity = 8)
         override val events: Flow<BusinessAgentEvent> = mutableEvents
         override val ingressEvents: Flow<BusinessAgentIngressEvent> = mutableEvents.map { event ->
-            BusinessAgentIngressEvent(event, authenticationGeneration = eventGeneration)
+            BusinessAgentIngressEvent(
+                event,
+                authSessionId = eventAuthSessionId,
+                identityEpoch = eventIdentityEpoch,
+            )
         }
-        var eventGeneration: Long = 0
+        var eventAuthSessionId: String = "old-session"
+        var eventIdentityEpoch: Long = 1
         var text: String? = null
         var attachments: List<BusinessAttachmentDraft>? = null
         var providerId: String? = null
@@ -271,11 +293,50 @@ class BusinessConversationControllerTest {
 
         override suspend fun send(text: String) = error("unexpected outbound request")
 
-        suspend fun serverNotify(method: String) {
+        suspend fun serverNotify(method: String, authSessionId: String, identityEpoch: Long) {
             inbound.send(buildJsonObject {
                 put("jsonrpc", "2.0")
                 put("method", method)
-                put("params", JsonObject(emptyMap()))
+                put("params", buildJsonObject {
+                    put("authSessionId", authSessionId)
+                    put("identityEpoch", identityEpoch)
+                })
+            }.toString())
+        }
+
+        suspend fun serverNotifyTurn(turnId: String, authSessionId: String, identityEpoch: Long) {
+            inbound.send(buildJsonObject {
+                put("jsonrpc", "2.0")
+                put("method", "turn/started")
+                put("params", buildJsonObject {
+                    put("threadId", "thread-1")
+                    put("turnId", turnId)
+                    put("authSessionId", authSessionId)
+                    put("identityEpoch", identityEpoch)
+                })
+            }.toString())
+        }
+
+        suspend fun serverNotifyItem(
+            itemId: String,
+            turnId: String,
+            authSessionId: String,
+            identityEpoch: Long,
+        ) {
+            inbound.send(buildJsonObject {
+                put("jsonrpc", "2.0")
+                put("method", "item/added")
+                put("params", buildJsonObject {
+                    put("threadId", "thread-1")
+                    put("turnId", turnId)
+                    put("authSessionId", authSessionId)
+                    put("identityEpoch", identityEpoch)
+                    put("item", buildJsonObject {
+                        put("id", itemId)
+                        put("type", "agentMessage")
+                        put("text", itemId)
+                    })
+                })
             }.toString())
         }
 

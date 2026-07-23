@@ -3,6 +3,7 @@ package com.wzx.babiq.server.conversation;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wzx.babiq.server.agent.ApprovalRequestPayload;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
 import com.wzx.babiq.server.conversation.items.TurnSummaryItem;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.socket.TextMessage;
@@ -23,6 +24,28 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ItemEmitterTest {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
+
+    @Test
+    void scopedEmitter_should_bind_frozen_identity_to_every_notification() throws Exception {
+        List<String> payloads = new ArrayList<>();
+        WebSocketSession session = recordingSession(payloads);
+        BusinessIdentityScope scope = BusinessIdentityScope.scoped(
+                "desktop-1", "desktop-session-1", "auth-old", 7,
+                "user-old", "tenant-old", "1");
+        ItemEmitter emitter = new ItemEmitter(
+                session, objectMapper, "thr_1", "turn_1", null, scope);
+
+        emitter.emitTurnStarted();
+        emitter.emitApprovalRequest(new ApprovalRequestPayload(
+                "thr_1", "turn_1", "appr_1", "write_file", "{}", "approve"));
+
+        assertThat(payloads).hasSize(2);
+        for (String payload : payloads) {
+            JsonNode params = objectMapper.readTree(payload).path("params");
+            assertThat(params.path("authSessionId").asText()).isEqualTo("auth-old");
+            assertThat(params.path("identityEpoch").asLong()).isEqualTo(7);
+        }
+    }
 
     @Test
     void emitApprovalRequest_should_send_approval_request_notification() throws Exception {

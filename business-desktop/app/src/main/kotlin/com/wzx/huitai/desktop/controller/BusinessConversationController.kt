@@ -31,7 +31,10 @@ class BusinessConversationController(
     private val eventCollector: Job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
         gateway.ingressEvents.collect { ingress ->
             val authentication = usageGate.captureIfReady() ?: return@collect
-            if (ingress.authenticationGeneration != authentication.generation) return@collect
+            if (
+                ingress.authSessionId != authentication.identity.authSessionId ||
+                ingress.identityEpoch != authentication.identity.identityEpoch
+            ) return@collect
             usageGate.commitIfCurrent(authentication) {
                 store.dispatch(BusinessDesktopEvent.AgentEventReceived(ingress.event))
             }

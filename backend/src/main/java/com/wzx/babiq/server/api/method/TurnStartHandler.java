@@ -268,7 +268,8 @@ public class TurnStartHandler implements JsonRpcMethodHandler {
                         .map(item -> item.metadata().displayId())
                         .toList());
 
-        ItemEmitter emitter = new ItemEmitter(session, objectMapper, threadId, turn.id(), eventRecorder);
+        ItemEmitter emitter = new ItemEmitter(
+                session, objectMapper, threadId, turn.id(), eventRecorder, turn.businessIdentityScope());
         try {
             emitter.emitTurnStarted();
         } catch (Exception exception) {

@@ -20,9 +20,9 @@ import kotlinx.serialization.json.put
  */
 interface BusinessConversationGateway : Closeable {
     val events: Flow<BusinessAgentEvent>
-    /** Captures the authentication generation at transport ingress; null is always fail-closed. */
+    /** Carries the immutable server-side turn identity boundary; missing scope is fail-closed. */
     val ingressEvents: Flow<BusinessAgentIngressEvent>
-        get() = events.map { BusinessAgentIngressEvent(it, authenticationGeneration = null) }
+        get() = events.map { BusinessAgentIngressEvent(it, authSessionId = null, identityEpoch = null) }
     suspend fun listProviders(): List<BusinessProvider>
     suspend fun createProvider(draft: BusinessProviderDraft): BusinessProvider =
         throw UnsupportedOperationException("Provider create is not supported")
@@ -54,7 +54,8 @@ interface BusinessConversationGateway : Closeable {
 
 data class BusinessAgentIngressEvent(
     val event: BusinessAgentEvent,
-    val authenticationGeneration: Long?,
+    val authSessionId: String?,
+    val identityEpoch: Long?,
 )
 
 class BusinessAgentClient(
@@ -66,7 +67,8 @@ class BusinessAgentClient(
         BusinessAgentIngressEvent(
             event = runCatching { BusinessAgentEventCodec.decode(notification) }
                 .getOrElse { BusinessAgentEvent.Unknown(notification.method) },
-            authenticationGeneration = notification.authenticationGeneration,
+            authSessionId = notification.authSessionId,
+            identityEpoch = notification.identityEpoch,
         )
     }
     override val events: Flow<BusinessAgentEvent> = ingressEvents.map { it.event }

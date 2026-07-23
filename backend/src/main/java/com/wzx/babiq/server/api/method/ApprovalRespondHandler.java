@@ -204,7 +204,8 @@ public class ApprovalRespondHandler implements JsonRpcMethodHandler {
                 : prepareResume(threadId, turnId, requestScope, original);
         Turn turn = prepared.turn();
         Thread thread = prepared.thread();
-        ItemEmitter emitter = new ItemEmitter(session, objectMapper, threadId, turnId, eventRecorder);
+        ItemEmitter emitter = new ItemEmitter(
+                session, objectMapper, threadId, turnId, eventRecorder, turn.businessIdentityScope());
         try {
             resolveApprovalIfPossible(threadId, turnId, canonicalDecision, scope, editedArgs);
             rememberAlwaysRulesIfNeeded(threadId, decision, scope, original);

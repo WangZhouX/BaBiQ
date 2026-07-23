@@ -368,6 +368,27 @@ class BusinessAgentClientTest {
     }
 
     @Test
+    fun `notification identity comes from frozen wire scope instead of receive time state`() = runTest {
+        val connection = FakeConnection()
+        val rpc = AgentJsonRpcClient(connection = connection, scope = this)
+        val client = BusinessAgentClient(rpc, this)
+        val ingress = async { client.ingressEvents.first() }
+
+        connection.serverNotify("turn/started", buildJsonObject {
+            put("threadId", "thread-1")
+            put("turnId", "turn-1")
+            put("authSessionId", "auth-old")
+            put("identityEpoch", 7)
+        })
+
+        val received = ingress.await()
+        assertEquals("auth-old", received.authSessionId)
+        assertEquals(7, received.identityEpoch)
+        client.close()
+        rpc.close()
+    }
+
+    @Test
     fun `unknown notification drops raw parameters and json rpc errors propagate`() = runTest {
         val connection = FakeConnection()
         val rpc = AgentJsonRpcClient(connection, this)

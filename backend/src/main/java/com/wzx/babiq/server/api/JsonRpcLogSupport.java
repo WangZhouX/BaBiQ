@@ -120,6 +120,7 @@ public final class JsonRpcLogSupport {
                 || normalized.contains("authorization")
                 || normalized.contains("password")
                 || normalized.contains("secret")
+                || "authsessionid".equals(normalized)
                 || "token".equals(normalized)
                 || "accesstoken".equals(normalized)
                 || "refreshtoken".equals(normalized);
