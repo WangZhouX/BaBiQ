@@ -71,7 +71,7 @@ class ApplicationActionRequestHandler(
         now,
     ),
     private val ownsRuntime: Boolean = false,
-) {
+) : ApplicationActionAdmissionRevoker {
     private val connectionJob = SupervisorJob(scope.coroutineContext[Job])
     private val connectionScope = CoroutineScope(scope.coroutineContext.minusKey(Job) + connectionJob)
     private val reader = connectionScope.launch { consumeIncoming() }
@@ -122,6 +122,11 @@ class ApplicationActionRequestHandler(
         connectionJob.cancel()
         withContext(NonCancellable) { runtime.onConnectionLost(statusClient) }
     }
+
+    override suspend fun cancelPreExecutionAdmissions(
+        identityScope: ActionIdentityScope,
+        states: Set<com.wzx.huitai.action.model.ActionExecutionState>,
+    ) = runtime.cancelPreExecutionAdmissions(identityScope, states)
 
     private suspend fun consumeIncoming() {
         try {

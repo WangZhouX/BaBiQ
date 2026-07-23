@@ -30,6 +30,14 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
+/** Revocation-side view of application actions admitted by the in-process runtime. */
+fun interface ApplicationActionAdmissionRevoker {
+    suspend fun cancelPreExecutionAdmissions(
+        identityScope: ActionIdentityScope,
+        states: Set<ActionExecutionState>,
+    )
+}
+
 /** Desktop-process lifetime owner for application action jobs across Agent connections. */
 class ApplicationActionExecutionRuntime(
     private val executor: ApplicationActionExecutor,
@@ -164,6 +172,30 @@ class ApplicationActionExecutionRuntime(
         if (execution.publication.correlation != correlation) return false
         execution.job?.cancelAndJoin()
         return true
+    }
+
+    internal suspend fun cancelPreExecutionAdmissions(
+        identityScope: ActionIdentityScope,
+        states: Set<ActionExecutionState>,
+    ) {
+        val admitted = active.values.filter { it.command.identityScope == identityScope }
+        admitted.forEach { execution ->
+            val cancellable = when (val read = scopedRead(
+                execution.command.executionId,
+                identityScope,
+            )) {
+                ScopedRead.Absent -> true
+                is ScopedRead.Found -> read.record.state in states
+                ScopedRead.Unavailable -> error("Scoped execution query is unavailable during revocation")
+            }
+            if (!cancellable) return@forEach
+            execution.job?.cancelAndJoin()
+            when (scopedRead(execution.command.executionId, identityScope)) {
+                ScopedRead.Absent -> if (active.remove(execution.runtimeKey(), execution)) execution.close()
+                is ScopedRead.Found -> Unit
+                ScopedRead.Unavailable -> error("Scoped execution query is unavailable after revocation")
+            }
+        }
     }
 
     internal suspend fun find(executionId: String, scope: ActionIdentityScope): ActionExecutionRecord? =

@@ -15,6 +15,7 @@ import com.wzx.huitai.action.port.ExecutionTransition
 import com.wzx.huitai.action.port.ExecutionTransitionResult
 import com.wzx.huitai.action.port.ActionExecutionStore
 import com.wzx.huitai.action.port.ScopedActionExecutionQuery
+import com.wzx.huitai.agent.application.ApplicationActionAdmissionRevoker
 import com.wzx.huitai.security.execution.InMemoryActionExecutionStore
 import java.time.Instant
 import kotlin.test.Test
@@ -29,6 +30,33 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 class ProductionIdentityBoundaryActionAdapterTest {
+    @Test
+    fun `revocation drains runtime admissions before scanning durable actions`() = runTest {
+        val store = InMemoryActionExecutionStore()
+        val oldScope = scope("old-auth", 1)
+        val calls = mutableListOf<String>()
+        val revoker = ApplicationActionAdmissionRevoker { identityScope, states ->
+            assertEquals(oldScope, identityScope)
+            assertTrue(ActionExecutionState.RECEIVED in states)
+            calls += "runtime"
+        }
+        val query = object : ScopedActionExecutionQuery by store {
+            override suspend fun listNonTerminal(identityScope: ActionIdentityScope): List<ActionExecutionRecord> {
+                calls += "durable"
+                return store.listNonTerminal(identityScope)
+            }
+        }
+        val adapter = ProductionIdentityBoundaryActionAdapter(
+            executionStore = store,
+            query = query,
+            admissionRevoker = revoker,
+        )
+
+        adapter.cancelPreExecution(oldScope, setOf(ActionExecutionState.RECEIVED))
+
+        assertEquals(listOf("runtime", "durable"), calls)
+    }
+
     @Test
     fun `revocation cancels only requested pre execution states in the exact old identity scope`() = runTest {
         val store = InMemoryActionExecutionStore()

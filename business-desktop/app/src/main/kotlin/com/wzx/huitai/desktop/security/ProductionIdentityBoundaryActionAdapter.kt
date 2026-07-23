@@ -8,6 +8,7 @@ import com.wzx.huitai.action.port.ActionExecutionStore
 import com.wzx.huitai.action.port.ExecutionTransition
 import com.wzx.huitai.action.port.ExecutionTransitionResult
 import com.wzx.huitai.action.port.ScopedActionExecutionQuery
+import com.wzx.huitai.agent.application.ApplicationActionAdmissionRevoker
 import com.wzx.huitai.integration.identity.IdentityBoundaryActionPort
 import java.time.Instant
 import kotlinx.serialization.json.JsonElement
@@ -17,6 +18,7 @@ import kotlinx.serialization.json.JsonObject
 class ProductionIdentityBoundaryActionAdapter(
     private val executionStore: ActionExecutionStore,
     private val query: ScopedActionExecutionQuery,
+    private val admissionRevoker: ApplicationActionAdmissionRevoker = ApplicationActionAdmissionRevoker { _, _ -> },
     private val now: () -> Instant = Instant::now,
     private val maxCancellationAttempts: Int = 4,
 ) : IdentityBoundaryActionPort {
@@ -28,6 +30,7 @@ class ProductionIdentityBoundaryActionAdapter(
         identityScope: ActionIdentityScope,
         states: Set<ActionExecutionState>,
     ) {
+        admissionRevoker.cancelPreExecutionAdmissions(identityScope, states)
         repeat(maxCancellationAttempts) { attempt ->
             var conflicted = false
             val targets = query.listNonTerminal(identityScope)

@@ -119,6 +119,53 @@ class ApplicationActionRequestHandlerTest {
     }
 
     @Test
+    fun `revocation cancels a registered lazy admission before executor can begin`() = runTest {
+        val connection = RecordingConnection()
+        val rpc = AgentJsonRpcClient(connection, backgroundScope, requestTimeoutMillis = 1_000)
+        val store = ControllableStore()
+        val executor = RecordingExecutor()
+        val runtime = ApplicationActionExecutionRuntime(
+            executor = executor,
+            executionStore = store,
+            scopedQuery = store,
+            scope = backgroundScope,
+            statusPollMillis = 1,
+        )
+        val status = ApplicationActionStatusClient(rpc, AtomicLong(1)::incrementAndGet, { NOW })
+        val command = command()
+        val start = runtime.start(
+            RuntimeOwnedExecution(
+                publication = publication(),
+                command = command,
+                context = ActionContext(
+                    identityScope = command.identityScope,
+                    pageId = command.pageId,
+                    contextRevision = command.contextRevision,
+                    permissions = setOf("case:read", "case:write"),
+                ),
+            ),
+            status,
+        )
+
+        assertIs<RuntimeStartResult.Accepted>(start)
+        runtime.cancelPreExecutionAdmissions(
+            TRUSTED_SCOPE,
+            setOf(
+                ActionExecutionState.RECEIVED,
+                ActionExecutionState.VALIDATING,
+                ActionExecutionState.PREVIEWED,
+                ActionExecutionState.WAITING_APPROVAL,
+            ),
+        )
+        runCurrent()
+
+        assertEquals(0, executor.calls)
+        assertNull(store.current)
+        runtime.close()
+        rpc.close()
+    }
+
+    @Test
     fun `turn start attachment responses and errors never enter application action audit routing`() = runTest {
         val fixture = Fixture(backgroundScope)
         val privatePath = "C:\\Users\\secret\\customer-contract.pdf"

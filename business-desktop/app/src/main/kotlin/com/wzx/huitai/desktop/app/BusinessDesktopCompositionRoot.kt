@@ -860,6 +860,7 @@ class ProductionBusinessDesktopCompositionFactory(
             actions = ProductionIdentityBoundaryActionAdapter(
                 this.storage.executionStore,
                 this.storage.executionStore,
+                admissionRevoker = actionHandler,
             ),
             desktopInstanceId = this.child.identity.desktopInstanceId,
             desktopSessionId = this.child.identity.desktopSessionId,
