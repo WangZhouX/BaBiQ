@@ -15,8 +15,24 @@ class HuitaiHttpClient(
     private val sessionManager: AuthSessionManager,
     private val refreshCoordinator: TokenRefreshCoordinator,
 ) {
-    suspend fun send(request: HuitaiRequest): HuitaiResponse {
-        val first = sendAuthenticated(request) ?: return failure(ActionErrorCode.AUTH_EXPIRED)
+    suspend fun send(request: HuitaiRequest): HuitaiResponse = send(request, expectedBoundary = null)
+
+    /** Sends only if the current token still belongs to the exact permitted login boundary. */
+    suspend fun send(
+        request: HuitaiRequest,
+        expectedAuthSessionId: String,
+        expectedIdentityEpoch: Long,
+    ): HuitaiResponse {
+        require(expectedAuthSessionId.isNotBlank()) { "expectedAuthSessionId must not be blank" }
+        require(expectedIdentityEpoch > 0) { "expectedIdentityEpoch must be positive" }
+        return send(request, IdentityBoundary(expectedAuthSessionId, expectedIdentityEpoch))
+    }
+
+    private suspend fun send(
+        request: HuitaiRequest,
+        expectedBoundary: IdentityBoundary?,
+    ): HuitaiResponse {
+        val first = sendAuthenticated(request, expectedBoundary) ?: return failure(ActionErrorCode.AUTH_EXPIRED)
         return when (val outcome = first.outcome) {
             is HuitaiTransportOutcome.ResponseReceived -> handleReceived(request, first.identity, outcome)
             HuitaiTransportOutcome.NotSent,
@@ -100,7 +116,10 @@ class HuitaiHttpClient(
         request: HuitaiRequest,
         expectedIdentity: AuthenticatedRequestIdentity,
     ): HuitaiResponse {
-        val retry = sendAuthenticated(request, expectedIdentity) ?: return failure(ActionErrorCode.AUTH_EXPIRED)
+        val retry = sendAuthenticated(
+            request,
+            IdentityBoundary(expectedIdentity.authSessionId, expectedIdentity.identityEpoch),
+        ) ?: return failure(ActionErrorCode.AUTH_EXPIRED)
         return when (val retryOutcome = retry.outcome) {
             is HuitaiTransportOutcome.ResponseReceived -> decodeTerminalResponse(retry.identity, retryOutcome)
             HuitaiTransportOutcome.AmbiguousAfterSend -> failure(ActionErrorCode.OUTCOME_UNKNOWN)
@@ -129,10 +148,10 @@ class HuitaiHttpClient(
 
     private suspend fun sendAuthenticated(
         request: HuitaiRequest,
-        expectedIdentity: AuthenticatedRequestIdentity? = null,
+        expectedBoundary: IdentityBoundary? = null,
     ): AuthenticatedTransportAttempt? {
         val identity = sessionManager.requestIdentitySnapshot() ?: return null
-        if (expectedIdentity != null && !identity.hasSameBoundary(expectedIdentity)) return null
+        if (expectedBoundary != null && !identity.hasSameBoundary(expectedBoundary)) return null
         val headers = LinkedHashMap(request.headers)
         removeHeaderIgnoreCase(headers, HttpHeaders.Authorization)
         removeHeaderIgnoreCase(headers, TENANT_HEADER)
@@ -184,7 +203,7 @@ class HuitaiHttpClient(
     private fun HuitaiResponse.isAuthenticationExpired(): Boolean =
         this is HuitaiResponse.Failure && errorCode == ActionErrorCode.AUTH_EXPIRED
 
-    private fun AuthenticatedRequestIdentity.hasSameBoundary(other: AuthenticatedRequestIdentity): Boolean =
+    private fun AuthenticatedRequestIdentity.hasSameBoundary(other: IdentityBoundary): Boolean =
         authSessionId == other.authSessionId && identityEpoch == other.identityEpoch
 
     private fun removeHeaderIgnoreCase(headers: MutableMap<String, String>, headerName: String) {
@@ -198,6 +217,11 @@ class HuitaiHttpClient(
     private data class AuthenticatedTransportAttempt(
         val identity: AuthenticatedRequestIdentity,
         val outcome: HuitaiTransportOutcome,
+    )
+
+    private data class IdentityBoundary(
+        val authSessionId: String,
+        val identityEpoch: Long,
     )
 
     private companion object {

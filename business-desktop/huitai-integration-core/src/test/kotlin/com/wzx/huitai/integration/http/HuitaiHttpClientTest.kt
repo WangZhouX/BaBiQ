@@ -30,6 +30,54 @@ import kotlin.test.assertTrue
 
 class HuitaiHttpClientTest {
     @Test
+    fun `request bound to old identity cannot borrow credentials from a new login`() = runTest {
+        val persistence = ClientCredentialPersistence()
+        val sessionSequence = AtomicInteger()
+        val manager = AuthSessionManager(
+            credentialPersistence = persistence,
+            authSessionIdFactory = { "auth-session-${sessionSequence.incrementAndGet()}" },
+        )
+        manager.login(
+            userId = USER_ID,
+            tenantId = TENANT_ID,
+            platformId = PLATFORM_ID,
+            roles = setOf("lawyer"),
+            permissions = setOf("case:read"),
+            authenticatedAt = AUTHENTICATED_AT,
+            tokens = tokenSet("old-session"),
+        )
+        val oldIdentity = requireNotNull(manager.requestIdentitySnapshot())
+        manager.logout()
+        manager.login(
+            userId = "user-new",
+            tenantId = "tenant-new",
+            platformId = PLATFORM_ID,
+            roles = setOf("partner"),
+            permissions = setOf("case:write"),
+            authenticatedAt = AUTHENTICATED_AT.plusSeconds(60),
+            tokens = tokenSet("new-session"),
+        )
+        val transport = RecordingTransport(listOf(jsonResponse(SUCCESS_JSON)))
+        val client = HuitaiHttpClient(
+            transport = transport,
+            decoder = CommonResultDecoder(),
+            sessionManager = manager,
+            refreshCoordinator = TokenRefreshCoordinator(manager, backgroundScope) {
+                TokenRefreshResult.AuthenticationExpired
+            },
+        )
+
+        val response = client.send(
+            request = request(ActionReplayPolicy.SAFE),
+            expectedAuthSessionId = oldIdentity.authSessionId,
+            expectedIdentityEpoch = oldIdentity.identityEpoch,
+        )
+
+        assertEquals(ActionErrorCode.AUTH_EXPIRED, assertIs<HuitaiResponse.Failure>(response).errorCode)
+        assertTrue(transport.requests.isEmpty(), "old request must not send with the new login token")
+    }
+
+    @Test
     fun `attaches auth and tenant headers without leaking tokens and decodes success`() = runTest {
         val fixture = fixture(
             refreshScope = backgroundScope,

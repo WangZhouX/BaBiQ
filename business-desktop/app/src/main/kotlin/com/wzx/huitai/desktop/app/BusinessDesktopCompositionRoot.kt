@@ -890,10 +890,7 @@ class ProductionBusinessDesktopCompositionFactory(
             refreshScope = scope,
             refreshOperation = refreshAdapter::refresh,
         )
-        val businessHttpTransportClient = HttpClient(CIO) {
-            expectSuccess = false
-            install(HttpTimeout) { requestTimeoutMillis = oaConfiguration.requestTimeoutMs }
-        }
+        val businessHttpTransportClient = createBusinessHttpTransportClient(oaConfiguration.requestTimeoutMs)
         val rawBusinessHttpClient = HuitaiHttpClient(
             transport = KtorHuitaiTransport(
                 baseUrl = oaConfiguration.baseUrl.trimEnd('/') + oaConfiguration.apiPrefix.trimEnd('/'),
@@ -905,7 +902,13 @@ class ProductionBusinessDesktopCompositionFactory(
         )
         authenticatedHttpClient = ReadyAuthenticatedHuitaiClient(
             gate = authenticatedHttpGate,
-            delegate = rawBusinessHttpClient,
+            sendAuthenticated = { request, identity ->
+                rawBusinessHttpClient.send(
+                    request = request,
+                    expectedAuthSessionId = identity.authSessionId,
+                    expectedIdentityEpoch = identity.identityEpoch,
+                )
+            },
             closeDelegate = businessHttpTransportClient::close,
         )
         loginController = BusinessLoginController(
@@ -1357,6 +1360,12 @@ class ProductionBusinessDesktopCompositionFactory(
         }
     }
 
+}
+
+internal fun createBusinessHttpTransportClient(requestTimeoutMillis: Long): HttpClient = HttpClient(CIO) {
+    expectSuccess = false
+    followRedirects = false
+    install(HttpTimeout) { this.requestTimeoutMillis = requestTimeoutMillis }
 }
 
 /**
