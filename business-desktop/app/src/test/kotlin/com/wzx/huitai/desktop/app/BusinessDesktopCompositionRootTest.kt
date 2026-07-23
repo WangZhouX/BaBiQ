@@ -187,6 +187,7 @@ class BusinessDesktopCompositionRootTest {
         assertSame(storage.actionBus, root.agentRequestActionBus)
         assertTrue(view.production.actionRequestHandler::class.simpleName == "ApplicationActionRequestHandler")
         assertTrue(view.production.authenticatedHttpGate::class.simpleName == "ReadyAuthenticatedHttpGate")
+        assertTrue(view.production.authenticatedHttpClient::class.simpleName == "ReadyAuthenticatedHuitaiClient")
         assertTrue(view.production.businessAgentClient::class.simpleName == "BusinessAgentClient")
         assertTrue(view.production.workspaceController::class.simpleName == "BusinessWorkspaceController")
         assertTrue(

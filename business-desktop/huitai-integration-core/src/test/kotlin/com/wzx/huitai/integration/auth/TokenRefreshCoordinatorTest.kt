@@ -25,6 +25,22 @@ import kotlin.test.assertTrue
 
 class TokenRefreshCoordinatorTest {
     @Test
+    fun `refresh operation receives tenant captured from the same request identity`() = runTest {
+        val manager = authenticatedManager(RefreshCredentialPersistence())
+        var observedTenant: String? = null
+        var observedToken: String? = null
+        val coordinator = TokenRefreshCoordinator(manager, backgroundScope) { tenantId, refreshToken ->
+            observedTenant = tenantId
+            observedToken = refreshToken
+            refreshedResult("tenant-aware")
+        }
+
+        assertIs<TokenRefreshResult.Refreshed>(coordinator.refreshOnce())
+        assertEquals(TENANT_ID, observedTenant)
+        assertEquals("refresh-initial", observedToken)
+    }
+
+    @Test
     fun `ten concurrent callers share one refresh and persistence replacement`() = runTest {
         val persistence = RefreshCredentialPersistence()
         val manager = authenticatedManager(persistence)

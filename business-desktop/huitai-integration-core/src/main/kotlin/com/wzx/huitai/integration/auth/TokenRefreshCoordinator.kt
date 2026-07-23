@@ -38,8 +38,14 @@ sealed interface TokenRefreshResult {
 class TokenRefreshCoordinator(
     private val sessionManager: AuthSessionManager,
     private val refreshScope: CoroutineScope,
-    private val refreshOperation: suspend (refreshToken: String) -> TokenRefreshResult,
+    private val refreshOperation: suspend (tenantId: String, refreshToken: String) -> TokenRefreshResult,
 ) {
+    constructor(
+        sessionManager: AuthSessionManager,
+        refreshScope: CoroutineScope,
+        refreshOperation: suspend (refreshToken: String) -> TokenRefreshResult,
+    ) : this(sessionManager, refreshScope, { _, refreshToken -> refreshOperation(refreshToken) })
+
     private val mutex = Mutex()
     private val inFlight = mutableMapOf<RefreshBoundary, Deferred<RefreshExecution>>()
 
@@ -127,7 +133,7 @@ class TokenRefreshCoordinator(
         }
 
         val result = try {
-            refreshOperation(refreshToken)
+            refreshOperation(startIdentity.tenantId, refreshToken)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Error) {

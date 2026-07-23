@@ -44,6 +44,8 @@ import com.wzx.huitai.desktop.auth.BusinessLoginMessage
 import com.wzx.huitai.desktop.auth.CoordinatorAgentRegistrationTransactionAdapter
 import com.wzx.huitai.desktop.auth.BusinessRegistrationWatermarks
 import com.wzx.huitai.desktop.auth.ReadyAgentUsageGate
+import com.wzx.huitai.desktop.auth.OaTokenRefreshAdapter
+import com.wzx.huitai.desktop.auth.ReadyAuthenticatedHuitaiClient
 import com.wzx.huitai.desktop.auth.ReadyAuthenticatedHttpGate
 import com.wzx.huitai.desktop.auth.config.BusinessOaConfiguration
 import com.wzx.huitai.desktop.auth.config.BusinessOaConfigurationLoader
@@ -95,10 +97,15 @@ import com.wzx.huitai.security.instance.ProcessInstanceLock
 import com.wzx.huitai.security.risk.DefaultActionRiskPolicy
 import com.wzx.huitai.security.secret.JceksSecretStore
 import com.wzx.huitai.integration.auth.AuthSessionManager
+import com.wzx.huitai.integration.auth.TokenRefreshCoordinator
+import com.wzx.huitai.integration.http.CommonResultDecoder
+import com.wzx.huitai.integration.http.HuitaiHttpClient
+import com.wzx.huitai.integration.http.KtorHuitaiTransport
 import com.wzx.huitai.integration.oa.auth.OaAuthenticationGatewayBundle
 import com.wzx.huitai.integration.oa.auth.OaAuthenticationGatewayFactory
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.websocket.WebSockets
 import java.nio.file.Path
 import java.nio.file.Files
@@ -412,6 +419,7 @@ class ProductionUiComponents internal constructor(
     val loginController: BusinessLoginController,
     internal val authenticationOrchestrator: BusinessAuthenticationOrchestrator,
     val authenticatedHttpGate: ReadyAuthenticatedHttpGate,
+    val authenticatedHttpClient: ReadyAuthenticatedHuitaiClient,
     val authenticationGate: StateFlow<BusinessAccessGateState>,
     val authenticationError: StateFlow<BusinessLoginMessage?>,
     val identityRegistry: BusinessIdentityRegistry,
@@ -699,6 +707,7 @@ class ProductionBusinessDesktopCompositionFactory(
         var decisionConnectionObserver: Job? = null
         var suggestionObserver: Job? = null
         var oaGateway: OaAuthenticationGatewayBundle? = null
+        var authenticatedHttpClient: ReadyAuthenticatedHuitaiClient? = null
         var authenticationLifecycle: BusinessAuthenticationLifecycle? = null
         var loginController: BusinessLoginController? = null
         try {
@@ -861,6 +870,35 @@ class ProductionBusinessDesktopCompositionFactory(
             onAuthenticationExpired = orchestrator::onAuthenticationExpired,
             onMembershipExpired = orchestrator::onMembershipExpired,
         )
+        val refreshAdapter = OaTokenRefreshAdapter(
+            preAuthentication = oaGateway.preAuthentication,
+            candidateAuthentication = oaGateway.candidateAuthentication,
+            sessionManager = authSessionManager,
+            platformId = oaConfiguration.platformId,
+        )
+        val refreshCoordinator = TokenRefreshCoordinator(
+            sessionManager = authSessionManager,
+            refreshScope = scope,
+            refreshOperation = refreshAdapter::refresh,
+        )
+        val businessHttpTransportClient = HttpClient(CIO) {
+            expectSuccess = false
+            install(HttpTimeout) { requestTimeoutMillis = oaConfiguration.requestTimeoutMs }
+        }
+        val rawBusinessHttpClient = HuitaiHttpClient(
+            transport = KtorHuitaiTransport(
+                baseUrl = oaConfiguration.baseUrl.trimEnd('/') + oaConfiguration.apiPrefix.trimEnd('/'),
+                httpClient = businessHttpTransportClient,
+            ),
+            decoder = CommonResultDecoder(),
+            sessionManager = authSessionManager,
+            refreshCoordinator = refreshCoordinator,
+        )
+        authenticatedHttpClient = ReadyAuthenticatedHuitaiClient(
+            gate = authenticatedHttpGate,
+            delegate = rawBusinessHttpClient,
+            closeDelegate = businessHttpTransportClient::close,
+        )
         loginController = BusinessLoginController(
             authentication = orchestrator,
             store = BusinessLoginCredentialStore(this.storage.secretStore),
@@ -903,6 +941,7 @@ class ProductionBusinessDesktopCompositionFactory(
             loginController = loginController,
             authenticationOrchestrator = orchestrator,
             authenticatedHttpGate = authenticatedHttpGate,
+            authenticatedHttpClient = authenticatedHttpClient,
             authenticationGate = identityRegistry.gate,
             authenticationError = orchestrator.lastError,
             identityRegistry = identityRegistry,
@@ -927,6 +966,7 @@ class ProductionBusinessDesktopCompositionFactory(
                     actionHandler,
                     loginController,
                     authenticationLifecycle,
+                    authenticatedHttpClient,
                     oaGateway,
                 )
             },
@@ -946,6 +986,7 @@ class ProductionBusinessDesktopCompositionFactory(
                         actionHandler,
                         loginController,
                         authenticationLifecycle,
+                        authenticatedHttpClient,
                         oaGateway,
                     )
                 }.exceptionOrNull()
@@ -964,6 +1005,7 @@ class ProductionBusinessDesktopCompositionFactory(
         actionHandler: ApplicationActionRequestHandler?,
         loginController: BusinessLoginController?,
         authenticationLifecycle: BusinessAuthenticationLifecycle?,
+        authenticatedHttpClient: ReadyAuthenticatedHuitaiClient?,
         oaGateway: OaAuthenticationGatewayBundle?,
     ) {
         var first: Throwable? = null
@@ -982,6 +1024,7 @@ class ProductionBusinessDesktopCompositionFactory(
         close { providerSettings?.close() }
         close { conversation?.close() }
         close { actionHandler?.close() }
+        close { authenticatedHttpClient?.close() }
         close { oaGateway?.close() }
         close { storage.decisions.shutdown() }
         first?.let { throw it }
