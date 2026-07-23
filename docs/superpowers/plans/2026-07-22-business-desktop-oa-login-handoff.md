@@ -4,11 +4,11 @@
 >
 > 交接原因：用户要求暂停当前实现，改由下一位 Agent 继续。
 >
-> 当前结论：登录页、OA 认证底座、READY 门禁、前后端独立运行配置、`code=0/200` 兼容及首次未登录身份通知修复均已提交；修复后的后端和桌面端全量测试已通过。最终前后端分离烟测按用户交接要求中止，安全扫描、独立审查和最终文档收口仍未完成，Goal 必须保持 `active`。
+> 当前结论：登录页、OA 认证底座、READY 门禁、前后端独立运行配置、`code=0/200` 兼容及首次未登录身份通知修复均已提交；修复后的后端和桌面端全量测试已通过。最终前后端分离烟测、运行目录/仓库金丝雀扫描、正常停止与锁释放检查均已通过。尚未完成全范围独立代码审查及实施计划/设计规格的最终收口，Goal 必须保持 `active`。
 
 ## 1. 下一位 Agent 的任务
 
-不要重做已经完成的登录迁移。当前工作区已干净，首先从全新的隔离 runtime 重新执行前后端分离烟测，确认首次 signed-out 通知不再报错；随后完成敏感信息扫描、独立代码审查和最终文档收口。没有真实 OA 账号时，不得声称正确密码登录、Token 刷新、重启恢复、主动退出和登录后 Agent 的真实链路已经人工验收通过。
+不要重做已经完成的登录迁移，也不要重复已经通过的全量自动化和最终分离烟测。当前工作区已干净，下一位 Agent 应先独立审查完整登录功能差异，修复审查发现，再收口实施计划、设计规格和最终验收记录。没有真实 OA 账号时，不得声称正确密码登录、Token 刷新、重启恢复、主动退出和登录后 Agent 的真实链路已经人工验收通过。
 
 ## 2. 工作位置、Goal 与 Git 现场
 
@@ -23,6 +23,7 @@
 - 最新已提交功能代码：
 
 ```text
+3e2efe8 docs(登录): 确认下一位Agent交接状态
 4fe4be6 fix(登录): 接受首次未登录身份通知
 df36573 docs(登录): 更新下一位Agent交接文档
 fda372a fix(登录): 兼容 OA 成功响应码
@@ -30,7 +31,8 @@ e834ac3 fix(运行): 加固前后端独立启动参数
 ```
 
 - 本次更新交接文档前，`git status --short` 为空。
-- 最终烟测的临时后端进程已经停止：端口 `49391` 已释放、`development-session.json` 已清理、相关运行进程为 0。
+- 最终烟测 runtime：`C:\tmp\babiq-oa-login-complete-smoke-20260723-161000`。
+- 最终烟测进程已经停止：端口 `49391` 已释放、`development-session.json` 已清理、相关运行进程为 0，所有关键 lock 均可独占打开。
 
 用户固定要求：
 
@@ -204,7 +206,58 @@ $env:JAVA_HOME='D:\Program Files\jdk21'
 
 桌面端全量中的 `packageBusinessBackendJar` 也重新打包了当前后端 jar。
 
-## 6. 最新分离烟测及其发现
+## 6. 最终前后端分离烟测：通过
+
+最终隔离运行目录：
+
+```text
+C:\tmp\babiq-oa-login-complete-smoke-20260723-161000
+```
+
+最终金丝雀：
+
+```text
+OA_LOGIN_SECURITY_CANARY_COMPLETE_20260723
+```
+
+启动脚本直接解析已提交 `.run/*.run.xml` 的 task、scriptParameters 和环境变量。后端、前端分别启动，没有使用合并运行配置：
+
+- 后端：`:app:runBusinessBackendDevelopment`
+- 前端：`:app:runBusinessFrontendDevelopment`
+- 两者均使用 `--no-daemon --max-workers=1 --no-parallel --no-build-cache -Pkotlin.incremental=false -Pkotlin.compiler.execution.strategy=in-process`
+- 前端继续使用外置后端和 development properties。
+
+最终结果：
+
+- 后端成功 ready 并监听 `127.0.0.1:49391`。
+- 前端只出现一个标题为“翔鸟律智桌面端”的窗口。
+- 实际画面为登录页：左侧蓝色插画与翔鸟律智 Logo；右侧账号、密码、记住密码、协议、滑块和禁用登录按钮。
+- 未显示业务导航、业务表单或“小律智能助手”，READY 门禁保持 fail-closed。
+- 本轮后端日志中以下错误均为 0 次：
+
+```text
+JSON-RPC notification 执行失败: method=application/identity/update
+Invalid application identity parameters
+```
+
+- 关闭前端窗口后，前端 Gradle `BUILD SUCCESSFUL in 1m 11s`，后端仍继续监听。
+- 主动停止后端后：
+  - `PORT_LISTENING=False`
+  - `RUNTIME_PROCESS_COUNT=0`
+  - `DEVELOPMENT_SESSION_EXISTS=False`
+  - `SESSION_TOKEN_EXISTS=False`
+  - agent development-session lock、agent instance lock、desktop instance lock、desktop JCEKS lock 均可独占打开。
+- 全程没有通过手工删除数据库、lock 或 build 文件掩盖停止问题。
+- Skiko DirectX12 fallback 后窗口正常渲染，仍属于已知图形后端降级警告。
+
+安全检查：
+
+- 新 runtime 共检查 18 个文件，金丝雀匹配 0。
+- 停止后再次扫描 runtime，金丝雀匹配 0。
+- 仓库金丝雀匹配 0。
+- `business-desktop/app/src/main`、`.run`、`business-desktop/config` 中生产 demo identity 绕过匹配 0。
+
+### 6.1 历史烟测缺陷（已经修复）
 
 隔离运行目录：
 
@@ -220,7 +273,7 @@ OA_LOGIN_SECURITY_CANARY_CODE0_20260723
 
 启动脚本直接解析已提交 `.run/*.run.xml` 的 task、scriptParameters 和环境变量，没有手工追加参数。
 
-### 6.1 已验证正常的部分
+#### 历史烟测中已验证正常的部分
 
 后端：
 
@@ -248,7 +301,7 @@ OA_LOGIN_SECURITY_CANARY_CODE0_20260723
 - 未手工删除残留文件。
 - 主动停止 Spring 长驻子进程后，后端 Gradle task 显示 FAILED 是人工终止结果，不是启动失败；启动成功应以 ready 日志、端口、WebSocket 探针为准。
 
-### 6.2 烟测暴露的真实缺陷
+#### 历史烟测暴露的真实缺陷
 
 后端日志在前端连接和关闭时各出现一次：
 
@@ -259,7 +312,7 @@ JsonRpcException: Invalid application identity parameters
 
 这说明“未登录桌面启动正常显示”成立，但新连接首次发布 signed-out 身份时，前后端身份协议不一致，不能把本轮分离烟测写成完全通过。
 
-## 7. 已提交修复：首次 signed-out 身份通知
+## 7. 已提交并通过最终烟测的修复：首次 signed-out 身份通知
 
 ### 7.1 根因
 
@@ -346,25 +399,8 @@ RED 结果：
 
 仍需完成：
 
-- 使用全新隔离 runtime 重新进行前后端分离烟测。
-- 确认新烟测日志中以下内容均为 0 次：
-
-```text
-JSON-RPC notification 执行失败: method=application/identity/update
-Invalid application identity parameters
-```
-
-- 新 runtime 的金丝雀与敏感信息扫描。
 - 全范围独立代码审查。
 - 实施计划、设计规格和最终交接/验收记录收口。
-
-2026-07-23 16:00 启动过一次仅后端的临时烟测，目录为：
-
-```text
-C:\tmp\babiq-oa-login-final-identity-20260723-160018
-```
-
-该后端已经到达 `Business Backend ready at ws://127.0.0.1:49391/ws/agent`，但用户随即要求交接，因此没有启动前端，也没有形成新的 signed-out 端到端证据。随后主动终止后端，造成该长驻 Gradle task 按预期显示非零退出；端口、session 和进程均已清理。下一位 Agent 必须使用另一个全新 runtime 重做完整烟测，不得把这次中止记录写成通过。
 
 由于没有可用的真实 OA 账号，尚未人工验证：
 
@@ -381,38 +417,28 @@ C:\tmp\babiq-oa-login-final-identity-20260723-160018
 1. 进入 `C:\tmp\BaBiQ-oa-login`，确认分支 `codex/lawyer-oa-login`。
 2. 完整读取第 3 节材料，核对 `git status --short` 为空。
 3. 确认没有残留 Gradle/Java 前后端进程正在写 `business-desktop/**/build`。
-4. 新建全新的隔离 runtime，严格从 `.run/Business Backend.run.xml` 与 `.run/Business Frontend.run.xml` 解析配置，重新做前后端分离烟测。
-5. 在新烟测中确认：
-   - 后端 ready、端口监听、WebSocket probe 成功。
-   - 前端只出现登录窗口，业务壳未组合。
-   - 前端正常关闭后，后端继续运行。
-   - 后端日志不再出现第 6.2 节身份错误。
-   - 停止后端后端口、session 和锁均正确释放。
-6. 用新的随机金丝雀扫描整个新 runtime：
-    - `rg -a --fixed-strings <CANARY> <runtime>` 必须为 0 matches。
-    - 检查日志、SQLite、JCEKS、session、配置和 Git 中无明文密码/Token/API Key。
-7. 发起独立代码审查，重点检查：
+4. 发起独立代码审查，重点检查：
     - READY 门禁是否存在绕过。
     - 首次 signed-out、首次 bind、刷新、退出和迟到数据的身份代次隔离。
     - Token、密码、API Key 是否可能进入日志、SQLite、RPC item/context。
     - `code=0/200` 是否仅放行明确成功码。
     - 两个 Run Configuration 是否仍保持前后端分离。
-8. 修复审查发现并重跑受影响测试。
-9. 更新：
+5. 修复审查发现并重跑受影响测试。
+6. 更新：
     - `docs/superpowers/plans/2026-07-22-business-desktop-oa-login.md`
     - `docs/superpowers/specs/2026-07-22-business-desktop-oa-login-design.md`
     - 本交接文档或新增最终验收记录。
-10. 执行：
+7. 执行：
     - `git diff --check`
     - `git status --short`
     - 最终敏感键与金丝雀扫描。
-11. 使用中文 commit 收口文档，建议：
+8. 使用中文 commit 收口文档，建议：
 
 ```text
 test(登录): 完成 OA 登录验收记录
 ```
 
-12. 只有上述自动化、分离烟测、安全扫描、独立审查和文档全部完成后，才能：
+9. 只有上述自动化、分离烟测、安全扫描、独立审查和文档全部完成后，才能：
     - 把实施计划最终任务标记为 completed。
     - 调用 `update_goal(status=complete)`。
 
@@ -461,9 +487,9 @@ test(登录): 完成 OA 登录验收记录
 - docs/superpowers/plans/2026-07-22-business-desktop-oa-login.md
 - docs/superpowers/specs/2026-07-22-business-desktop-oa-login-design.md
 
-不要重做已完成的 OA 登录功能。`fda372a` 已用 TDD 修复 code=0/200 兼容，`4fe4be6` 已修复并提交首次 application/identity/update(signed-out) 被拒绝的问题；后端 1154 tests 和桌面端 1059 tests 的全量结果均为 0 失败。当前工作区应为干净状态。
+不要重做已完成的 OA 登录功能。`fda372a` 已用 TDD 修复 code=0/200 兼容，`4fe4be6` 已修复并提交首次 application/identity/update(signed-out) 被拒绝的问题；后端 1154 tests 和桌面端 1059 tests 的全量结果均为 0 失败。最终前后端分离烟测也已在 `C:\tmp\babiq-oa-login-complete-smoke-20260723-161000` 通过：身份错误 0 次、runtime/仓库金丝雀 0 matches、停止后端口/进程/session/lock 全部正常。当前工作区应为干净状态。
 
-从一个全新的隔离 runtime 继续完整的前后端分离烟测，确认后端日志中 `application/identity/update` 与 `Invalid application identity parameters` 错误均为 0，再完成金丝雀/敏感信息扫描、独立代码审查和设计/计划/验收文档收口。不要复用或把 `C:\tmp\babiq-oa-login-final-identity-20260723-160018` 的中止记录写成通过。
+下一步只需完成全范围独立代码审查，修复审查发现，然后更新设计规格、实施计划和最终验收记录，执行 `git diff --check`、安全复扫并用中文提交收口。
 
 没有真实 OA 账号，不得声称正确密码登录、Token 刷新、重启恢复、主动退出或登录后 Agent 已人工验收通过。全部收口后才可完成 Goal。
 ```
