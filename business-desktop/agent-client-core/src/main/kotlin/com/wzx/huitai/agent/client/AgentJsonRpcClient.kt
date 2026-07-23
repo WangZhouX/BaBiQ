@@ -40,6 +40,7 @@ import kotlinx.serialization.json.put
 data class AgentRawNotification(
     val method: String,
     val params: JsonObject,
+    val authenticationGeneration: Long? = null,
 )
 
 /** 远端 JSON-RPC error 的脱敏本地投影；只保留数字码和白名单附件码。 */
@@ -71,6 +72,7 @@ class AgentJsonRpcClient(
     scope: CoroutineScope,
     private val requestTimeoutMillis: Long = 30_000,
     inboundCapacity: Int = 64,
+    private val notificationAuthenticationGeneration: () -> Long? = { null },
 ) {
     private val requestIds = AtomicLong(0)
     private val pendingResponses = ConcurrentHashMap<Long, CompletableDeferred<JsonObject>>()
@@ -271,7 +273,12 @@ class AgentJsonRpcClient(
                 val applicationMethod = ApplicationMethod.entries.firstOrNull { it.wireName == method }
                 if (applicationMethod == null) {
                     val params = runCatching { value.getValue("params").jsonObject }.getOrNull() ?: JsonObject(emptyMap())
-                    if (mutableRawNotifications.trySend(AgentRawNotification(method, params)).isFailure) {
+                    val authenticationGeneration = notificationAuthenticationGeneration()
+                    if (
+                        mutableRawNotifications.trySend(
+                            AgentRawNotification(method, params, authenticationGeneration),
+                        ).isFailure
+                    ) {
                         requestCleanupFromOverload()
                         throw AgentJsonRpcClosedCancellation()
                     }

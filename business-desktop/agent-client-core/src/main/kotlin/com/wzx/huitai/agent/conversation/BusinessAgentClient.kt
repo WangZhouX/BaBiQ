@@ -20,6 +20,9 @@ import kotlinx.serialization.json.put
  */
 interface BusinessConversationGateway : Closeable {
     val events: Flow<BusinessAgentEvent>
+    /** Captures the authentication generation at transport ingress; null is always fail-closed. */
+    val ingressEvents: Flow<BusinessAgentIngressEvent>
+        get() = events.map { BusinessAgentIngressEvent(it, authenticationGeneration = null) }
     suspend fun listProviders(): List<BusinessProvider>
     suspend fun createProvider(draft: BusinessProviderDraft): BusinessProvider =
         throw UnsupportedOperationException("Provider create is not supported")
@@ -49,15 +52,24 @@ interface BusinessConversationGateway : Closeable {
     suspend fun cancelTurn(turnId: String): Boolean
 }
 
+data class BusinessAgentIngressEvent(
+    val event: BusinessAgentEvent,
+    val authenticationGeneration: Long?,
+)
+
 class BusinessAgentClient(
     private val rpc: AgentJsonRpcClient,
     @Suppress("UNUSED_PARAMETER")
     scope: CoroutineScope,
 ) : BusinessConversationGateway {
-    override val events: Flow<BusinessAgentEvent> = rpc.rawNotifications.receiveAsFlow().map { notification ->
-        runCatching { BusinessAgentEventCodec.decode(notification) }
-            .getOrElse { BusinessAgentEvent.Unknown(notification.method) }
+    override val ingressEvents: Flow<BusinessAgentIngressEvent> = rpc.rawNotifications.receiveAsFlow().map { notification ->
+        BusinessAgentIngressEvent(
+            event = runCatching { BusinessAgentEventCodec.decode(notification) }
+                .getOrElse { BusinessAgentEvent.Unknown(notification.method) },
+            authenticationGeneration = notification.authenticationGeneration,
+        )
     }
+    override val events: Flow<BusinessAgentEvent> = ingressEvents.map { it.event }
 
     override suspend fun listProviders(): List<BusinessProvider> =
         BusinessProviderCodec.decodeList(rpc.request("provider/list", buildJsonObject { }))

@@ -26,6 +26,7 @@ import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import com.wzx.huitai.agent.conversation.BusinessAgentEvent
+import com.wzx.huitai.agent.conversation.BusinessAgentIngressEvent
 import com.wzx.huitai.agent.conversation.BusinessAttachmentDraft
 import com.wzx.huitai.agent.conversation.BusinessConversationGateway
 import com.wzx.huitai.agent.conversation.BusinessMessageAttachment
@@ -69,6 +70,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
 import org.junit.After
@@ -321,6 +323,9 @@ class BusinessAgentAttachmentWorkflowIT {
     private inner class RecordingGateway : BusinessConversationGateway {
         private val mutableEvents = MutableSharedFlow<BusinessAgentEvent>(extraBufferCapacity = 16)
         override val events: Flow<BusinessAgentEvent> = mutableEvents
+        override val ingressEvents: Flow<BusinessAgentIngressEvent> = mutableEvents.map {
+            BusinessAgentIngressEvent(it, authenticationGeneration = 0)
+        }
         val starts = CopyOnWriteArrayList<Start>()
         @Volatile
         var failNext: Boolean = false

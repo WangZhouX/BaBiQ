@@ -7,6 +7,7 @@ import com.wzx.huitai.action.model.ActionError
 import com.wzx.huitai.action.model.ActionErrorCode
 import com.wzx.huitai.agent.client.AgentSupervisorState
 import com.wzx.huitai.agent.conversation.BusinessAgentEvent
+import com.wzx.huitai.agent.conversation.BusinessAgentIngressEvent
 import com.wzx.huitai.agent.conversation.BusinessAttachmentDraft
 import com.wzx.huitai.agent.conversation.BusinessConversationGateway
 import com.wzx.huitai.agent.conversation.BusinessProvider
@@ -38,6 +39,7 @@ import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.withTimeout
@@ -750,6 +752,9 @@ class BusinessDesktopCoordinatorTest {
     private class FakeConversationGateway : BusinessConversationGateway {
         val mutableEvents = MutableSharedFlow<BusinessAgentEvent>()
         override val events: Flow<BusinessAgentEvent> = mutableEvents
+        override val ingressEvents: Flow<BusinessAgentIngressEvent> = mutableEvents.map {
+            BusinessAgentIngressEvent(it, authenticationGeneration = 0)
+        }
         var startedWithProvider: String? = null
         var startedAttachments: List<BusinessAttachmentDraft>? = null
         var canceledTurnId: String? = null

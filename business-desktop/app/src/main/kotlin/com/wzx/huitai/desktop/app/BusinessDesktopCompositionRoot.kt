@@ -604,7 +604,15 @@ class ProductionBusinessDesktopCompositionFactory(
         agentConnection = (connector ?: defaultConnector()).connect(this.child)
         try {
             connectionLifecycle = AgentConnectionLifecycleProjection(agentConnection.connection, scope)
-            rpc = AgentJsonRpcClient(agentConnection.connection, scope)
+            rpc = AgentJsonRpcClient(
+                connection = agentConnection.connection,
+                scope = scope,
+                notificationAuthenticationGeneration = {
+                    identityRegistry.snapshot.value
+                        .takeIf { it.gate == BusinessAccessGateState.READY }
+                        ?.generation
+                },
+            )
             catalogClient = ApplicationCatalogClient(rpc, this.child.sequenceTracker)
             contextClient = ApplicationContextClient(rpc, this.child.sequenceTracker)
             identityClient = ApplicationIdentityClient(rpc, this.child.sequenceTracker, catalogClient, contextClient)

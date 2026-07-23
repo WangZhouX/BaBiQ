@@ -29,10 +29,11 @@ class BusinessConversationController(
     scope: CoroutineScope,
 ) : Closeable {
     private val eventCollector: Job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
-        gateway.events.collect { event ->
+        gateway.ingressEvents.collect { ingress ->
             val authentication = usageGate.captureIfReady() ?: return@collect
+            if (ingress.authenticationGeneration != authentication.generation) return@collect
             usageGate.commitIfCurrent(authentication) {
-                store.dispatch(BusinessDesktopEvent.AgentEventReceived(event))
+                store.dispatch(BusinessDesktopEvent.AgentEventReceived(ingress.event))
             }
         }
     }

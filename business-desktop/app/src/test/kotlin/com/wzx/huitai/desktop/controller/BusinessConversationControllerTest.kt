@@ -5,6 +5,7 @@ import com.wzx.huitai.agent.client.AgentConnection
 import com.wzx.huitai.agent.client.AgentConnectionState
 import com.wzx.huitai.agent.client.AgentJsonRpcClient
 import com.wzx.huitai.agent.conversation.BusinessAgentEvent
+import com.wzx.huitai.agent.conversation.BusinessAgentIngressEvent
 import com.wzx.huitai.agent.conversation.BusinessAgentClient
 import com.wzx.huitai.agent.conversation.BusinessAttachmentDraft
 import com.wzx.huitai.agent.conversation.BusinessConversationGateway
@@ -32,6 +33,8 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonObject
@@ -163,6 +166,7 @@ class BusinessConversationControllerTest {
         val newIdentity = identity(epoch = 2, authSessionId = "new-session", userId = "new-user")
         check(registry.publishReady(newIdentity, 1))
         runCurrent()
+        gateway.eventGeneration = 1
         gateway.mutableEvents.emit(BusinessAgentEvent.Unknown("new/session-event"))
         runCurrent()
 
@@ -171,28 +175,37 @@ class BusinessConversationControllerTest {
     }
 
     @Test
-    fun `real business agent channel drains signed out notifications before next identity`() = runTest {
+    fun `real business agent channel keeps ingress generation when collection is delayed until next identity`() = runTest {
         val connection = NotificationConnection()
-        val rpc = AgentJsonRpcClient(connection, this)
-        val gateway = BusinessAgentClient(rpc, this)
         val store = BusinessDesktopStore(BusinessDesktopReducer())
         val oldIdentity = identity(epoch = 1, authSessionId = "old-session", userId = "old-user")
         val registry = readyRegistry(oldIdentity)
-        val controller = BusinessConversationController(gateway, store, ReadyAgentUsageGate(registry), this)
-        runCurrent()
+        val ingressCaptured = CompletableDeferred<Long?>()
+        val rpc = AgentJsonRpcClient(
+            connection = connection,
+            scope = this,
+            notificationAuthenticationGeneration = {
+                registry.snapshot.value
+                    .takeIf { it.gate == BusinessAccessGateState.READY }
+                    ?.generation
+                    .also(ingressCaptured::complete)
+            },
+        )
+        val client = BusinessAgentClient(rpc, this)
 
-        registry.invalidate(BusinessAccessGateState.SIGNING_OUT)
-        runCurrent()
         connection.serverNotify("old/session-event")
-        runCurrent()
+        assertEquals(0L, ingressCaptured.await())
+        registry.invalidate(BusinessAccessGateState.SIGNING_OUT)
         val newIdentity = identity(epoch = 2, authSessionId = "new-session", userId = "new-user")
         check(registry.publishReady(newIdentity, 1))
-        runCurrent()
+        val consumed = CompletableDeferred<BusinessAgentIngressEvent>()
+        val gateway = object : BusinessConversationGateway by client {
+            override val ingressEvents: Flow<BusinessAgentIngressEvent> = client.ingressEvents.onEach(consumed::complete)
+        }
+        val controller = BusinessConversationController(gateway, store, ReadyAgentUsageGate(registry), this)
 
+        assertEquals(0L, consumed.await().authenticationGeneration)
         assertEquals(0, store.state.value.unknownEventCount)
-        connection.serverNotify("new/session-event")
-        runCurrent()
-        assertEquals(1, store.state.value.unknownEventCount)
         controller.close()
         rpc.close()
     }
@@ -214,6 +227,10 @@ class BusinessConversationControllerTest {
     private class RecordingGateway : BusinessConversationGateway {
         val mutableEvents = MutableSharedFlow<BusinessAgentEvent>(extraBufferCapacity = 8)
         override val events: Flow<BusinessAgentEvent> = mutableEvents
+        override val ingressEvents: Flow<BusinessAgentIngressEvent> = mutableEvents.map { event ->
+            BusinessAgentIngressEvent(event, authenticationGeneration = eventGeneration)
+        }
+        var eventGeneration: Long = 0
         var text: String? = null
         var attachments: List<BusinessAttachmentDraft>? = null
         var providerId: String? = null
