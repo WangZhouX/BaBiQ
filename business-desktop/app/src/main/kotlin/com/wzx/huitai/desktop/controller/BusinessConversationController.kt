@@ -18,7 +18,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
@@ -30,22 +29,11 @@ class BusinessConversationController(
     scope: CoroutineScope,
 ) : Closeable {
     private val eventCollector: Job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
-        var scopedCollector: Job? = null
-        try {
-            usageGate.readySnapshots.collect { authentication ->
-                scopedCollector?.cancelAndJoin()
-                scopedCollector = authentication?.let {
-                    launch(start = CoroutineStart.UNDISPATCHED) {
-                        gateway.events.collect { event ->
-                            usageGate.commitIfCurrent(it) {
-                                store.dispatch(BusinessDesktopEvent.AgentEventReceived(event))
-                            }
-                        }
-                    }
-                }
+        gateway.events.collect { event ->
+            val authentication = usageGate.captureIfReady() ?: return@collect
+            usageGate.commitIfCurrent(authentication) {
+                store.dispatch(BusinessDesktopEvent.AgentEventReceived(event))
             }
-        } finally {
-            scopedCollector?.cancelAndJoin()
         }
     }
 
@@ -57,12 +45,7 @@ class BusinessConversationController(
 
     /** 接受设置控制器已加载且通过连接代次校验的 Provider 快照，不发起第二次网络请求。 */
     fun acceptProviders(providers: List<BusinessProvider>) {
-        val authentication = usageGate.captureIfReady()
-        if (authentication == null && providers.isEmpty()) {
-            store.dispatch(BusinessDesktopEvent.ProvidersChanged(emptyList()))
-            return
-        }
-        authentication ?: throw AgentAuthenticationRequiredException()
+        val authentication = usageGate.captureIfReady() ?: throw AgentAuthenticationRequiredException()
         if (!usageGate.commitIfCurrent(authentication) {
                 store.dispatch(BusinessDesktopEvent.ProvidersChanged(providers))
             }
@@ -100,13 +83,19 @@ class BusinessConversationController(
         gateway.close()
     }
 
-    private suspend fun <T> guarded(code: String, block: suspend () -> T): T = try {
+    private suspend fun <T> guarded(
+        authentication: com.wzx.huitai.desktop.auth.ReadyAgentUsageSnapshot,
+        code: String,
+        block: suspend () -> T,
+    ): T = try {
         block()
     } catch (cancelled: CancellationException) {
         throw cancelled
     } catch (failure: Exception) {
         if (failure is AgentAuthenticationRequiredException || failure is StaleAgentUsageException) throw failure
-        store.dispatch(BusinessDesktopEvent.Failed(code, safeFailureMessage(failure)))
+        usageGate.commitIfCurrent(authentication) {
+            store.dispatch(BusinessDesktopEvent.Failed(code, safeFailureMessage(failure)))
+        }
         throw failure
     }
 
@@ -116,7 +105,7 @@ class BusinessConversationController(
         commit: (T) -> Unit,
     ): T {
         val authentication = usageGate.requireReady()
-        val result = guarded(code, request)
+        val result = guarded(authentication, code, request)
         if (!usageGate.commitIfCurrent(authentication) { commit(result) }) throw StaleAgentUsageException()
         return result
     }

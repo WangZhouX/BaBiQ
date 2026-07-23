@@ -1,7 +1,11 @@
 package com.wzx.huitai.desktop.controller
 
 import com.wzx.huitai.agent.client.AgentJsonRpcException
+import com.wzx.huitai.agent.client.AgentConnection
+import com.wzx.huitai.agent.client.AgentConnectionState
+import com.wzx.huitai.agent.client.AgentJsonRpcClient
 import com.wzx.huitai.agent.conversation.BusinessAgentEvent
+import com.wzx.huitai.agent.conversation.BusinessAgentClient
 import com.wzx.huitai.agent.conversation.BusinessAttachmentDraft
 import com.wzx.huitai.agent.conversation.BusinessConversationGateway
 import com.wzx.huitai.agent.conversation.BusinessProvider
@@ -24,10 +28,15 @@ import kotlin.test.assertNull
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class BusinessConversationControllerTest {
@@ -112,6 +121,34 @@ class BusinessConversationControllerTest {
     }
 
     @Test
+    fun `late failure from logged out identity cannot publish error into new identity store`() = runTest {
+        val gateway = RecordingGateway().apply {
+            failure = IllegalStateException("old request failed")
+            failureRelease = CompletableDeferred()
+        }
+        val store = BusinessDesktopStore(BusinessDesktopReducer())
+        val oldIdentity = identity(epoch = 1, authSessionId = "old-session", userId = "old-user")
+        store.dispatch(BusinessDesktopEvent.IdentityAuthenticated(oldIdentity))
+        store.dispatch(BusinessDesktopEvent.ThreadChanged(BusinessThread("thread-1", "demo", "C:/demo")))
+        val registry = readyRegistry(oldIdentity)
+        val controller = BusinessConversationController(gateway, store, ReadyAgentUsageGate(registry), this)
+
+        val pending = async { runCatching { controller.startTurn("old request") } }
+        gateway.startTurnEntered.await()
+        registry.invalidate(BusinessAccessGateState.SIGNING_OUT)
+        store.dispatch(BusinessDesktopEvent.SignedOut)
+        val newIdentity = identity(epoch = 2, authSessionId = "new-session", userId = "new-user")
+        store.dispatch(BusinessDesktopEvent.IdentityAuthenticated(newIdentity))
+        check(registry.publishReady(newIdentity, 1))
+        gateway.failureRelease!!.complete(Unit)
+        runCurrent()
+
+        check(pending.await().isFailure)
+        assertNull(store.state.value.error)
+        controller.close()
+    }
+
+    @Test
     fun `events emitted for revoked session are not delivered to the next ready identity`() = runTest {
         val gateway = RecordingGateway()
         val store = BusinessDesktopStore(BusinessDesktopReducer())
@@ -134,16 +171,43 @@ class BusinessConversationControllerTest {
     }
 
     @Test
-    fun `provider cleanup remains allowed after the ready gate closes`() = runTest {
+    fun `real business agent channel drains signed out notifications before next identity`() = runTest {
+        val connection = NotificationConnection()
+        val rpc = AgentJsonRpcClient(connection, this)
+        val gateway = BusinessAgentClient(rpc, this)
+        val store = BusinessDesktopStore(BusinessDesktopReducer())
+        val oldIdentity = identity(epoch = 1, authSessionId = "old-session", userId = "old-user")
+        val registry = readyRegistry(oldIdentity)
+        val controller = BusinessConversationController(gateway, store, ReadyAgentUsageGate(registry), this)
+        runCurrent()
+
+        registry.invalidate(BusinessAccessGateState.SIGNING_OUT)
+        runCurrent()
+        connection.serverNotify("old/session-event")
+        runCurrent()
+        val newIdentity = identity(epoch = 2, authSessionId = "new-session", userId = "new-user")
+        check(registry.publishReady(newIdentity, 1))
+        runCurrent()
+
+        assertEquals(0, store.state.value.unknownEventCount)
+        connection.serverNotify("new/session-event")
+        runCurrent()
+        assertEquals(1, store.state.value.unknownEventCount)
+        controller.close()
+        rpc.close()
+    }
+
+    @Test
+    fun `unscoped provider cleanup is rejected after the ready gate closes`() = runTest {
         val gateway = RecordingGateway()
         val store = BusinessDesktopStore(BusinessDesktopReducer())
         store.dispatch(BusinessDesktopEvent.ProvidersChanged(listOf(provider())))
         val registry = BusinessIdentityRegistry().apply { transitionTo(BusinessAccessGateState.SIGNING_OUT) }
         val controller = BusinessConversationController(gateway, store, ReadyAgentUsageGate(registry), this)
 
-        controller.acceptProviders(emptyList())
+        assertFailsWith<IllegalStateException> { controller.acceptProviders(emptyList()) }
 
-        assertEquals(emptyList(), store.state.value.providers)
+        assertEquals(listOf(provider()), store.state.value.providers)
         controller.close()
     }
 
@@ -154,6 +218,7 @@ class BusinessConversationControllerTest {
         var attachments: List<BusinessAttachmentDraft>? = null
         var providerId: String? = null
         var failure: Exception? = null
+        var failureRelease: CompletableDeferred<Unit>? = null
         var startTurnCalls: Int = 0
         val startTurnEntered = CompletableDeferred<Unit>()
         var startTurnResult: CompletableDeferred<BusinessTurn>? = null
@@ -169,6 +234,7 @@ class BusinessConversationControllerTest {
         ): BusinessTurn {
             startTurnCalls += 1
             startTurnEntered.complete(Unit)
+            failureRelease?.await()
             failure?.let { throw it }
             this.text = text
             this.attachments = attachments
@@ -177,6 +243,28 @@ class BusinessConversationControllerTest {
         }
         override suspend fun cancelTurn(turnId: String): Boolean = false
         override fun close() = Unit
+    }
+
+    private class NotificationConnection : AgentConnection {
+        private val inbound = Channel<String>(Channel.UNLIMITED)
+        override val connectionId: String = "connection-1"
+        override val incoming = inbound
+        override val state = MutableStateFlow<AgentConnectionState>(AgentConnectionState.Connected)
+        override val hasConnected: Boolean = true
+
+        override suspend fun send(text: String) = error("unexpected outbound request")
+
+        suspend fun serverNotify(method: String) {
+            inbound.send(buildJsonObject {
+                put("jsonrpc", "2.0")
+                put("method", method)
+                put("params", JsonObject(emptyMap()))
+            }.toString())
+        }
+
+        override suspend fun close() {
+            inbound.close()
+        }
     }
 
     private fun attachment(): BusinessAttachmentDraft = BusinessAttachmentDraft(

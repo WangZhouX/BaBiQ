@@ -210,7 +210,7 @@ class BusinessProviderSettingsControllerTest {
         assertTrue(controller.state.value.providers.isEmpty())
         assertTrue(controller.state.value.oauthStatus.isEmpty())
         assertNull(controller.state.value.notice)
-        assertEquals(emptyList(), projectedProviders.last())
+        assertTrue(projectedProviders.none { it.isEmpty() })
         controller.close()
     }
 
@@ -251,8 +251,9 @@ class BusinessProviderSettingsControllerTest {
         accessGate.value = BusinessAccessGateState.SIGNING_OUT
         advanceUntilIdle()
         assertTrue(controller.state.value.providers.isEmpty())
+        desktopStore.dispatch(BusinessDesktopEvent.SignedOut)
         assertTrue(desktopStore.state.value.providers.isEmpty())
-        assertEquals(emptyList(), projections.last())
+        assertTrue(projections.none { it.isEmpty() })
         controller.close()
     }
 

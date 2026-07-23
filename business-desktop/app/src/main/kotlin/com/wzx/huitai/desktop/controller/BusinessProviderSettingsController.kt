@@ -322,7 +322,6 @@ class BusinessProviderSettingsController(
                         operationsEnabled = false,
                         connectionGeneration = mutableState.value.connectionGeneration,
                     )
-                    onProvidersChanged(emptyList())
                 } else {
                     mutableState.value = mutableState.value.copy(
                         operationsEnabled = false,
