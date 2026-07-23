@@ -10,10 +10,12 @@ import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.parameter
 import io.ktor.client.request.post
+import io.ktor.client.request.forms.FormDataContent
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
+import io.ktor.http.Parameters
 import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.CancellationException
@@ -94,8 +96,10 @@ internal class KtorOaAuthenticationGateway(
 
     override suspend fun refresh(tenantId: String, refreshToken: String): OaTokenBundle = request {
         tokenFrom(successData(httpClient.post("$endpointBase/system/auth/refresh-token") {
-            parameter("refreshToken", refreshToken)
             header(TENANT_HEADER, tenantId)
+            setBody(FormDataContent(Parameters.build {
+                append("refreshToken", refreshToken)
+            }))
         }))
     }
 

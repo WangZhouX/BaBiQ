@@ -165,9 +165,9 @@ class ApplicationActionRequestHandler(
                     handleStart(request.id, envelope, authentication)
                 }
             }
-            ApplicationMethod.ACTION_CANCEL.wireName -> handleCancel(request.id, envelope)
-            ApplicationMethod.ACTION_STATUS.wireName -> handleStatus(request.id, envelope)
-            ApplicationMethod.ACTION_RESULT_GET.wireName -> handleResult(request.id, envelope)
+            ApplicationMethod.ACTION_CANCEL.wireName -> handleCancel(request.id, envelope, currentAuthentication(request.id, envelope) ?: return)
+            ApplicationMethod.ACTION_STATUS.wireName -> handleStatus(request.id, envelope, currentAuthentication(request.id, envelope) ?: return)
+            ApplicationMethod.ACTION_RESULT_GET.wireName -> handleResult(request.id, envelope, currentAuthentication(request.id, envelope) ?: return)
             else -> rpc.respondProtocolError(request.id)
         }
     }
@@ -175,7 +175,25 @@ class ApplicationActionRequestHandler(
     private suspend fun handle(notification: com.wzx.huitai.agent.protocol.JsonRpcNotification) {
         val envelope = notification.params as? ActionEnvelope ?: return
         if (notification.method != ApplicationMethod.ACTION_CANCEL.wireName) return
-        handleCancel(envelope)
+        val authentication = authenticationGate.captureIfReady() ?: return
+        if (!authenticationGate.isCurrent(authentication) || !isTrusted(envelope, authentication.identity.scope)) return
+        handleCancel(envelope, authentication)
+    }
+
+    private suspend fun currentAuthentication(
+        requestId: Long,
+        envelope: ActionEnvelope,
+    ): ApplicationAuthenticationSnapshot? {
+        val authentication = authenticationGate.captureIfReady()
+        if (authentication == null || !authenticationGate.isCurrent(authentication)) {
+            rpc.respondProtocolError(requestId, AUTH_REQUIRED_REASON)
+            return null
+        }
+        if (!isTrusted(envelope, authentication.identity.scope)) {
+            rpc.respondProtocolError(requestId, PROTOCOL_ERROR_REASON)
+            return null
+        }
+        return authentication
     }
 
     private suspend fun handleStart(
@@ -224,26 +242,53 @@ class ApplicationActionRequestHandler(
         }
     }
 
-    private suspend fun handleCancel(requestId: Long, envelope: ActionEnvelope) {
+    private suspend fun handleCancel(
+        requestId: Long,
+        envelope: ActionEnvelope,
+        authentication: ApplicationAuthenticationSnapshot,
+    ) {
         val requestedScope = requestedScopeOrNull(envelope) ?: run {
             rpc.respondProtocolError(requestId, PROTOCOL_ERROR_REASON)
             return
         }
-        if (!runtime.cancel(RuntimeExecutionKey(envelope.executionId, requestedScope), envelope.correlation())) {
+        val canceled = authenticationGate.withCurrentPermit(authentication) {
+            runtime.cancel(RuntimeExecutionKey(envelope.executionId, requestedScope), envelope.correlation())
+        }
+        if (canceled == null) {
+            rpc.respondProtocolError(requestId, AUTH_REQUIRED_REASON)
+            return
+        }
+        if (!canceled) {
             rpc.respondProtocolError(requestId, PROTOCOL_ERROR_REASON)
             return
         }
         rpc.respondSuccess(requestId, ack(envelope.executionId))
     }
 
-    private suspend fun handleCancel(envelope: ActionEnvelope) {
+    private suspend fun handleCancel(
+        envelope: ActionEnvelope,
+        authentication: ApplicationAuthenticationSnapshot,
+    ) {
         val requestedScope = requestedScopeOrNull(envelope) ?: return
-        runtime.cancel(RuntimeExecutionKey(envelope.executionId, requestedScope), envelope.correlation())
+        authenticationGate.withCurrentPermit(authentication) {
+            runtime.cancel(RuntimeExecutionKey(envelope.executionId, requestedScope), envelope.correlation())
+        }
     }
 
-    private suspend fun handleStatus(requestId: Long, envelope: ActionEnvelope) {
+    private suspend fun handleStatus(
+        requestId: Long,
+        envelope: ActionEnvelope,
+        authentication: ApplicationAuthenticationSnapshot,
+    ) {
         val requestedScope = requestedScopeOrNull(envelope)
-        val record = requestedScope?.let { runtime.find(envelope.executionId, it) }
+        val query = authenticationGate.withCurrentPermit(authentication) {
+            requestedScope?.let { runtime.find(envelope.executionId, it) }
+        }
+        if (query == null && !authenticationGate.isCurrent(authentication)) {
+            rpc.respondProtocolError(requestId, AUTH_REQUIRED_REASON)
+            return
+        }
+        val record = query
         if (record == null) {
             rpc.respondProtocolError(requestId, PROTOCOL_ERROR_REASON)
             return
@@ -254,9 +299,20 @@ class ApplicationActionRequestHandler(
         })
     }
 
-    private suspend fun handleResult(requestId: Long, envelope: ActionEnvelope) {
+    private suspend fun handleResult(
+        requestId: Long,
+        envelope: ActionEnvelope,
+        authentication: ApplicationAuthenticationSnapshot,
+    ) {
         val requestedScope = requestedScopeOrNull(envelope)
-        val record = requestedScope?.let { runtime.find(envelope.executionId, it) }
+        val query = authenticationGate.withCurrentPermit(authentication) {
+            requestedScope?.let { runtime.find(envelope.executionId, it) }
+        }
+        if (query == null && !authenticationGate.isCurrent(authentication)) {
+            rpc.respondProtocolError(requestId, AUTH_REQUIRED_REASON)
+            return
+        }
+        val record = query
         if (record == null || !record.isTerminal) {
             rpc.respondProtocolError(requestId, PROTOCOL_ERROR_REASON)
             return

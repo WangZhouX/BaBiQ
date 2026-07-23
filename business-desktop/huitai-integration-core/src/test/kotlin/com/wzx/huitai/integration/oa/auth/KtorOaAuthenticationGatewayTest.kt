@@ -65,7 +65,10 @@ class KtorOaAuthenticationGatewayTest {
         assertFalse(loginBody.contains("Abcdef12"))
         assertEquals(HttpMethod.Post, requests[2].method)
         assertEquals("/api/system/auth/refresh-token", requests[2].url.encodedPath)
-        assertEquals("refresh-1", requests[2].url.parameters["refreshToken"])
+        assertNull(requests[2].url.parameters["refreshToken"])
+        val refreshContent = requests[2].body as OutgoingContent.ByteArrayContent
+        assertEquals("application/x-www-form-urlencoded", refreshContent.contentType?.withoutParameters()?.toString())
+        assertEquals("refreshToken=refresh-1", refreshContent.bytes().decodeToString())
         assertEquals("t-1", requests[2].headers["tenant-id"])
         assertEquals(null, requests[2].headers[HttpHeaders.Authorization])
         assertEquals(HttpMethod.Get, requests[3].method)
@@ -309,7 +312,7 @@ class KtorOaAuthenticationGatewayTest {
     }
 
     @Test
-    fun `encodes plus slash equals spaces and Unicode in auth query parameters`() = runBlocking {
+    fun `keeps refresh token out of URL and form encodes special characters`() = runBlocking {
         val requests = mutableListOf<HttpRequestData>()
         val gateway = gateway(MockEngine { request ->
             requests += request
@@ -330,10 +333,12 @@ class KtorOaAuthenticationGatewayTest {
 
         assertEquals(mobile, requests[0].url.parameters["mobile"])
         assertEquals("mobile=%2B8613800138000", requests[0].url.encodedQuery)
-        assertEquals(refreshToken, requests[1].url.parameters["refreshToken"])
+        assertNull(requests[1].url.parameters["refreshToken"])
+        assertEquals("", requests[1].url.encodedQuery)
+        val refreshContent = requests[1].body as OutgoingContent.ByteArrayContent
         assertEquals(
             "refreshToken=refresh%2B+%2F+%3D%E7%A9%BA%E6%A0%BC%E9%9B%AA",
-            requests[1].url.encodedQuery,
+            refreshContent.bytes().decodeToString(),
         )
     }
 

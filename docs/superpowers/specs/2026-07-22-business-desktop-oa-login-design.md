@@ -322,6 +322,13 @@ READY -> SIGNING_OUT -> SIGNED_OUT
 人工验收使用配置文件指向可用 OA 环境，验证错误密码、正确密码、重启恢复、主动退出和登录后
 小律助手可用；没有可用账号时只完成自动化与可达性烟测，不声称真实登录已通过。
 
+### 9.1 最终安全审查补强
+
+- Application Action 的 start、cancel、status、result-get 都必须捕获当前 READY 身份，校验请求 scope 与当前身份一致，并在同一 current permit 内访问运行时；退出或换身份后的旧代次请求不得读取结果或取消执行。
+- notification 形式的 cancel 在非 READY、当前身份已变化或 scope 不匹配时静默丢弃，不产生跨身份副作用。
+- OA refresh Token 不得出现在 URL query。为兼容 OA 后端的 `@RequestParam` 合约，客户端使用 `application/x-www-form-urlencoded` POST body 传递 `refreshToken`。
+- 最终验收包含上述回归测试、全量自动化、安全扫描和独立代码审查。
+
 ## 10. 完成标准
 
 - 正常启动首先看到与 Web 端一致的翔鸟律智登录页。

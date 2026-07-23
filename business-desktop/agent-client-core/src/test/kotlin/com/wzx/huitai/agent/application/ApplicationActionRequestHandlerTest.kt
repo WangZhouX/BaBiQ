@@ -88,6 +88,31 @@ class ApplicationActionRequestHandlerTest {
     }
 
     @Test
+    fun `action queries and cancel while authentication is not ready return auth required without touching old execution`() = runTest {
+        val gate = object : ApplicationAuthenticationGate {
+            override fun captureIfReady(): ApplicationAuthenticationSnapshot? = null
+
+            override fun isCurrent(snapshot: ApplicationAuthenticationSnapshot): Boolean = false
+        }
+        val fixture = Fixture(backgroundScope, authenticationGate = gate)
+        fixture.store.current = record(command(), ActionExecutionState.SUCCEEDED)
+
+        fixture.serverRequest("cancel-not-ready", ApplicationMethod.ACTION_CANCEL, requestEnvelope(sequence = 1))
+        fixture.serverRequest("status-not-ready", ApplicationMethod.ACTION_STATUS, requestEnvelope(sequence = 2))
+        fixture.serverRequest("result-not-ready", ApplicationMethod.ACTION_RESULT_GET, requestEnvelope(sequence = 3))
+        fixture.serverNotification(ApplicationMethod.ACTION_CANCEL, requestEnvelope(sequence = 4))
+        runCurrent()
+
+        listOf("cancel-not-ready", "status-not-ready", "result-not-ready").forEach { id ->
+            val error = fixture.response(id).getValue("error").jsonObject
+            assertEquals("auth_required", error.getValue("data").jsonObject.getValue("reason").jsonPrimitive.content)
+        }
+        assertEquals(0, fixture.store.scopedFindCalls)
+        assertEquals(ActionExecutionState.SUCCEEDED, fixture.store.current?.state)
+        fixture.close()
+    }
+
+    @Test
     fun `authentication invalidated at permit boundary cannot install action runtime`() = runTest {
         var permitCalls = 0
         val gate = object : ApplicationAuthenticationGate {

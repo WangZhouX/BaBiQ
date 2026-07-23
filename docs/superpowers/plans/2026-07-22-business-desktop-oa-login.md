@@ -205,11 +205,18 @@
 - Modify: `docs/superpowers/plans/2026-07-22-business-desktop-oa-login.md`（记录结果）
 - Create: `docs/superpowers/plans/2026-07-22-business-desktop-oa-login-handoff.md`
 
-- [ ] 1. 运行认证定向套件，确认 0 failure：配置、网关、JCEKS、controller/orchestrator、action gate、UI、smoke。
-- [ ] 2. 使用 ASCII Gradle cache 运行 `cd business-desktop; .\gradlew.bat test --rerun-tasks --no-daemon --max-workers=1 --no-parallel`，记录测试数和 0 failure。
-- [ ] 3. 运行 `cd backend; .\mvnw.cmd clean verify`，确认内置 Agent 后端没有回退。
-- [ ] 4. 分别启动 `Business Backend` 和 `Business Frontend`，验证未登录只显示登录页、后端日志可独立观察，关闭前端不会遗留后端锁。
-- [ ] 5. 无可用真实账号时只做 OA 端点可达性/错误账号 smoke，并明确“未完成人工真实登录”；有账号时再验正确密码、重启恢复、主动退出、登录后 Agent 可用。
-- [ ] 6. 运行自动化安全验收，注入金丝雀密码/Token，断言日志、SQLite、WebSocket payload、Agent item/context 均不含金丝雀；再检查 `git diff --check`、`git status --short` 和源码敏感键扫描，并写 handoff。
-- [ ] 7. 运行独立代码审查，修复发现的问题后重新执行受影响测试。
-- [ ] 8. 中文提交：`test(登录): 完成 OA 登录验收记录`。
+- [x] 1. 运行认证定向套件，确认 0 failure：配置、网关、JCEKS、controller/orchestrator、action gate、UI、smoke。
+- [x] 2. 使用 ASCII Gradle cache 运行桌面端全量测试，1059 tests / 0 failure。
+- [x] 3. 运行后端 `clean verify`，1154 tests / 0 failure / 0 error。
+- [x] 4. 分别启动 `Business Backend` 和 `Business Frontend`，验证未登录只显示登录页、后端日志可独立观察，停止后无残留端口、进程、session 或锁占用。
+- [x] 5. 无可用真实账号，已完成 OA 端点契约和未登录分离 smoke；正确密码、真实刷新、重启恢复、主动退出、登录后 Agent 可用明确保留为未人工验证。
+- [x] 6. 完成金丝雀和敏感键安全验收；日志、runtime、仓库、配置与 Git 未发现真实敏感值。
+- [x] 7. 完成独立代码审查；修复旧身份 action 查询/取消绕过和 refresh Token URL query 两项 Important 问题，并重跑受影响测试。
+- [x] 8. 中文提交：`test(登录): 完成 OA 登录验收记录`。
+
+### Task 9 最终收口补充（2026-07-23）
+
+- 独立审查范围为 `92d4f34..448187d`。
+- `ACTION_REQUEST`、`ACTION_CANCEL`、`ACTION_STATUS`、`ACTION_RESULT_GET` 统一要求当前 READY 身份和同一 identity scope；操作在 current permit 内完成，通知型 cancel 在非 READY 或代次不匹配时丢弃。
+- OA refresh 保持服务端 `@RequestParam("refreshToken")` 兼容语义，但桌面端改用 `application/x-www-form-urlencoded` POST body，URL query 不再携带 refresh Token。
+- 两项回归测试均先 RED 后 GREEN；最终证据记录在 handoff。

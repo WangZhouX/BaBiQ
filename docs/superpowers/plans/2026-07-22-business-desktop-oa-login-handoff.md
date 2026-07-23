@@ -493,3 +493,27 @@ test(登录): 完成 OA 登录验收记录
 
 没有真实 OA 账号，不得声称正确密码登录、Token 刷新、重启恢复、主动退出或登录后 Agent 已人工验收通过。全部收口后才可完成 Goal。
 ```
+
+## 13. 最终独立审查与收口（2026-07-23）
+
+独立审查范围：`92d4f34..448187d`。审查确认 code 白名单和前后端独立运行配置正确，同时发现并修复两项 Important 问题：
+
+1. `ACTION_CANCEL`、`ACTION_STATUS`、`ACTION_RESULT_GET` 此前没有统一经过 READY generation/identity 门禁，旧身份可能查询或取消旧 action。现已与 `ACTION_REQUEST` 一样校验当前 READY snapshot、identity scope，并在 current permit 内访问运行时；notification cancel 在非 READY 或 scope 不匹配时丢弃。
+2. OA refresh Token 此前作为 URL query 发送，存在进入代理、access log 或 APM 的风险。现改为 `application/x-www-form-urlencoded` POST body；Spring `@RequestParam("refreshToken")` 服务端合约保持兼容。
+
+TDD 证据：
+
+- RED：`ApplicationActionRequestHandlerTest` 新增未登录 cancel/status/result 用例后失败，证明旧实现仍触及旧执行。
+- GREEN：
+
+```powershell
+cd C:\tmp\BaBiQ-oa-login\business-desktop
+$env:GRADLE_USER_HOME='C:\tmp\gradle-home-ascii'
+$env:JAVA_TOOL_OPTIONS='-Djava.io.tmpdir=C:\tmp\gradle-temp'
+$env:JAVA_HOME='D:\Program Files\jdk21'
+.\gradlew.bat :agent-client-core:test --tests "*ApplicationActionRequestHandlerTest" :huitai-integration-core:test --tests "*KtorOaAuthenticationGatewayTest" --no-daemon --max-workers=1 --no-parallel --no-build-cache "-Pkotlin.incremental=false" "-Pkotlin.compiler.execution.strategy=in-process" --console=plain
+```
+
+- 结果：`BUILD SUCCESSFUL in 3m 28s`。
+
+真实 OA 账号仍不可用，因此正确密码登录、真实 Token 刷新、重启恢复、主动退出和登录后 Agent 可用没有人工验收通过；不得改变这一结论。

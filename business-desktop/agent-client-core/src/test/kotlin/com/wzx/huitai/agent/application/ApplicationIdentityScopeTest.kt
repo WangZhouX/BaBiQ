@@ -99,7 +99,7 @@ class ApplicationIdentityScopeTest {
     }
 
     @Test
-    fun `status and result use requested complete scope and do not expose missing versus mismatch`() = runTest {
+    fun `status and result reject old or mismatched identity without reading persisted records`() = runTest {
         val oldScope = TRUSTED_SCOPE
         val running = record(command(oldScope).copy(executionId = "running-execution"), ActionExecutionState.EXECUTING)
         val terminal = record(command(oldScope), ActionExecutionState.SUCCEEDED)
@@ -125,21 +125,20 @@ class ApplicationIdentityScopeTest {
         fixture.request("old-result", ApplicationMethod.ACTION_RESULT_GET, envelope(41, oldScope))
         runCurrent()
 
-        val missingError = fixture.response("missing-status").getValue("error")
-        assertEquals(missingError, fixture.response("missing-result").getValue("error"))
+        assertProtocolError(fixture.response("missing-status"))
+        assertProtocolError(fixture.response("missing-result"))
         scopes.indices.forEach {
-            assertEquals(missingError, fixture.response("mismatch-status-$it").getValue("error"))
-            assertEquals(missingError, fixture.response("mismatch-result-$it").getValue("error"))
+            assertProtocolError(fixture.response("mismatch-status-$it"))
+            assertProtocolError(fixture.response("mismatch-result-$it"))
         }
-        assertEquals("executing", fixture.response("old-status").result().getValue("state").jsonPrimitive.content)
-        assertEquals("public", fixture.response("old-result").result().getValue("output").jsonObject.getValue("value").jsonPrimitive.content)
-        assertEquals(false, fixture.connection.sent.joinToString().contains("private"))
-        assertEquals(18, fixture.query.findCalls)
+        assertProtocolError(fixture.response("old-status"))
+        assertProtocolError(fixture.response("old-result"))
+        assertEquals(0, fixture.query.findCalls)
         fixture.close()
     }
 
     @Test
-    fun `cancel notification uses frozen requested scope and correlation after current identity changes`() = runTest {
+    fun `cancel notification cannot affect old execution after current identity changes`() = runTest {
         val fixture = Fixture(backgroundScope)
         fixture.executor.block = true
         fixture.request("start", ApplicationMethod.ACTION_REQUEST, envelope(1))
@@ -157,10 +156,10 @@ class ApplicationIdentityScopeTest {
         assertFalse(fixture.executor.cancelled.isCompleted)
 
         fixture.notification(ApplicationMethod.ACTION_CANCEL, envelope(3, TRUSTED_SCOPE))
-        fixture.executor.cancelled.await()
         runCurrent()
 
         assertEquals(1, fixture.executor.calls)
+        assertFalse(fixture.executor.cancelled.isCompleted)
         assertEquals(listOf("start".testJsonRpcId().toString()), fixture.connection.sent.map { it.json() }.mapNotNull { it["id"]?.jsonPrimitive?.content })
         fixture.close()
     }
