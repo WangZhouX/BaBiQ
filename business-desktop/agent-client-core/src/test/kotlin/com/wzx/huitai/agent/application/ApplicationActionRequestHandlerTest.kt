@@ -88,6 +88,37 @@ class ApplicationActionRequestHandlerTest {
     }
 
     @Test
+    fun `authentication invalidated at permit boundary cannot install action runtime`() = runTest {
+        var permitCalls = 0
+        val gate = object : ApplicationAuthenticationGate {
+            override fun captureIfReady() = ApplicationAuthenticationSnapshot(
+                TrustedApplicationIdentity(TRUSTED_SCOPE, setOf("case:read", "case:write")),
+                generation = 7,
+            )
+
+            override fun isCurrent(snapshot: ApplicationAuthenticationSnapshot) = true
+
+            override suspend fun <T> withCurrentPermit(
+                snapshot: ApplicationAuthenticationSnapshot,
+                use: suspend () -> T,
+            ): T? {
+                permitCalls += 1
+                return null
+            }
+        }
+        val fixture = Fixture(backgroundScope, authenticationGate = gate)
+
+        fixture.serverRequest("permit-revoked", ApplicationMethod.ACTION_REQUEST, requestEnvelope(sequence = 1))
+        runCurrent()
+
+        val error = fixture.response("permit-revoked").getValue("error").jsonObject
+        assertEquals("auth_required", error.getValue("data").jsonObject.getValue("reason").jsonPrimitive.content)
+        assertEquals(1, permitCalls)
+        assertEquals(0, fixture.executor.calls)
+        fixture.close()
+    }
+
+    @Test
     fun `turn start attachment responses and errors never enter application action audit routing`() = runTest {
         val fixture = Fixture(backgroundScope)
         val privatePath = "C:\\Users\\secret\\customer-contract.pdf"

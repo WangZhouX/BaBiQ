@@ -6,6 +6,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 
 class ReadyAgentUsageGateTest {
     @Test
@@ -37,6 +41,51 @@ class ReadyAgentUsageGateTest {
         assertFalse(gate.commitIfCurrent(snapshot) { commits += 1 })
 
         assertEquals(1, commits)
+    }
+
+    @Test
+    fun `permit acquired before invalidation must drain before revocation scans actions`() = runTest {
+        val registry = BusinessIdentityRegistry()
+        check(registry.publishReady(identity(), 0))
+        val gate = ReadyAgentUsageGate(registry)
+        val snapshot = gate.requireReady()
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+
+        val usage = async {
+            gate.withCurrentPermit(snapshot) {
+                entered.complete(Unit)
+                release.await()
+                "started"
+            }
+        }
+        entered.await()
+        registry.invalidate(BusinessAccessGateState.SIGNING_OUT)
+        val drained = async { registry.awaitUsagePermitsDrained() }
+        runCurrent()
+
+        assertFalse(drained.isCompleted)
+        release.complete(Unit)
+        assertEquals("started", usage.await())
+        drained.await()
+    }
+
+    @Test
+    fun `invalidation before permit acquisition prevents protected action start`() = runTest {
+        val registry = BusinessIdentityRegistry()
+        check(registry.publishReady(identity(), 0))
+        val gate = ReadyAgentUsageGate(registry)
+        val snapshot = gate.requireReady()
+        registry.invalidate(BusinessAccessGateState.SIGNING_OUT)
+        var starts = 0
+
+        val result = gate.withCurrentPermit(snapshot) {
+            starts += 1
+            "started"
+        }
+
+        assertNull(result)
+        assertEquals(0, starts)
     }
 
     private fun identity() = BusinessIdentity(

@@ -580,6 +580,13 @@ class BusinessAuthenticationOrchestrator(
                 safeToRelease = false,
             )
         }
+        if (!awaitRevokedUsagePermits()) {
+            return RevocationOutcome(
+                visibleError = BusinessLoginErrorCode.ACTION_REVOCATION_FAILED,
+                terminalFailure = BusinessLoginErrorCode.ACTION_REVOCATION_FAILED,
+                safeToRelease = false,
+            )
+        }
         val actionRevocationComplete = revoked.identity?.let { revokeActionsFailClosed(it) } ?: true
         boundedCleanup { registration.publishSignedOut() }
         boundedCleanup { registration.clearWorkspace() }
@@ -615,6 +622,12 @@ class BusinessAuthenticationOrchestrator(
             true
         } ?: false
     }
+
+    private suspend fun awaitRevokedUsagePermits(): Boolean =
+        withTimeoutOrNull(operationSettleTimeoutMillis) {
+            identityRegistry.awaitUsagePermitsDrained()
+            true
+        } ?: false
 
     private suspend fun clearCurrentLocalPair(operation: Operation): Boolean = authorityMutationMutex.withLock {
         checkCurrent(operation)

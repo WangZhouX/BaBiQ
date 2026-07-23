@@ -786,6 +786,19 @@ class ProductionBusinessDesktopCompositionFactory(
                         current.identity.actionScope() == snapshot.identity.scope &&
                         current.identity.permissions == snapshot.identity.permissions
                 }
+
+                override suspend fun <T> withCurrentPermit(
+                    snapshot: ApplicationAuthenticationSnapshot,
+                    use: suspend () -> T,
+                ): T? {
+                    val current = agentUsageGate.captureIfReady() ?: return null
+                    if (
+                        current.generation != snapshot.generation ||
+                        current.identity.actionScope() != snapshot.identity.scope ||
+                        current.identity.permissions != snapshot.identity.permissions
+                    ) return null
+                    return agentUsageGate.withCurrentPermit(current, use)
+                }
             },
             nextSequence = ::nextSequence,
             now = Instant::now,

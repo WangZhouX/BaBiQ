@@ -1,6 +1,7 @@
 package com.wzx.huitai.desktop.auth
 
 import com.wzx.huitai.desktop.state.BusinessIdentity
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.StateFlow
@@ -10,6 +11,8 @@ import kotlinx.coroutines.flow.asStateFlow
 class BusinessIdentityRegistry {
     private val lock = Any()
     private val mutableSnapshot = MutableStateFlow(BusinessIdentityRegistrySnapshot())
+    private var activeUsagePermits = 0
+    private var usagePermitsDrained = CompletableDeferred(Unit)
 
     val snapshot: StateFlow<BusinessIdentityRegistrySnapshot> = mutableSnapshot.asStateFlow()
     val gate: StateFlow<BusinessAccessGateState> = SnapshotGateStateFlow(snapshot)
@@ -34,6 +37,50 @@ class BusinessIdentityRegistry {
         }
         commit()
         true
+    }
+
+    /**
+     * Runs [use] while holding a revocation-visible lease on the exact READY publication.
+     *
+     * Acquisition and [invalidate] are serialized by [lock]. Once invalidation wins, no new use
+     * can start. If acquisition wins, revocation can close the gate immediately but must await
+     * [awaitUsagePermitsDrained] before scanning pre-execution actions.
+     */
+    internal suspend fun <T> withCurrentUsagePermit(
+        expectedGeneration: Long,
+        expectedIdentity: BusinessIdentity,
+        use: suspend () -> T,
+    ): T? {
+        val acquired = synchronized(lock) {
+            val current = mutableSnapshot.value
+            if (
+                current.gate != BusinessAccessGateState.READY ||
+                current.generation != expectedGeneration ||
+                current.identity != expectedIdentity
+            ) {
+                false
+            } else {
+                if (activeUsagePermits == 0) usagePermitsDrained = CompletableDeferred()
+                activeUsagePermits += 1
+                true
+            }
+        }
+        if (!acquired) return null
+        return try {
+            use()
+        } finally {
+            synchronized(lock) {
+                check(activeUsagePermits > 0) { "usage permit accounting underflow" }
+                activeUsagePermits -= 1
+                if (activeUsagePermits == 0) usagePermitsDrained.complete(Unit)
+            }
+        }
+    }
+
+    /** Called only after the READY publication has been invalidated, so no new permit can enter. */
+    suspend fun awaitUsagePermitsDrained() {
+        val drained = synchronized(lock) { usagePermitsDrained }
+        drained.await()
     }
 
     /** Non-ready transitions can never retain an identity. */

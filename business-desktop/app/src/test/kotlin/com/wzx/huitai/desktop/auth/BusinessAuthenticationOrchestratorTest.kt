@@ -308,6 +308,36 @@ class BusinessAuthenticationOrchestratorTest {
     }
 
     @Test
+    fun `logout closes ready gate then waits admitted action start before scanning old scope`() = runTest {
+        val fixture = Fixture()
+        fixture.verify()
+        fixture.orchestrator.authenticate("lawyer@example.com", "password8".toCharArray(), fixture.candidate)
+        val usageGate = ReadyAgentUsageGate(fixture.registry)
+        val authentication = usageGate.requireReady()
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val admittedStart = async {
+            usageGate.withCurrentPermit(authentication) {
+                entered.complete(Unit)
+                release.await()
+            }
+        }
+        entered.await()
+
+        val logout = async { fixture.orchestrator.logout() }
+        runCurrent()
+
+        assertEquals(BusinessAccessGateState.SIGNING_OUT, fixture.orchestrator.gate.value)
+        assertFalse(logout.isCompleted)
+        assertEquals(0, fixture.actions.cancelCount)
+
+        release.complete(Unit)
+        admittedStart.await()
+        logout.await()
+        assertEquals(1, fixture.actions.cancelCount)
+    }
+
+    @Test
     fun `logout stays fail closed when pre execution cancellation cannot be completed`() = runTest {
         val fixture = Fixture()
         fixture.verify()

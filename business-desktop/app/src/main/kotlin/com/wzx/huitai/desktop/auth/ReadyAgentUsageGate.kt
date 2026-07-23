@@ -39,6 +39,11 @@ class ReadyAgentUsageGate(
     fun commitIfCurrent(snapshot: ReadyAgentUsageSnapshot, commit: () -> Unit): Boolean =
         registry.commitIfCurrent(snapshot.generation, snapshot.identity, commit)
 
+    suspend fun <T> withCurrentPermit(
+        snapshot: ReadyAgentUsageSnapshot,
+        use: suspend () -> T,
+    ): T? = registry.withCurrentUsagePermit(snapshot.generation, snapshot.identity, use)
+
     internal val readySnapshots: Flow<ReadyAgentUsageSnapshot?> = registry.snapshot
         .map(BusinessIdentityRegistrySnapshot::toUsageSnapshotOrNull)
         .distinctUntilChanged()

@@ -29,7 +29,7 @@ class ReadyAuthenticatedHttpGate(
                 ActionErrorCode.MEMBERSHIP_EXPIRED -> onMembershipExpired()
                 else -> return commitResponse(authentication, response)
             }
-            return response
+            return null
         }
         return commitResponse(authentication, response)
     }

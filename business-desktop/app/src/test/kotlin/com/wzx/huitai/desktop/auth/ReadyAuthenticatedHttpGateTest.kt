@@ -41,7 +41,7 @@ class ReadyAuthenticatedHttpGateTest {
 
             val response = gate.execute { HuitaiResponse.Failure(ActionErrorCode.AUTH_EXPIRED, status.toString()) }
 
-            assertEquals(ActionErrorCode.AUTH_EXPIRED, (response as HuitaiResponse.Failure).errorCode)
+            assertNull(response)
             assertEquals(1, authenticationExpiredCalls, "HTTP $status")
         }
     }
@@ -60,8 +60,26 @@ class ReadyAuthenticatedHttpGateTest {
             HuitaiResponse.Failure(ActionErrorCode.AUTH_EXPIRED, remoteCode = "refresh_failed")
         }
 
-        assertEquals(ActionErrorCode.AUTH_EXPIRED, (response as HuitaiResponse.Failure).errorCode)
+        assertNull(response)
         assertEquals(1, authenticationExpiredCalls)
+    }
+
+    @Test
+    fun `membership expiry callback also consumes the stale HTTP response`() = runTest {
+        val registry = readyRegistry()
+        var membershipExpiredCalls = 0
+        val gate = ReadyAuthenticatedHttpGate(
+            ReadyAgentUsageGate(registry),
+            onAuthenticationExpired = {},
+            onMembershipExpired = { membershipExpiredCalls += 1 },
+        )
+
+        val response = gate.execute {
+            HuitaiResponse.Failure(ActionErrorCode.MEMBERSHIP_EXPIRED, remoteCode = "membership_expired")
+        }
+
+        assertNull(response)
+        assertEquals(1, membershipExpiredCalls)
     }
 
     @Test

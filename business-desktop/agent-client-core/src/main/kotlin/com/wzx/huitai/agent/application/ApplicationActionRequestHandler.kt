@@ -194,7 +194,14 @@ class ApplicationActionRequestHandler(
             TrustedApplicationIdentity(decoded.first.identityScope, decoded.second.permissions),
         )
         val candidate = RuntimeOwnedExecution(publication, decoded.first, decoded.second)
-        when (runtime.start(candidate, statusClient)) {
+        val startResult = authenticationGate.withCurrentPermit(authentication) {
+            runtime.start(candidate, statusClient)
+        }
+        if (startResult == null) {
+            rpc.respondProtocolError(requestId, AUTH_REQUIRED_REASON)
+            return
+        }
+        when (startResult) {
             RuntimeStartResult.Conflict -> {
                 rpc.respondProtocolError(requestId)
                 return

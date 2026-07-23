@@ -19,6 +19,12 @@ interface ApplicationAuthenticationGate {
     /** Revalidates that [snapshot] still belongs to the currently published identity. */
     fun isCurrent(snapshot: ApplicationAuthenticationSnapshot): Boolean
 
+    /** Executes action admission only while [snapshot] owns a revocation-visible permit. */
+    suspend fun <T> withCurrentPermit(
+        snapshot: ApplicationAuthenticationSnapshot,
+        use: suspend () -> T,
+    ): T? = if (isCurrent(snapshot)) use() else null
+
     companion object {
         /** Compatibility adapter for callers without an external authentication lifecycle. */
         fun trustedBy(identity: () -> TrustedApplicationIdentity): ApplicationAuthenticationGate =
@@ -26,6 +32,11 @@ interface ApplicationAuthenticationGate {
                 override fun captureIfReady() = ApplicationAuthenticationSnapshot(identity(), 0L)
 
                 override fun isCurrent(snapshot: ApplicationAuthenticationSnapshot) = true
+
+                override suspend fun <T> withCurrentPermit(
+                    snapshot: ApplicationAuthenticationSnapshot,
+                    use: suspend () -> T,
+                ): T = use()
             }
     }
 }
