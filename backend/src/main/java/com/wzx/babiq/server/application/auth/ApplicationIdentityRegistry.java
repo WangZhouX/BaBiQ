@@ -94,6 +94,9 @@ public class ApplicationIdentityRegistry {
         validateConnectionScope(connection, message);
         ApplicationProtocolValidator.validate(message);
         Objects.requireNonNull(beforeCommitCleanup, "beforeCommitCleanup");
+        if (acceptInitialSignedOut(connection, message, beforeCommitCleanup)) {
+            return Optional.empty();
+        }
         ConnectionIdentityState current;
         ConnectionIdentityState transition;
         TrustedBusinessIdentity next;
@@ -136,6 +139,36 @@ public class ApplicationIdentityRegistry {
             finishTransition(connection, message.identityEpoch(), next);
         }
         return Optional.ofNullable(next);
+    }
+
+    /**
+     * 新连接在用户登录前只发布 signed-out；此时没有可替换的身份水位。
+     *
+     * <p>接受该消息并清空连接快照，但不创建伪造的已绑定状态，使后续首次 authenticated bind
+     * 仍走原子绑定路径。已有状态的登出继续由正常 update 分支保留严格 epoch 水位。</p>
+     */
+    private boolean acceptInitialSignedOut(
+            TrustedDesktopConnection connection,
+            ApplicationIdentityMessage message,
+            Runnable beforeCommitCleanup) {
+        if (message.authenticated()) {
+            return false;
+        }
+        synchronized (connection) {
+            synchronized (this) {
+                if (states.containsKey(connection.webSocketSessionId())) {
+                    return false;
+                }
+            }
+            beforeCommitCleanup.run();
+            synchronized (this) {
+                if (states.containsKey(connection.webSocketSessionId())) {
+                    throw new IllegalStateException(
+                            "Identity changed concurrently during initial signed-out update");
+                }
+            }
+            return true;
+        }
     }
 
     /** 返回指定 WebSocket 当前已认证身份；登出和未知连接均为空。 */

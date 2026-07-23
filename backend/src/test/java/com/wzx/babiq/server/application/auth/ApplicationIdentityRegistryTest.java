@@ -114,6 +114,31 @@ class ApplicationIdentityRegistryTest {
     }
 
     @Test
+    void initialSignedOutUpdateRunsCleanupWithoutBlockingLaterAuthenticatedBind() {
+        List<IdentityChange> changes = new ArrayList<>();
+        AtomicBoolean cleanupRan = new AtomicBoolean();
+        ApplicationIdentityRegistry registry = new ApplicationIdentityRegistry(
+                (trustedConnection, oldIdentity, newIdentity) ->
+                        changes.add(new IdentityChange(trustedConnection, oldIdentity, newIdentity)));
+
+        assertThat(registry.update(
+                connection,
+                identity(1, false, null, null, null, null),
+                () -> cleanupRan.set(true))).isEmpty();
+
+        assertThat(cleanupRan).isTrue();
+        assertThat(registry.current(connection)).isEmpty();
+        assertThat(registry.isAuthenticated("websocket-1")).isFalse();
+        assertThat(changes).isEmpty();
+
+        TrustedBusinessIdentity authenticated = registry.bind(connection,
+                identity(2, true, "auth-session-1", "user-1", "tenant-1", "platform-1"));
+
+        assertThat(authenticated.identityEpoch()).isEqualTo(2);
+        assertThat(registry.current(connection)).contains(authenticated);
+    }
+
+    @Test
     void clearRemovesIdentityAndEpochWatermarkForTheClosedConnection() {
         ApplicationIdentityRegistry registry = new ApplicationIdentityRegistry();
         registry.bind(connection,

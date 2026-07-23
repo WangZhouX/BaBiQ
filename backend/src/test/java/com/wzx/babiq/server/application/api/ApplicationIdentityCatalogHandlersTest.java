@@ -58,6 +58,24 @@ class ApplicationIdentityCatalogHandlersTest {
     }
 
     @Test
+    void initialSignedOutUpdateIsAcceptedBeforeFirstAuthenticatedBind() throws Exception {
+        Object signedOut = identityHandler.handle(
+                "application/identity/update", node(identity(1, false)), session);
+
+        assertThat(signedOut).isEqualTo(Map.of("authenticated", false, "identityEpoch", 1L));
+        assertThat(identities.current(trustedConnectionMessage())).isEmpty();
+
+        Object authenticated = identityHandler.handle(
+                "application/identity/bind", node(identity(2, true)), session);
+
+        assertThat(authenticated).isEqualTo(Map.of("authenticated", true, "identityEpoch", 2L));
+        assertThat(identities.current(trustedConnectionMessage()))
+                .get()
+                .extracting(com.wzx.babiq.server.application.auth.TrustedBusinessIdentity::identityEpoch)
+                .isEqualTo(2L);
+    }
+
+    @Test
     void identityHandlerOwnsBindAndUpdateAndClearsBusinessSnapshotsOnChange() throws Exception {
         assertThat(identityHandler.methods()).containsExactlyInAnyOrder(
                 "application/identity/bind", "application/identity/update");
