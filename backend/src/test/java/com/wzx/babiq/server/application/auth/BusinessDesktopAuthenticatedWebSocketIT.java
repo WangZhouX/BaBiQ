@@ -2,6 +2,7 @@ package com.wzx.babiq.server.application.auth;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wzx.babiq.server.application.protocol.ApplicationProtocolValidator;
 import com.wzx.babiq.server.agent.ReActStrategy;
 import com.wzx.babiq.server.agent.TurnExecutor;
 import org.junit.jupiter.api.Test;
@@ -71,6 +72,9 @@ class BusinessDesktopAuthenticatedWebSocketIT {
     @Autowired
     private BusinessDesktopConnectionRegistry registry;
 
+    @Autowired
+    private ApplicationIdentityRegistry identities;
+
     @TestConfiguration
     static class MockConfig {
 
@@ -119,6 +123,53 @@ class BusinessDesktopAuthenticatedWebSocketIT {
         }
     }
 
+    @Test
+    void endpointAcceptsIdentityEnvelopeAboveTomcatDefaultWithinProtocolLimit() throws Exception {
+        String sessionId = UUID.randomUUID().toString();
+        List<String> received = new CopyOnWriteArrayList<>();
+        try (WebSocketSession session = connect(TOKEN, INSTANCE_ID, sessionId, received)) {
+            var params = objectMapper.createObjectNode()
+                    .put("protocolVersion", "1.0")
+                    .put("desktopInstanceId", INSTANCE_ID)
+                    .put("desktopSessionId", sessionId)
+                    .put("authSessionId", "auth-large")
+                    .put("identityEpoch", 1)
+                    .put("sequence", 1)
+                    .put("generatedAt", "2026-07-24T00:00:00Z")
+                    .put("userId", "user-large")
+                    .put("tenantId", "tenant-large")
+                    .put("platformId", "2")
+                    .put("authenticated", true);
+            params.putArray("roles").add("tenant_admin");
+            var permissions = params.putArray("permissions");
+            for (int index = 0; index < 600; index++) {
+                permissions.add("law:real-permission:" + index + ":query");
+            }
+            String request = objectMapper.writeValueAsString(objectMapper.createObjectNode()
+                    .put("jsonrpc", "2.0")
+                    .put("id", 19)
+                    .put("method", "application/identity/bind")
+                    .set("params", params));
+            byte[] requestBytes = request.getBytes(StandardCharsets.UTF_8);
+            assertThat(requestBytes.length)
+                    .isGreaterThan(8 * 1024)
+                    .isLessThanOrEqualTo(ApplicationProtocolValidator.MAX_ENVELOPE_BYTES);
+
+            session.sendMessage(new TextMessage(request));
+
+            await().atMost(Duration.ofSeconds(3)).untilAsserted(() ->
+                    assertThat(received.stream()
+                            .map(this::read)
+                            .anyMatch(response -> response.path("id").asInt() == 19
+                                    && response.path("result").path("authenticated").asBoolean()
+                                    && response.path("result").path("identityEpoch").asLong() == 1L))
+                            .isTrue());
+            var connection = registry.findByDesktopSessionId(sessionId).orElseThrow();
+            assertThat(identities.current(connection)).get().satisfies(identity ->
+                    assertThat(identity.permissions()).hasSize(600));
+        }
+    }
+
     private void assertRejected(String token) throws Exception {
         String rejectedSessionId = UUID.randomUUID().toString();
         assertThatThrownBy(() -> connect(
@@ -155,5 +206,13 @@ class BusinessDesktopAuthenticatedWebSocketIT {
                 },
                 headers,
                 URI.create("ws://127.0.0.1:" + port + "/ws/agent")).get();
+    }
+
+    private JsonNode read(String value) {
+        try {
+            return objectMapper.readTree(value);
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception);
+        }
     }
 }

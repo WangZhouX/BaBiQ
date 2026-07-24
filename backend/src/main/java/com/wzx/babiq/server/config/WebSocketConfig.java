@@ -2,12 +2,15 @@ package com.wzx.babiq.server.config;
 
 import com.wzx.babiq.server.api.JsonRpcWebSocketHandler;
 import com.wzx.babiq.server.application.auth.BusinessDesktopHandshakeInterceptor;
+import com.wzx.babiq.server.application.protocol.ApplicationProtocolValidator;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.boot.web.servlet.context.ServletWebServerInitializedEvent;
 import org.springframework.web.socket.config.annotation.EnableWebSocket;
 import org.springframework.web.socket.config.annotation.WebSocketConfigurer;
 import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry;
+import jakarta.websocket.server.ServerContainer;
 
 /**
  * WebSocket 端点配置。
@@ -57,6 +60,22 @@ public class WebSocketConfig implements WebSocketConfigurer {
                 .setAllowedOrigins(allowedOrigins);
         if (businessDesktopHandshakeInterceptor != null) {
             registration.addInterceptors(businessDesktopHandshakeInterceptor);
+        }
+    }
+
+    /**
+     * 让底层 Servlet WebSocket 容器接受协议层允许的完整 JSON-RPC 文本帧。
+     */
+    @org.springframework.context.event.EventListener
+    public void configureWebSocketContainer(ServletWebServerInitializedEvent event) {
+        var servletContext = event.getApplicationContext().getServletContext();
+        if (servletContext == null) {
+            return;
+        }
+        Object container = servletContext.getAttribute(ServerContainer.class.getName());
+        if (container instanceof ServerContainer serverContainer) {
+            serverContainer.setDefaultMaxTextMessageBufferSize(
+                    ApplicationProtocolValidator.MAX_ENVELOPE_BYTES);
         }
     }
 }
