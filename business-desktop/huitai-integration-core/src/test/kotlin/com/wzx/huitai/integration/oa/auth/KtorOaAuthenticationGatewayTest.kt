@@ -54,6 +54,9 @@ class KtorOaAuthenticationGatewayTest {
         assertEquals(HttpMethod.Get, requests[0].method)
         assertEquals("/api/system/auth/get-users-by-mobile", requests[0].url.encodedPath)
         assertEquals("13800138000", requests[0].url.parameters["mobile"])
+        requests.forEach { request ->
+            assertEquals("pc", request.headers["X-Platform-Type"])
+        }
         assertNull(requests[0].headers[HttpHeaders.Authorization])
         assertEquals(HttpMethod.Post, requests[1].method)
         assertEquals("/api/system/auth/login", requests[1].url.encodedPath)

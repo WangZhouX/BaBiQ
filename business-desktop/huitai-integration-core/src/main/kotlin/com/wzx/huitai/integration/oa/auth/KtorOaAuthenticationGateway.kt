@@ -6,6 +6,7 @@ import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.HttpRequestTimeoutException
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.plugins.defaultRequest
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.parameter
@@ -55,6 +56,9 @@ internal class KtorOaAuthenticationGateway(
         followRedirects = false
         install(HttpTimeout) { requestTimeoutMillis = requestTimeoutMs }
         install(ContentNegotiation) { json(json) }
+        defaultRequest {
+            header(PLATFORM_HEADER, PLATFORM_PC)
+        }
     }
 
     init {
@@ -262,6 +266,8 @@ internal class KtorOaAuthenticationGateway(
 
     private companion object {
         val SUCCESS_CODES = setOf("0", "200")
+        const val PLATFORM_HEADER = "X-Platform-Type"
+        const val PLATFORM_PC = "pc"
         const val TENANT_HEADER = "tenant-id"
     }
 }
