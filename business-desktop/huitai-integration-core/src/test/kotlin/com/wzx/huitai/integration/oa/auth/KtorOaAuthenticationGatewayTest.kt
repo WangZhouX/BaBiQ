@@ -190,6 +190,21 @@ class KtorOaAuthenticationGatewayTest {
     }
 
     @Test
+    fun `filters blank permission markers returned by the live OA contract`() = runBlocking {
+        val gateway = gateway(MockEngine {
+            respondJson(
+                """{"code":0,"msg":"","data":{"permissions":["","law:case:query","  "],"roles":["tenant_admin"],"user":{"id":"u-1","nickname":"用户1"},"menus":[]}}""",
+            )
+        })
+
+        val permission = gateway.loadPermissionInfo(
+            OaCandidateAccess("u-1", "t-1", 7, "candidate-token"),
+        )
+
+        assertEquals(setOf("law:case:query"), permission.permissions)
+    }
+
+    @Test
     fun `maps live OA zero success empty tenant list to account not found`() = runBlocking {
         val gateway = gateway(MockEngine {
             respondJson("""{"code":0,"msg":"","data":[]}""")
@@ -289,6 +304,8 @@ class KtorOaAuthenticationGatewayTest {
         val bodies = listOf(
             """{"code":200,"msg":"ok","data":{"permissions":[],"roles":[],"user":{"id":"other"},"menus":[]}}""",
             """{"code":200,"msg":"ok","data":{"permissions":{},"roles":[],"user":{"id":"u-1"},"menus":[]}}""",
+            """{"code":200,"msg":"ok","data":{"permissions":[null],"roles":[],"user":{"id":"u-1"},"menus":[]}}""",
+            """{"code":200,"msg":"ok","data":{"permissions":[1],"roles":[],"user":{"id":"u-1"},"menus":[]}}""",
             """{"code":200,"msg":"ok","data":{"permissions":[],"roles":[],"user":[],"menus":[]}}""",
             """{"code":200,"msg":"ok","data":{"permissions":[],"roles":[],"user":{"id":"u-1"},"menus":{}}}""",
         )

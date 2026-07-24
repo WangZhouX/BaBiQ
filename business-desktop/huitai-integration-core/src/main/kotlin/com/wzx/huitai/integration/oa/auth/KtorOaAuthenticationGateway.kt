@@ -183,7 +183,7 @@ internal class KtorOaAuthenticationGateway(
         val user = source["user"] as? JsonObject ?: protocolError()
         val id = user.requiredIdentifier("id")
         if (id != expectedUserId) protocolError()
-        val permissions = source.requiredStringSet("permissions")
+        val permissions = source.requiredStringSetIgnoringBlank("permissions")
         val roles = source.requiredStringSet("roles")
         val menus = (source["menus"] as? JsonArray)?.toList() ?: protocolError()
         return OaPermissionInfo(permissions, roles, OaPermissionUser(id, user.optionalString("name")), menus)
@@ -260,6 +260,14 @@ internal class KtorOaAuthenticationGateway(
                 ?.takeIf(String::isNotBlank)
                 ?: protocolError()
         }?.toSet() ?: protocolError()
+
+    private fun JsonObject.requiredStringSetIgnoringBlank(name: String): Set<String> =
+        (this[name] as? JsonArray)?.map {
+            (it as? JsonPrimitive)
+                ?.takeIf(JsonPrimitive::isString)
+                ?.contentOrNull
+                ?: protocolError()
+        }?.filter(String::isNotBlank)?.toSet() ?: protocolError()
 
     private fun JsonElement?.scalar(): String? = (this as? JsonPrimitive)?.contentOrNull
 
