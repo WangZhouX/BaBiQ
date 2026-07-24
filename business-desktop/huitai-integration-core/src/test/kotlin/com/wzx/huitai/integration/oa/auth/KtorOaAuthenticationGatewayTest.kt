@@ -160,6 +160,36 @@ class KtorOaAuthenticationGatewayTest {
     }
 
     @Test
+    fun `accepts numeric OA identity fields returned by the live contract`() = runBlocking {
+        val gateway = gateway(MockEngine { request ->
+            when (request.url.encodedPath) {
+                "/api/system/auth/get-users-by-mobile" -> respondJson(
+                    """{"code":0,"msg":"","data":[{"userId":123,"tenantId":2,"platformId":7,"tenantName":"个人律师端","tenantEnterStatus":0,"tenantEnterId":456}]}""",
+                )
+                "/api/system/auth/login" -> respondJson(
+                    """{"code":0,"msg":"","data":{"accessToken":"access-1","refreshToken":"refresh-1","userId":123,"expiresTime":123}}""",
+                )
+                "/api/system/auth/get-permission-info" -> respondJson(
+                    """{"code":0,"msg":"","data":{"permissions":[],"roles":[],"user":{"id":123,"name":"用户1"},"menus":[]}}""",
+                )
+                else -> error("unexpected path ${request.url.encodedPath}")
+            }
+        })
+
+        val candidate = gateway.findTenantCandidates("13800138000").single()
+        val token = gateway.login("13800138000", "Abcdef12".toCharArray(), candidate.tenantId)
+        val permission = gateway.loadPermissionInfo(
+            OaCandidateAccess(candidate.userId, candidate.tenantId, candidate.platformId, token.accessToken),
+        )
+
+        assertEquals("123", candidate.userId)
+        assertEquals("2", candidate.tenantId)
+        assertEquals("456", candidate.tenantEnterId)
+        assertEquals("123", token.userId)
+        assertEquals("123", permission.user.id)
+    }
+
+    @Test
     fun `maps live OA zero success empty tenant list to account not found`() = runBlocking {
         val gateway = gateway(MockEngine {
             respondJson("""{"code":0,"msg":"","data":[]}""")

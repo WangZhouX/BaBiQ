@@ -1,6 +1,11 @@
 <component name="ProjectRunConfigurationManager">
   <configuration default="false" name="Business Backend" type="GradleRunConfiguration" factoryName="Gradle">
     <ExternalSystemSettings>
+      <option name="env">
+        <map>
+          <entry key="HUITAI_DESKTOP_HOME" value="$PROJECT_DIR$/.tmp-business-desktop-idea-runtime" />
+        </map>
+      </option>
       <option name="executionName" />
       <option name="externalProjectPath" value="$PROJECT_DIR$/business-desktop" />
       <option name="externalSystemIdString" value="GRADLE" />

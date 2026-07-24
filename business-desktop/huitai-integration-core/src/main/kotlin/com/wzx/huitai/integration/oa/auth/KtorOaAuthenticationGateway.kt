@@ -157,12 +157,12 @@ internal class KtorOaAuthenticationGateway(
     private fun candidateFrom(value: JsonElement): OaTenantCandidate {
         val source = value as? JsonObject ?: protocolError()
         val candidate = OaTenantCandidate(
-            userId = source.requiredString("userId"),
-            tenantId = source.requiredString("tenantId"),
+            userId = source.requiredIdentifier("userId"),
+            tenantId = source.requiredIdentifier("tenantId"),
             platformId = source.requiredInt("platformId"),
             tenantName = source.optionalString("tenantName"),
             tenantEnterStatus = source.requiredInt("tenantEnterStatus"),
-            tenantEnterId = source.optionalString("tenantEnterId"),
+            tenantEnterId = source.optionalIdentifier("tenantEnterId"),
         )
         if (candidate.platformId != platformId) protocolError()
         return candidate
@@ -173,7 +173,7 @@ internal class KtorOaAuthenticationGateway(
         return OaTokenBundle(
             accessToken = source.requiredString("accessToken"),
             refreshToken = source.requiredString("refreshToken"),
-            userId = source.requiredString("userId"),
+            userId = source.requiredIdentifier("userId"),
             expiresTime = source.requiredLong("expiresTime"),
         )
     }
@@ -181,7 +181,7 @@ internal class KtorOaAuthenticationGateway(
     private fun permissionFrom(value: JsonElement, expectedUserId: String): OaPermissionInfo {
         val source = value as? JsonObject ?: protocolError()
         val user = source["user"] as? JsonObject ?: protocolError()
-        val id = user.requiredString("id")
+        val id = user.requiredIdentifier("id")
         if (id != expectedUserId) protocolError()
         val permissions = source.requiredStringSet("permissions")
         val roles = source.requiredStringSet("roles")
@@ -217,6 +217,26 @@ internal class KtorOaAuthenticationGateway(
             ?.contentOrNull
             ?.takeIf(String::isNotBlank)
             ?: protocolError()
+
+    /**
+     * OA serializes identity IDs as either JSON strings or integer JSON numbers.
+     * Accept both representations while rejecting booleans, decimals, and nulls.
+     */
+    private fun JsonObject.requiredIdentifier(name: String): String {
+        val value = this[name] as? JsonPrimitive ?: protocolError()
+        val content = value.contentOrNull?.takeIf(String::isNotBlank) ?: protocolError()
+        if (value.isString || INTEGER_IDENTIFIER_PATTERN.matches(content)) return content
+        protocolError()
+    }
+
+    private fun JsonObject.optionalIdentifier(name: String): String? {
+        val value = this[name] ?: return null
+        if (value is JsonNull) return null
+        val primitive = value as? JsonPrimitive ?: protocolError()
+        val content = primitive.contentOrNull?.takeIf(String::isNotBlank) ?: protocolError()
+        if (primitive.isString || INTEGER_IDENTIFIER_PATTERN.matches(content)) return content
+        protocolError()
+    }
 
     private fun JsonObject.optionalString(name: String): String? {
         val value = this[name] ?: return null
@@ -269,5 +289,6 @@ internal class KtorOaAuthenticationGateway(
         const val PLATFORM_HEADER = "X-Platform-Type"
         const val PLATFORM_PC = "pc"
         const val TENANT_HEADER = "tenant-id"
+        val INTEGER_IDENTIFIER_PATTERN = Regex("-?\\d+")
     }
 }
