@@ -46,6 +46,7 @@ import com.wzx.huitai.desktop.auth.BusinessLoginMessage
 import com.wzx.huitai.desktop.auth.ReadyAgentUsageGate
 import com.wzx.huitai.desktop.auth.config.BusinessLegalLinksConfiguration
 import com.wzx.huitai.desktop.auth.config.BusinessLegalLinksLoader
+import com.wzx.huitai.desktop.auth.config.BusinessBackendConnectionConfigurationLoader
 import com.wzx.huitai.desktop.decision.ComposeActionDecisionCoordinator
 import com.wzx.huitai.desktop.decision.ComposeApprovalPort
 import com.wzx.huitai.desktop.decision.ComposeConfirmationPort
@@ -567,8 +568,12 @@ class ProductionBusinessDesktopCompositionFactory(
 
     override suspend fun launchChild(storage: BusinessDesktopStorageAssembly): CompositionResource {
         if (configuration.agentLaunchMode == BusinessAgentLaunchMode.ExternalDevelopment) {
+            val backendConfiguration = BusinessBackendConnectionConfigurationLoader().load(paths)
             val connectionSession = BusinessAgentConnectionSession(
-                BusinessAgentDevelopmentSessionFile.read(paths.agentDevelopmentSession),
+                BusinessAgentDevelopmentSessionFile.read(
+                    paths.agentDevelopmentSession,
+                    backendConfiguration,
+                ),
             )
             child = BusinessAgentChildHandle(
                 identity = connectionSession.identity,

@@ -23,6 +23,8 @@ class BusinessAgentBackendConfigPropagationTest {
             setOf(
                 "business.legal.service-agreement-url",
                 "business.legal.privacy-policy-url",
+                "business.backend.websocket-url",
+                "business.backend.local-origin",
             ),
             properties.stringPropertyNames(),
         )
@@ -148,6 +150,8 @@ class BusinessAgentBackendConfigPropagationTest {
         const val CONFIGURATION_UNAVAILABLE = "business backend configuration is unavailable"
         const val LEGAL_CONFIGURATION =
             "business.legal.service-agreement-url=https://example.test/agreement.html\n" +
-                "business.legal.privacy-policy-url=https://example.test/privacy.html\n"
+                "business.legal.privacy-policy-url=https://example.test/privacy.html\n" +
+                "business.backend.websocket-url=ws://127.0.0.1:43117/ws/agent\n" +
+                "business.backend.local-origin=http://127.0.0.1:43117\n"
     }
 }

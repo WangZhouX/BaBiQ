@@ -60,7 +60,11 @@ class BusinessLegalLinksLoader internal constructor(
         } catch (_: Exception) {
             unavailable()
         }
-        if (properties.stringPropertyNames() != ALLOWED_CONFIGURATION_KEYS) invalid()
+        if (!properties.stringPropertyNames().containsAll(REQUIRED_CONFIGURATION_KEYS) ||
+            properties.stringPropertyNames().any { it !in ALLOWED_CONFIGURATION_KEYS }
+        ) {
+            invalid()
+        }
 
         val serviceAgreementUrl = validateHttpsUrl(required(properties, SERVICE_AGREEMENT_URL))
         val privacyPolicyUrl = validateHttpsUrl(required(properties, PRIVACY_POLICY_URL))
@@ -105,6 +109,12 @@ class BusinessLegalLinksLoader internal constructor(
         const val BUNDLED_CONFIGURATION_RESOURCE = "/config/business-desktop.properties"
         const val SERVICE_AGREEMENT_URL = "business.legal.service-agreement-url"
         const val PRIVACY_POLICY_URL = "business.legal.privacy-policy-url"
-        val ALLOWED_CONFIGURATION_KEYS = setOf(SERVICE_AGREEMENT_URL, PRIVACY_POLICY_URL)
+        const val BACKEND_WEBSOCKET_URL = "business.backend.websocket-url"
+        const val BACKEND_LOCAL_ORIGIN = "business.backend.local-origin"
+        val REQUIRED_CONFIGURATION_KEYS = setOf(SERVICE_AGREEMENT_URL, PRIVACY_POLICY_URL)
+        val ALLOWED_CONFIGURATION_KEYS = REQUIRED_CONFIGURATION_KEYS + setOf(
+            BACKEND_WEBSOCKET_URL,
+            BACKEND_LOCAL_ORIGIN,
+        )
     }
 }

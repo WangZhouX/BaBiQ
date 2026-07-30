@@ -96,6 +96,10 @@ val runBusinessFrontendDevelopment by tasks.registering(JavaExec::class) {
     classpath = sourceSets["main"].runtimeClasspath
     mainClass.set("com.wzx.huitai.desktop.MainKt")
     environment("HUITAI_DESKTOP_EXTERNAL_BACKEND", "1")
+    environment(
+        "HUITAI_DESKTOP_CONFIG_FILE",
+        rootProject.projectDir.resolve("config/business-desktop-development.properties").absolutePath,
+    )
     jvmArgs("--enable-native-access=ALL-UNNAMED")
 }
 

@@ -2,6 +2,7 @@ package com.wzx.huitai.desktop.runtime
 
 import com.wzx.huitai.agent.client.AgentConnectRequest
 import com.wzx.huitai.agent.client.DesktopSessionIdentity
+import com.wzx.huitai.desktop.auth.config.BusinessBackendConnectionConfiguration
 import com.wzx.huitai.security.instance.ProcessInstanceLock
 import com.wzx.huitai.security.path.SecureRuntimeFile
 import java.net.URI
@@ -111,6 +112,28 @@ object BusinessAgentDevelopmentSessionFile {
         } finally {
             bytes.fill(0)
         }
+    }
+
+    fun read(
+        path: Path,
+        expectedConfiguration: BusinessBackendConnectionConfiguration,
+    ): AgentConnectRequest {
+        val request = read(path)
+        require(request.url == expectedConfiguration.websocketUrl) {
+            "development backend URL does not match desktop configuration"
+        }
+        require(request.identity.localOrigin == expectedConfiguration.localOrigin) {
+            "development backend Origin does not match desktop configuration"
+        }
+        return AgentConnectRequest(
+            url = expectedConfiguration.websocketUrl,
+            identity = DesktopSessionIdentity(
+                desktopInstanceId = request.identity.desktopInstanceId,
+                desktopSessionId = request.identity.desktopSessionId,
+                desktopSessionToken = request.identity.desktopSessionToken,
+                localOrigin = expectedConfiguration.localOrigin,
+            ),
+        )
     }
 
     /**

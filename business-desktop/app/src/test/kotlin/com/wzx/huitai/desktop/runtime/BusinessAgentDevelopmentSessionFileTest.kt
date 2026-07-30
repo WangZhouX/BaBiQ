@@ -2,6 +2,7 @@ package com.wzx.huitai.desktop.runtime
 
 import com.wzx.huitai.agent.client.AgentConnectRequest
 import com.wzx.huitai.agent.client.DesktopSessionIdentity
+import com.wzx.huitai.desktop.auth.config.BusinessBackendConnectionConfiguration
 import java.nio.file.Files
 import java.util.UUID
 import kotlin.test.Test
@@ -80,6 +81,28 @@ class BusinessAgentDevelopmentSessionFileTest {
                 BusinessAgentDevelopmentSessionFile.read(linkedPaths.agentDevelopmentSession)
             }
         }
+    }
+
+    @Test
+    fun `reader uses the configured endpoint while retaining only session identity`() {
+        val paths = BusinessDesktopRuntimePaths.create(Files.createTempDirectory("huitai-configured-dev-session"))
+        val request = connectRequest()
+        val ownership = BusinessAgentDevelopmentSessionFile.acquireOwnership(paths.agentDevelopmentSession)
+        val lease = BusinessAgentDevelopmentSessionFile.publish(paths.agentDevelopmentSession, request, ownership)
+
+        val loaded = BusinessAgentDevelopmentSessionFile.read(
+            paths.agentDevelopmentSession,
+            BusinessBackendConnectionConfiguration(
+                websocketUrl = request.url,
+                localOrigin = request.identity.localOrigin,
+            ),
+        )
+
+        assertEquals(request.url, loaded.url)
+        assertEquals(request.identity.desktopSessionToken, loaded.identity.desktopSessionToken)
+
+        lease.close()
+        ownership.close()
     }
 
     @Test
