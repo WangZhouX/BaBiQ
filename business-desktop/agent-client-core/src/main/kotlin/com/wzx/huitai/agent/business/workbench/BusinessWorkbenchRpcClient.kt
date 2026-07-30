@@ -65,13 +65,14 @@ class BusinessWorkbenchRpcClient(private val rpc: AgentJsonRpcClient) : Business
     override suspend fun page(request: BusinessWorkbenchPageRequest): BusinessWorkbenchPage {
         validatePageRequest(request)
         val result = request("business/workbench/page/get", request.toJson())
+        val pageValue = (result["page"] as? JsonObject) ?: result
         val page = BusinessWorkbenchPage(
             identityEpoch = result.requiredLong("identityEpoch"),
-            generation = result.optionalLong("generation") ?: 0,
-            total = result.optionalLong("total") ?: 0,
-            pageNo = result.optionalLong("pageNo")?.toInt() ?: request.pageNo,
-            pageSize = result.optionalLong("pageSize")?.toInt() ?: request.pageSize,
-            items = (result["items"] as? JsonArray)?.mapNotNull { decodePageItem(it) }.orEmpty(),
+            generation = result.optionalLong("generation") ?: pageValue.optionalLong("generation") ?: 0,
+            total = pageValue.optionalLong("total") ?: 0,
+            pageNo = pageValue.optionalLong("pageNo")?.toInt() ?: request.pageNo,
+            pageSize = pageValue.optionalLong("pageSize")?.toInt() ?: request.pageSize,
+            items = (pageValue["items"] as? JsonArray)?.mapNotNull { decodePageItem(it) }.orEmpty(),
         )
         lastIdentityEpoch = page.identityEpoch
         return page

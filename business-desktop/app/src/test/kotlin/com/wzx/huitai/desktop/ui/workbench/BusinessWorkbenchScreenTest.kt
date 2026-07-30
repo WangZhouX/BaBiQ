@@ -40,17 +40,16 @@ class BusinessWorkbenchScreenTest {
             HuitaiBusinessTheme {
                 BusinessWorkbenchScreen(
                     state = readyState(),
+                    showHeader = false,
                     onQuickEntrance = opened::add,
                     onScopeSelected = { selectedScope = it.name },
-                    modifier = Modifier.requiredSize(1200.dp, 900.dp),
+                    modifier = Modifier.requiredSize(1000.dp, 700.dp),
                 )
             }
         }
 
         listOf(
             WorkbenchTags.ROOT,
-            WorkbenchTags.HEADER,
-            WorkbenchTags.NAVIGATION,
             WorkbenchTags.QUICK_ENTRANCES,
             WorkbenchTags.STATISTICS,
             WorkbenchTags.LIST,
@@ -83,6 +82,7 @@ class BusinessWorkbenchScreenTest {
                         loadState = BusinessWorkbenchLoadState.READY,
                         pageError = "网络不可用",
                     ),
+                    showHeader = false,
                     onRetryPage = { retries++ },
                     modifier = Modifier.requiredSize(900.dp, 700.dp),
                 )
@@ -94,7 +94,7 @@ class BusinessWorkbenchScreenTest {
     }
 
     @Test
-    fun `screen forwards selected path to the fixed width OA navigation`() {
+    fun `screen does not render a second navigation inside workbench content`() {
         val base = readyState()
         val state = base.copy(
             navigation = listOf(
@@ -106,14 +106,14 @@ class BusinessWorkbenchScreenTest {
             HuitaiBusinessTheme {
                 BusinessWorkbenchScreen(
                     state = state,
+                    showHeader = false,
                     selectedPath = "/case",
-                    modifier = Modifier.requiredSize(1200.dp, 900.dp),
+                    modifier = Modifier.requiredSize(1000.dp, 700.dp),
                 )
             }
         }
 
-        rule.onNodeWithTag(WorkbenchTags.NAVIGATION).assertWidthIsEqualTo(88.dp)
-        rule.onNodeWithTag(WorkbenchTags.navItem("/case")).assertIsSelected()
+        rule.onNodeWithTag(WorkbenchTags.NAVIGATION).assertDoesNotExist()
     }
 
     @Test
@@ -142,9 +142,10 @@ class BusinessWorkbenchScreenTest {
             HuitaiBusinessTheme {
                 BusinessWorkbenchScreen(
                     state = state,
+                    showHeader = false,
                     onTeamSelected = { team = it },
                     onRoleSelected = { role = it },
-                    modifier = Modifier.requiredSize(1200.dp, 900.dp),
+                    modifier = Modifier.requiredSize(1000.dp, 700.dp),
                 )
             }
         }
@@ -182,10 +183,11 @@ class BusinessWorkbenchScreenTest {
             HuitaiBusinessTheme {
                 BusinessWorkbenchScreen(
                     state = state,
+                    showHeader = false,
                     onPreviousPage = { previous++ },
                     onNextPage = { next++ },
                     onCaseSelected = { selectedCase = it },
-                    modifier = Modifier.requiredSize(1200.dp, 900.dp),
+                    modifier = Modifier.requiredSize(1000.dp, 700.dp),
                 )
             }
         }

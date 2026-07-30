@@ -1,5 +1,6 @@
 package com.wzx.babiq.server.business.api.dto;
 
+import com.fasterxml.jackson.annotation.JsonUnwrapped;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -19,6 +20,18 @@ public final class BusinessWorkbenchDtos {
     }
     public record PageResult(long total, int pageNo, int pageSize, List<PageRow> items) {
         public PageResult { items = List.copyOf(items); }
+    }
+    /** Page responses carry the same identity fence as every other workbench read. */
+    public record PageEnvelope(long identityEpoch, long generation, @JsonUnwrapped PageResult page) {
+        public PageEnvelope {
+            if (identityEpoch <= 0) throw new IllegalArgumentException("identityEpoch must be positive");
+            if (generation < 0) throw new IllegalArgumentException("generation must not be negative");
+            if (page == null) throw new IllegalArgumentException("page must not be null");
+        }
+        public long total() { return page.total(); }
+        public int pageNo() { return page.pageNo(); }
+        public int pageSize() { return page.pageSize(); }
+        public List<PageRow> items() { return page.items(); }
     }
     public record PageRow(String id, String applicationNumber, String categoriesName, String scheduleName,
                           String title, Map<String, Object> values) {

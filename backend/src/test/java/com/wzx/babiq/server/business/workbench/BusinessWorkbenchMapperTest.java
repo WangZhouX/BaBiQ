@@ -90,6 +90,9 @@ class BusinessWorkbenchMapperTest {
         Map<String, Object> row = Map.ofEntries(
                 Map.entry("id", "case-1"),
                 Map.entry("caseName", "合同争议"),
+                Map.entry("parties", List.of(
+                        Map.of("name", "张三", "phone", "13800000000", "accessToken", "party-token"),
+                        Map.of("name", "李四", "idCard", "secret-card"))),
                 Map.entry("logo", "https://oa.example.com/logo.png?accessToken=logo-canary"),
                 Map.entry("tenant", Map.of(
                         "name", "惠太律所",
@@ -113,10 +116,12 @@ class BusinessWorkbenchMapperTest {
                 .doesNotContainKey("logo")
                 .containsEntry("tenant", Map.of("name", "惠太律所"))
                 .containsEntry("teamDatas", List.of(Map.of("teamName", "一组", "roleName", "负责人")))
+                .containsEntry("parties", List.of(Map.of("name", "张三"), Map.of("name", "李四")))
                 .containsEntry("lawFirmRelationStatus", 1)
                 .doesNotContainKey("accessToken");
         assertThat(values.toString()).doesNotContain(
                 "oa.example.com", "nested-access-canary", "nested-refresh-canary",
-                "oa-file-canary", "team-file-canary", "deep-tenant-canary", "deep-team-canary");
+                "oa-file-canary", "team-file-canary", "deep-tenant-canary", "deep-team-canary",
+                "13800000000", "party-token", "secret-card");
     }
 }

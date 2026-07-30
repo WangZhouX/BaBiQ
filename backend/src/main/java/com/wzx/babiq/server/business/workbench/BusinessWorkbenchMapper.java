@@ -25,6 +25,7 @@ public final class BusinessWorkbenchMapper {
                             "lawFirmRelationStatus");
                     copyNestedMap(safe, row, "tenant", "name");
                     copyNestedList(safe, row, "teamDatas", "teamName", "name", "roleName", "roleCode");
+                    copyNestedList(safe, row, "parties", "name");
                 }
                 case "APPOINTMENT" -> copyScalar(safe, row,
                         "name", "consultMode", "causeAction", "appointLocation", "remark", "createTime");

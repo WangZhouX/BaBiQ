@@ -90,7 +90,10 @@ public final class BusinessWorkbenchProtocolHandler implements JsonRpcMultiMetho
                 case "business/workbench/home-info/get" -> service.homeInfo(lease, identity);
                 case "business/workbench/team-roles/list" -> service.teamRoles(lease, identity,
                         requiredText(input, "kind"), requiredText(input, "teamId"));
-                case "business/workbench/page/get" -> service.page(lease, identity, pageRequest(input));
+                case "business/workbench/page/get" -> {
+                    BusinessWorkbenchDtos.PageResult page = service.page(lease, identity, pageRequest(input));
+                    yield new BusinessWorkbenchDtos.PageEnvelope(identity.identityEpoch(), lease.generation(), page);
+                }
                 case "business/workbench/sort/update" -> requireSchedules().updateSort(lease, identity,
                         requiredText(input, "kind"), textList(input, "ids"), requiredLong(input, "expectedRevision"));
                 case "business/schedule/month/get" -> requireSchedules().month(lease, identity, scheduleQuery(input, false));

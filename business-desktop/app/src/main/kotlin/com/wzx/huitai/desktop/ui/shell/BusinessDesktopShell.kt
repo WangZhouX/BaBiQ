@@ -2,9 +2,11 @@ package com.wzx.huitai.desktop.ui.shell
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredWidth
@@ -36,7 +38,8 @@ import com.wzx.huitai.desktop.ui.form.DemoFormPanel
 import com.wzx.huitai.desktop.ui.layout.BusinessDesktopLayoutPolicy
 import com.wzx.huitai.desktop.ui.settings.BusinessProviderSettingsPanel
 import com.wzx.huitai.desktop.ui.workbench.BusinessWorkbenchScreen
-import com.wzx.huitai.desktop.ui.workbench.WorkbenchNavigation
+import com.wzx.huitai.desktop.ui.workbench.BusinessWorkbenchVisualSpec
+import com.wzx.huitai.desktop.ui.workbench.WorkbenchHeader
 import com.wzx.huitai.desktop.workbench.BusinessWorkbenchState
 import com.wzx.huitai.desktop.workbench.BusinessScheduleDraft
 import com.wzx.huitai.desktop.workbench.BusinessScheduleFormOption
@@ -143,12 +146,30 @@ fun BusinessDesktopShell(
     LaunchedEffect(requestedAssistantWidth) {
         resizeAccumulator = requestedAssistantWidth
     }
-    Row(modifier.fillMaxSize()) {
+    Column(modifier.fillMaxSize()) {
+        if (selectedDestination == BusinessDesktopDestination.WORKBENCH) {
+            WorkbenchHeader(
+                profile = workbenchState.snapshot?.profile?.data,
+                notice = workbenchState.error ?: workbenchState.snapshot?.issues?.firstOrNull(),
+                onRefresh = onWorkbenchRefresh,
+                onLogout = onLogout,
+            )
+        }
+        Row(Modifier.fillMaxWidth().weight(1f)) {
             BusinessSidebar(
                 selected = selectedDestination,
+                workbenchItems = workbenchState.navigation,
+                selectedWorkbenchPath = selectedWorkbenchPath,
                 onSelected = onDestinationSelected,
+                onWorkbenchSelected = onWorkbenchNavigationSelected,
                 onComposed = onSidebarNavigationComposed,
-                modifier = Modifier.width(BusinessDesktopLayoutPolicy.navigationWidth),
+                modifier = Modifier.width(
+                    if (selectedDestination == BusinessDesktopDestination.WORKBENCH) {
+                        BusinessWorkbenchVisualSpec.navigationWidth
+                    } else {
+                        BusinessDesktopLayoutPolicy.navigationWidth
+                    },
+                ),
             )
             BoxWithConstraints(
                 Modifier
@@ -309,6 +330,7 @@ fun BusinessDesktopShell(
                     }
                 }
             }
+        }
     }
 }
 
@@ -372,18 +394,10 @@ private fun BusinessContent(
 ) {
     if (destination == BusinessDesktopDestination.WORKBENCH) {
         if (selectedWorkbenchPath != "/") {
-            Row(modifier.fillMaxSize()) {
-                WorkbenchNavigation(
-                    items = workbenchState.navigation,
-                    selectedPath = selectedWorkbenchPath,
-                    onSelected = { onWorkbenchNavigationSelected(it.path) },
-                    modifier = Modifier.padding(start = 16.dp, top = 8.dp),
-                )
-                PlaceholderPanel(
-                    "功能占位：$selectedWorkbenchPath",
-                    Modifier.weight(1f).fillMaxHeight(),
-                )
-            }
+            PlaceholderPanel(
+                "功能占位：$selectedWorkbenchPath",
+                modifier.fillMaxSize(),
+            )
             return
         }
         BusinessWorkbenchScreen(
@@ -422,6 +436,7 @@ private fun BusinessContent(
             onScheduleRemoveAttachment = onScheduleRemoveAttachment,
             onScheduleSubmit = onScheduleSubmit,
             onScheduleDismiss = onScheduleDismiss,
+            showHeader = false,
             modifier = modifier,
         )
         return

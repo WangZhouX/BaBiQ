@@ -3,10 +3,15 @@ package com.wzx.huitai.desktop.ui.workbench
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.material3.FilterChip
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.wzx.huitai.agent.business.workbench.BusinessWorkbenchScope
@@ -30,9 +35,16 @@ fun DataScopeSelector(
     Column(modifier.testTag(WorkbenchTags.SCOPE), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             BusinessWorkbenchScope.entries.forEach { option ->
-                FilterChip(selected = scope == option, onClick = { onScopeSelected(option) }, label = {
-                    Text(when (option) { BusinessWorkbenchScope.ALL -> "全部"; BusinessWorkbenchScope.PERSONAL -> "我的"; BusinessWorkbenchScope.TEAM -> "团队" })
-                }, modifier = Modifier.testTag(WorkbenchTags.scopeItem(option.name)))
+                WorkbenchFilter(
+                    selected = scope == option,
+                    label = when (option) {
+                        BusinessWorkbenchScope.ALL -> "全部数据"
+                        BusinessWorkbenchScope.PERSONAL -> "个人数据"
+                        BusinessWorkbenchScope.TEAM -> "团队数据"
+                    },
+                    onClick = { onScopeSelected(option) },
+                    modifier = Modifier.testTag(WorkbenchTags.scopeItem(option.name)),
+                )
             }
         }
         if (scope == BusinessWorkbenchScope.TEAM) {
@@ -45,30 +57,56 @@ fun DataScopeSelector(
                 teamItems.forEach { team ->
                     val id = team.text("id") ?: team.text("teamId") ?: return@forEach
                     val name = team.text("name") ?: team.text("teamName") ?: id
-                    FilterChip(
+                    WorkbenchFilter(
                         selected = id == teamId,
                         onClick = { onTeamSelected(id) },
-                        label = { Text(name) },
+                        label = name,
                         modifier = Modifier.testTag("business-workbench-team-$id"),
                     )
                 }
             }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(
+                WorkbenchFilter(
                     selected = roleCode == null,
                     onClick = { onRoleSelected(null) },
-                    label = { Text("不限角色") },
+                    label = "不限角色",
                     modifier = Modifier.testTag("business-workbench-role-all"),
                 )
                 roles.forEach { role ->
-                    FilterChip(
+                    WorkbenchFilter(
                         selected = role.roleCode == roleCode,
                         onClick = { onRoleSelected(role.roleCode) },
-                        label = { Text(role.name) },
+                        label = role.name,
                         modifier = Modifier.testTag("business-workbench-role-${role.roleCode}"),
                     )
                 }
             }
         }
     }
+}
+
+/** 轻量筛选 Tab 对齐 Web 的白底/蓝字样式，不使用 Material 紫色 FilterChip。 */
+@Composable
+private fun WorkbenchFilter(
+    selected: Boolean,
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Text(
+        text = label,
+        color = if (selected) BusinessWorkbenchVisualSpec.primary else BusinessWorkbenchVisualSpec.textPrimary,
+        modifier = modifier
+            .background(
+                if (selected) Color(0xFFF5F9FF) else BusinessWorkbenchVisualSpec.surface,
+                RoundedCornerShape(2.dp),
+            )
+            .border(
+                1.dp,
+                if (selected) BusinessWorkbenchVisualSpec.primary else BusinessWorkbenchVisualSpec.border,
+                RoundedCornerShape(2.dp),
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 7.dp),
+    )
 }

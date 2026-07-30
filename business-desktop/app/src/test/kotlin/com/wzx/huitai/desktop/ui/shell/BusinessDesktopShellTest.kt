@@ -61,6 +61,7 @@ import com.wzx.huitai.agent.business.workbench.BusinessWorkbenchSectionStatus
 import com.wzx.huitai.agent.business.workbench.BusinessWorkbenchSnapshot
 import com.wzx.huitai.agent.business.workbench.BusinessWorkbenchTeamRole
 import com.wzx.huitai.agent.business.workbench.BusinessWorkbenchSortKind
+import com.wzx.huitai.agent.business.auth.BusinessNavigationTarget
 import kotlinx.serialization.json.Json
 import java.time.LocalDate
 import java.time.YearMonth
@@ -75,6 +76,33 @@ import org.junit.Test
 class BusinessDesktopShellTest {
     @get:Rule
     val rule = createComposeRule()
+
+    @Test
+    fun `workbench uses the shell sidebar as the only OA navigation`() {
+        rule.setContent {
+            HuitaiBusinessTheme {
+                BusinessDesktopShell(
+                    state = BusinessDesktopState(),
+                    formState = DemoFormState(),
+                    selectedDestination = BusinessDesktopDestination.WORKBENCH,
+                    workbenchState = BusinessWorkbenchState(
+                        navigation = listOf(
+                            BusinessNavigationTarget("WORKBENCH", "/", "工作台"),
+                            BusinessNavigationTarget("CASE", "/case", "案件管理"),
+                            BusinessNavigationTarget("CUSTOMER", "/customer", "客户管理"),
+                        ),
+                    ),
+                    modifier = Modifier.requiredSize(1200.dp, 700.dp),
+                )
+            }
+        }
+
+        rule.onNodeWithText("资料录入").assertDoesNotExist()
+        rule.onNodeWithText("运行记录").assertDoesNotExist()
+        rule.onNodeWithText("案件管理").assertExists()
+        rule.onNodeWithText("客户管理").assertExists()
+        rule.onNodeWithTag(com.wzx.huitai.desktop.ui.workbench.WorkbenchTags.NAVIGATION).assertDoesNotExist()
+    }
 
     @Test
     fun `login gate never composes business shell before ready and removes it on logout`() {

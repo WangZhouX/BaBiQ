@@ -65,6 +65,32 @@ class BusinessWorkbenchRpcClientTest {
     }
 
     @Test
+    fun `page decodes identity envelope returned by backend`() = runTest {
+        val connection = FakeConnection {
+            buildJsonObject {
+                put("identityEpoch", 21)
+                put("generation", 4)
+                put("page", buildJsonObject {
+                    put("total", 1)
+                    put("pageNo", 1)
+                    put("pageSize", 20)
+                    put("items", ApplicationProtocol.JSON.parseToJsonElement("""[{"id":"case-1","title":"合同纠纷"}]"""))
+                })
+            }
+        }
+        val rpc = AgentJsonRpcClient(connection, this)
+        val client = BusinessWorkbenchRpcClient(rpc)
+
+        val page = client.page(BusinessWorkbenchPageRequest(BusinessWorkbenchKind.CASE))
+
+        assertEquals(21, page.identityEpoch)
+        assertEquals(4, page.generation)
+        assertEquals("case-1", page.items.single().id)
+        client.close()
+        rpc.close()
+    }
+
+    @Test
     fun `page rejects unknown scope and forbidden authority fields before sending`() = runTest {
         val connection = FakeConnection { error("request must not be sent") }
         val rpc = AgentJsonRpcClient(connection, this)
