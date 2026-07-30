@@ -77,7 +77,7 @@ public final class BusinessDirectDevelopmentSessionBootstrap {
     }
 
     public static PreparedSession prepareIfRequested(String[] args, Map<String, String> environment) {
-        if (!"1".equals(environment.get(ENABLED_ENV)) && !hasDirectDevelopmentProfile(args)) {
+        if (!"1".equals(environment.get(ENABLED_ENV)) && !isDirectDevelopment(args)) {
             return null;
         }
         Path runtime = Path.of(option(
@@ -98,7 +98,7 @@ public final class BusinessDirectDevelopmentSessionBootstrap {
         return new BusinessDirectDevelopmentSessionBootstrap(runtime, tokenFile, port).prepare();
     }
 
-    private static boolean hasDirectDevelopmentProfile(String[] args) {
+    public static boolean isDirectDevelopment(String[] args) {
         String prefix = "--spring.profiles.active=";
         for (String arg : args) {
             if (!arg.startsWith(prefix)) {

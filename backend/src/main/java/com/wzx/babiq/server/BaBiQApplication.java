@@ -23,6 +23,10 @@ public class BaBiQApplication {
      * @param args JVM 启动参数
      */
     public static void main(String[] args) {
+        if (BusinessDirectDevelopmentSessionBootstrap.isDirectDevelopment(args)) {
+            System.setProperty("spring.devtools.restart.enabled", "false");
+            System.setProperty("spring.devtools.livereload.enabled", "false");
+        }
         BusinessDirectDevelopmentSessionBootstrap.PreparedSession directSession =
                 BusinessDirectDevelopmentSessionBootstrap.prepareIfRequested(args, System.getenv());
         if (directSession != null) {
