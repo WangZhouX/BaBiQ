@@ -2,6 +2,11 @@ server:
   address: 127.0.0.1
   port: 49391
 
+spring:
+  devtools:
+    restart:
+      enabled: false
+
 babiq:
   business:
     runtime-dir: ${HUITAI_BUSINESS_RUNTIME_DIR:${user.dir}/.tmp-business-desktop-direct/.huitai-agent-desktop/agent}
