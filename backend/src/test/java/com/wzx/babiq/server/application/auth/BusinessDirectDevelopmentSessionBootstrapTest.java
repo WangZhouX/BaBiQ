@@ -62,6 +62,24 @@ class BusinessDirectDevelopmentSessionBootstrapTest {
                 .isNotEqualTo("stale");
     }
 
+    @Test
+    void profile_direct_development_enables_session_without_environment_switch() throws Exception {
+        BusinessDesktopModeProperties properties = properties();
+
+        BusinessDirectDevelopmentSessionBootstrap.PreparedSession prepared =
+                BusinessDirectDevelopmentSessionBootstrap.prepareIfRequested(
+                        new String[]{"--spring.profiles.active=business-desktop,direct-development"},
+                        java.util.Map.of(
+                                BusinessDirectDevelopmentSessionBootstrap.RUNTIME_DIR_ENV,
+                                properties.runtimeDir().toString(),
+                                BusinessDirectDevelopmentSessionBootstrap.PORT_ENV,
+                                "49391"));
+
+        assertThat(prepared).isNotNull();
+        assertThat(Files.exists(properties.runtimeDir().resolve("development-session.json"))).isTrue();
+        prepared.close();
+    }
+
     private BusinessDesktopModeProperties properties() {
         Path runtime = tempDir.toAbsolutePath().normalize();
         return new BusinessDesktopModeProperties(

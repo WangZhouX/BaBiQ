@@ -16,6 +16,9 @@ import java.security.MessageDigest
 import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -135,6 +138,30 @@ object BusinessAgentDevelopmentSessionFile {
             ),
         )
     }
+
+    /**
+     * IDEA Compound 启动时后端和前端并行拉起；在有限时间内等待后端发布握手文件。
+     */
+    suspend fun awaitRead(
+        path: Path,
+        expectedConfiguration: BusinessBackendConnectionConfiguration,
+        timeoutMillis: Long = 30_000L,
+    ): AgentConnectRequest = withTimeoutOrNull(timeoutMillis) {
+        var loaded: AgentConnectRequest? = null
+        while (loaded == null) {
+            loaded = try {
+                read(path, expectedConfiguration)
+            } catch (failure: IllegalArgumentException) {
+                null
+            } catch (failure: CancellationException) {
+                throw failure
+            }
+            if (loaded == null) {
+                delay(100)
+            }
+        }
+        loaded
+    } ?: throw IllegalStateException("development backend session was not published in time")
 
     /**
      * Captures one stable view for startup recovery. A null [BusinessAgentDevelopmentSessionObservation.request]

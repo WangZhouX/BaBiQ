@@ -570,7 +570,7 @@ class ProductionBusinessDesktopCompositionFactory(
         if (configuration.agentLaunchMode == BusinessAgentLaunchMode.ExternalDevelopment) {
             val backendConfiguration = BusinessBackendConnectionConfigurationLoader().load(paths)
             val connectionSession = BusinessAgentConnectionSession(
-                BusinessAgentDevelopmentSessionFile.read(
+                BusinessAgentDevelopmentSessionFile.awaitRead(
                     paths.agentDevelopmentSession,
                     backendConfiguration,
                 ),

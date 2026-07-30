@@ -1,0 +1,6 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Business Desktop Direct" type="CompoundRunConfigurationType">
+    <toRun configName="Business Backend Direct" configType="SpringBootApplicationConfigurationType" />
+    <toRun configName="Business Frontend Direct" configType="Application" />
+  </configuration>
+</component>
