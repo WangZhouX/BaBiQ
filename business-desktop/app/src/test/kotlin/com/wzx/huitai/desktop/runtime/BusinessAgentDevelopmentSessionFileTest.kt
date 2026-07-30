@@ -123,7 +123,7 @@ class BusinessAgentDevelopmentSessionFileTest {
     private fun connectRequest(): AgentConnectRequest {
         val identity = DesktopSessionIdentity.forChildLaunch(
             desktopInstanceId = UUID.randomUUID().toString(),
-            localOrigin = "http://127.0.0.1",
+            localOrigin = "http://127.0.0.1:49391",
         )
         return AgentConnectRequest(
             url = "ws://127.0.0.1:49391/ws/agent",

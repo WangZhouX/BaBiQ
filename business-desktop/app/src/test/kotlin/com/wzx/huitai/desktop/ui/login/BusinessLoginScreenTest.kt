@@ -31,7 +31,7 @@ import com.wzx.huitai.desktop.auth.BusinessLoginState
 import com.wzx.huitai.desktop.auth.BusinessSliderState
 import com.wzx.huitai.desktop.auth.BusinessTenantCandidateState
 import com.wzx.huitai.desktop.ui.theme.HuitaiBusinessTheme
-import com.wzx.huitai.integration.oa.auth.OaTenantCandidate
+import com.wzx.huitai.desktop.auth.BusinessTenantCandidate
 import java.net.URI
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -222,7 +222,7 @@ class BusinessLoginScreenTest {
     fun `multi tenant dialog requires explicit enabled selection and masks unnamed tenant`() {
         val enabled = tenant("tenant-enabled", "翔鸟律所", status = 0)
         val pending = tenant("tenant-secret-5678", null, status = 1)
-        val selected = mutableListOf<OaTenantCandidate>()
+        val selected = mutableListOf<BusinessTenantCandidate>()
         var cancelled = false
         rule.setContent {
             HuitaiBusinessTheme {
@@ -246,7 +246,7 @@ class BusinessLoginScreenTest {
         rule.onNodeWithTag(BusinessLoginTags.tenantOption(0)).assertIsEnabled()
         rule.onNodeWithTag(BusinessLoginTags.tenantOption(1)).assertIsNotEnabled()
         rule.onNodeWithText("租户 ****5678").assertExists()
-        rule.onNodeWithText(pending.tenantId).assertDoesNotExist()
+        rule.onNodeWithText(pending.candidateId).assertDoesNotExist()
         rule.onNodeWithText("入驻中，暂不可选择").assertExists()
         rule.onNodeWithTag(BusinessLoginTags.tenantOption(1)).performClick()
         rule.runOnIdle { assertTrue(selected.isEmpty()) }
@@ -376,11 +376,10 @@ class BusinessLoginScreenTest {
         tenantId: String,
         tenantName: String?,
         status: Int,
-    ) = OaTenantCandidate(
-        userId = "user-$tenantId",
-        tenantId = tenantId,
+    ) = BusinessTenantCandidate(
+        candidateId = tenantId,
         platformId = 2,
-        tenantName = tenantName,
+        name = tenantName,
         tenantEnterStatus = status,
     )
 

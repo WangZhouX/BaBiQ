@@ -6,8 +6,8 @@ import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.unit.dp
-import com.wzx.huitai.desktop.auth.config.BusinessOaConfigurationErrorCode
-import com.wzx.huitai.desktop.auth.config.BusinessOaConfigurationException
+import com.wzx.huitai.desktop.auth.config.BusinessLegalLinksConfigurationErrorCode
+import com.wzx.huitai.desktop.auth.config.BusinessLegalLinksConfigurationException
 import com.wzx.huitai.desktop.security.LocalCredentialStoreUnavailableException
 import com.wzx.huitai.desktop.ui.shell.BusinessUiTags
 import com.wzx.huitai.desktop.ui.theme.HuitaiBusinessTheme
@@ -28,7 +28,7 @@ class BusinessBootstrapFailureScreenTest {
         assertEquals(
             BusinessBootstrapFailureCode.CONFIG_UNAVAILABLE,
             classifyBusinessBootstrapFailure(
-                BusinessOaConfigurationException(BusinessOaConfigurationErrorCode.CONFIG_UNAVAILABLE),
+                BusinessLegalLinksConfigurationException(BusinessLegalLinksConfigurationErrorCode.CONFIG_UNAVAILABLE),
             ),
         )
         assertEquals(
@@ -36,7 +36,7 @@ class BusinessBootstrapFailureScreenTest {
             classifyBusinessBootstrapFailure(
                 IllegalStateException(
                     "wrapper",
-                    BusinessOaConfigurationException(BusinessOaConfigurationErrorCode.CONFIG_INVALID),
+                    BusinessLegalLinksConfigurationException(BusinessLegalLinksConfigurationErrorCode.CONFIG_INVALID),
                 ),
             ),
         )

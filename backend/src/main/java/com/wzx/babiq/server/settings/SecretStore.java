@@ -1,5 +1,6 @@
 package com.wzx.babiq.server.settings;
 
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -9,6 +10,62 @@ import java.util.Optional;
  * 和“可持久化引用”隔离开，P2-3 可以把实现替换为 Windows Credential Manager 或 Java KeyStore。</p>
  */
 public interface SecretStore {
+
+    /**
+     * 预分配一个尚未写入敏感材料的不透明引用。
+     *
+     * <p>兼容实现默认 fail closed；需要 reserve-before-save 的生产实现必须显式覆写。</p>
+     */
+    default String allocateRef(String namespace) {
+        throw new UnsupportedOperationException("当前 SecretStore 不支持预分配引用");
+    }
+
+    /**
+     * 将字符材料写入预分配引用；实现必须拒绝覆盖任何已有 entry。
+     *
+     * <p>兼容实现默认 fail closed，不能用旧的随机引用 save API 模拟显式引用写入。</p>
+     */
+    default void saveCharsAtRef(String secretRef, char[] secretChars) {
+        throw new UnsupportedOperationException("当前 SecretStore 不支持显式引用写入");
+    }
+
+    /**
+     * 返回 sanitized namespace 前缀下的引用，结果必须稳定排序且不得返回其他命名空间。
+     */
+    default List<String> listRefs(String namespacePrefix) {
+        throw new UnsupportedOperationException("当前 SecretStore 不支持引用枚举");
+    }
+
+    /**
+     * 以字符数组保存敏感材料。新认证链路应优先使用此 API，避免把凭据建模为长期存活的 String。
+     *
+     * @implSpec 默认实现仅供 legacy/test adapter 兼容，会创建不可擦除的 String；生产 SecretStore
+     * 必须覆写本方法并直接处理 char[]。
+     */
+    default String saveChars(String namespace, char[] secretChars) {
+        if (secretChars == null || secretChars.length == 0) {
+            throw new IllegalArgumentException("secretChars 不能为空");
+        }
+        String value = new String(secretChars);
+        return save(namespace, value);
+    }
+
+    /**
+     * 按引用读取字符数组；调用方负责在 finally 中擦除返回数组。
+     *
+     * @implSpec 默认实现仅供 legacy/test adapter 兼容，会经过不可擦除的 String；生产 SecretStore
+     * 必须覆写本方法并直接返回可由调用方擦除的 char[]。
+     */
+    default Optional<char[]> loadChars(String secretRef) {
+        return load(secretRef).map(String::toCharArray);
+    }
+
+    /** 按引用读取字符数组，找不到时抛出不泄露密钥内容的异常。 */
+    default char[] requireChars(String secretRef) {
+        return loadChars(secretRef)
+                .orElseThrow(() -> new SecretStoreException(
+                        "SECRET_STORE_REFERENCE_NOT_FOUND", "密钥不存在"));
+    }
 
     /**
      * 保存一段明文密钥，并返回外部可持久化引用。
@@ -40,7 +97,8 @@ public interface SecretStore {
      */
     default String require(String secretRef) {
         return load(secretRef)
-                .orElseThrow(() -> new IllegalStateException("密钥不存在: " + secretRef));
+                .orElseThrow(() -> new SecretStoreException(
+                        "SECRET_STORE_REFERENCE_NOT_FOUND", "密钥不存在"));
     }
 
     /**

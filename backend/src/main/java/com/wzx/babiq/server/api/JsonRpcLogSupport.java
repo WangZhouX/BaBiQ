@@ -23,6 +23,13 @@ public final class JsonRpcLogSupport {
 
     private static final String APPLICATION_ACTION_PREFIX = "application/action/";
     private static final String APPLICATION_ACTION_REDACTED = "[application-action-redacted]";
+    private static final String BUSINESS_AUTH_PREFIX = "business/auth/";
+    private static final String BUSINESS_AUTH_REDACTED = "[business-auth-redacted]";
+    private static final String BUSINESS_ATTACHMENT_PREFIX = "business/attachments/";
+    private static final String BUSINESS_ATTACHMENT_REDACTED = "[business-attachment-redacted]";
+    private static final String BUSINESS_WORKBENCH_PREFIX = "business/workbench/";
+    private static final String BUSINESS_SCHEDULE_PREFIX = "business/schedule/";
+    private static final String BUSINESS_WORKBENCH_REDACTED = "[business-workbench-redacted]";
 
     /** 日志摘要专用 ObjectMapper，只做安全序列化，不参与业务请求反序列化。 */
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
@@ -52,8 +59,18 @@ public final class JsonRpcLogSupport {
         }
     }
 
-    /** 应用动作参数永不进入日志，其他方法继续使用通用安全摘要。 */
+    /** 敏感业务方法参数整段不进入日志，其他方法继续使用通用安全摘要。 */
     public static String paramsSummary(String method, JsonNode params) {
+        if (method != null && method.startsWith(BUSINESS_AUTH_PREFIX)) {
+            return BUSINESS_AUTH_REDACTED;
+        }
+        if (method != null && method.startsWith(BUSINESS_ATTACHMENT_PREFIX)) {
+            return BUSINESS_ATTACHMENT_REDACTED;
+        }
+        if (method != null && (method.startsWith(BUSINESS_WORKBENCH_PREFIX)
+                || method.startsWith(BUSINESS_SCHEDULE_PREFIX))) {
+            return BUSINESS_WORKBENCH_REDACTED;
+        }
         if (method != null && method.startsWith(APPLICATION_ACTION_PREFIX)) {
             return APPLICATION_ACTION_REDACTED;
         }
@@ -89,7 +106,7 @@ public final class JsonRpcLogSupport {
             ObjectNode copy = OBJECT_MAPPER.createObjectNode();
             for (Map.Entry<String, JsonNode> field : node.properties()) {
                 // 字段名命中敏感词时保留 key、替换 value，既能排查字段存在，也不泄漏密钥。
-                if (isSensitiveField(field.getKey())) {
+                if (isSensitiveField(field.getKey(), field.getValue())) {
                     copy.set(field.getKey(), TextNode.valueOf("***"));
                 } else {
                     copy.set(field.getKey(), sanitize(field.getValue()));
@@ -112,18 +129,23 @@ public final class JsonRpcLogSupport {
     /**
      * 判断字段名是否属于敏感字段。
      */
-    private static boolean isSensitiveField(String fieldName) {
+    private static boolean isSensitiveField(String fieldName, JsonNode value) {
         String normalized = fieldName.toLowerCase(Locale.ROOT)
                 .replace("-", "")
                 .replace("_", "");
+        boolean tokenMetric = value != null
+                && value.isNumber()
+                && ("prompttokens".equals(normalized)
+                    || "completiontokens".equals(normalized)
+                    || "totaltokens".equals(normalized));
         return normalized.contains("apikey")
                 || normalized.contains("authorization")
                 || normalized.contains("password")
                 || normalized.contains("secret")
+                || normalized.contains("token") && !tokenMetric
                 || "authsessionid".equals(normalized)
-                || "token".equals(normalized)
-                || "accesstoken".equals(normalized)
-                || "refreshtoken".equals(normalized);
+                || "attachhandle".equals(normalized)
+                || "token".equals(normalized);
     }
 
     /**

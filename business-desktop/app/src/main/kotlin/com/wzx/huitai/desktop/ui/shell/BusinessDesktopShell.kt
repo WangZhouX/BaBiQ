@@ -35,6 +35,17 @@ import com.wzx.huitai.desktop.ui.agent.BusinessAssistantResizeHandle
 import com.wzx.huitai.desktop.ui.form.DemoFormPanel
 import com.wzx.huitai.desktop.ui.layout.BusinessDesktopLayoutPolicy
 import com.wzx.huitai.desktop.ui.settings.BusinessProviderSettingsPanel
+import com.wzx.huitai.desktop.ui.workbench.BusinessWorkbenchScreen
+import com.wzx.huitai.desktop.ui.workbench.WorkbenchNavigation
+import com.wzx.huitai.desktop.workbench.BusinessWorkbenchState
+import com.wzx.huitai.desktop.workbench.BusinessScheduleDraft
+import com.wzx.huitai.desktop.workbench.BusinessScheduleFormOption
+import com.wzx.huitai.desktop.workbench.BusinessScheduleFormState
+import com.wzx.huitai.desktop.workbench.BusinessScheduleRelationType
+import com.wzx.huitai.desktop.workbench.BusinessScheduleState
+import com.wzx.huitai.desktop.workbench.BusinessScheduleViewMode
+import com.wzx.huitai.desktop.workbench.BusinessAttachmentUploadState
+import java.time.LocalDate
 
 /** 跨组件共享的稳定语义标签，供桌面 UI 自动化定位。 */
 object BusinessUiTags {
@@ -55,6 +66,11 @@ fun BusinessDesktopShell(
     formState: DemoFormState,
     providerSettingsState: BusinessProviderSettingsState = BusinessProviderSettingsState(),
     selectedDestination: BusinessDesktopDestination = BusinessDesktopDestination.DATA_ENTRY,
+    selectedWorkbenchPath: String = "/",
+    workbenchState: BusinessWorkbenchState = BusinessWorkbenchState(),
+    scheduleState: BusinessScheduleState = BusinessScheduleState(),
+    scheduleFormState: BusinessScheduleFormState = BusinessScheduleFormState(),
+    scheduleUploadState: BusinessAttachmentUploadState = BusinessAttachmentUploadState(),
     selectedModelId: String? = null,
     composerText: String = "",
     composerAttachments: List<BusinessAttachmentDraft> = emptyList(),
@@ -85,6 +101,36 @@ fun BusinessDesktopShell(
     onProviderOAuthStatus: (String) -> Unit = {},
     onProviderOAuthLogin: (String) -> Unit = {},
     onLogout: () -> Unit = {},
+    onWorkbenchRefresh: () -> Unit = {},
+    onWorkbenchNavigationSelected: (String) -> Unit = {},
+    onWorkbenchQuickEntrance: (String) -> Unit = {},
+    onWorkbenchStatisticSelected: (Int) -> Unit = {},
+    onWorkbenchKindSelected: (com.wzx.huitai.agent.business.workbench.BusinessWorkbenchKind) -> Unit = {},
+    onWorkbenchScopeSelected: (com.wzx.huitai.agent.business.workbench.BusinessWorkbenchScope) -> Unit = {},
+    onWorkbenchTeamSelected: (String) -> Unit = {},
+    onWorkbenchRoleSelected: (String?) -> Unit = {},
+    onWorkbenchSortRequested: (com.wzx.huitai.agent.business.workbench.BusinessWorkbenchSortKind, List<String>) -> Unit = { _, _ -> },
+    onWorkbenchRetryPage: () -> Unit = {},
+    onWorkbenchPreviousPage: () -> Unit = {},
+    onWorkbenchNextPage: () -> Unit = {},
+    onWorkbenchCaseSelected: (String) -> Unit = {},
+    onSchedulePrevious: () -> Unit = {},
+    onScheduleNext: () -> Unit = {},
+    onScheduleToday: () -> Unit = {},
+    onScheduleViewModeChanged: (BusinessScheduleViewMode) -> Unit = {},
+    onScheduleOnlyMineChanged: (Boolean) -> Unit = {},
+    onScheduleDateSelected: (LocalDate) -> Unit = {},
+    onScheduleCompletionChanged: (String, Boolean) -> Unit = { _, _ -> },
+    onScheduleCreate: () -> Unit = {},
+    onScheduleDraftChanged: (BusinessScheduleDraft) -> Unit = {},
+    onScheduleRelationTypeSelected: (BusinessScheduleRelationType) -> Unit = {},
+    onScheduleRelationOptionSelected: (BusinessScheduleRelationType, BusinessScheduleFormOption) -> Unit = { _, _ -> },
+    onScheduleLoadRelationOptions: () -> Unit = {},
+    onScheduleChooseAttachments: () -> Unit = {},
+    onScheduleCancelUpload: () -> Unit = {},
+    onScheduleRemoveAttachment: (String) -> Unit = {},
+    onScheduleSubmit: () -> Unit = {},
+    onScheduleDismiss: () -> Unit = {},
     onAgentPanelExpandedChange: (Boolean) -> Unit = {},
     onRequestedAssistantWidthChange: (Dp) -> Unit = {},
     onShellComposed: () -> Unit = {},
@@ -130,9 +176,14 @@ fun BusinessDesktopShell(
                         ) {
                             BusinessContent(
                                 destination = selectedDestination,
+                                selectedWorkbenchPath = selectedWorkbenchPath,
                                 state = state,
                                 formState = formState,
                                 providerSettingsState = providerSettingsState,
+                                workbenchState = workbenchState,
+                                scheduleState = scheduleState,
+                                scheduleFormState = scheduleFormState,
+                                scheduleUploadState = scheduleUploadState,
                                 onFieldEdited = onFieldEdited,
                                 onSuggestionsChanged = onSuggestionsChanged,
                                 onAcceptSuggestion = onAcceptSuggestion,
@@ -148,6 +199,36 @@ fun BusinessDesktopShell(
                                 onProviderOAuthStatus = onProviderOAuthStatus,
                                 onProviderOAuthLogin = onProviderOAuthLogin,
                                 onLogout = onLogout,
+                                onWorkbenchRefresh = onWorkbenchRefresh,
+                                onWorkbenchNavigationSelected = onWorkbenchNavigationSelected,
+                                onWorkbenchQuickEntrance = onWorkbenchQuickEntrance,
+                                onWorkbenchStatisticSelected = onWorkbenchStatisticSelected,
+                                onWorkbenchKindSelected = onWorkbenchKindSelected,
+                                onWorkbenchScopeSelected = onWorkbenchScopeSelected,
+                                onWorkbenchTeamSelected = onWorkbenchTeamSelected,
+                                onWorkbenchRoleSelected = onWorkbenchRoleSelected,
+                                onWorkbenchSortRequested = onWorkbenchSortRequested,
+                                onWorkbenchRetryPage = onWorkbenchRetryPage,
+                                onWorkbenchPreviousPage = onWorkbenchPreviousPage,
+                                onWorkbenchNextPage = onWorkbenchNextPage,
+                                onWorkbenchCaseSelected = onWorkbenchCaseSelected,
+                                onSchedulePrevious = onSchedulePrevious,
+                                onScheduleNext = onScheduleNext,
+                                onScheduleToday = onScheduleToday,
+                                onScheduleViewModeChanged = onScheduleViewModeChanged,
+                                onScheduleOnlyMineChanged = onScheduleOnlyMineChanged,
+                                onScheduleDateSelected = onScheduleDateSelected,
+                                onScheduleCompletionChanged = onScheduleCompletionChanged,
+                                onScheduleCreate = onScheduleCreate,
+                                onScheduleDraftChanged = onScheduleDraftChanged,
+                                onScheduleRelationTypeSelected = onScheduleRelationTypeSelected,
+                                onScheduleRelationOptionSelected = onScheduleRelationOptionSelected,
+                                onScheduleLoadRelationOptions = onScheduleLoadRelationOptions,
+                                onScheduleChooseAttachments = onScheduleChooseAttachments,
+                                onScheduleCancelUpload = onScheduleCancelUpload,
+                                onScheduleRemoveAttachment = onScheduleRemoveAttachment,
+                                onScheduleSubmit = onScheduleSubmit,
+                                onScheduleDismiss = onScheduleDismiss,
                                 modifier = Modifier.fillMaxSize(),
                             )
                         }
@@ -234,9 +315,14 @@ fun BusinessDesktopShell(
 @Composable
 private fun BusinessContent(
     destination: BusinessDesktopDestination,
+    selectedWorkbenchPath: String,
     state: BusinessDesktopState,
     formState: DemoFormState,
     providerSettingsState: BusinessProviderSettingsState,
+    workbenchState: BusinessWorkbenchState,
+    scheduleState: BusinessScheduleState,
+    scheduleFormState: BusinessScheduleFormState,
+    scheduleUploadState: BusinessAttachmentUploadState,
     onFieldEdited: (String, String) -> Unit,
     onSuggestionsChanged: (Map<String, BusinessFieldSuggestion>) -> Unit,
     onAcceptSuggestion: (String, Long) -> Unit,
@@ -252,8 +338,94 @@ private fun BusinessContent(
     onProviderOAuthStatus: (String) -> Unit,
     onProviderOAuthLogin: (String) -> Unit,
     onLogout: () -> Unit,
+    onWorkbenchRefresh: () -> Unit,
+    onWorkbenchNavigationSelected: (String) -> Unit,
+    onWorkbenchQuickEntrance: (String) -> Unit,
+    onWorkbenchStatisticSelected: (Int) -> Unit,
+    onWorkbenchKindSelected: (com.wzx.huitai.agent.business.workbench.BusinessWorkbenchKind) -> Unit,
+    onWorkbenchScopeSelected: (com.wzx.huitai.agent.business.workbench.BusinessWorkbenchScope) -> Unit,
+    onWorkbenchTeamSelected: (String) -> Unit,
+    onWorkbenchRoleSelected: (String?) -> Unit,
+    onWorkbenchSortRequested: (com.wzx.huitai.agent.business.workbench.BusinessWorkbenchSortKind, List<String>) -> Unit,
+    onWorkbenchRetryPage: () -> Unit,
+    onWorkbenchPreviousPage: () -> Unit,
+    onWorkbenchNextPage: () -> Unit,
+    onWorkbenchCaseSelected: (String) -> Unit,
+    onSchedulePrevious: () -> Unit,
+    onScheduleNext: () -> Unit,
+    onScheduleToday: () -> Unit,
+    onScheduleViewModeChanged: (BusinessScheduleViewMode) -> Unit,
+    onScheduleOnlyMineChanged: (Boolean) -> Unit,
+    onScheduleDateSelected: (LocalDate) -> Unit,
+    onScheduleCompletionChanged: (String, Boolean) -> Unit,
+    onScheduleCreate: () -> Unit,
+    onScheduleDraftChanged: (BusinessScheduleDraft) -> Unit,
+    onScheduleRelationTypeSelected: (BusinessScheduleRelationType) -> Unit,
+    onScheduleRelationOptionSelected: (BusinessScheduleRelationType, BusinessScheduleFormOption) -> Unit,
+    onScheduleLoadRelationOptions: () -> Unit,
+    onScheduleChooseAttachments: () -> Unit,
+    onScheduleCancelUpload: () -> Unit,
+    onScheduleRemoveAttachment: (String) -> Unit,
+    onScheduleSubmit: () -> Unit,
+    onScheduleDismiss: () -> Unit,
     modifier: Modifier,
 ) {
+    if (destination == BusinessDesktopDestination.WORKBENCH) {
+        if (selectedWorkbenchPath != "/") {
+            Row(modifier.fillMaxSize()) {
+                WorkbenchNavigation(
+                    items = workbenchState.navigation,
+                    selectedPath = selectedWorkbenchPath,
+                    onSelected = { onWorkbenchNavigationSelected(it.path) },
+                    modifier = Modifier.padding(start = 16.dp, top = 8.dp),
+                )
+                PlaceholderPanel(
+                    "功能占位：$selectedWorkbenchPath",
+                    Modifier.weight(1f).fillMaxHeight(),
+                )
+            }
+            return
+        }
+        BusinessWorkbenchScreen(
+            state = workbenchState,
+            scheduleState = scheduleState,
+            scheduleFormState = scheduleFormState,
+            scheduleUploadState = scheduleUploadState,
+            selectedPath = selectedWorkbenchPath,
+            onRefresh = onWorkbenchRefresh,
+            onNavigationSelected = onWorkbenchNavigationSelected,
+            onQuickEntrance = onWorkbenchQuickEntrance,
+            onStatisticSelected = onWorkbenchStatisticSelected,
+            onKindSelected = onWorkbenchKindSelected,
+            onScopeSelected = onWorkbenchScopeSelected,
+            onTeamSelected = onWorkbenchTeamSelected,
+            onRoleSelected = onWorkbenchRoleSelected,
+            onSortRequested = onWorkbenchSortRequested,
+            onRetryPage = onWorkbenchRetryPage,
+            onPreviousPage = onWorkbenchPreviousPage,
+            onNextPage = onWorkbenchNextPage,
+            onCaseSelected = onWorkbenchCaseSelected,
+            onSchedulePrevious = onSchedulePrevious,
+            onScheduleNext = onScheduleNext,
+            onScheduleToday = onScheduleToday,
+            onScheduleViewModeChanged = onScheduleViewModeChanged,
+            onScheduleOnlyMineChanged = onScheduleOnlyMineChanged,
+            onScheduleDateSelected = onScheduleDateSelected,
+            onScheduleCompletionChanged = onScheduleCompletionChanged,
+            onScheduleCreate = onScheduleCreate,
+            onScheduleDraftChanged = onScheduleDraftChanged,
+            onScheduleRelationTypeSelected = onScheduleRelationTypeSelected,
+            onScheduleRelationOptionSelected = onScheduleRelationOptionSelected,
+            onScheduleLoadRelationOptions = onScheduleLoadRelationOptions,
+            onScheduleChooseAttachments = onScheduleChooseAttachments,
+            onScheduleCancelUpload = onScheduleCancelUpload,
+            onScheduleRemoveAttachment = onScheduleRemoveAttachment,
+            onScheduleSubmit = onScheduleSubmit,
+            onScheduleDismiss = onScheduleDismiss,
+            modifier = modifier,
+        )
+        return
+    }
     when (destination) {
         BusinessDesktopDestination.WORKBENCH -> PlaceholderPanel("工作台功能将在后续阶段开放", modifier)
         BusinessDesktopDestination.DATA_ENTRY -> FormPanelForShell(

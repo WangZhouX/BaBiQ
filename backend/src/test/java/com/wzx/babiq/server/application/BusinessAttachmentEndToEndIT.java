@@ -93,6 +93,7 @@ class BusinessAttachmentEndToEndIT {
     static void businessRuntime(DynamicPropertyRegistry registry) {
         registry.add("babiq.business.runtime-dir", RUNTIME::toString);
         registry.add("babiq.business.session-token-file", TOKEN_FILE::toString);
+        registry.add("babiq.business.legacy-client-projections-enabled", () -> "true");
         registry.add("babiq.persistence.database-path", () -> RUNTIME.resolve("data/attachments.db").toString());
         registry.add("babiq.memory.long-term.enabled", () -> "false");
         registry.add("babiq.memory.long-term.generate-enabled", () -> "false");

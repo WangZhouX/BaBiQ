@@ -1,6 +1,8 @@
 package com.wzx.huitai.desktop.controller
 
+import com.wzx.huitai.agent.business.auth.BusinessAuthStateChanged
 import com.wzx.huitai.agent.client.AgentJsonRpcException
+import com.wzx.huitai.agent.conversation.BusinessAgentIngressEvent
 import com.wzx.huitai.agent.conversation.BusinessConversationGateway
 import com.wzx.huitai.agent.conversation.BusinessAttachmentDraft
 import com.wzx.huitai.agent.conversation.BusinessProvider
@@ -27,16 +29,29 @@ class BusinessConversationController(
     private val store: BusinessDesktopStore,
     private val usageGate: ReadyAgentUsageGate,
     scope: CoroutineScope,
+    private val onAuthStateChanged: suspend (BusinessAuthStateChanged) -> Unit = {},
 ) : Closeable {
     private val eventCollector: Job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
         gateway.ingressEvents.collect { ingress ->
-            val authentication = usageGate.captureIfReady() ?: return@collect
-            if (
-                ingress.authSessionId != authentication.identity.authSessionId ||
-                ingress.identityEpoch != authentication.identity.identityEpoch
-            ) return@collect
-            usageGate.commitIfCurrent(authentication) {
-                store.dispatch(BusinessDesktopEvent.AgentEventReceived(ingress.event))
+            when (ingress) {
+                is BusinessAgentIngressEvent.AuthStateChanged -> try {
+                    onAuthStateChanged(ingress.change)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    // Auth reconciliation is isolated from the shared notification collector.
+                }
+
+                is BusinessAgentIngressEvent.Conversation -> {
+                    val authentication = usageGate.captureIfReady() ?: return@collect
+                    if (
+                        ingress.authSessionId != authentication.identity.authSessionId ||
+                        ingress.identityEpoch != authentication.identity.identityEpoch
+                    ) return@collect
+                    usageGate.commitIfCurrent(authentication) {
+                        store.dispatch(BusinessDesktopEvent.AgentEventReceived(ingress.event))
+                    }
+                }
             }
         }
     }

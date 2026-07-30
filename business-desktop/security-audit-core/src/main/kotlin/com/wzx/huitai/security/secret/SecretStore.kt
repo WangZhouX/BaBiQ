@@ -25,4 +25,11 @@ interface SecretStore : AutoCloseable {
     fun delete(ref: SecretRef): Boolean
 }
 
-class SecretStoreException(message: String, cause: Throwable? = null) : IllegalStateException(message, cause)
+class SecretStoreException(
+    @Suppress("UNUSED_PARAMETER") message: String = PUBLIC_MESSAGE,
+    @Suppress("UNUSED_PARAMETER") cause: Throwable? = null,
+) : IllegalStateException(PUBLIC_MESSAGE) {
+    companion object {
+        const val PUBLIC_MESSAGE = "Local secret store operation failed"
+    }
+}

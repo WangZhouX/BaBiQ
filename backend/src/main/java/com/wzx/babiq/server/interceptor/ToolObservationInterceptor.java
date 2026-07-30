@@ -22,6 +22,7 @@ import org.springframework.stereotype.Component;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -40,6 +41,8 @@ public class ToolObservationInterceptor extends ToolInterceptor {
     private static final int TOOL_ARGUMENT_PREVIEW_LIMIT = 400;
     /** 应用动作审计标识符的最大长度，避免敏感正文伪装成标识符写入运行记录。 */
     private static final int APPLICATION_ACTION_IDENTIFIER_LIMIT = 256;
+    /** Stable diagnostic value used instead of untrusted exception messages. */
+    private static final String TOOL_EXECUTION_FAILED = "TOOL_EXECUTION_FAILED";
 
     /** 全局工具调用指标聚合器，和每轮 TurnObservationContext 的局部统计互相补充。 */
     private final BaBiQMetrics metrics;
@@ -80,7 +83,7 @@ public class ToolObservationInterceptor extends ToolInterceptor {
             ToolCallResponse response = handler.call(request);
             persistFinishedIfPossible(request, response, context);
             emitToolDetailIfPossible(request, response, elapsedMillis(startedNanos));
-            return response;
+            return sanitizeErrorResponse(response);
         } catch (RuntimeException exception) {
             persistFailedIfPossible(request, exception, context);
             emitFailedToolDetailIfPossible(request, exception, elapsedMillis(startedNanos));
@@ -138,15 +141,14 @@ public class ToolObservationInterceptor extends ToolInterceptor {
                     Instant.now());
         } catch (RuntimeException exception) {
             // 运行记录属于观测增强，不能反向影响工具执行；例如旧测试或内存 turn 没有先落库时会触发外键失败。
-            log.warn("工具调用开始记录持久化失败，已降级为仅内存观测: toolCallId={}, toolName={}, reason={}",
-                    request.getToolCallId(), request.getToolName(), exception.getMessage());
-            log.debug("工具调用开始记录持久化失败详情", exception);
+            log.warn("工具调用开始记录持久化失败，已降级为仅内存观测: toolCallId={}, toolName={}, failureType={}",
+                    request.getToolCallId(), request.getToolName(), failureType(exception));
         }
     }
 
     private String persistenceArguments(ToolCallRequest request) {
         if (!"application_action".equals(request.getToolName())) {
-            return request.getArguments();
+            return "{\"arguments\":\"[REDACTED]\"}";
         }
         try {
             JsonNode root = OBJECT_MAPPER.readTree(request.getArguments());
@@ -194,17 +196,29 @@ public class ToolObservationInterceptor extends ToolInterceptor {
         }
         String status = response.isError() ? deniedOrFailed(response.getResult()) : "completed";
         String resultPreview = response.isError() ? null : response.getResult();
-        String errorMessage = response.isError() ? response.getResult() : null;
+        String errorMessage = response.isError() ? TOOL_EXECUTION_FAILED : null;
         try {
             toolCallPersistenceService.recordFinished(
                     context.turnId(), request.getToolCallId(),
                     status, resultPreview, errorMessage, Instant.now());
         } catch (RuntimeException exception) {
             // 完成态更新失败同样不能覆盖工具真实结果，否则用户会看到“工具成功但 turn 失败”的假错误。
-            log.warn("工具调用完成记录持久化失败，已保留工具真实响应: toolCallId={}, status={}, reason={}",
-                    request.getToolCallId(), status, exception.getMessage());
-            log.debug("工具调用完成记录持久化失败详情", exception);
+            log.warn("工具调用完成记录持久化失败，已保留工具真实响应: toolCallId={}, status={}, failureType={}",
+                    request.getToolCallId(), status, failureType(exception));
         }
+    }
+
+    /** The raw error body is used only for in-memory status classification above this boundary. */
+    private ToolCallResponse sanitizeErrorResponse(ToolCallResponse response) {
+        if (!response.isError()) {
+            return response;
+        }
+        return new ToolCallResponse(
+                TOOL_EXECUTION_FAILED,
+                response.getToolName(),
+                response.getToolCallId(),
+                "error",
+                Map.of("error", true, "errorMessage", TOOL_EXECUTION_FAILED));
     }
 
     private void persistFailedIfPossible(ToolCallRequest request, RuntimeException exception,
@@ -215,12 +229,11 @@ public class ToolObservationInterceptor extends ToolInterceptor {
         try {
             toolCallPersistenceService.recordFinished(
                     context.turnId(), request.getToolCallId(),
-                    "failed", null, exception.getMessage(), Instant.now());
+                    "failed", null, TOOL_EXECUTION_FAILED, Instant.now());
         } catch (RuntimeException persistenceException) {
             // 这里正在处理工具异常，持久化异常只写日志，不能掩盖原始工具异常。
-            log.warn("工具调用失败记录持久化失败，已保留原始工具异常: toolCallId={}, reason={}",
-                    request.getToolCallId(), persistenceException.getMessage());
-            log.debug("工具调用失败记录持久化失败详情", persistenceException);
+            log.warn("工具调用失败记录持久化失败，已保留原始工具异常: toolCallId={}, failureType={}",
+                    request.getToolCallId(), failureType(persistenceException));
         }
     }
 
@@ -251,11 +264,11 @@ public class ToolObservationInterceptor extends ToolInterceptor {
         CommandExecutionItem item = new CommandExecutionItem(
                 newItemId(),
                 "commandExecution",
-                displayCommand(request),
+                response.isError() ? request.getToolName() : displayCommand(request),
                 status,
                 null,
                 response.isError() ? null : preview(response.getResult(), TOOL_DETAIL_PREVIEW_LIMIT),
-                response.isError() ? preview(response.getResult(), TOOL_DETAIL_PREVIEW_LIMIT) : null,
+                response.isError() ? TOOL_EXECUTION_FAILED : null,
                 durationMs);
         emitCommandExecution(emitter, item, request);
     }
@@ -282,11 +295,11 @@ public class ToolObservationInterceptor extends ToolInterceptor {
         CommandExecutionItem item = new CommandExecutionItem(
                 newItemId(),
                 "commandExecution",
-                displayCommand(request),
+                request.getToolName(),
                 "failed",
                 null,
                 null,
-                preview(exception.getMessage(), TOOL_DETAIL_PREVIEW_LIMIT),
+                TOOL_EXECUTION_FAILED,
                 durationMs);
         emitCommandExecution(emitter, item, request);
     }
@@ -296,9 +309,8 @@ public class ToolObservationInterceptor extends ToolInterceptor {
             emitter.emitCommandExecution(item);
         } catch (Exception exception) {
             // UI 明细属于可观测增强，发送失败不能反向影响工具执行和模型续轮。
-            log.warn("发送工具调用明细失败，已保留工具真实结果: toolCallId={}, toolName={}, reason={}",
-                    request.getToolCallId(), request.getToolName(), exception.getMessage());
-            log.debug("发送工具调用明细失败详情", exception);
+            log.warn("发送工具调用明细失败，已保留工具真实结果: toolCallId={}, toolName={}, failureType={}",
+                    request.getToolCallId(), request.getToolName(), failureType(exception));
         }
     }
 
@@ -403,5 +415,9 @@ public class ToolObservationInterceptor extends ToolInterceptor {
                 || normalized.contains("sandbox")
                 ? "denied"
                 : "failed";
+    }
+
+    private static String failureType(Exception exception) {
+        return exception == null ? "Exception" : exception.getClass().getSimpleName();
     }
 }

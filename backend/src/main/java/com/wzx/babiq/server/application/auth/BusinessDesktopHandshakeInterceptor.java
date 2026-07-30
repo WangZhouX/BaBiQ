@@ -1,6 +1,7 @@
 package com.wzx.babiq.server.application.auth;
 
 import com.wzx.babiq.server.application.config.BusinessDesktopModeProperties;
+import com.wzx.babiq.server.recovery.StartupRecoveryCoordinator;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpHeaders;
@@ -38,6 +39,7 @@ public final class BusinessDesktopHandshakeInterceptor implements HandshakeInter
 
     private final DesktopSessionTokenProvider tokenProvider;
     private final BusinessDesktopConnectionRegistry connectionRegistry;
+    private final StartupRecoveryCoordinator startupRecoveryCoordinator;
     private final Set<String> allowedOrigins;
     private final Map<ServerHttpRequest, RequestLease> requestLeases = new IdentityHashMap<>();
     private final Clock clock;
@@ -48,10 +50,12 @@ public final class BusinessDesktopHandshakeInterceptor implements HandshakeInter
     public BusinessDesktopHandshakeInterceptor(
             DesktopSessionTokenProvider tokenProvider,
             BusinessDesktopConnectionRegistry connectionRegistry,
-            BusinessDesktopModeProperties properties) {
+            BusinessDesktopModeProperties properties,
+            StartupRecoveryCoordinator startupRecoveryCoordinator) {
         this(tokenProvider,
                 connectionRegistry,
                 properties,
+                startupRecoveryCoordinator,
                 Clock.systemUTC(),
                 properties.acceptTimeout(),
                 DEFAULT_MAX_REQUEST_LEASES);
@@ -61,11 +65,13 @@ public final class BusinessDesktopHandshakeInterceptor implements HandshakeInter
             DesktopSessionTokenProvider tokenProvider,
             BusinessDesktopConnectionRegistry connectionRegistry,
             BusinessDesktopModeProperties properties,
+            StartupRecoveryCoordinator startupRecoveryCoordinator,
             Clock clock,
             Duration requestLeaseTtl,
             int maxRequestLeases) {
         this.tokenProvider = tokenProvider;
         this.connectionRegistry = connectionRegistry;
+        this.startupRecoveryCoordinator = startupRecoveryCoordinator;
         this.clock = clock;
         this.requestLeaseTtl = requestLeaseTtl;
         this.maxRequestLeases = maxRequestLeases;
@@ -95,6 +101,10 @@ public final class BusinessDesktopHandshakeInterceptor implements HandshakeInter
                 || !isLoopback(request.getRemoteAddress())
                 || !allowedOrigins.contains(origin)) {
             response.setStatusCode(HttpStatus.FORBIDDEN);
+            return false;
+        }
+        if (!startupRecoveryCoordinator.isRecoveryComplete()) {
+            response.setStatusCode(HttpStatus.SERVICE_UNAVAILABLE);
             return false;
         }
 

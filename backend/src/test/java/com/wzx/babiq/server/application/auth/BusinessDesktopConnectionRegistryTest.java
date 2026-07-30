@@ -42,6 +42,20 @@ class BusinessDesktopConnectionRegistryTest {
     private final BusinessDesktopConnectionRegistry registry = new BusinessDesktopConnectionRegistry();
 
     @Test
+    void findsFinalizedConnectionByWebSocketSessionIdOnly() {
+        String reservationId = registry.reserve(INSTANCE_ID, SESSION_ID);
+        TrustedDesktopConnection connection = registry.finalizeReservation(
+                reservationId, INSTANCE_ID, SESSION_ID, "ws-by-id");
+
+        assertThat(registry.findByWebSocketSessionId("ws-by-id")).contains(connection);
+        assertThat(registry.findByWebSocketSessionId("ws-missing")).isEmpty();
+        assertThat(registry.isFinalized("ws-by-id")).isTrue();
+
+        registry.release(reservationId, "ws-by-id");
+        assertThat(registry.isFinalized("ws-by-id")).isFalse();
+    }
+
+    @Test
     void reservesThenFinalizesOneTrustedConnection() {
         String reservationId = registry.reserve(INSTANCE_ID, SESSION_ID);
 
@@ -304,8 +318,9 @@ class BusinessDesktopConnectionRegistryTest {
                 .doesNotContain(sensitiveMessage)
                 .doesNotContain("secret-case.json");
         assertThat(output)
-                .contains(sensitiveMessage)
-                .contains("IllegalStateException");
+                .contains("IllegalStateException")
+                .doesNotContain(sensitiveMessage)
+                .doesNotContain("secret-case.json");
     }
 
     @SuppressWarnings("unchecked")

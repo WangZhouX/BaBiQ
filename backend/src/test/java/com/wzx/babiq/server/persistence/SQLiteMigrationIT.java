@@ -11,12 +11,14 @@ import javax.sql.DataSource;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * SQLite migration 集成测试。
@@ -55,8 +57,55 @@ class SQLiteMigrationIT {
                     "bq_approvals",
                     "bq_provider_configs",
                     "bq_app_settings",
+                    "bq_business_oa_sessions",
+                    "bq_business_auth_events",
+                    "bq_business_oa_secret_cleanup",
                     "bq_schema_comments",
                     "flyway_schema_history");
+        }
+    }
+
+    @Test
+    @DisplayName("OA 密钥清理 tombstone 具备状态约束、完整审计字段且不级联 OA 会话")
+    void business_oa_secret_cleanup_should_be_durable_without_session_cascade() throws Exception {
+        try (Connection connection = dataSource.getConnection();
+             Statement statement = connection.createStatement()) {
+            assertThat(flywayVersions(statement)).contains("28");
+            assertThat(columns(statement, "bq_business_oa_secret_cleanup")).containsExactlyInAnyOrder(
+                    "secret_ref",
+                    "auth_session_id",
+                    "state",
+                    "reason_code",
+                    "operation_id",
+                    "attempt_count",
+                    "created_at",
+                    "updated_at",
+                    "last_attempt_at",
+                    "last_result_code");
+            assertThat(commentFor(statement, "bq_business_oa_secret_cleanup", "secret_ref"))
+                    .contains("SecretStore").contains("引用");
+            assertThat(tableSql(statement, "bq_business_oa_secret_cleanup"))
+                    .doesNotContainIgnoringCase("ON DELETE CASCADE")
+                    .doesNotContain("REFERENCES bq_business_oa_sessions");
+
+            statement.executeUpdate("""
+                    INSERT INTO bq_business_oa_secret_cleanup(
+                        secret_ref, auth_session_id, state, reason_code, attempt_count, created_at, updated_at)
+                    VALUES ('keystore://business.oa.test-reserved', 'auth-test', 'RESERVED', 'TEST', 0,
+                            '2026-07-28T00:00:00Z', '2026-07-28T00:00:00Z')
+                    """);
+            assertThatThrownBySql(() -> statement.executeUpdate("""
+                    INSERT INTO bq_business_oa_secret_cleanup(
+                        secret_ref, auth_session_id, state, reason_code, attempt_count, created_at, updated_at)
+                    VALUES (NULL, 'auth-test-null-ref', 'RESERVED', 'TEST', 0,
+                            '2026-07-28T00:00:00Z', '2026-07-28T00:00:00Z')
+                    """));
+            assertThatThrownBySql(() -> statement.executeUpdate("""
+                    INSERT INTO bq_business_oa_secret_cleanup(
+                        secret_ref, auth_session_id, state, reason_code, attempt_count, created_at, updated_at)
+                    VALUES ('keystore://business.oa.test-invalid', 'auth-test', 'UNKNOWN', 'TEST', 0,
+                            '2026-07-28T00:00:00Z', '2026-07-28T00:00:00Z')
+                    """));
         }
     }
 
@@ -158,5 +207,39 @@ class SQLiteMigrationIT {
         try (ResultSet rs = statement.executeQuery(sql)) {
             return rs.next();
         }
+    }
+
+    @Test
+    void business_schedule_create_operations_are_durable_and_recoverable() throws Exception {
+        try (Connection connection = dataSource.getConnection();
+             Statement statement = connection.createStatement()) {
+            assertThat(tableNames(statement)).contains("bq_business_schedule_operations");
+            assertThat(columns(statement, "bq_business_schedule_operations")).contains(
+                    "operation_id", "desktop_instance_id", "desktop_session_id", "auth_session_id",
+                    "tenant_id", "identity_generation", "client_operation_id", "actor_user_id",
+                    "form_revision", "attachment_batch_id", "request_fingerprint", "state",
+                    "result_revision", "created_at", "updated_at");
+            assertThat(tableSql(statement, "bq_business_schedule_operations"))
+                    .contains("IN_FLIGHT", "COMPLETED", "OUTCOME_UNKNOWN", "FAILED");
+            assertThat(commentFor(statement, "bq_business_schedule_operations", "request_fingerprint"))
+                    .contains("指纹");
+        }
+    }
+
+    private static String tableSql(Statement statement, String tableName) throws Exception {
+        try (ResultSet rs = statement.executeQuery(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='" + tableName + "'")) {
+            assertThat(rs.next()).isTrue();
+            return rs.getString(1);
+        }
+    }
+
+    private static void assertThatThrownBySql(SqlAction action) {
+        assertThatThrownBy(action::run).isInstanceOf(SQLException.class);
+    }
+
+    @FunctionalInterface
+    private interface SqlAction {
+        void run() throws SQLException;
     }
 }

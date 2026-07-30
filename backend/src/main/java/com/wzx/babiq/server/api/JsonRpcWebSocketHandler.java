@@ -9,6 +9,7 @@ import com.wzx.babiq.server.application.auth.BusinessDesktopHandshakeInterceptor
 import com.wzx.babiq.server.application.action.ApplicationOutboundRequestTracker;
 import com.wzx.babiq.server.application.action.PendingApplicationActions;
 import com.wzx.babiq.server.application.action.ApplicationOutboundJsonRpcClient;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -21,6 +22,11 @@ import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * JSON-RPC WebSocket 主入口。
@@ -33,6 +39,7 @@ import java.nio.charset.StandardCharsets;
 public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
 
     private static final Logger log = LoggerFactory.getLogger(JsonRpcWebSocketHandler.class);
+    private static final int MAX_PENDING_BUSINESS_REQUESTS = 32;
 
     /** JSON-RPC 分发器，负责根据 method 找到具体业务 handler。 */
     private final JsonRpcDispatcher dispatcher;
@@ -44,6 +51,8 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
     private final ApplicationOutboundRequestTracker outboundRequestTracker;
     private final PendingApplicationActions pendingApplicationActions;
     private final ApplicationOutboundJsonRpcClient outboundJsonRpcClient;
+    private final ExecutorService businessRequestExecutor;
+    private final Map<String, SerialRequestQueue> businessRequestQueues = new ConcurrentHashMap<>();
 
     /**
      * 创建 WebSocket handler。
@@ -98,6 +107,10 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
         this.outboundJsonRpcClient = outboundClientProvider == null
                 ? null
                 : outboundClientProvider.getIfAvailable();
+        this.businessRequestExecutor = businessDesktopConnectionRegistry == null
+                ? null
+                : Executors.newThreadPerTaskExecutor(
+                        Thread.ofVirtual().name("business-jsonrpc-", 0).factory());
     }
 
     /**
@@ -135,6 +148,9 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
         if (outboundJsonRpcClient != null) {
             outboundJsonRpcClient.registerSession(session);
         }
+        if (businessRequestExecutor != null) {
+            businessRequestQueues.put(session.getId(), new SerialRequestQueue(businessRequestExecutor));
+        }
         log.info("WebSocket 已连接: sessionId={}, remote={}, uri={}",
                 session.getId(), session.getRemoteAddress(), session.getUri());
     }
@@ -147,6 +163,85 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
      */
     @Override
     protected void handleTextMessage(WebSocketSession session, TextMessage message) {
+        if (businessRequestExecutor != null) {
+            // A request running on the per-session queue may itself be waiting for a
+            // server-initiated JSON-RPC call. Its correlated response must therefore
+            // bypass that request queue or the two sides deadlock.
+            if (outboundRequestTracker != null
+                    && isCorrelatedOutboundResponse(message.getPayload())) {
+                processTextMessage(session, message);
+                return;
+            }
+            if (isExplicitLogoutRequest(message.getPayload())) {
+                businessRequestExecutor.execute(() -> processTextMessage(session, message));
+                return;
+            }
+            SerialRequestQueue queue = businessRequestQueues.get(session.getId());
+            if (queue != null) {
+                QueueSubmission submission =
+                        queue.submit(() -> processTextMessage(session, message));
+                if (submission == QueueSubmission.FULL) {
+                    sendResponse(session, JsonRpcMessage.ErrorResponse.of(
+                            requestId(message.getPayload()),
+                            JsonRpcErrorCode.SERVER_ERROR,
+                            "Server busy",
+                            null));
+                }
+            }
+            return;
+        }
+        processTextMessage(session, message);
+    }
+
+    private boolean isCorrelatedOutboundResponse(String payload) {
+        if (payload == null || payload.getBytes(StandardCharsets.UTF_8).length >
+                com.wzx.babiq.server.application.protocol.ApplicationProtocolValidator.MAX_ENVELOPE_BYTES) {
+            return false;
+        }
+        try {
+            JsonNode root = objectMapper.readTree(payload);
+            return root != null
+                    && root.isObject()
+                    && !root.has("method")
+                    && (root.has("result") || root.has("error"))
+                    && hasCorrelatableId(root);
+        } catch (JsonProcessingException ignored) {
+            return false;
+        }
+    }
+
+    private boolean isExplicitLogoutRequest(String payload) {
+        if (payload == null || payload.getBytes(StandardCharsets.UTF_8).length >
+                com.wzx.babiq.server.application.protocol.ApplicationProtocolValidator.MAX_ENVELOPE_BYTES) {
+            return false;
+        }
+        try {
+            JsonNode root = objectMapper.readTree(payload);
+            return root != null
+                    && root.isObject()
+                    && "2.0".equals(root.path("jsonrpc").asText())
+                    && "business/auth/logout".equals(root.path("method").asText())
+                    && hasCorrelatableId(root)
+                    && !root.has("result")
+                    && !root.has("error")
+                    && (!root.has("params") || root.path("params").isObject());
+        } catch (JsonProcessingException ignored) {
+            return false;
+        }
+    }
+
+    private Long requestId(String payload) {
+        try {
+            JsonNode root = objectMapper.readTree(payload);
+            return root != null && root.isObject() && hasCorrelatableId(root)
+                    ? root.path("id").longValue()
+                    : null;
+        } catch (JsonProcessingException ignored) {
+            return null;
+        }
+    }
+
+    private void processTextMessage(WebSocketSession session, TextMessage message) {
         long startedNanos = System.nanoTime();
         JsonRpcMessage response = handleInboundMessage(session, message.getPayload(), startedNanos);
         if (response != null) {
@@ -162,6 +257,10 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
      */
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+        SerialRequestQueue queue = businessRequestQueues.remove(session.getId());
+        if (queue != null) {
+            queue.close();
+        }
         try {
             if (businessDesktopConnectionRegistry != null) {
                 String reservationId = stringAttribute(
@@ -187,6 +286,15 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
         log.info("WebSocket 已关闭: sessionId={}, status={}", session.getId(), status);
     }
 
+    @PreDestroy
+    void closeBusinessRequestExecutor() {
+        businessRequestQueues.values().forEach(SerialRequestQueue::close);
+        businessRequestQueues.clear();
+        if (businessRequestExecutor != null) {
+            businessRequestExecutor.shutdownNow();
+        }
+    }
+
     private static String trustedAttribute(WebSocketSession session, String key) {
         String value = stringAttribute(session, key);
         if (value == null || value.isBlank()) {
@@ -203,6 +311,11 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
     private JsonRpcMessage handleInboundMessage(WebSocketSession session, String payload, long startedNanos) {
         Long requestId = null;
         String method = "<parse-failed>";
+        if (payload == null || payload.getBytes(StandardCharsets.UTF_8).length >
+                com.wzx.babiq.server.application.protocol.ApplicationProtocolValidator.MAX_ENVELOPE_BYTES) {
+            return JsonRpcMessage.ErrorResponse.of(null, JsonRpcErrorCode.PROTOCOL_ERROR,
+                    "PROTOCOL_ERROR", null);
+        }
         try {
             JsonNode root = objectMapper.readTree(payload);
             if (root.has("method")) {
@@ -232,18 +345,19 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
                     "Invalid JSON-RPC envelope",
                     null);
         } catch (JsonProcessingException exception) {
-            log.warn("JSON-RPC 解析失败: sessionId={}, payloadBytes={}, error={}",
+            log.warn("JSON-RPC 解析失败: sessionId={}, payloadBytes={}, errorType={}",
                     session.getId(),
                     payload.getBytes(StandardCharsets.UTF_8).length,
-                    exception.getOriginalMessage());
+                    exception.getClass().getSimpleName());
             return JsonRpcMessage.ErrorResponse.of(
                     null,
                     JsonRpcErrorCode.PARSE_ERROR,
-                    "Parse error: " + exception.getOriginalMessage(),
+                    "Malformed JSON",
                     null);
         } catch (Exception exception) {
-            log.error("WebSocket 请求处理失败: sessionId={}, requestId={}, method={}, elapsedMs={}",
-                    session.getId(), requestId, method, JsonRpcLogSupport.elapsedMillis(startedNanos), exception);
+            log.error("WebSocket 请求处理失败: sessionId={}, requestId={}, method={}, elapsedMs={}, errorType={}",
+                    session.getId(), requestId, method, JsonRpcLogSupport.elapsedMillis(startedNanos),
+                    exception.getClass().getSimpleName());
             return JsonRpcMessage.ErrorResponse.of(
                     requestId,
                     JsonRpcErrorCode.INTERNAL_ERROR,
@@ -291,8 +405,9 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
                     JsonRpcLogSupport.elapsedMillis(startedNanos));
             return response;
         } catch (Exception exception) {
-            log.error("WebSocket 请求处理失败: sessionId={}, requestId={}, method={}, elapsedMs={}",
-                    session.getId(), requestId, method, JsonRpcLogSupport.elapsedMillis(startedNanos), exception);
+            log.error("WebSocket 请求处理失败: sessionId={}, requestId={}, method={}, elapsedMs={}, errorType={}",
+                    session.getId(), requestId, method, JsonRpcLogSupport.elapsedMillis(startedNanos),
+                    exception.getClass().getSimpleName());
             return JsonRpcMessage.ErrorResponse.of(
                     requestId,
                     JsonRpcErrorCode.INTERNAL_ERROR,
@@ -337,13 +452,77 @@ public class JsonRpcWebSocketHandler extends TextWebSocketHandler {
     private void sendResponse(WebSocketSession session, JsonRpcMessage response) {
         try {
             String payload = objectMapper.writeValueAsString(response);
+            if (payload.getBytes(StandardCharsets.UTF_8).length >
+                    com.wzx.babiq.server.application.protocol.ApplicationProtocolValidator.MAX_ENVELOPE_BYTES) {
+                Long id = response instanceof JsonRpcMessage.Response success ? success.id()
+                        : response instanceof JsonRpcMessage.ErrorResponse error ? error.id() : null;
+                payload = objectMapper.writeValueAsString(JsonRpcMessage.ErrorResponse.of(
+                        id, JsonRpcErrorCode.PROTOCOL_ERROR, "PROTOCOL_ERROR", null));
+            }
             // 与 ItemEmitter 一样同步写 session,防止同步响应和异步 notification 并发写同一连接。
             synchronized (session) {
                 session.sendMessage(new TextMessage(payload));
             }
-        } catch (IOException exception) {
-            log.error("WebSocket 响应发送失败: sessionId={}", session.getId(), exception);
+        } catch (IOException | IllegalStateException exception) {
+            log.warn("WebSocket 响应已丢弃: sessionId={}, errorType={}",
+                    session.getId(), exception.getClass().getSimpleName());
         }
+    }
+
+    private static final class SerialRequestQueue {
+        private final ExecutorService executor;
+        private final ArrayDeque<Runnable> pending = new ArrayDeque<>();
+        private boolean running;
+        private boolean closed;
+
+        private SerialRequestQueue(ExecutorService executor) {
+            this.executor = executor;
+        }
+
+        synchronized QueueSubmission submit(Runnable request) {
+            if (closed) {
+                return QueueSubmission.CLOSED;
+            }
+            if (pending.size() >= MAX_PENDING_BUSINESS_REQUESTS) {
+                return QueueSubmission.FULL;
+            }
+            pending.addLast(request);
+            if (!running) {
+                running = true;
+                executor.execute(this::drain);
+            }
+            return QueueSubmission.ACCEPTED;
+        }
+
+        private void drain() {
+            while (true) {
+                Runnable request;
+                synchronized (this) {
+                    if (closed || pending.isEmpty()) {
+                        running = false;
+                        return;
+                    }
+                    request = pending.removeFirst();
+                }
+                try {
+                    request.run();
+                } catch (RuntimeException failure) {
+                    log.warn("Business WebSocket request dropped: errorType={}",
+                            failure.getClass().getSimpleName());
+                }
+            }
+        }
+
+        synchronized void close() {
+            closed = true;
+            pending.clear();
+        }
+    }
+
+    private enum QueueSubmission {
+        ACCEPTED,
+        FULL,
+        CLOSED
     }
 
     /**

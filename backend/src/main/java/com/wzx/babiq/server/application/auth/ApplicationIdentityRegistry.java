@@ -66,7 +66,105 @@ public class ApplicationIdentityRegistry {
 
         TrustedBusinessIdentity identity = trustedIdentity(connection, message);
         states.put(connection.webSocketSessionId(),
-                new ConnectionIdentityState(connection, message.identityEpoch(), identity, false, true));
+                new ConnectionIdentityState(connection, message.identityEpoch(), identity, null, false, true));
+        return identity;
+    }
+
+    /**
+     * Installs an identity projected by a trusted server-side business adapter.
+     * Client supplied identity messages must continue to use bind/update and are
+     * not accepted by this API.
+     */
+    public synchronized TrustedBusinessIdentity installServer(
+            TrustedDesktopConnection connection,
+            ApplicationInstallationLease installationLease,
+            String authSessionId,
+            long identityEpoch,
+            String userId,
+            String tenantId,
+            String platformId,
+            java.util.Set<String> roles,
+            java.util.Set<String> permissions) {
+        return installServer(connection, installationLease, authSessionId, identityEpoch, userId,
+                tenantId, platformId, roles, permissions, java.util.Set.of());
+    }
+
+    public synchronized TrustedBusinessIdentity installServer(
+            TrustedDesktopConnection connection,
+            ApplicationInstallationLease installationLease,
+            String authSessionId,
+            long identityEpoch,
+            String userId,
+            String tenantId,
+            String platformId,
+            java.util.Set<String> roles,
+            java.util.Set<String> permissions,
+            java.util.Set<String> navigationPaths) {
+        Objects.requireNonNull(connection, "connection");
+        Objects.requireNonNull(installationLease, "installationLease").requireOwner(connection);
+        if (identityEpoch <= 0) throw new IllegalArgumentException("identityEpoch must be positive");
+        if (states.containsKey(connection.webSocketSessionId())) {
+            throw new IllegalStateException("Identity is already installed for this WebSocket connection");
+        }
+        TrustedBusinessIdentity identity = new TrustedBusinessIdentity(
+                connection.reservationId(), connection.webSocketSessionId(),
+                connection.desktopInstanceId(), connection.desktopSessionId(), authSessionId,
+                identityEpoch, userId, tenantId, platformId, roles, permissions, navigationPaths);
+        states.put(connection.webSocketSessionId(),
+                new ConnectionIdentityState(
+                        connection, identityEpoch, identity, installationLease, false, false));
+        return identity;
+    }
+
+    /** Returns the server-owned lease for exact cleanup, including a provisional installation. */
+    public synchronized Optional<ApplicationInstallationLease> installationLease(
+            TrustedDesktopConnection connection) {
+        Objects.requireNonNull(connection, "connection");
+        ConnectionIdentityState state = states.get(connection.webSocketSessionId());
+        if (state == null || !state.connection().equals(connection)) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(state.installationLease());
+    }
+
+    /** Server-internal exact lookup used while installing dependent projections. */
+    public synchronized Optional<TrustedBusinessIdentity> provisional(
+            TrustedDesktopConnection connection,
+            ApplicationInstallationLease installationLease) {
+        Objects.requireNonNull(connection, "connection");
+        Objects.requireNonNull(installationLease, "installationLease").requireOwner(connection);
+        ConnectionIdentityState state = states.get(connection.webSocketSessionId());
+        if (state == null
+                || state.transitioning()
+                || state.committed()
+                || !state.connection().equals(connection)
+                || !installationLease.equals(state.installationLease())) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(state.identity());
+    }
+
+    /** Server-internal cleanup lookup; unlike current/find it may observe provisional state. */
+    public synchronized Optional<TrustedBusinessIdentity> installed(
+            TrustedDesktopConnection connection) {
+        Objects.requireNonNull(connection, "connection");
+        ConnectionIdentityState state = states.get(connection.webSocketSessionId());
+        if (state == null || state.transitioning() || !state.connection().equals(connection)) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(state.identity());
+    }
+
+    /** Commits only the exact provisional identity selected by the installation lease. */
+    public synchronized TrustedBusinessIdentity commitInstallation(
+            TrustedDesktopConnection connection,
+            ApplicationInstallationLease installationLease) {
+        TrustedBusinessIdentity identity = provisional(connection, installationLease)
+                .orElseThrow(() -> new IllegalStateException("Identity installation is stale"));
+        ConnectionIdentityState current = states.get(connection.webSocketSessionId());
+        states.put(connection.webSocketSessionId(), new ConnectionIdentityState(
+                current.connection(), current.identityEpoch(), identity,
+                current.installationLease(), false, true));
         return identity;
     }
 
@@ -111,7 +209,8 @@ public class ApplicationIdentityRegistry {
                 }
                 next = message.authenticated() ? trustedIdentity(connection, message) : null;
                 transition = new ConnectionIdentityState(
-                        connection, current.identityEpoch(), current.identity(), true, false);
+                        connection, current.identityEpoch(), current.identity(),
+                        current.installationLease(), true, false);
                 states.put(connection.webSocketSessionId(), transition);
             }
         }
@@ -126,7 +225,8 @@ public class ApplicationIdentityRegistry {
                         throw new IllegalStateException("Identity changed concurrently during update");
                     }
                     states.put(connection.webSocketSessionId(),
-                            new ConnectionIdentityState(connection, message.identityEpoch(), next, true, true));
+                            new ConnectionIdentityState(
+                                    connection, message.identityEpoch(), next, null, true, true));
                 }
             }
         } catch (RuntimeException | Error exception) {
@@ -174,7 +274,7 @@ public class ApplicationIdentityRegistry {
     /** 返回指定 WebSocket 当前已认证身份；登出和未知连接均为空。 */
     public synchronized Optional<TrustedBusinessIdentity> find(String webSocketSessionId) {
         ConnectionIdentityState state = states.get(webSocketSessionId);
-        return state == null || state.transitioning()
+        return state == null || state.transitioning() || !state.committed()
                 ? Optional.empty()
                 : Optional.ofNullable(state.identity());
     }
@@ -199,6 +299,48 @@ public class ApplicationIdentityRegistry {
         if (current != null && current.connection().equals(connection)) {
             states.remove(connection.webSocketSessionId());
         }
+    }
+
+    /** Clears a provisional identity only when it still belongs to the exact installation attempt. */
+    public synchronized boolean clearInstallation(
+            TrustedDesktopConnection connection,
+            ApplicationInstallationLease installationLease) {
+        Objects.requireNonNull(connection, "connection");
+        Objects.requireNonNull(installationLease, "installationLease").requireOwner(connection);
+        ConnectionIdentityState current = states.get(connection.webSocketSessionId());
+        if (current == null
+                || !current.connection().equals(connection)
+                || !installationLease.equals(current.installationLease())) {
+            return false;
+        }
+        states.remove(connection.webSocketSessionId());
+        return true;
+    }
+
+    /**
+     * Removes one exact server-owned installation and then publishes old -> null outside
+     * the registry monitor. Failed-install aborts continue to use silent clearInstallation.
+     */
+    public boolean revokeInstallation(
+            TrustedDesktopConnection connection,
+            ApplicationInstallationLease installationLease) {
+        Objects.requireNonNull(connection, "connection");
+        Objects.requireNonNull(installationLease, "installationLease").requireOwner(connection);
+        TrustedBusinessIdentity removed;
+        synchronized (this) {
+            ConnectionIdentityState current = states.get(connection.webSocketSessionId());
+            if (current == null
+                    || !current.connection().equals(connection)
+                    || !installationLease.equals(current.installationLease())) {
+                return false;
+            }
+            removed = current.committed() ? current.identity() : null;
+            states.remove(connection.webSocketSessionId());
+        }
+        if (removed != null) {
+            notifyIdentityChanged(connection, removed, null);
+        }
+        return true;
     }
 
     private ConnectionIdentityState requireState(TrustedDesktopConnection connection) {
@@ -237,7 +379,8 @@ public class ApplicationIdentityRegistry {
                         && current.identityEpoch() == identityEpoch
                         && Objects.equals(current.identity(), identity)) {
                     states.put(connection.webSocketSessionId(),
-                            new ConnectionIdentityState(connection, identityEpoch, identity, false, true));
+                            new ConnectionIdentityState(
+                                    connection, identityEpoch, identity, null, false, true));
                 }
             }
         }
@@ -289,6 +432,7 @@ public class ApplicationIdentityRegistry {
             TrustedDesktopConnection connection,
             long identityEpoch,
             TrustedBusinessIdentity identity,
+            ApplicationInstallationLease installationLease,
             boolean transitioning,
             boolean committed) {
     }

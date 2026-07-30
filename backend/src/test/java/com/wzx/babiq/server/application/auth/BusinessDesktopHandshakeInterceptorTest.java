@@ -1,12 +1,17 @@
 package com.wzx.babiq.server.application.auth;
 
 import com.wzx.babiq.server.application.config.BusinessDesktopModeProperties;
+import com.wzx.babiq.server.recovery.StartupRecoveryCoordinator;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.server.ServerHttpRequest;
 import org.springframework.http.server.ServerHttpResponse;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.socket.WebSocketHandler;
 
 import java.net.InetAddress;
@@ -20,6 +25,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Arrays;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -27,6 +33,104 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class BusinessDesktopHandshakeInterceptorTest {
+
+    @Test
+    void every_handshake_constructor_requires_the_startup_recovery_coordinator() {
+        assertThat(Arrays.stream(BusinessDesktopHandshakeInterceptor.class.getConstructors()))
+                .isNotEmpty();
+        assertThat(Arrays.stream(BusinessDesktopHandshakeInterceptor.class.getDeclaredConstructors()))
+                .allMatch(constructor -> Arrays.asList(constructor.getParameterTypes())
+                        .contains(StartupRecoveryCoordinator.class));
+    }
+
+    @Test
+    void spring_wires_the_production_handshake_to_the_shared_recovery_gate() throws Exception {
+        Path tokenFile = tempDir.resolve("spring-wiring-session-token");
+        Files.writeString(tokenFile, TOKEN, StandardCharsets.US_ASCII);
+        BusinessDesktopConnectionRegistry registry = new BusinessDesktopConnectionRegistry();
+
+        new ApplicationContextRunner()
+                .withPropertyValues("babiq.business.enabled=true")
+                .withUserConfiguration(HandshakeWiringConfiguration.class)
+                .withBean(BusinessDesktopModeProperties.class, this::properties)
+                .withBean(DesktopSessionTokenProvider.class,
+                        () -> new DesktopSessionTokenProvider(tokenFile))
+                .withBean(BusinessDesktopConnectionRegistry.class, () -> registry)
+                .withBean(StartupRecoveryCoordinator.class, StartupRecoveryCoordinator::new)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    BusinessDesktopHandshakeInterceptor interceptor =
+                            context.getBean(BusinessDesktopHandshakeInterceptor.class);
+                    StartupRecoveryCoordinator recovery =
+                            context.getBean(StartupRecoveryCoordinator.class);
+                    assertThat(ReflectionTestUtils.getField(
+                            interceptor, "startupRecoveryCoordinator")).isSameAs(recovery);
+
+                    ServerHttpRequest legalRequest = request(
+                            TOKEN, INSTANCE_ID, SESSION_ID, ORIGIN, "127.0.0.1");
+                    ServerHttpResponse blockedResponse = mock(ServerHttpResponse.class);
+                    Map<String, Object> attributes = new HashMap<>();
+
+                    assertThat(interceptor.beforeHandshake(
+                            legalRequest,
+                            blockedResponse,
+                            mock(WebSocketHandler.class),
+                            attributes)).isFalse();
+                    verify(blockedResponse).setStatusCode(HttpStatus.SERVICE_UNAVAILABLE);
+                    assertThat(attributes).isEmpty();
+                    String probeReservation = registry.reserve(INSTANCE_ID, SESSION_ID);
+                    assertThat(registry.cancelReservation(probeReservation)).isTrue();
+
+                    recovery.markRecoveryComplete();
+
+                    assertThat(interceptor.beforeHandshake(
+                            legalRequest,
+                            mock(ServerHttpResponse.class),
+                            mock(WebSocketHandler.class),
+                            attributes)).isTrue();
+                    assertThat(attributes)
+                            .containsEntry(
+                                    BusinessDesktopHandshakeInterceptor.DESKTOP_INSTANCE_ID_ATTRIBUTE,
+                                    INSTANCE_ID)
+                            .containsEntry(
+                                    BusinessDesktopHandshakeInterceptor.DESKTOP_SESSION_ID_ATTRIBUTE,
+                                    SESSION_ID)
+                            .containsKey(
+                                    BusinessDesktopHandshakeInterceptor.RESERVATION_ID_ATTRIBUTE);
+                });
+    }
+
+    @Test
+    void valid_handshake_waits_for_startup_recovery_without_creating_a_reservation() throws Exception {
+        StartupRecoveryCoordinator recovery = new StartupRecoveryCoordinator();
+        BusinessDesktopConnectionRegistry registry = new BusinessDesktopConnectionRegistry();
+        Fixture fixture = fixture(
+                registry,
+                recovery,
+                Clock.systemUTC(),
+                Duration.ofSeconds(10),
+                1024);
+        Map<String, Object> blockedAttributes = new HashMap<>();
+
+        assertThat(fixture.interceptor.beforeHandshake(
+                request(TOKEN, INSTANCE_ID, SESSION_ID, ORIGIN, "127.0.0.1"),
+                fixture.response,
+                mock(WebSocketHandler.class),
+                blockedAttributes)).isFalse();
+        verify(fixture.response).setStatusCode(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(blockedAttributes).isEmpty();
+        String probeReservation = registry.reserve(INSTANCE_ID, SESSION_ID);
+        assertThat(probeReservation).isNotBlank();
+        assertThat(registry.cancelReservation(probeReservation)).isTrue();
+
+        recovery.markRecoveryComplete();
+
+        assertThat(fixture.interceptor.beforeHandshake(
+                request(TOKEN, INSTANCE_ID, SESSION_ID, ORIGIN, "127.0.0.1"),
+                mock(ServerHttpResponse.class),
+                mock(WebSocketHandler.class),
+                new HashMap<>())).isTrue();
+    }
 
     private static final String TOKEN = "A".repeat(43);
     private static final String INSTANCE_ID = "11111111-1111-4111-8111-111111111111";
@@ -205,6 +309,17 @@ class BusinessDesktopHandshakeInterceptorTest {
             Clock clock,
             Duration requestLeaseTtl,
             int maxRequestLeases) throws Exception {
+        StartupRecoveryCoordinator recovery = new StartupRecoveryCoordinator();
+        recovery.markRecoveryComplete();
+        return fixture(registry, recovery, clock, requestLeaseTtl, maxRequestLeases);
+    }
+
+    private Fixture fixture(
+            BusinessDesktopConnectionRegistry registry,
+            StartupRecoveryCoordinator recovery,
+            Clock clock,
+            Duration requestLeaseTtl,
+            int maxRequestLeases) throws Exception {
         Path tokenFile = tempDir.resolve("session-token-" + System.nanoTime());
         Files.writeString(tokenFile, TOKEN, StandardCharsets.US_ASCII);
         DesktopSessionTokenProvider tokenProvider = new DesktopSessionTokenProvider(tokenFile);
@@ -214,6 +329,7 @@ class BusinessDesktopHandshakeInterceptorTest {
                         tokenProvider,
                         registry,
                         properties(),
+                        recovery,
                         clock,
                         requestLeaseTtl,
                         maxRequestLeases),
@@ -273,6 +389,11 @@ class BusinessDesktopHandshakeInterceptorTest {
             BusinessDesktopConnectionRegistry registry,
             ServerHttpResponse response
     ) {
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @Import(BusinessDesktopHandshakeInterceptor.class)
+    static class HandshakeWiringConfiguration {
     }
 
     private static final class MutableClock extends Clock {

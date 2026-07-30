@@ -1,5 +1,8 @@
 package com.wzx.huitai.desktop.controller
 
+import com.wzx.huitai.agent.business.auth.BusinessAuthStateChangeCode
+import com.wzx.huitai.agent.business.auth.BusinessAuthStateChanged
+import com.wzx.huitai.agent.business.auth.BusinessAuthStatus
 import com.wzx.huitai.agent.client.AgentJsonRpcException
 import com.wzx.huitai.agent.client.AgentConnection
 import com.wzx.huitai.agent.client.AgentConnectionState
@@ -27,6 +30,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertNull
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
@@ -36,6 +40,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
@@ -178,6 +183,90 @@ class BusinessConversationControllerTest {
     }
 
     @Test
+    fun `raw auth state notification bypasses ready and identity epoch filters`() = runTest {
+        val connection = NotificationConnection()
+        val rpc = AgentJsonRpcClient(connection = connection, scope = this)
+        val client = BusinessAgentClient(rpc, this)
+        val registry = BusinessIdentityRegistry().apply { transitionTo(BusinessAccessGateState.RESTORING) }
+        val handled = CompletableDeferred<BusinessAuthStateChanged>()
+        val controller = BusinessConversationController(
+            gateway = client,
+            store = BusinessDesktopStore(BusinessDesktopReducer()),
+            usageGate = ReadyAgentUsageGate(registry),
+            scope = this,
+            onAuthStateChanged = { handled.complete(it) },
+        )
+
+        connection.serverNotifyAuthState(
+            authSessionId = "auth-reconnecting",
+            generation = 11,
+            businessCode = "BUSINESS_AUTH_EXPIRED",
+        )
+
+        val change = withTimeout(1_000) { handled.await() }
+        assertEquals("auth-reconnecting", change.authSessionId)
+        assertEquals(11, change.generation)
+        assertEquals(BusinessAuthStateChangeCode.AUTH_EXPIRED, change.businessCode)
+        controller.close()
+        rpc.close()
+    }
+
+    @Test
+    fun `auth reconciliation failure is isolated from later conversation events`() = runTest {
+        val gateway = RecordingGateway().apply {
+            eventAuthSessionId = "auth-session-1"
+            eventIdentityEpoch = 1
+        }
+        val store = BusinessDesktopStore(BusinessDesktopReducer())
+        val controller = BusinessConversationController(
+            gateway = gateway,
+            store = store,
+            usageGate = ReadyAgentUsageGate(readyRegistry()),
+            scope = this,
+            onAuthStateChanged = { throw IllegalStateException("session probe failed") },
+        )
+
+        runCurrent()
+        gateway.mutableAuthEvents.emit(authStateChanged())
+        runCurrent()
+        gateway.mutableEvents.emit(BusinessAgentEvent.Unknown("future/conversation-event"))
+
+        val state = withTimeout(1_000) { store.state.first { it.unknownEventCount == 1 } }
+        assertEquals(1, state.unknownEventCount)
+        controller.close()
+    }
+
+    @Test
+    fun `auth reconciliation cancellation stops the ingress collector`() = runTest {
+        val gateway = RecordingGateway().apply {
+            eventAuthSessionId = "auth-session-1"
+            eventIdentityEpoch = 1
+        }
+        val store = BusinessDesktopStore(BusinessDesktopReducer())
+        var authCallbackCount = 0
+        val controller = BusinessConversationController(
+            gateway = gateway,
+            store = store,
+            usageGate = ReadyAgentUsageGate(readyRegistry()),
+            scope = this,
+            onAuthStateChanged = {
+                authCallbackCount += 1
+                throw CancellationException("shutdown")
+            },
+        )
+
+        runCurrent()
+        gateway.mutableAuthEvents.emit(authStateChanged())
+        runCurrent()
+        assertEquals(1, authCallbackCount)
+        gateway.mutableEvents.emit(BusinessAgentEvent.Unknown("must-not-be-consumed"))
+        runCurrent()
+
+        assertEquals(0, store.state.value.unknownEventCount)
+        controller.close()
+    }
+
+    @Test
     fun `real business agent channel preserves producing identity when old notification arrives after switch`() = runTest {
         val connection = NotificationConnection()
         val oldIdentity = identity(epoch = 1, authSessionId = "old-session", userId = "old-user")
@@ -190,7 +279,7 @@ class BusinessConversationControllerTest {
         check(registry.publishReady(newIdentity, 1))
         connection.serverNotify("old/session-event", authSessionId = "old-session", identityEpoch = 1)
 
-        val received = ingress.await()
+        val received = assertIs<BusinessAgentIngressEvent.Conversation>(ingress.await())
         assertEquals("old-session", received.authSessionId)
         assertEquals(1, received.identityEpoch)
         rpc.close()
@@ -243,14 +332,18 @@ class BusinessConversationControllerTest {
 
     private class RecordingGateway : BusinessConversationGateway {
         val mutableEvents = MutableSharedFlow<BusinessAgentEvent>(extraBufferCapacity = 8)
+        val mutableAuthEvents = MutableSharedFlow<BusinessAuthStateChanged>(extraBufferCapacity = 8)
         override val events: Flow<BusinessAgentEvent> = mutableEvents
-        override val ingressEvents: Flow<BusinessAgentIngressEvent> = mutableEvents.map { event ->
-            BusinessAgentIngressEvent(
-                event,
-                authSessionId = eventAuthSessionId,
-                identityEpoch = eventIdentityEpoch,
-            )
-        }
+        override val ingressEvents: Flow<BusinessAgentIngressEvent> = merge(
+            mutableEvents.map { event ->
+                BusinessAgentIngressEvent.Conversation(
+                    event,
+                    authSessionId = eventAuthSessionId,
+                    identityEpoch = eventIdentityEpoch,
+                )
+            },
+            mutableAuthEvents.map { BusinessAgentIngressEvent.AuthStateChanged(it) },
+        )
         var eventAuthSessionId: String = "old-session"
         var eventIdentityEpoch: Long = 1
         var text: String? = null
@@ -300,6 +393,23 @@ class BusinessConversationControllerTest {
                 put("params", buildJsonObject {
                     put("authSessionId", authSessionId)
                     put("identityEpoch", identityEpoch)
+                })
+            }.toString())
+        }
+
+        suspend fun serverNotifyAuthState(
+            authSessionId: String,
+            generation: Long,
+            businessCode: String,
+        ) {
+            inbound.send(buildJsonObject {
+                put("jsonrpc", "2.0")
+                put("method", "business/auth/state-changed")
+                put("params", buildJsonObject {
+                    put("authSessionId", authSessionId)
+                    put("state", "SIGNED_OUT")
+                    put("generation", generation)
+                    put("businessCode", businessCode)
                 })
             }.toString())
         }
@@ -367,6 +477,13 @@ class BusinessConversationControllerTest {
 
     private fun readyRegistry(identity: BusinessIdentity = identity()): BusinessIdentityRegistry =
         BusinessIdentityRegistry().also { check(it.publishReady(identity, 0)) }
+
+    private fun authStateChanged() = BusinessAuthStateChanged(
+        authSessionId = "auth-session-1",
+        state = BusinessAuthStatus.SIGNED_OUT,
+        generation = 2,
+        businessCode = BusinessAuthStateChangeCode.AUTH_EXPIRED,
+    )
 
     private fun identity(
         epoch: Long = 1,

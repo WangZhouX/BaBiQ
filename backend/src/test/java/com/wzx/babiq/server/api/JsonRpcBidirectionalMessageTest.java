@@ -6,9 +6,14 @@ import com.wzx.babiq.server.application.action.ApplicationOutboundJsonRpcClient;
 import com.wzx.babiq.server.application.action.ApplicationOutboundRequestTracker;
 import com.wzx.babiq.server.application.action.PendingApplicationActions;
 import com.wzx.babiq.server.application.auth.BusinessDesktopConnectionRegistry;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.web.socket.CloseStatus;
@@ -24,6 +29,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.Arrays;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -123,6 +129,106 @@ class JsonRpcBidirectionalMessageTest {
     }
 
     @Test
+    void malformedJsonUsesFixedErrorWithoutEchoingPayloadInResponseOrLogs() throws Exception {
+        String sensitivePayload = "oaPasswordMustNotLeak";
+        Logger logger = (Logger) LoggerFactory.getLogger(JsonRpcWebSocketHandler.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            handler.handle(session, sensitivePayload);
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+
+        JsonNode response = objectMapper.readTree(sent.get().getPayload());
+        assertThat(response.path("error").path("code").intValue()).isEqualTo(-32700);
+        assertThat(response.path("error").path("message").asText())
+                .isEqualTo("Malformed JSON")
+                .doesNotContain(sensitivePayload);
+        assertThat(appender.list.stream()
+                .map(ILoggingEvent::getFormattedMessage)
+                .collect(Collectors.joining("\n")))
+                .doesNotContain(sensitivePayload);
+    }
+
+    @Test
+    void closedSessionSendIsDroppedWithoutLeakingFailureMessage() throws Exception {
+        String sensitiveFailure = "closed E:\\clients\\secret-case-token.txt";
+        when(dispatcher.dispatch(any(JsonRpcMessage.Request.class), eq(session)))
+                .thenReturn(JsonRpcMessage.Response.ok(42L, Map.of("ok", true)));
+        org.mockito.Mockito.doThrow(new IllegalStateException(sensitiveFailure))
+                .when(session).sendMessage(any(TextMessage.class));
+
+        Logger logger = (Logger) LoggerFactory.getLogger(JsonRpcWebSocketHandler.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            org.assertj.core.api.Assertions.assertThatCode(() -> handler.handle(session, """
+                    {"jsonrpc":"2.0","id":42,"method":"thread/create","params":{"cwd":"."}}
+                    """)).doesNotThrowAnyException();
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+
+        assertThat(appender.list.stream()
+                .map(ILoggingEvent::getFormattedMessage)
+                .collect(Collectors.joining("\n")))
+                .contains("IllegalStateException")
+                .doesNotContain(sensitiveFailure, "secret-case-token.txt");
+    }
+
+    @Test
+    void businessAuthRequestInfoLogUsesFixedSummaryWithoutChangingDispatchedParams() throws Exception {
+        String accountCanary = "account-canary@example.test";
+        String candidateCanary = "candidate-canary";
+        String innocentCanary = "innocent-password-token-canary";
+        AtomicReference<JsonRpcMessage.Request> dispatched = new AtomicReference<>();
+        org.mockito.Mockito.doAnswer(invocation -> {
+            dispatched.set(invocation.getArgument(0));
+            return JsonRpcMessage.Response.ok(41L, Map.of("ok", true));
+        }).when(dispatcher).dispatch(any(JsonRpcMessage.Request.class), eq(session));
+
+        Logger logger = (Logger) LoggerFactory.getLogger(JsonRpcWebSocketHandler.class);
+        Level previousLevel = logger.getLevel();
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            logger.setLevel(Level.INFO);
+            handler.handle(session, """
+                    {"jsonrpc":"2.0","id":41,"method":"business/auth/login","params":{
+                      "account":"account-canary@example.test",
+                      "candidateId":"candidate-canary",
+                      "innocentLookingField":"innocent-password-token-canary"
+                    }}
+                    """);
+        } finally {
+            logger.setLevel(previousLevel);
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+
+        String logs = appender.list.stream()
+                .map(ILoggingEvent::getFormattedMessage)
+                .collect(Collectors.joining("\n"));
+        assertThat(logs)
+                .contains("business/auth/login")
+                .contains("[business-auth-redacted]")
+                .doesNotContain(accountCanary)
+                .doesNotContain(candidateCanary)
+                .doesNotContain(innocentCanary);
+
+        JsonNode dispatchedParams = objectMapper.valueToTree(dispatched.get().params());
+        assertThat(dispatchedParams.path("account").asText()).isEqualTo(accountCanary);
+        assertThat(dispatchedParams.path("candidateId").asText()).isEqualTo(candidateCanary);
+        assertThat(dispatchedParams.path("innocentLookingField").asText()).isEqualTo(innocentCanary);
+    }
+
+    @Test
     void outboundClientUsesMonotonicIdsAndHandlerCorrelatesDesktopResponses() throws Exception {
         ApplicationOutboundJsonRpcClient client = new ApplicationOutboundJsonRpcClient(objectMapper, tracker);
 
@@ -158,6 +264,22 @@ class JsonRpcBidirectionalMessageTest {
                 Duration.ofSeconds(1)))
                 .isInstanceOf(IllegalStateException.class)
                 .hasCauseInstanceOf(IOException.class);
+        assertThat(tracker.pendingCount()).isZero();
+    }
+
+    @Test
+    void outboundNotificationUsesRegisteredSessionWithoutCorrelationId() throws Exception {
+        ApplicationOutboundJsonRpcClient client = new ApplicationOutboundJsonRpcClient(objectMapper, tracker);
+        client.registerSession(session);
+
+        client.sendNotification("ws-1", "business/auth/state-changed",
+                Map.of("authSessionId", "auth-1", "state", "SIGNED_OUT", "generation", 3));
+
+        JsonNode wire = objectMapper.readTree(sent.get().getPayload());
+        assertThat(wire.path("jsonrpc").asText()).isEqualTo("2.0");
+        assertThat(wire.path("method").asText()).isEqualTo("business/auth/state-changed");
+        assertThat(wire.has("id")).isFalse();
+        assertThat(wire.at("/params/state").asText()).isEqualTo("SIGNED_OUT");
         assertThat(tracker.pendingCount()).isZero();
     }
 

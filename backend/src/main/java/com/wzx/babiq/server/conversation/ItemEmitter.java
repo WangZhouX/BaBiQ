@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.wzx.babiq.server.agent.ApprovalRequestPayload;
 import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
+import com.wzx.babiq.server.application.protocol.ApplicationProtocolValidator;
 import com.wzx.babiq.server.api.JsonRpcLogSupport;
 import com.wzx.babiq.server.api.JsonRpcMessage;
 import com.wzx.babiq.server.conversation.items.ThreadItem;
@@ -272,6 +273,7 @@ public class ItemEmitter {
         }
         JsonRpcMessage.Notification notification = JsonRpcMessage.Notification.of(method, wireParams);
         String payload = objectMapper.writeValueAsString(notification);
+        ApplicationProtocolValidator.validateEnvelopeSize(payload.getBytes(java.nio.charset.StandardCharsets.UTF_8));
 
         // Spring WebSocket 的 sendMessage 不是并发写安全的;异步 item 流和同步响应会共享同一 session。
         synchronized (session) {

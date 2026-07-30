@@ -27,6 +27,19 @@ import java.util.concurrent.locks.ReentrantLock
 import javax.crypto.spec.SecretKeySpec
 import com.wzx.huitai.security.path.SecureRuntimeFile
 
+internal class JceksSecretOperations(
+    val passwordProtectionFactory: (CharArray) -> KeyStore.PasswordProtection = { password ->
+        KeyStore.PasswordProtection(password)
+    },
+    val wipeBytes: (ByteArray) -> Unit = { buffer -> Arrays.fill(buffer, 0) },
+    val wipeChars: (CharArray) -> Unit = { buffer -> Arrays.fill(buffer, '\u0000') },
+    val fileLockFactory: ((FileChannel) -> FileLock)? = null,
+)
+
+private fun moveSecretStoreAtomically(source: Path, target: Path) {
+    Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+}
+
 /**
  * Synchronous JCEKS storage with deadline-bounded in-process and cross-process lock acquisition.
  *
@@ -34,14 +47,45 @@ import com.wzx.huitai.security.path.SecureRuntimeFile
  * therefore stay synchronous on the calling thread (never continue as late background deletion); every explicit lock
  * wait surrounding them has the configured finite deadline.
  */
-class JceksSecretStore(
+class JceksSecretStore private constructor(
     storePath: Path,
     password: CharArray,
-    private val lockTimeoutMillis: Long = DEFAULT_LOCK_TIMEOUT_MILLIS,
-    private val moveAtomically: (Path, Path) -> Unit = { source, target ->
-        Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-    },
+    private val lockTimeoutMillis: Long,
+    private val beforeCandidateValidation: (Path) -> Unit,
+    private val operations: JceksSecretOperations,
+    private val moveAtomically: (Path, Path) -> Unit,
 ) : SecretStore {
+    constructor(
+        storePath: Path,
+        password: CharArray,
+        lockTimeoutMillis: Long = DEFAULT_LOCK_TIMEOUT_MILLIS,
+        beforeCandidateValidation: (Path) -> Unit = {},
+        moveAtomically: (Path, Path) -> Unit = ::moveSecretStoreAtomically,
+    ) : this(
+        storePath,
+        password,
+        lockTimeoutMillis,
+        beforeCandidateValidation,
+        JceksSecretOperations(),
+        moveAtomically,
+    )
+
+    internal constructor(
+        storePath: Path,
+        password: CharArray,
+        operations: JceksSecretOperations,
+        lockTimeoutMillis: Long = DEFAULT_LOCK_TIMEOUT_MILLIS,
+        beforeCandidateValidation: (Path) -> Unit = {},
+        moveAtomically: (Path, Path) -> Unit = ::moveSecretStoreAtomically,
+    ) : this(
+        storePath,
+        password,
+        lockTimeoutMillis,
+        beforeCandidateValidation,
+        operations,
+        moveAtomically,
+    )
+
     init {
         require(lockTimeoutMillis > 0) { "lockTimeoutMillis must be positive" }
     }
@@ -77,14 +121,10 @@ class JceksSecretStore(
         try {
             val keyStore = loadStore()
             if (!keyStore.containsAlias(alias)) return@withStoreLock null
-            val protection = protection()
-            try {
-                val entry = keyStore.getEntry(alias, protection) as? KeyStore.SecretKeyEntry
-                    ?: return@withStoreLock null
-                decodeSecret(entry.secretKey.encoded)
-            } finally {
-                protection.destroy()
-            }
+            val entry = withPasswordProtection { protection ->
+                keyStore.getEntry(alias, protection)
+            } as? KeyStore.SecretKeyEntry ?: return@withStoreLock null
+            decodeSecret(entry.secretKey.encoded)
         } catch (failure: SecretStoreException) {
             throw failure
         } catch (failure: Exception) {
@@ -108,6 +148,25 @@ class JceksSecretStore(
         keyStore.deleteEntry(alias)
         persist(keyStore)
         true
+    }
+
+    fun deleteAliasesAtomically(aliases: Set<String>): Boolean {
+        val aliasesSnapshot = aliases.toSet()
+        return withStoreLock {
+            aliasesSnapshot.forEach(::validateAlias)
+            if (aliasesSnapshot.isEmpty()) return@withStoreLock false
+            val keyStore = loadStore()
+            val originalAliases = keyStore.aliases().asSequence().toSet()
+            val deletedAliases = aliasesSnapshot.filterTo(linkedSetOf(), keyStore::containsAlias)
+            if (deletedAliases.isEmpty()) return@withStoreLock false
+            deletedAliases.forEach(keyStore::deleteEntry)
+            persistValidatedDeletionCandidate(
+                keyStore = keyStore,
+                expectedAliases = originalAliases - deletedAliases,
+                deletedAliases = deletedAliases,
+            )
+            true
+        }
     }
 
     override fun close() {
@@ -134,8 +193,9 @@ class JceksSecretStore(
                 applyBestEffortPermissions(lockPath)
                 acquireFileLock(channel).use { block() }
             }
-        } catch (failure: SecretStoreException) {
-            throw failure
+        } catch (_: SecretStoreException) {
+            // Resource close failures may have been attached as suppressed while nested use blocks unwound.
+            throw SecretStoreException()
         } catch (failure: IllegalArgumentException) {
             throw failure
         } catch (failure: IllegalStateException) {
@@ -160,6 +220,7 @@ class JceksSecretStore(
     }
 
     private fun acquireFileLock(channel: FileChannel): FileLock {
+        operations.fileLockFactory?.let { factory -> return factory(channel) }
         val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(lockTimeoutMillis)
         while (true) {
             val acquired = try {
@@ -199,35 +260,43 @@ class JceksSecretStore(
         val chars = secret.copyOf()
         val charBuffer = CharBuffer.wrap(chars)
         var encoded: ByteBuffer? = null
-        val protection = protection()
-        try {
-            encoded = StandardCharsets.UTF_8.newEncoder().encode(charBuffer)
+        withBestEffortCleanup(
+            cleanupSteps = listOf(
+                { encoded?.let { operations.wipeBytes(it.array()) } },
+                { operations.wipeChars(chars) },
+                { charBuffer.clear() },
+            ),
+        ) {
+            val encodedBuffer = StandardCharsets.UTF_8.newEncoder().encode(charBuffer)
+            encoded = encodedBuffer
             val key = SecretKeySpec(
-                encoded.array(),
-                encoded.arrayOffset() + encoded.position(),
-                encoded.remaining(),
+                encodedBuffer.array(),
+                encodedBuffer.arrayOffset() + encodedBuffer.position(),
+                encodedBuffer.remaining(),
                 SECRET_ALGORITHM,
             )
-            keyStore.setEntry(alias, KeyStore.SecretKeyEntry(key), protection)
-        } finally {
-            protection.destroy()
-            encoded?.let { Arrays.fill(it.array(), 0) }
-            Arrays.fill(chars, '\u0000')
-            charBuffer.clear()
+            withPasswordProtection { protection ->
+                keyStore.setEntry(alias, KeyStore.SecretKeyEntry(key), protection)
+            }
         }
     }
 
     private fun decodeSecret(encoded: ByteArray): CharArray {
         var decoded: CharBuffer? = null
-        try {
-            decoded = StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(encoded))
-            return CharArray(decoded.remaining()).also(decoded::get)
-        } finally {
-            Arrays.fill(encoded, 0)
-            decoded?.let {
-                if (it.hasArray()) Arrays.fill(it.array(), '\u0000')
-                it.clear()
-            }
+        return withBestEffortCleanup(
+            cleanupSteps = listOf(
+                { operations.wipeBytes(encoded) },
+                {
+                    decoded?.let { buffer ->
+                        if (buffer.hasArray()) operations.wipeChars(buffer.array())
+                    }
+                },
+                { decoded?.clear() },
+            ),
+        ) {
+            val decodedBuffer = StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(encoded))
+            decoded = decodedBuffer
+            CharArray(decodedBuffer.remaining()).also(decodedBuffer::get)
         }
     }
 
@@ -235,37 +304,110 @@ class JceksSecretStore(
         SecureRuntimeFile.validateParent(storePath)
         val temp = Files.createTempFile(parent, ".${storePath.fileName}.", ".tmp")
         try {
-            val tempIdentity = SecureRuntimeFile.capture(temp)
-            val encodedStore = WipeableByteArrayOutputStream()
-            try {
-                keyStore.store(encodedStore, password)
-                SecureRuntimeFile.openChannel(
-                    temp,
-                    StandardOpenOption.WRITE,
-                    StandardOpenOption.TRUNCATE_EXISTING,
-                ).use { channel ->
-                    encodedStore.writeTo(channel)
-                    channel.force(true)
-                }
-                SecureRuntimeFile.verifyUnchanged(tempIdentity)
-            } finally {
-                encodedStore.wipe()
-            }
+            writeCandidate(keyStore, temp)
             applyBestEffortPermissions(temp)
-            SecureRuntimeFile.captureIfExists(storePath)
-            moveAtomically(temp, storePath)
-            SecureRuntimeFile.capture(storePath)
-            runCatching {
-                FileChannel.open(parent, StandardOpenOption.READ).use { it.force(true) }
-            }
-            applyBestEffortPermissions(storePath)
+            replaceWithCandidate(temp)
         } catch (failure: Exception) {
             runCatching { Files.deleteIfExists(temp) }
             throw storeFailure("Unable to persist local secret store", failure)
         }
     }
 
-    private fun protection() = KeyStore.PasswordProtection(password.copyOf())
+    private fun persistValidatedDeletionCandidate(
+        keyStore: KeyStore,
+        expectedAliases: Set<String>,
+        deletedAliases: Set<String>,
+    ) {
+        SecureRuntimeFile.validateParent(storePath)
+        val temp = Files.createTempFile(parent, ".${storePath.fileName}.", ".tmp")
+        try {
+            writeCandidate(keyStore, temp)
+            applyBestEffortPermissions(temp)
+            beforeCandidateValidation(temp)
+            val candidateAliases = loadCandidateAliases(temp)
+            check(candidateAliases == expectedAliases && deletedAliases.none(candidateAliases::contains)) {
+                "candidate secret store alias validation failed"
+            }
+            replaceWithCandidate(temp)
+        } catch (failure: Exception) {
+            runCatching { Files.deleteIfExists(temp) }
+            throw storeFailure("Unable to persist local secret store", failure)
+        }
+    }
+
+    private fun writeCandidate(keyStore: KeyStore, candidate: Path) {
+        val candidateIdentity = SecureRuntimeFile.capture(candidate)
+        val encodedStore = WipeableByteArrayOutputStream()
+        try {
+            keyStore.store(encodedStore, password)
+            SecureRuntimeFile.openChannel(
+                candidate,
+                StandardOpenOption.WRITE,
+                StandardOpenOption.TRUNCATE_EXISTING,
+            ).use { channel ->
+                encodedStore.writeTo(channel)
+                channel.force(true)
+            }
+            SecureRuntimeFile.verifyUnchanged(candidateIdentity)
+        } finally {
+            encodedStore.wipe()
+        }
+    }
+
+    private fun loadCandidateAliases(candidate: Path): Set<String> = try {
+        val candidateIdentity = SecureRuntimeFile.capture(candidate)
+        val keyStore = KeyStore.getInstance(STORE_TYPE)
+        Files.newInputStream(candidate, LinkOption.NOFOLLOW_LINKS).use { keyStore.load(it, password) }
+        SecureRuntimeFile.verifyUnchanged(candidateIdentity)
+        keyStore.aliases().asSequence().toSet()
+    } catch (failure: Exception) {
+        throw storeFailure("Unable to validate local secret store candidate", failure)
+    }
+
+    private fun replaceWithCandidate(candidate: Path) {
+        SecureRuntimeFile.captureIfExists(storePath)
+        moveAtomically(candidate, storePath)
+        runCatching {
+            FileChannel.open(parent, StandardOpenOption.READ).use { it.force(true) }
+        }
+        applyBestEffortPermissions(storePath)
+    }
+
+    private fun <T> withPasswordProtection(operation: (KeyStore.PasswordProtection) -> T): T {
+        val protection = protection()
+        return withBestEffortCleanup(
+            cleanupSteps = listOf({ protection.destroy() }),
+        ) {
+            operation(protection)
+        }
+    }
+
+    private fun <T> withBestEffortCleanup(
+        cleanupSteps: List<() -> Unit>,
+        operation: () -> T,
+    ): T {
+        var primaryFailure: Throwable? = null
+        try {
+            return operation()
+        } catch (failure: Throwable) {
+            primaryFailure = failure
+            throw failure
+        } finally {
+            var firstCleanupFailure: Throwable? = null
+            cleanupSteps.forEach { cleanup ->
+                try {
+                    cleanup()
+                } catch (cleanupFailure: Throwable) {
+                    if (primaryFailure == null && firstCleanupFailure == null) {
+                        firstCleanupFailure = cleanupFailure
+                    }
+                }
+            }
+            if (primaryFailure == null) firstCleanupFailure?.let { throw it }
+        }
+    }
+
+    private fun protection() = operations.passwordProtectionFactory(password)
 
     private fun checkOpen() = check(!closed) { "secret store is closed" }
     private fun validateRef(ref: SecretRef): String = ref.alias.also(::validateAlias)
@@ -303,7 +445,10 @@ class JceksSecretStore(
         if (!aclApplied) runCatching { Files.setAttribute(path, "dos:hidden", true) }
     }
 
-    private fun storeFailure(message: String, cause: Throwable?) = SecretStoreException(message, cause)
+    private fun storeFailure(
+        @Suppress("UNUSED_PARAMETER") message: String,
+        @Suppress("UNUSED_PARAMETER") cause: Throwable?,
+    ) = SecretStoreException()
 
     private class WipeableByteArrayOutputStream : ByteArrayOutputStream() {
         fun writeTo(channel: FileChannel) {

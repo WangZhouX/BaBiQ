@@ -1,136 +1,108 @@
 package com.wzx.huitai.desktop.security
 
-import com.wzx.huitai.integration.auth.AuthTokenSet
 import com.wzx.huitai.security.secret.JceksSecretStore
+import com.wzx.huitai.security.secret.SecretRef
 import java.nio.file.Files
-import kotlin.io.path.readBytes
-import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class BusinessLoginCredentialStoreTest {
     @Test
-    fun `remembered login replaces and returns a caller wipeable password copy`() {
-        val password = "key-store-password".toCharArray()
-        val loginPassword = "oa-password".toCharArray()
-        val replacementPassword = "replacement".toCharArray()
+    fun `remembered login replaces account and never accepts a password`() {
+        val keyStorePassword = "key-store-password".toCharArray()
         val root = Files.createTempDirectory("business-remembered-login")
         try {
-            JceksSecretStore(root.resolve("credentials.jceks"), password).use { secrets ->
+            JceksSecretStore(root.resolve("credentials.jceks"), keyStorePassword).use { secrets ->
                 val store = BusinessLoginCredentialStore(secrets)
-                store.saveOrReplace("account-1", loginPassword)
-                val first = requireNotNull(store.load())
-                first.use {
-                    assertEquals("account-1", it.account)
-                    val firstCopy = it.copyPassword()
-                    try {
-                        assertEquals("oa-password", firstCopy.concatToString())
-                        firstCopy.fill('x')
-                        val secondCopy = it.copyPassword()
-                        try {
-                            assertEquals("oa-password", secondCopy.concatToString())
-                        } finally {
-                            secondCopy.fill('\u0000')
-                        }
-                    } finally {
-                        firstCopy.fill('\u0000')
-                    }
-                }
+                store.saveOrReplace("account-1")
+                assertEquals("account-1", store.load()?.account)
 
-                store.saveOrReplace("account-2", replacementPassword)
-                requireNotNull(store.load()).use { assertEquals("account-2", it.account) }
+                store.saveOrReplace("account-2")
+                assertEquals("account-2", store.load()?.account)
+
                 store.clear()
                 store.clear()
                 assertNull(store.load())
-                assertEquals("RememberedBusinessLogin(account=[REDACTED], password=[REDACTED])", first.toString())
-            }
-            Files.list(root).use { files ->
-                val entries = files.toList()
-                assertTrue(entries.all { it.fileName.toString() in setOf("credentials.jceks", "credentials.jceks.lock") })
-                entries.forEach { file ->
-                    val contents = file.readBytes().toString(Charsets.ISO_8859_1)
-                    assertFalse("account-1" in contents)
-                    assertFalse("oa-password" in contents)
-                }
             }
         } finally {
-            password.fill('\u0000')
-            loginPassword.fill('\u0000')
-            replacementPassword.fill('\u0000')
+            keyStorePassword.fill('\u0000')
         }
     }
 
     @Test
-    fun `remembered login owns a defensive password copy and clears it idempotently`() {
-        val source = "owned-password".toCharArray()
-        val remembered = RememberedBusinessLogin("account-1", source)
-        source.fill('x')
-
-        val firstCopy = remembered.copyPassword()
+    fun `remembered account rejects blank values and clear is idempotent`() {
+        val keyStorePassword = "key-store-password".toCharArray()
         try {
-            assertEquals("owned-password", firstCopy.concatToString())
-            firstCopy.fill('y')
-            val secondCopy = remembered.copyPassword()
-            try {
-                assertEquals("owned-password", secondCopy.concatToString())
-            } finally {
-                secondCopy.fill('\u0000')
+            JceksSecretStore(Files.createTempDirectory("business-remembered-login-invalid").resolve("credentials.jceks"), keyStorePassword).use { secrets ->
+                val store = BusinessLoginCredentialStore(secrets)
+                assertFailsWith<IllegalArgumentException> { store.saveOrReplace(" ") }
+                assertFailsWith<IllegalArgumentException> { RememberedBusinessLogin(" ") }
+                store.clear()
             }
         } finally {
-            firstCopy.fill('\u0000')
-            remembered.clear()
-            remembered.clear()
-            source.fill('\u0000')
+            keyStorePassword.fill('\u0000')
         }
-        val failure = assertFailsWith<IllegalStateException> { remembered.copyPassword() }
-        assertFalse("owned-password" in failure.toString())
     }
 
     @Test
-    fun `all malformed remembered login forms remove only remembered alias`() = runBlocking {
-        val password = "key-store-password".toCharArray()
-        try {
-            JceksSecretStore(Files.createTempDirectory("business-remembered-login-invalid").resolve("credentials.jceks"), password).use { secrets ->
-                val remembered = BusinessLoginCredentialStore(secrets)
-                val metadata = BusinessAuthSessionMetadataStore(secrets)
-                val tokens = JceksAuthCredentialPersistence(secrets)
-                tokens.replace(AuthTokenSet("access-token", "refresh-token"))
-                metadata.saveOrReplace(BusinessAuthSessionMetadata("user-1", "tenant-1", "100"))
-                secrets.upsert(BusinessAuthSessionMetadataStoreTest.PROVIDER_ALIAS, "provider-secret".toCharArray())
+    fun `remembered account string representation redacts account`() {
+        val remembered = RememberedBusinessLogin("account-1")
+        assertFalse(remembered.toString().contains("account-1"))
+        remembered.close()
+        assertEquals("RememberedBusinessLogin(account=[REDACTED])", remembered.toString())
+    }
 
-                BusinessAuthSessionMetadataStoreTest.malformedEntries(
-                    BusinessAuthSessionMetadataStoreTest.REMEMBERED_MAGIC,
-                    2,
-                ).forEach { (caseName, corrupt) ->
-                    secrets.upsert(BusinessLoginCredentialStore.DEFAULT_ALIAS, hex(corrupt))
-                    val failure = assertFailsWith<RememberedLoginInvalidException>(caseName) { remembered.load() }
-                    assertEquals("Remembered login is invalid", failure.message, caseName)
-                    assertFalse("access-token" in failure.toString(), caseName)
-                    assertNull(remembered.load(), caseName)
-                    assertEquals("access-token", tokens.load()?.accessToken, caseName)
-                    assertEquals("user-1", metadata.load()?.userId, caseName)
-                    BusinessAuthSessionMetadataStoreTest.assertSecretEquals(
-                        secrets,
-                        BusinessAuthSessionMetadataStoreTest.PROVIDER_ALIAS,
-                        "provider-secret",
-                        caseName,
-                    )
-                }
+    @Test
+    fun `account only persistence uses a non legacy alias and survives restart`() {
+        assertEquals("huitai.login.account.v2", BusinessLoginCredentialStore.DEFAULT_ALIAS)
+        assertTrue(BusinessLoginCredentialStore.DEFAULT_ALIAS !in LEGACY_ALIASES)
+        val keyStorePassword = "key-store-password".toCharArray()
+        val path = Files.createTempDirectory("business-remembered-account-v2").resolve("credentials.jceks")
+        try {
+            JceksSecretStore(path, keyStorePassword).use { secrets ->
+                BusinessLoginCredentialStore(secrets).saveOrReplace("restart-account")
+                assertNotNull(secrets.load(SecretRef.parse(BusinessLoginCredentialStore.DEFAULT_ALIAS)))
+                LEGACY_ALIASES.forEach { alias -> assertNull(secrets.load(SecretRef.parse(alias))) }
+            }
+
+            JceksSecretStore(path, keyStorePassword).use { reopened ->
+                assertEquals("restart-account", BusinessLoginCredentialStore(reopened).load()?.account)
+                LEGACY_ALIASES.forEach { alias -> assertNull(reopened.load(SecretRef.parse(alias))) }
             }
         } finally {
-            password.fill('\u0000')
+            keyStorePassword.fill('\u0000')
         }
     }
 
-    private fun hex(bytes: ByteArray): CharArray {
-        val digits = "0123456789abcdef"
-        return CharArray(bytes.size * 2) { index ->
-            val value = bytes[index / 2].toInt() and 0xff
-            digits[if (index % 2 == 0) value ushr 4 else value and 0xf]
-        }
+    @Test
+    fun `account persistence API cannot accept a password`() {
+        val methods = BusinessLoginCredentialStore::class.java.declaredMethods
+            .filter { method -> method.name == "saveOrReplace" }
+        assertEquals(1, methods.size)
+        assertEquals(listOf(String::class.java), methods.single().parameterTypes.toList())
+    }
+
+    @Test
+    fun `account persistence constructors cannot inject an arbitrary secret alias`() {
+        val aliasAwareConstructors = BusinessLoginCredentialStore::class.java.declaredConstructors
+            .filter { constructor -> SecretRef::class.java in constructor.parameterTypes }
+
+        assertTrue(
+            aliasAwareConstructors.isEmpty(),
+            "remembered-account storage must be fixed to ${BusinessLoginCredentialStore.DEFAULT_ALIAS}",
+        )
+    }
+
+    private companion object {
+        val LEGACY_ALIASES = setOf(
+            "huitai.auth.tokens.v1",
+            "huitai.auth.session-metadata.v1",
+            "huitai.login.remembered.v1",
+        )
     }
 }

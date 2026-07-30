@@ -3,7 +3,6 @@ package com.wzx.huitai.desktop.auth
 import com.wzx.huitai.desktop.security.BusinessLoginCredentialStore
 import com.wzx.huitai.desktop.security.LocalCredentialStoreUnavailableException
 import com.wzx.huitai.desktop.security.RememberedLoginInvalidException
-import com.wzx.huitai.integration.oa.auth.OaTenantCandidate
 import java.util.Arrays
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
@@ -19,39 +18,28 @@ import kotlinx.coroutines.withContext
 
 interface BusinessAuthenticationOperations {
     val gate: StateFlow<BusinessAccessGateState>
-    suspend fun findTenantCandidates(account: String): List<OaTenantCandidate>
+    suspend fun findTenantCandidates(account: String): List<BusinessTenantCandidate>
     fun enterTenantSelection()
     fun cancelTenantSelection()
-    suspend fun authenticate(account: String, password: CharArray, candidate: OaTenantCandidate)
+    suspend fun authenticate(account: String, password: CharArray, candidate: BusinessTenantCandidate)
     suspend fun onLocalCredentialStoreFailure(code: BusinessLoginErrorCode)
 }
 
 class RememberedLoginValue(
     val account: String,
-    password: CharArray,
 ) : AutoCloseable {
-    private val password = password.copyOf()
-    private var closed = false
-
-    @Synchronized
-    fun copyPassword(): CharArray {
-        check(!closed) { "Remembered login is closed" }
-        return password.copyOf()
+    init {
+        require(account.isNotBlank()) { "account must not be blank" }
     }
 
-    @Synchronized
-    override fun close() {
-        if (closed) return
-        Arrays.fill(password, '\u0000')
-        closed = true
-    }
+    override fun close() = Unit
 
-    override fun toString(): String = "RememberedLoginValue(account=[REDACTED], password=[REDACTED])"
+    override fun toString(): String = "RememberedLoginValue(account=[REDACTED])"
 }
 
 interface BusinessRememberedLoginPort {
     fun load(): RememberedLoginValue?
-    fun saveOrReplace(account: String, password: CharArray)
+    fun saveOrReplace(account: String)
     fun clear()
 }
 
@@ -60,12 +48,7 @@ class StoredBusinessRememberedLoginPort(
 ) : BusinessRememberedLoginPort {
     override fun load(): RememberedLoginValue? = try {
         store.load()?.use { remembered ->
-            val copy = remembered.copyPassword()
-            try {
-                RememberedLoginValue(remembered.account, copy)
-            } finally {
-                Arrays.fill(copy, '\u0000')
-            }
+            RememberedLoginValue(remembered.account)
         }
     } catch (failure: RememberedLoginInvalidException) {
         throw BusinessLoginException(BusinessLoginErrorCode.REMEMBERED_LOGIN_INVALID)
@@ -73,7 +56,7 @@ class StoredBusinessRememberedLoginPort(
         throw BusinessLoginException(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE)
     }
 
-    override fun saveOrReplace(account: String, password: CharArray) = store.saveOrReplace(account, password)
+    override fun saveOrReplace(account: String) = store.saveOrReplace(account)
     override fun clear() = store.clear()
 }
 
@@ -96,18 +79,13 @@ class BusinessLoginController(
         if (closed.get()) return
         try {
             rememberedLogin.load()?.use { remembered ->
-                val password = remembered.copyPassword()
-                try {
-                    updateIfOpen {
-                        copy(
-                            account = remembered.account,
-                            password = password.concatToString(),
-                            remember = true,
-                            notice = null,
-                        )
-                    }
-                } finally {
-                    Arrays.fill(password, '\u0000')
+                updateIfOpen {
+                    copy(
+                        account = remembered.account,
+                        password = "",
+                        remember = true,
+                        notice = null,
+                    )
                 }
             }
         } catch (cancelled: CancellationException) {
@@ -202,7 +180,7 @@ class BusinessLoginController(
         }
     }
 
-    suspend fun selectTenant(candidate: OaTenantCandidate) {
+    suspend fun selectTenant(candidate: BusinessTenantCandidate) {
         if (closed.get() || mutableState.value.submitting) return
         val option = mutableState.value.tenantCandidates.firstOrNull { it.candidate == candidate } ?: return
         if (!option.enabled || !requestMutex.tryLock()) return
@@ -262,7 +240,7 @@ class BusinessLoginController(
 
     private suspend fun authenticate(
         snapshot: BusinessLoginState,
-        candidate: OaTenantCandidate,
+        candidate: BusinessTenantCandidate,
         request: Request,
     ) {
         val password = snapshot.password.toCharArray()
@@ -278,7 +256,7 @@ class BusinessLoginController(
                 synchronized(requestLock) {
                     checkRequestCurrentLocked(request)
                     if (snapshot.remember) {
-                        rememberedLogin.saveOrReplace(snapshot.account, password)
+                        rememberedLogin.saveOrReplace(snapshot.account)
                     } else {
                         rememberedLogin.clear()
                     }
@@ -373,7 +351,7 @@ class BusinessLoginController(
         } else {
             BusinessLoginErrorCode.LOCAL_CREDENTIAL_STORE_FAILED
         }
-    private fun List<OaTenantCandidate>.toStates() = map {
+    private fun List<BusinessTenantCandidate>.toStates() = map {
         BusinessTenantCandidateState(it, it.tenantEnterStatus != 1 && it.tenantEnterStatus != 2)
     }
 

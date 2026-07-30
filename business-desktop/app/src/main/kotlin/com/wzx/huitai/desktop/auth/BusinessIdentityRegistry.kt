@@ -102,6 +102,20 @@ class BusinessIdentityRegistry {
         true
     }
 
+    /** Publishes READY only while the complete captured registry snapshot is still current. */
+    internal fun publishReadyIfCurrent(
+        identity: BusinessIdentity,
+        expectedSnapshot: BusinessIdentityRegistrySnapshot,
+    ): Boolean = synchronized(lock) {
+        if (mutableSnapshot.value != expectedSnapshot) return@synchronized false
+        mutableSnapshot.value = BusinessIdentityRegistrySnapshot(
+            gate = BusinessAccessGateState.READY,
+            identity = identity,
+            generation = expectedSnapshot.generation,
+        )
+        true
+    }
+
     /** Atomically closes the gate, removes identity and invalidates in-flight publications. */
     fun invalidate(targetGate: BusinessAccessGateState): BusinessIdentity? = synchronized(lock) {
         require(targetGate != BusinessAccessGateState.READY) { "revocation target must not be READY" }
@@ -113,6 +127,21 @@ class BusinessIdentityRegistry {
             generation = current.generation + 1,
         )
         previous
+    }
+
+    /** Invalidates only while the complete captured registry snapshot is still current. */
+    internal fun invalidateIfCurrent(
+        expectedSnapshot: BusinessIdentityRegistrySnapshot,
+        targetGate: BusinessAccessGateState,
+    ): Boolean = synchronized(lock) {
+        require(targetGate != BusinessAccessGateState.READY) { "revocation target must not be READY" }
+        if (mutableSnapshot.value != expectedSnapshot) return@synchronized false
+        mutableSnapshot.value = BusinessIdentityRegistrySnapshot(
+            gate = targetGate,
+            identity = null,
+            generation = expectedSnapshot.generation + 1,
+        )
+        true
     }
 
     override fun toString(): String =

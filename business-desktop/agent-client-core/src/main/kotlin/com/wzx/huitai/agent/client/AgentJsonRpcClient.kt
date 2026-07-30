@@ -31,6 +31,8 @@ import kotlinx.coroutines.withTimeout
 import kotlin.coroutines.coroutineContext
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -48,6 +50,7 @@ data class AgentRawNotification(
 class AgentJsonRpcException(
     val remoteCode: Int,
     val attachmentCode: String? = null,
+    val safeData: JsonObject? = null,
 ) : IllegalStateException(
     "Agent JSON-RPC request failed (code=$remoteCode)",
 )
@@ -248,6 +251,7 @@ class AgentJsonRpcClient(
                         AgentJsonRpcException(
                             response.error.code,
                             whitelistedAttachmentCode(response.error.data),
+                            whitelistedErrorData(response.error.data),
                         ),
                     )
             }
@@ -403,6 +407,34 @@ class AgentJsonRpcClient(
             val primitive = runCatching { candidate.jsonPrimitive }.getOrNull() ?: return null
             if (!primitive.isString) return null
             return primitive.content.takeIf(ATTACHMENT_ERROR_CODES::contains)
+        }
+
+        fun whitelistedErrorData(data: JsonElement?): JsonObject? {
+            val objectData = data as? JsonObject ?: return null
+            val entries = linkedMapOf<String, JsonElement>()
+            (objectData["businessCode"] as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank)?.let {
+                entries["businessCode"] = JsonPrimitive(it)
+            }
+            (objectData["retryable"] as? JsonPrimitive)?.contentOrNull?.let {
+                if (it == "true" || it == "false") entries["retryable"] = JsonPrimitive(it.toBoolean())
+            }
+            (objectData["section"] as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank)?.let {
+                entries["section"] = JsonPrimitive(it)
+            }
+            (objectData["currentSessionState"] as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank)?.let {
+                entries["currentSessionState"] = JsonPrimitive(it)
+            }
+            (objectData["correlationId"] as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank)?.let {
+                entries["correlationId"] = JsonPrimitive(it)
+            }
+            (objectData["fieldErrors"] as? JsonObject)?.let { fields ->
+                val safeFields = fields.entries.mapNotNull { (key, value) ->
+                    val text = (value as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank)
+                    text?.let { key to JsonPrimitive(it) }
+                }.toMap(LinkedHashMap())
+                if (safeFields.isNotEmpty()) entries["fieldErrors"] = JsonObject(safeFields)
+            }
+            return entries.takeIf { it.isNotEmpty() }?.let(::JsonObject)
         }
     }
 }

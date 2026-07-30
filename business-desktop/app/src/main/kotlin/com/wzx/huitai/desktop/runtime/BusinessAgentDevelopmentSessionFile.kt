@@ -201,8 +201,8 @@ object BusinessAgentDevelopmentSessionFile {
         require(isValidToken(payload.desktopSessionToken)) {
             "development desktop session token is invalid"
         }
-        require(payload.localOrigin == "http://127.0.0.1") {
-            "development local origin must use loopback"
+        require(payload.localOrigin == "http://127.0.0.1:${uri.port}") {
+            "development local origin must match the loopback backend port"
         }
     }
 

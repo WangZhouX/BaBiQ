@@ -52,8 +52,8 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.wzx.huitai.desktop.auth.BusinessLoginState
 import com.wzx.huitai.desktop.auth.BusinessSliderState
+import com.wzx.huitai.desktop.auth.BusinessTenantCandidate
 import com.wzx.huitai.desktop.auth.BusinessTenantCandidateState
-import com.wzx.huitai.integration.oa.auth.OaTenantCandidate
 import org.jetbrains.skia.Image as SkiaImage
 
 object BusinessLoginTags {
@@ -92,7 +92,7 @@ fun BusinessLoginScreen(
     onSubmit: () -> Unit = {},
     onSliderCompleted: () -> Unit = {},
     onSliderDismissed: () -> Unit = {},
-    onTenantSelected: (OaTenantCandidate) -> Unit = {},
+    onTenantSelected: (BusinessTenantCandidate) -> Unit = {},
     onTenantSelectionCancelled: () -> Unit = {},
     onOpenServiceAgreement: (() -> BusinessExternalLinkOpenResult)? = null,
     onOpenPrivacyPolicy: (() -> BusinessExternalLinkOpenResult)? = null,
@@ -310,7 +310,7 @@ private fun LoginForm(
                     enabled = !state.submitting,
                     modifier = Modifier.testTag(BusinessLoginTags.REMEMBER),
                 )
-                Text("记住密码")
+                Text("记住账号")
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -368,7 +368,7 @@ private fun LoginForm(
 @Composable
 private fun TenantSelectionDialog(
     candidates: List<BusinessTenantCandidateState>,
-    onSelected: (OaTenantCandidate) -> Unit,
+    onSelected: (BusinessTenantCandidate) -> Unit,
     onCancelled: () -> Unit,
 ) {
     AlertDialog(
@@ -421,13 +421,13 @@ private fun TenantSelectionDialog(
     )
 }
 
-private fun tenantLabel(candidate: OaTenantCandidate): String =
-    candidate.tenantName?.trim()?.takeIf(String::isNotEmpty)
-        ?: candidate.tenantId.let { tenantId ->
-            if (tenantId.length <= MASKED_TENANT_SUFFIX_LENGTH) {
+private fun tenantLabel(candidate: BusinessTenantCandidate): String =
+    candidate.name?.trim()?.takeIf(String::isNotEmpty)
+        ?: candidate.candidateId.let { candidateId ->
+            if (candidateId.length <= MASKED_TENANT_SUFFIX_LENGTH) {
                 "租户 ****"
             } else {
-                "租户 ****${tenantId.takeLast(MASKED_TENANT_SUFFIX_LENGTH)}"
+                "租户 ****${candidateId.takeLast(MASKED_TENANT_SUFFIX_LENGTH)}"
             }
         }
 

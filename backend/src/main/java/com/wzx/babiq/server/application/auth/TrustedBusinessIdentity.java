@@ -19,8 +19,25 @@ public record TrustedBusinessIdentity(
         String tenantId,
         String platformId,
         Set<String> roles,
-        Set<String> permissions
+        Set<String> permissions,
+        Set<String> navigationPaths
 ) {
+    public TrustedBusinessIdentity(
+            String reservationId,
+            String webSocketSessionId,
+            String desktopInstanceId,
+            String desktopSessionId,
+            String authSessionId,
+            long identityEpoch,
+            String userId,
+            String tenantId,
+            String platformId,
+            Set<String> roles,
+            Set<String> permissions) {
+        this(reservationId, webSocketSessionId, desktopInstanceId, desktopSessionId, authSessionId,
+                identityEpoch, userId, tenantId, platformId, roles, permissions, Set.of());
+    }
+
     public TrustedBusinessIdentity {
         requireText(reservationId, "reservationId");
         requireText(webSocketSessionId, "webSocketSessionId");
@@ -35,6 +52,7 @@ public record TrustedBusinessIdentity(
         }
         roles = Set.copyOf(Objects.requireNonNull(roles, "roles"));
         permissions = Set.copyOf(Objects.requireNonNull(permissions, "permissions"));
+        navigationPaths = Set.copyOf(Objects.requireNonNull(navigationPaths, "navigationPaths"));
     }
 
     @Override
@@ -42,7 +60,7 @@ public record TrustedBusinessIdentity(
         return "TrustedBusinessIdentity(reservationId=[REDACTED], webSocketSessionId=[REDACTED], desktopInstanceId=[REDACTED], "
                 + "desktopSessionId=[REDACTED], authSessionId=[REDACTED], identityEpoch=" + identityEpoch
                 + ", userId=[REDACTED], tenantId=[REDACTED], platformId=[REDACTED], roles=" + roles.size()
-                + ", permissions=" + permissions.size() + ")";
+                + ", permissions=" + permissions.size() + ", navigationPaths=" + navigationPaths.size() + ")";
     }
 
     private static void requireText(String value, String name) {

@@ -15,7 +15,6 @@ dependencies {
     implementation(project(":presentation-core"))
     implementation(project(":application-action-core"))
     implementation(project(":agent-client-core"))
-    implementation(project(":huitai-integration-core"))
     implementation(project(":security-audit-core"))
     implementation(project(":framework-demo"))
     implementation(compose.desktop.currentOs)
@@ -38,6 +37,7 @@ kotlin { jvmToolchain(21) }
 
 val backendProjectDir = rootProject.projectDir.parentFile.resolve("backend")
 val backendJar = backendProjectDir.resolve("target/babiq-server-0.0.1-SNAPSHOT.jar")
+val backendMavenRepository = File(System.getProperty("user.home"), ".m2/repository")
 val preparedAppResourcesRoot = layout.buildDirectory.dir("preparedAppResources")
 val bundledBackendRelativePath = "common/backend/babiq-server.jar"
 
@@ -47,6 +47,8 @@ val packageBusinessBackendJar by tasks.registering(Exec::class) {
     workingDir(backendProjectDir)
     commandLine(
         backendProjectDir.resolve("mvnw.cmd").absolutePath,
+        "-o",
+        "-Dmaven.repo.local=${backendMavenRepository.absolutePath}",
         "-DskipTests",
         "package",
     )

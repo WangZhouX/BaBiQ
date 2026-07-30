@@ -753,7 +753,7 @@ class BusinessDesktopCoordinatorTest {
         val mutableEvents = MutableSharedFlow<BusinessAgentEvent>()
         override val events: Flow<BusinessAgentEvent> = mutableEvents
         override val ingressEvents: Flow<BusinessAgentIngressEvent> = mutableEvents.map {
-            BusinessAgentIngressEvent(it, authSessionId = "auth-1", identityEpoch = 1)
+            BusinessAgentIngressEvent.Conversation(it, authSessionId = "auth-1", identityEpoch = 1)
         }
         var startedWithProvider: String? = null
         var startedAttachments: List<BusinessAttachmentDraft>? = null

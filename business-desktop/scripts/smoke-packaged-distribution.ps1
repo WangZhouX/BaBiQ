@@ -31,6 +31,22 @@ function Test-PathWithinRoot {
     return $candidatePath.StartsWith($boundedRoot, [StringComparison]::OrdinalIgnoreCase)
 }
 
+function Remove-SmokeTemporaryRoot {
+    param(
+        [Parameter(Mandatory = $true)] [string]$Root,
+        [Parameter(Mandatory = $true)] [string]$SystemTemp
+    )
+    $verifiedRoot = [IO.Path]::GetFullPath($Root)
+    $verifiedSystemTemp = [IO.Path]::GetFullPath($SystemTemp)
+    if (-not (Test-PathWithinRoot -Candidate $verifiedRoot -Root $verifiedSystemTemp) -or
+        -not (Split-Path -Leaf $verifiedRoot).StartsWith('huitai-packaged-smoke-')) {
+        throw 'Refusing to remove an unverified smoke temporary root.'
+    }
+    if (Test-Path -LiteralPath $verifiedRoot -PathType Container) {
+        Remove-Item -LiteralPath $verifiedRoot -Recurse -Force
+    }
+}
+
 function Set-SmokeEnvironment {
     param([hashtable]$Values)
     $snapshot = @{}
@@ -95,6 +111,124 @@ function Stop-SmokeProcessId {
     }
 }
 
+function Assert-NoSecretMarkerInTree {
+    param(
+        [Parameter(Mandatory = $true)] [string]$Root,
+        [Parameter(Mandatory = $true)] [string]$Marker
+    )
+    if ([string]::IsNullOrWhiteSpace($Marker)) {
+        throw 'Packaged smoke secret marker is unavailable.'
+    }
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
+        throw 'Packaged smoke artifact root is unavailable.'
+    }
+    if ($null -eq ('SmokeSecretMarkerScanner' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+
+public static class SmokeSecretMarkerScanner
+{
+    public static bool ContainsFile(string path, byte[][] markers)
+    {
+        if (String.IsNullOrWhiteSpace(path) || markers == null || markers.Length == 0)
+        {
+            return false;
+        }
+        int maxMarkerLength = 0;
+        foreach (byte[] marker in markers)
+        {
+            if (marker != null && marker.Length > maxMarkerLength)
+            {
+                maxMarkerLength = marker.Length;
+            }
+        }
+        if (maxMarkerLength == 0)
+        {
+            return false;
+        }
+        const int chunkSize = 65536;
+        byte[] buffer = new byte[chunkSize + maxMarkerLength - 1];
+        int carry = 0;
+        using (FileStream stream = new FileStream(
+            path, FileMode.Open, FileAccess.Read, FileShare.Read, chunkSize, FileOptions.SequentialScan))
+        {
+            while (true)
+            {
+                int read = stream.Read(buffer, carry, chunkSize);
+                if (read == 0)
+                {
+                    break;
+                }
+                int length = carry + read;
+                foreach (byte[] marker in markers)
+                {
+                    if (Contains(buffer, length, marker))
+                    {
+                        return true;
+                    }
+                }
+                carry = Math.Min(maxMarkerLength - 1, length);
+                if (carry > 0)
+                {
+                    Buffer.BlockCopy(buffer, length - carry, buffer, 0, carry);
+                }
+            }
+        }
+        return false;
+    }
+
+    private static bool Contains(byte[] source, int sourceLength, byte[] marker)
+    {
+        if (marker == null || marker.Length == 0 || sourceLength < marker.Length)
+        {
+            return false;
+        }
+        int limit = sourceLength - marker.Length;
+        int last = marker.Length - 1;
+        for (int offset = 0; offset <= limit; offset++)
+        {
+            if (source[offset] != marker[0] || source[offset + last] != marker[last])
+            {
+                continue;
+            }
+            int index = 1;
+            while (index < marker.Length && source[offset + index] == marker[index])
+            {
+                index++;
+            }
+            if (index == marker.Length)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+}
+'@
+    }
+    [byte[][]]$markerBytes = @(
+        [Text.Encoding]::UTF8.GetBytes($Marker),
+        [Text.Encoding]::Unicode.GetBytes($Marker),
+        [Text.Encoding]::BigEndianUnicode.GetBytes($Marker)
+    )
+    $entries = @(Get-ChildItem -LiteralPath $Root -Recurse -Force -ErrorAction Stop)
+    foreach ($entry in $entries) {
+        if ($entry.FullName.IndexOf($Marker, [StringComparison]::Ordinal) -ge 0) {
+            throw 'Secret marker detected in packaged smoke artifacts.'
+        }
+        if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Unexpected reparse point in packaged smoke artifacts.'
+        }
+        if ($entry.PSIsContainer) {
+            continue
+        }
+        if ([SmokeSecretMarkerScanner]::ContainsFile($entry.FullName, $markerBytes)) {
+            throw 'Secret marker detected in packaged smoke artifacts.'
+        }
+    }
+}
+
 function Get-MsiProperty {
     param(
         [Parameter(Mandatory = $true)] [string]$Path,
@@ -136,9 +270,14 @@ Assert-Smoke ((Split-Path -Leaf $temporaryRoot).StartsWith('huitai-packaged-smok
 New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
 
 $environmentSnapshot = $null
+$authenticatedEnvironmentSnapshot = $null
 $desktopProcess = $null
+$authenticatedProcess = $null
+$fakeOaProcess = $null
 $reportedChildPid = $null
 $primaryFailure = $null
+$secretMarker = $null
+$authenticatedSecretMarkers = @()
 $expectedProductName = -join ([char[]]@(0x7FD4, 0x9E1F, 0x5F8B, 0x667A, 0x684C, 0x9762, 0x7AEF))
 $desktopLauncherName = "$expectedProductName.exe"
 try {
@@ -193,12 +332,17 @@ try {
 
     $smokeHome = Join-Path $temporaryRoot 'home'
     New-Item -ItemType Directory -Path $smokeHome | Out-Null
+    $processTemp = Join-Path $temporaryRoot 'process-temp'
+    New-Item -ItemType Directory -Path $processTemp | Out-Null
     $reportPath = Join-Path $temporaryRoot 'smoke-report.json'
     $secretMarker = 'smoke-secret-marker-' + [Guid]::NewGuid().ToString('N')
     $environmentSnapshot = Set-SmokeEnvironment @{
         HUITAI_DESKTOP_HOME = $smokeHome
         HUITAI_DESKTOP_SMOKE_REPORT = $reportPath
         HUITAI_DESKTOP_KEYSTORE_PASSWORD = $secretMarker
+        TEMP = $processTemp
+        TMP = $processTemp
+        TMPDIR = $processTemp
     }
 
     $desktopProcess = Start-Process -FilePath $desktopExe.FullName -WorkingDirectory $desktopExe.DirectoryName -PassThru -WindowStyle Hidden
@@ -257,13 +401,118 @@ try {
     $child = Get-Process -Id $reportedChildPid -ErrorAction SilentlyContinue
     Assert-Smoke ($null -eq $child) 'Bundled Agent child process remains alive after desktop shutdown.'
 
-    $secretHits = Get-ChildItem -LiteralPath $expectedRuntimeRoot -Recurse -File -Filter '*.log' -ErrorAction SilentlyContinue |
-        Select-String -SimpleMatch $secretMarker -ErrorAction SilentlyContinue
-    Assert-Smoke ($null -eq $secretHits) 'Secret marker leaked into packaged runtime logs.'
-
     $reportedChildPid = $null
     $desktopProcess = $null
-    Write-Host ("Packaged distribution smoke passed: MSI={0}; EXE={1}" -f $msi.FullName, $packageExe.FullName)
+
+    $fakeOaReadyReport = Join-Path $temporaryRoot 'fake-oa-ready.json'
+    $authenticatedReport = Join-Path $temporaryRoot 'authenticated-smoke-report.json'
+    $authenticatedHome = Join-Path $temporaryRoot 'authenticated-home'
+    New-Item -ItemType Directory -Path $authenticatedHome | Out-Null
+    $authenticatedPassword = 'Pa' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
+    $authenticatedAccess = 'oa-access-' + [Guid]::NewGuid().ToString('N')
+    $authenticatedRefresh = 'oa-refresh-' + [Guid]::NewGuid().ToString('N')
+    $authenticatedSecretMarkers = @($authenticatedPassword, $authenticatedAccess, $authenticatedRefresh)
+    $authenticatedEnvironmentSnapshot = Set-SmokeEnvironment @{
+        HUITAI_DESKTOP_AUTH_SMOKE_ACCOUNT = '13800138000'
+        HUITAI_DESKTOP_AUTH_SMOKE_PASSWORD = $authenticatedPassword
+        HUITAI_DESKTOP_AUTH_SMOKE_ACCESS = $authenticatedAccess
+        HUITAI_DESKTOP_AUTH_SMOKE_REFRESH = $authenticatedRefresh
+        HUITAI_OA_BASE_URL = ''
+    }
+    $fakeOaScript = Join-Path $repoRoot 'business-desktop\scripts\packaged-authenticated-fake-oa.ps1'
+    $fakeOaArguments = @(
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        ('"{0}"' -f $fakeOaScript),
+        '-ReadyReport',
+        ('"{0}"' -f $fakeOaReadyReport)
+    )
+    $fakeOaOutput = Join-Path $temporaryRoot 'fake-oa.stdout.log'
+    $fakeOaError = Join-Path $temporaryRoot 'fake-oa.stderr.log'
+    $fakeOaProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList $fakeOaArguments `
+        -PassThru -WindowStyle Hidden -WorkingDirectory $repoRoot `
+        -RedirectStandardOutput $fakeOaOutput -RedirectStandardError $fakeOaError
+    $fakeOaDeadline = [DateTime]::UtcNow.AddSeconds(30)
+    while (-not (Test-Path -LiteralPath $fakeOaReadyReport -PathType Leaf)) {
+        if ($fakeOaProcess.HasExited) {
+            $fakeFailure = if (Test-Path -LiteralPath $fakeOaError -PathType Leaf) {
+                Get-Content -LiteralPath $fakeOaError -Raw -Encoding UTF8
+            } else { '' }
+            throw ("Authenticated packaged-smoke fake OA exited early: {0}; {1}" -f
+                $fakeOaProcess.ExitCode, $fakeFailure.Trim())
+        }
+        if ([DateTime]::UtcNow -ge $fakeOaDeadline) {
+            throw 'Authenticated packaged-smoke fake OA timed out during startup.'
+        }
+        Start-Sleep -Milliseconds 100
+        $fakeOaProcess.Refresh()
+    }
+    $fakeOaReady = Get-Content -LiteralPath $fakeOaReadyReport -Raw -Encoding UTF8 | ConvertFrom-Json
+    Assert-Smoke ([string]$fakeOaReady.baseUrl -match '^http://127\.0\.0\.1:\d+$') `
+        'Authenticated packaged-smoke fake OA did not bind exact loopback.'
+    [Environment]::SetEnvironmentVariable('HUITAI_OA_BASE_URL', [string]$fakeOaReady.baseUrl, 'Process')
+
+    $packagedAppDirectory = Join-Path $desktopExe.DirectoryName 'app'
+    Assert-Smoke (Test-Path -LiteralPath $packagedAppDirectory -PathType Container) `
+        'Extracted packaged application classpath is missing.'
+    $authenticatedArguments = @(
+        '-cp',
+        ('"{0}\*"' -f $packagedAppDirectory),
+        'com.wzx.huitai.desktop.smoke.PackagedAuthenticatedSmokeMainKt',
+        ('"{0}"' -f $authenticatedReport),
+        ('"{0}"' -f $bundledJar.FullName),
+        ('"{0}"' -f $authenticatedHome)
+    )
+    $authenticatedOutput = Join-Path $temporaryRoot 'authenticated.stdout.log'
+    $authenticatedError = Join-Path $temporaryRoot 'authenticated.stderr.log'
+    $authenticatedProcess = Start-Process -FilePath $runtimeJava.FullName `
+        -ArgumentList $authenticatedArguments -PassThru -WindowStyle Hidden `
+        -WorkingDirectory $desktopExe.DirectoryName `
+        -RedirectStandardOutput $authenticatedOutput -RedirectStandardError $authenticatedError
+    $authenticatedDeadline = [DateTime]::UtcNow.AddSeconds(120)
+    while (-not (Test-Path -LiteralPath $authenticatedReport -PathType Leaf)) {
+        if ($authenticatedProcess.HasExited) {
+            $authenticatedFailure = if (Test-Path -LiteralPath $authenticatedError -PathType Leaf) {
+                Get-Content -LiteralPath $authenticatedError -Raw -Encoding UTF8
+            } else { '' }
+            foreach ($marker in $authenticatedSecretMarkers) {
+                $authenticatedFailure = $authenticatedFailure.Replace($marker, '[REDACTED]')
+            }
+            throw ("Authenticated packaged-smoke runtime exited early: {0}; {1}" -f
+                $authenticatedProcess.ExitCode, $authenticatedFailure.Trim())
+        }
+        if ([DateTime]::UtcNow -ge $authenticatedDeadline) {
+            throw 'Authenticated packaged-smoke runtime timed out after 120 seconds.'
+        }
+        Start-Sleep -Milliseconds 250
+        $authenticatedProcess.Refresh()
+    }
+    $authenticatedResult = Get-Content -LiteralPath $authenticatedReport -Raw -Encoding UTF8 | ConvertFrom-Json
+    Assert-Smoke ($authenticatedResult.profile -eq 'business-desktop') `
+        'Authenticated packaged smoke used an unexpected profile.'
+    Assert-Smoke ($authenticatedResult.oaLoopback -eq $true) `
+        'Authenticated packaged smoke did not use loopback OA.'
+    Assert-Smoke ($authenticatedResult.ready -eq $true -and [long]$authenticatedResult.identityEpoch -gt 0) `
+        'Authenticated packaged smoke did not reach READY.'
+    Assert-Smoke ($authenticatedResult.workbenchReady -eq $true) `
+        'Authenticated packaged smoke did not load the workbench.'
+    Assert-Smoke ($authenticatedResult.navigationAllowlisted -eq $true) `
+        'Authenticated packaged smoke navigation escaped its allowlist.'
+    Assert-Smoke ($authenticatedResult.assistantControllerReady -eq $true) `
+        'Authenticated packaged smoke did not exercise the assistant controller.'
+    Assert-Smoke ($authenticatedProcess.WaitForExit(30000)) `
+        'Authenticated packaged-smoke runtime did not exit after reporting.'
+    $authenticatedProcess.Refresh()
+    Assert-Smoke ($authenticatedProcess.HasExited) `
+        'Authenticated packaged-smoke runtime remains alive after reporting.'
+    $authenticatedFailure = if (Test-Path -LiteralPath $authenticatedError -PathType Leaf) {
+        Get-Content -LiteralPath $authenticatedError -Raw -Encoding UTF8
+    } else { '' }
+    Assert-Smoke ([string]::IsNullOrWhiteSpace($authenticatedFailure)) `
+        'Authenticated packaged-smoke runtime wrote an error after reporting.'
+    Write-Host ("Packaged distribution smoke passed (signed-out + fake-OA authenticated): MSI={0}; EXE={1}" -f $msi.FullName, $packageExe.FullName)
 }
 catch {
     $primaryFailure = $_
@@ -272,6 +521,7 @@ catch {
 finally {
     $cleanupFailure = $null
     try {
+        Restore-SmokeEnvironment $authenticatedEnvironmentSnapshot
         Restore-SmokeEnvironment $environmentSnapshot
     } catch {
         $cleanupFailure = $_
@@ -283,8 +533,24 @@ finally {
                 Get-SmokeDescendantProcessIds -RootProcessId $desktopProcess.Id -OwnedRoot $temporaryRoot
             )
         }
+        foreach ($ownedRootProcess in @($authenticatedProcess, $fakeOaProcess)) {
+            if ($null -ne $ownedRootProcess) {
+                $descendants += @(
+                    Get-SmokeDescendantProcessIds -RootProcessId $ownedRootProcess.Id -OwnedRoot $temporaryRoot
+                )
+            }
+        }
     } catch {
         if ($null -eq $cleanupFailure) { $cleanupFailure = $_ }
+    }
+    foreach ($ownedRootProcess in @($authenticatedProcess, $fakeOaProcess)) {
+        try {
+            if ($null -ne $ownedRootProcess -and -not $ownedRootProcess.HasExited) {
+                Stop-SmokeProcessId -ProcessId $ownedRootProcess.Id -OwnedRoot $temporaryRoot
+            }
+        } catch {
+            if ($null -eq $cleanupFailure) { $cleanupFailure = $_ }
+        }
     }
     if ($null -ne $reportedChildPid) {
         $descendants += $reportedChildPid
@@ -320,12 +586,17 @@ finally {
         if ($ownedProcesses.Count -gt 0) {
             throw ("Owned smoke processes remain alive: {0}" -f (($ownedProcesses | ForEach-Object ProcessId) -join ','))
         }
-        $verifiedTemporaryRoot = [IO.Path]::GetFullPath($temporaryRoot)
-        if ($verifiedTemporaryRoot.StartsWith($systemTemp, [StringComparison]::OrdinalIgnoreCase) -and
-            (Split-Path -Leaf $verifiedTemporaryRoot).StartsWith('huitai-packaged-smoke-') -and
-            (Test-Path -LiteralPath $verifiedTemporaryRoot -PathType Container)) {
-            Remove-Item -LiteralPath $verifiedTemporaryRoot -Recurse -Force
+        if ($null -ne $secretMarker) {
+            Assert-NoSecretMarkerInTree -Root $temporaryRoot -Marker $secretMarker
         }
+        foreach ($authenticatedSecretMarker in $authenticatedSecretMarkers) {
+            Assert-NoSecretMarkerInTree -Root $temporaryRoot -Marker $authenticatedSecretMarker
+        }
+    } catch {
+        if ($null -eq $cleanupFailure) { $cleanupFailure = $_ }
+    }
+    try {
+        Remove-SmokeTemporaryRoot -Root $temporaryRoot -SystemTemp $systemTemp
     } catch {
         if ($null -eq $cleanupFailure) { $cleanupFailure = $_ }
     }

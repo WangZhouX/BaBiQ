@@ -198,7 +198,7 @@ public class SubAgentRuntimeFactory {
                 .tools(childCallbacks)
                 .toolContext(childToolContext.getContext())
                 .streamingInterceptors(streamingTokenUsageInterceptor)
-                .interceptors(sandboxInterceptor, toolObservationInterceptor, spotlightingInterceptor, evictionInterceptor)
+                .interceptors(toolObservationInterceptor, sandboxInterceptor, spotlightingInterceptor, evictionInterceptor)
                 .hooks(limitHook, tokenUsageHook)
                 .saver(saver == null ? new MemorySaver() : saver);
         if (compileConfig != null) {

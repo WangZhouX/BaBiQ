@@ -1,9 +1,12 @@
 package com.wzx.huitai.agent.conversation
 
+import com.wzx.huitai.agent.business.auth.BusinessAuthStateChanged
+import com.wzx.huitai.agent.business.auth.BusinessAuthStateChangedCodec
 import com.wzx.huitai.agent.client.AgentJsonRpcClient
 import java.io.Closeable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.serialization.SerializationException
@@ -22,7 +25,7 @@ interface BusinessConversationGateway : Closeable {
     val events: Flow<BusinessAgentEvent>
     /** Carries the immutable server-side turn identity boundary; missing scope is fail-closed. */
     val ingressEvents: Flow<BusinessAgentIngressEvent>
-        get() = events.map { BusinessAgentIngressEvent(it, authSessionId = null, identityEpoch = null) }
+        get() = events.map { BusinessAgentIngressEvent.Conversation(it, authSessionId = null, identityEpoch = null) }
     suspend fun listProviders(): List<BusinessProvider>
     suspend fun createProvider(draft: BusinessProviderDraft): BusinessProvider =
         throw UnsupportedOperationException("Provider create is not supported")
@@ -52,11 +55,17 @@ interface BusinessConversationGateway : Closeable {
     suspend fun cancelTurn(turnId: String): Boolean
 }
 
-data class BusinessAgentIngressEvent(
-    val event: BusinessAgentEvent,
-    val authSessionId: String?,
-    val identityEpoch: Long?,
-)
+sealed interface BusinessAgentIngressEvent {
+    data class Conversation(
+        val event: BusinessAgentEvent,
+        val authSessionId: String?,
+        val identityEpoch: Long?,
+    ) : BusinessAgentIngressEvent
+
+    data class AuthStateChanged(
+        val change: BusinessAuthStateChanged,
+    ) : BusinessAgentIngressEvent
+}
 
 class BusinessAgentClient(
     private val rpc: AgentJsonRpcClient,
@@ -64,14 +73,28 @@ class BusinessAgentClient(
     scope: CoroutineScope,
 ) : BusinessConversationGateway {
     override val ingressEvents: Flow<BusinessAgentIngressEvent> = rpc.rawNotifications.receiveAsFlow().map { notification ->
-        BusinessAgentIngressEvent(
-            event = runCatching { BusinessAgentEventCodec.decode(notification) }
-                .getOrElse { BusinessAgentEvent.Unknown(notification.method) },
-            authSessionId = notification.authSessionId,
-            identityEpoch = notification.identityEpoch,
-        )
+        if (notification.method == BusinessAuthStateChangedCodec.METHOD) {
+            try {
+                BusinessAgentIngressEvent.AuthStateChanged(BusinessAuthStateChangedCodec.decode(notification))
+            } catch (_: SerializationException) {
+                BusinessAgentIngressEvent.Conversation(
+                    event = BusinessAgentEvent.Unknown(notification.method),
+                    authSessionId = notification.authSessionId,
+                    identityEpoch = notification.identityEpoch,
+                )
+            }
+        } else {
+            BusinessAgentIngressEvent.Conversation(
+                event = runCatching { BusinessAgentEventCodec.decode(notification) }
+                    .getOrElse { BusinessAgentEvent.Unknown(notification.method) },
+                authSessionId = notification.authSessionId,
+                identityEpoch = notification.identityEpoch,
+            )
+        }
     }
-    override val events: Flow<BusinessAgentEvent> = ingressEvents.map { it.event }
+    override val events: Flow<BusinessAgentEvent> = ingressEvents
+        .filterIsInstance<BusinessAgentIngressEvent.Conversation>()
+        .map { it.event }
 
     override suspend fun listProviders(): List<BusinessProvider> =
         BusinessProviderCodec.decodeList(rpc.request("provider/list", buildJsonObject { }))

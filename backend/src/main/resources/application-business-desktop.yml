@@ -10,6 +10,13 @@ logging:
     # Keep business diagnostics at their existing level while suppressing SQL bind values.
     com.wzx.babiq.server.persistence.mapper: INFO
 
+huitai:
+  oa:
+    base-url: ${HUITAI_OA_BASE_URL:}
+    api-prefix: /law-api
+    platform-id: 2
+    request-timeout-ms: 30000
+    allow-private-http: true
 babiq:
   business:
     enabled: true
@@ -39,6 +46,8 @@ babiq:
     database-path: ${babiq.business.runtime-dir}/data/babiq-business.db
   secrets:
     keystore-path: ${babiq.business.runtime-dir}/secrets/business-agent.jceks
+    # Business profile must receive a per-launch secret from the desktop launcher; no fixed fallback.
+    keystore-password: ${BABIQ_SECRETS_KEYSTORE_PASSWORD:}
   memory:
     long-term:
       enabled: false

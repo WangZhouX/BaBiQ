@@ -75,7 +75,7 @@ public class WebSocketConfig implements WebSocketConfigurer {
         Object container = servletContext.getAttribute(ServerContainer.class.getName());
         if (container instanceof ServerContainer serverContainer) {
             serverContainer.setDefaultMaxTextMessageBufferSize(
-                    ApplicationProtocolValidator.MAX_ENVELOPE_BYTES);
+                    ApplicationProtocolValidator.MAX_WEBSOCKET_TEXT_BUFFER_BYTES);
         }
     }
 }

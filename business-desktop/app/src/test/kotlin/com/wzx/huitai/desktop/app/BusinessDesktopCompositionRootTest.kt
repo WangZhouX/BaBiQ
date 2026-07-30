@@ -8,6 +8,7 @@ import com.wzx.huitai.agent.client.AgentConnectionState
 import com.wzx.huitai.agent.client.ApplicationSequenceTracker
 import com.wzx.huitai.agent.client.DesktopSessionIdentity
 import com.wzx.huitai.agent.client.AgentSupervisorState
+import com.wzx.huitai.agent.business.workbench.BusinessWorkbenchScope
 import com.wzx.huitai.agent.protocol.ActionEnvelope
 import com.wzx.huitai.agent.protocol.ApplicationMethod
 import com.wzx.huitai.agent.protocol.ApplicationProtocol
@@ -15,6 +16,7 @@ import com.wzx.huitai.agent.protocol.CommonApplicationFields
 import com.wzx.huitai.agent.protocol.JsonRpcRequest
 import com.wzx.huitai.desktop.runtime.ManagedBusinessAgentConnection
 import com.wzx.huitai.desktop.runtime.BusinessAgentDevelopmentSessionFile
+import com.wzx.huitai.desktop.runtime.BusinessBackendKeyStorePasswordVault
 import com.wzx.huitai.desktop.logging.DesktopLoggingBootstrap
 import com.wzx.huitai.desktop.decision.ActionDecisionPhase
 import com.wzx.huitai.demo.action.DemoActionCatalog
@@ -22,15 +24,11 @@ import com.wzx.huitai.demo.gateway.FakeHuitaiGateway
 import com.wzx.huitai.demo.model.DemoScreenModel
 import com.wzx.huitai.demo.model.DemoFormEvent
 import com.wzx.huitai.demo.model.DemoFormState
-import com.wzx.huitai.presentation.context.FieldContext
-import com.wzx.huitai.presentation.context.FieldSensitivity
 import com.wzx.huitai.presentation.form.FieldChange
 import com.wzx.huitai.presentation.form.FormPatch
 import com.wzx.huitai.presentation.form.SourceReference
-import com.wzx.huitai.desktop.state.BusinessConnectionStatus
 import com.wzx.huitai.desktop.state.BusinessAuthenticationStatus
 import com.wzx.huitai.desktop.auth.BusinessAccessGateState
-import com.wzx.huitai.desktop.security.BusinessAuthSessionMetadataStore
 import com.wzx.huitai.security.approval.InMemoryApprovalPort
 import com.wzx.huitai.security.approval.InMemoryConfirmationPort
 import com.wzx.huitai.security.execution.InMemoryActionExecutionStore
@@ -48,14 +46,12 @@ import kotlin.test.assertFalse
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.test.assertNotNull
-import kotlin.test.assertNull
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.async
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.test.advanceUntilIdle
-import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
@@ -67,8 +63,6 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.long
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -90,7 +84,7 @@ class BusinessDesktopCompositionRootTest {
         val root = BusinessDesktopCompositionRoot.start(factory)
 
         assertEquals(
-            listOf("lock", "storage", "child", "connection", "identity", "catalog", "context", "ui"),
+            listOf("lock", "storage", "child", "connection", "ui"),
             events,
         )
         assertSame(bus, root.applicationActionBus)
@@ -101,7 +95,7 @@ class BusinessDesktopCompositionRootTest {
 
         assertEquals(
             listOf(
-                "lock", "storage", "child", "connection", "identity", "catalog", "context", "ui",
+                "lock", "storage", "child", "connection", "ui",
                 "close-ui", "close-connection", "close-child", "close-storage", "close-lock",
             ),
             events,
@@ -111,7 +105,7 @@ class BusinessDesktopCompositionRootTest {
     @Test
     fun `startup failure rolls back every acquired stage in reverse order`() = runTest {
         val events = mutableListOf<String>()
-        val factory = RecordingFactory(events, actionBus(), failAt = "context")
+        val factory = RecordingFactory(events, actionBus(), failAt = "ui")
 
         assertFailsWith<IllegalStateException> {
             BusinessDesktopCompositionRoot.start(factory)
@@ -119,7 +113,7 @@ class BusinessDesktopCompositionRootTest {
 
         assertEquals(
             listOf(
-                "lock", "storage", "child", "connection", "identity", "catalog", "context",
+                "lock", "storage", "child", "connection", "ui",
                 "close-connection", "close-child", "close-storage", "close-lock",
             ),
             events,
@@ -137,7 +131,7 @@ class BusinessDesktopCompositionRootTest {
 
         assertEquals(
             listOf(
-                "lock", "storage", "child", "connection", "identity", "catalog", "context", "ui",
+                "lock", "storage", "child", "connection", "ui",
                 "close-ui", "close-connection", "close-child", "close-storage", "close-lock",
             ),
             events,
@@ -149,18 +143,19 @@ class BusinessDesktopCompositionRootTest {
         val home = Files.createTempDirectory("huitai-production-composition")
         val desktopPassword = "desktop-keystore-test-password".toCharArray()
         val childClosed = mutableListOf<Boolean>()
-        val connection = AutoRespondingConnection()
+        lateinit var launchedIdentity: DesktopSessionIdentity
+        val connection = AutoRespondingConnection(sessionGetResult = readySessionResult())
         val factory = ProductionBusinessDesktopCompositionFactory(
             configuration = BusinessDesktopProductionConfiguration(
                 home = home,
                 backendJar = home.resolve("backend/babiq-server.jar"),
                 desktopSecretBootstrap = DesktopSecretBootstrap { desktopPassword.copyOf() },
-                frameworkDemoIdentity = true,
             ),
             parentScope = this,
             childLauncher = BusinessAgentChildLauncher { context ->
                 assertEquals(43, context.backendKeyStorePassword.size)
-                val identity = DesktopSessionIdentity.forChildLaunch(context.desktopInstanceId, "http://127.0.0.1")
+                val identity = DesktopSessionIdentity.forChildLaunch(context.desktopInstanceId, "http://127.0.0.1:49391")
+                launchedIdentity = identity
                 BusinessAgentChildHandle(
                     identity = identity,
                     sequenceTracker = ApplicationSequenceTracker(identity.desktopSessionId),
@@ -173,6 +168,7 @@ class BusinessDesktopCompositionRootTest {
         )
 
         val root = BusinessDesktopCompositionRoot.start(factory)
+        advanceUntilIdle()
         val storage = requireNotNull(root.productionStorage)
         val view = requireNotNull(root.runtimeView)
         val runtimeRoot = home.resolve(".huitai-agent-desktop")
@@ -186,9 +182,20 @@ class BusinessDesktopCompositionRootTest {
         assertSame(storage.actionBus, root.userActionBus)
         assertSame(storage.actionBus, root.agentRequestActionBus)
         assertTrue(view.production.actionRequestHandler::class.simpleName == "ApplicationActionRequestHandler")
-        assertTrue(view.production.authenticatedHttpGate::class.simpleName == "ReadyAuthenticatedHttpGate")
-        assertTrue(view.production.authenticatedHttpClient::class.simpleName == "ReadyAuthenticatedHuitaiClient")
+        assertTrue(
+            view.production.authenticationOperations::class.simpleName ==
+                "BusinessRpcAuthenticationOperations",
+        )
         assertTrue(view.production.businessAgentClient::class.simpleName == "BusinessAgentClient")
+        assertTrue(view.production.workbenchController::class.simpleName == "BusinessWorkbenchController")
+        assertTrue(view.production.scheduleController::class.simpleName == "BusinessScheduleController")
+        assertTrue(view.production.attachmentUploadClient::class.simpleName == "BusinessAttachmentUploadClient")
+        assertSame(launchedIdentity, view.production.attachmentUploadClient.sessionIdentity)
+        assertEquals("http://127.0.0.1:49391", view.production.attachmentUploadClient.loopbackBaseUrl)
+        view.production.scheduleController.attach(7, 9, BusinessWorkbenchScope.PERSONAL, null)
+        assertEquals(7L to 9L, view.production.attachmentUploadClient.currentIdentityVersion)
+        view.production.scheduleController.attach(8, 10, BusinessWorkbenchScope.PERSONAL, null)
+        assertEquals(8L to 10L, view.production.attachmentUploadClient.currentIdentityVersion)
         assertTrue(view.production.workspaceController::class.simpleName == "BusinessWorkspaceController")
         assertTrue(
             view.production.providerSettingsController::class.simpleName == "BusinessProviderSettingsController",
@@ -210,44 +217,6 @@ class BusinessDesktopCompositionRootTest {
         withTimeout(5_000) {
             providerSettings.state.first { it.operationsEnabled && it.providers.isNotEmpty() }
         }
-
-        val initialMessages = connection.sent.map { Json.parseToJsonElement(it).jsonObject }
-        assertEquals(1, initialMessages.count { it["method"]?.jsonPrimitive?.content == "application/identity/bind" })
-        assertEquals(1, initialMessages.count { it["method"]?.jsonPrimitive?.content == "application/catalog/register" })
-        assertEquals(1, initialMessages.count { it["method"]?.jsonPrimitive?.content == "application/context/publish" })
-        val catalogRequest = initialMessages.single {
-            it["method"]?.jsonPrimitive?.content == "application/catalog/register"
-        }
-        val actions = catalogRequest.getValue("params").jsonObject
-            .getValue("payload").jsonObject
-            .getValue("actions").jsonObject
-        actions.values.forEach { encoded ->
-            val descriptor = encoded.jsonObject
-            assertTrue(descriptor.getValue("requiredPermissions").toString().startsWith("["))
-            assertTrue(descriptor.getValue("risk").jsonPrimitive.content in setOf(
-                "read_only", "reversible_write", "high_risk",
-            ))
-            assertTrue("inputSchema" in descriptor)
-            assertTrue("replayPolicy" in descriptor)
-            assertTrue("reconciliationPolicy" in descriptor)
-            assertTrue("target" in descriptor)
-        }
-        val firstContext = initialMessages.single {
-            it["method"]?.jsonPrimitive?.content == "application/context/publish"
-        }.getValue("params").jsonObject
-        assertEquals(1L, firstContext.getValue("contextSequence").jsonPrimitive.long)
-        val firstPayload = firstContext.getValue("payload").jsonObject
-        assertEquals(1L, firstPayload.getValue("contextRevision").jsonPrimitive.long)
-        assertEquals(7, firstPayload.getValue("fields").jsonArray.size)
-        assertTrue(firstPayload.getValue("availableActions").jsonArray.isNotEmpty())
-        assertEquals(
-            "未命名资料",
-            firstPayload.getValue("fields").jsonArray
-                .map { it.jsonObject }
-                .single { it.getValue("id").jsonPrimitive.content == "material_name" }
-                .getValue("value").jsonPrimitive.content,
-        )
-
         val activeIdentity = requireNotNull(view.desktopState.value.identity)
         val agentSuggestionPatch = FormPatch(
             pageId = DemoFormState.PAGE_ID,
@@ -341,123 +310,6 @@ class BusinessDesktopCompositionRootTest {
             storage.screen.state.value.revision,
             storage.screen.state.value.suggestionPatch?.baseRevision,
         )
-
-        val sensitiveSnapshot = storage.screen.pageContext().copy(
-            revision = 100,
-            fields = storage.screen.pageContext().fields + listOf(
-                FieldContext(
-                    id = "internal_note",
-                    label = "Internal note",
-                    type = "text",
-                    value = JsonPrimitive("sensitive-value"),
-                    editable = true,
-                    required = false,
-                    sensitivity = FieldSensitivity.SENSITIVE,
-                ),
-                FieldContext(
-                    id = "internal_secret",
-                    label = "Internal secret",
-                    type = "text",
-                    value = JsonPrimitive("must-not-leak"),
-                    editable = true,
-                    required = false,
-                    sensitivity = FieldSensitivity.SECRET,
-                ),
-                FieldContext(
-                    id = "api_token",
-                    label = "API token",
-                    type = "text",
-                    value = JsonPrimitive("must-not-leak"),
-                    editable = true,
-                    required = false,
-                    sensitivity = FieldSensitivity.INTERNAL,
-                ),
-            ),
-        )
-        view.production.workspaceController.publishPage(sensitiveSnapshot)
-        val sanitizedPayload = connection.sent
-            .map { Json.parseToJsonElement(it).jsonObject }
-            .last { it["method"]?.jsonPrimitive?.content == "application/context/publish" }
-            .getValue("params").jsonObject.getValue("payload").jsonObject
-        val sanitizedFields = sanitizedPayload.getValue("fields").jsonArray.map { it.jsonObject }
-        assertEquals(8, sanitizedFields.size, sanitizedFields.map { it.getValue("id") }.toString())
-        assertEquals(
-            "[MASKED]",
-            sanitizedFields.single { it.getValue("id").jsonPrimitive.content == "internal_note" }
-                .getValue("value").jsonPrimitive.content,
-        )
-        assertTrue(sanitizedFields.none { it.getValue("id").jsonPrimitive.content == "internal_secret" })
-        assertTrue(sanitizedFields.none { it.getValue("id").jsonPrimitive.content == "api_token" })
-
-        storage.screen.dispatch(DemoFormEvent.EditField("material_name", "第二版"))
-        view.production.workspaceController.publishPage(storage.screen.pageContext())
-        val contextSequences = connection.sent
-            .map { Json.parseToJsonElement(it).jsonObject }
-            .filter { it["method"]?.jsonPrimitive?.content == "application/context/publish" }
-            .map { it.getValue("params").jsonObject.getValue("contextSequence").jsonPrimitive.long }
-        assertEquals(listOf(1L, 2L, 3L), contextSequences)
-        val latestContextPayload = connection.sent
-            .map { Json.parseToJsonElement(it).jsonObject }
-            .last { it["method"]?.jsonPrimitive?.content == "application/context/publish" }
-            .getValue("params").jsonObject.getValue("payload").jsonObject
-        assertEquals(3L, latestContextPayload.getValue("contextRevision").jsonPrimitive.long)
-        assertEquals(
-            "第二版",
-            latestContextPayload.getValue("fields").jsonArray
-                .map { it.jsonObject }
-                .single { it.getValue("id").jsonPrimitive.content == "material_name" }
-                .getValue("value").jsonPrimitive.content,
-        )
-
-        connection.emitSupervisorState(AgentSupervisorState.Reconnecting(4, 8_000))
-        advanceUntilIdle()
-        assertEquals(BusinessConnectionStatus.RECONNECTING, view.desktopState.value.connectionStatus)
-
-        connection.contextRegistrationFailuresRemaining = 1
-        connection.emitSupervisorState(AgentSupervisorState.Connected("production-test-connection-2"))
-        advanceUntilIdle()
-        val republished = connection.sent.map { Json.parseToJsonElement(it).jsonObject }
-        assertEquals(3, republished.count { it["method"]?.jsonPrimitive?.content == "application/identity/bind" })
-        assertEquals(3, republished.count { it["method"]?.jsonPrimitive?.content == "application/catalog/register" })
-        assertEquals(5, republished.count { it["method"]?.jsonPrimitive?.content == "application/context/publish" })
-        val reconnectContexts = republished
-            .filter { it["method"]?.jsonPrimitive?.content == "application/context/publish" }
-            .takeLast(2)
-            .map { it.getValue("params").jsonObject }
-        assertEquals(listOf(3L, 3L), reconnectContexts.map { it.getValue("contextSequence").jsonPrimitive.long })
-        assertEquals(7, reconnectContexts.last().getValue("payload").jsonObject.getValue("fields").jsonArray.size)
-        assertEquals(BusinessConnectionStatus.CONNECTED, view.desktopState.value.connectionStatus)
-        val identitySessions = republished
-            .filter { it["method"]?.jsonPrimitive?.content == "application/identity/bind" }
-            .map { it.getValue("params").jsonObject.getValue("desktopSessionId").jsonPrimitive.content }
-        assertEquals(1, identitySessions.distinct().size)
-
-        val contextCountBeforeConcurrentReconnect = connection.sent.count {
-            Json.parseToJsonElement(it).jsonObject["method"]?.jsonPrimitive?.content == "application/context/publish"
-        }
-        val registrationEntered = CompletableDeferred<Unit>()
-        val releaseRegistration = CompletableDeferred<Unit>()
-        connection.contextRegistrationEntered = registrationEntered
-        connection.contextRegistrationRelease = releaseRegistration
-        connection.emitSupervisorState(AgentSupervisorState.Reconnecting(1, 1_000))
-        connection.emitSupervisorState(AgentSupervisorState.Connected("production-test-connection-4"))
-        registrationEntered.await()
-        storage.screen.dispatch(DemoFormEvent.EditField(DemoFormState.FIELD_CONTACT, "concurrent edit"))
-        val concurrentPublication = async {
-            view.production.workspaceController.publishPage(storage.screen.pageContext())
-        }
-        runCurrent()
-        assertFalse(concurrentPublication.isCompleted)
-        releaseRegistration.complete(Unit)
-        advanceUntilIdle()
-        assertTrue(concurrentPublication.await())
-        val serializedReconnectContexts = connection.sent
-            .map { Json.parseToJsonElement(it).jsonObject }
-            .filter { it["method"]?.jsonPrimitive?.content == "application/context/publish" }
-            .drop(contextCountBeforeConcurrentReconnect)
-            .map { it.getValue("params").jsonObject.getValue("contextSequence").jsonPrimitive.long }
-        assertEquals(listOf(3L, 4L), serializedReconnectContexts)
-
         val decisionResponder = launch {
             view.decisions.state.collect { decisionState ->
                 decisionState.activeDialog?.let { dialog ->
@@ -604,7 +456,7 @@ class BusinessDesktopCompositionRootTest {
         val paths = com.wzx.huitai.desktop.runtime.BusinessDesktopRuntimePaths.create(home)
         val identity = DesktopSessionIdentity.forChildLaunch(
             desktopInstanceId = java.util.UUID.randomUUID().toString(),
-            localOrigin = "http://127.0.0.1",
+            localOrigin = "http://127.0.0.1:49391",
         )
         val request = com.wzx.huitai.agent.client.AgentConnectRequest(
             "ws://127.0.0.1:49391/ws/agent",
@@ -616,7 +468,7 @@ class BusinessDesktopCompositionRootTest {
             request,
             ownership,
         )
-        val connection = AutoRespondingConnection()
+        val connection = AutoRespondingConnection(sessionGetResult = readySessionResult())
         var embeddedLaunches = 0
         val factory = ProductionBusinessDesktopCompositionFactory(
             configuration = BusinessDesktopProductionConfiguration(
@@ -625,7 +477,6 @@ class BusinessDesktopCompositionRootTest {
                 desktopSecretBootstrap = DesktopSecretBootstrap {
                     "external-development-password".toCharArray()
                 },
-                frameworkDemoIdentity = true,
                 agentLaunchMode = BusinessAgentLaunchMode.ExternalDevelopment,
             ),
             parentScope = this,
@@ -640,6 +491,7 @@ class BusinessDesktopCompositionRootTest {
         )
 
         val root = BusinessDesktopCompositionRoot.start(factory)
+        advanceUntilIdle()
 
         assertEquals(0, embeddedLaunches)
         assertEquals(identity.desktopSessionId, requireNotNull(root.runtimeView).desktopState.value.identity?.desktopSessionId)
@@ -651,7 +503,7 @@ class BusinessDesktopCompositionRootTest {
     }
 
     @Test
-    fun `packaged production defaults to signed out identity without catalog or context registration`() = runTest {
+    fun `packaged production starts signed out without OA registration side effects`() = runTest {
         val home = Files.createTempDirectory("huitai-signed-out-composition")
         val connection = AutoRespondingConnection()
         val factory = ProductionBusinessDesktopCompositionFactory(
@@ -662,7 +514,7 @@ class BusinessDesktopCompositionRootTest {
             ),
             parentScope = this,
             childLauncher = BusinessAgentChildLauncher { context ->
-                val session = DesktopSessionIdentity.forChildLaunch(context.desktopInstanceId, "http://127.0.0.1")
+                val session = DesktopSessionIdentity.forChildLaunch(context.desktopInstanceId, "http://127.0.0.1:49391")
                 BusinessAgentChildHandle(
                     identity = session,
                     sequenceTracker = ApplicationSequenceTracker(session.desktopSessionId),
@@ -677,36 +529,174 @@ class BusinessDesktopCompositionRootTest {
         val root = BusinessDesktopCompositionRoot.start(factory)
         advanceUntilIdle()
 
-        val methods = connection.sent.mapNotNull { text ->
-            Json.parseToJsonElement(text).jsonObject["method"]?.jsonPrimitive?.content
-        }
-        assertTrue("application/identity/update" in methods)
-        assertFalse("application/identity/bind" in methods)
-        assertFalse("application/catalog/register" in methods)
-        assertFalse("application/context/publish" in methods)
         val state = requireNotNull(root.runtimeView).desktopState.value
         assertEquals(BusinessAuthenticationStatus.SIGNED_OUT, state.authenticationStatus)
         assertEquals(null, state.identity)
         assertFalse(requireNotNull(root.runtimeView).production.providerSettingsController.state.value.operationsEnabled)
-        assertFalse(methods.contains("provider/list"))
         assertEquals(BusinessAccessGateState.SIGNED_OUT, requireNotNull(root.runtimeView).production.authenticationGate.value)
         assertTrue(requireNotNull(root.runtimeView).production.loginController::class.simpleName == "BusinessLoginController")
-        val productionStorage = assertNotNull(root.productionStorage)
-        assertNull(productionStorage.credentialPersistence.load())
-        assertNull(BusinessAuthSessionMetadataStore(productionStorage.secretStore).load())
-
-        val beforeReconnect = connection.sent.size
-        requireNotNull(root.runtimeView).production.identityRegistry
-            .transitionTo(BusinessAccessGateState.AUTHENTICATING)
-        connection.emitSupervisorState(AgentSupervisorState.Reconnecting(1, 0))
-        connection.emitSupervisorState(AgentSupervisorState.Connected("production-test-connection-2"))
-        advanceUntilIdle()
-        val reconnectMethods = connection.sent.drop(beforeReconnect).mapNotNull { text ->
-            Json.parseToJsonElement(text).jsonObject["method"]?.jsonPrimitive?.content
-        }
-        assertEquals(listOf("application/identity/update"), reconnectMethods)
-
         root.shutdown()
+    }
+
+    @Test
+    fun `production confirms auth protocol before atomically deleting only legacy desktop aliases`() = runTest {
+        val home = Files.createTempDirectory("huitai-legacy-cleanup-order")
+        val password = "desktop-secret-password".toCharArray()
+        val paths = com.wzx.huitai.desktop.runtime.BusinessDesktopRuntimePaths.create(home)
+        seedLegacyDesktopKeyStore(paths.desktopKeyStore, password)
+        val original = Files.readAllBytes(paths.desktopKeyStore)
+        var protocolObserved = false
+        val connection = AutoRespondingConnection(
+            beforeFirstSessionGetResponse = {
+                assertTrue(original.contentEquals(Files.readAllBytes(paths.desktopKeyStore)))
+                protocolObserved = true
+            },
+        )
+        val factory = productionFactory(this, home, password, connection)
+
+        val root = BusinessDesktopCompositionRoot.start(factory)
+        advanceUntilIdle()
+
+        assertTrue(protocolObserved)
+        JceksSecretStore(paths.desktopKeyStore, password).use { reopened ->
+            LEGACY_ALIASES.forEach { alias -> assertEquals(null, reopened.load(SecretRef.parse(alias))) }
+            assertEquals("vault-password", reopened.load(SecretRef.parse(VAULT_SENTINEL_ALIAS))?.concatToString())
+            assertEquals("provider-secret", reopened.load(SecretRef.parse(PROVIDER_SENTINEL_ALIAS))?.concatToString())
+        }
+        root.shutdown()
+        password.fill('\u0000')
+    }
+
+    @Test
+    fun `production waits for the replacement connection probe before deleting legacy aliases`() = runTest {
+        val home = Files.createTempDirectory("huitai-startup-session-connection")
+        val password = "desktop-secret-password".toCharArray()
+        val paths = com.wzx.huitai.desktop.runtime.BusinessDesktopRuntimePaths.create(home)
+        seedLegacyDesktopKeyStore(paths.desktopKeyStore, password)
+        val original = Files.readAllBytes(paths.desktopKeyStore)
+        val replacementProbeEntered = CompletableDeferred<Unit>()
+        val releaseReplacementProbe = CompletableDeferred<Unit>()
+        val cleanupEntered = CompletableDeferred<Unit>()
+        lateinit var connection: AutoRespondingConnection
+        connection = AutoRespondingConnection(
+            beforeFirstSessionGetResponse = {
+                connection.emitSupervisorState(
+                    AgentSupervisorState.Connected("production-test-connection-2"),
+                )
+            },
+            beforeSecondSessionGetResponse = {
+                replacementProbeEntered.complete(Unit)
+                releaseReplacementProbe.await()
+            },
+        )
+
+        val startup = async {
+            BusinessDesktopCompositionRoot.start(
+                productionFactory(
+                    this@runTest,
+                    home,
+                    password,
+                    connection,
+                    legacyCredentialCleanup = { secrets ->
+                        cleanupEntered.complete(Unit)
+                        com.wzx.huitai.desktop.security.LegacyOaCredentialAliasCleanup(secrets).cleanup()
+                    },
+                ),
+            )
+        }
+        replacementProbeEntered.await()
+
+        try {
+            assertFalse(startup.isCompleted, "startup must wait for the finalized connection probe")
+            assertFalse(cleanupEntered.isCompleted, "legacy cleanup must wait for the finalized connection probe")
+            assertTrue(original.contentEquals(Files.readAllBytes(paths.desktopKeyStore)))
+            assertLegacyAliasesPresent(paths.desktopKeyStore, password)
+        } finally {
+            releaseReplacementProbe.complete(Unit)
+        }
+
+        val root = startup.await()
+        assertTrue(cleanupEntered.isCompleted)
+        assertEquals(2, connection.sessionGetCalls)
+        root.shutdown()
+        password.fill('\u0000')
+    }
+
+    @Test
+    fun `replacement connection probe failure preserves legacy key store bytes and fails startup closed`() = runTest {
+        val home = Files.createTempDirectory("huitai-replacement-probe-failure")
+        val password = "desktop-secret-password".toCharArray()
+        val paths = com.wzx.huitai.desktop.runtime.BusinessDesktopRuntimePaths.create(home)
+        seedLegacyDesktopKeyStore(paths.desktopKeyStore, password)
+        val original = Files.readAllBytes(paths.desktopKeyStore)
+        lateinit var connection: AutoRespondingConnection
+        connection = AutoRespondingConnection(
+            beforeFirstSessionGetResponse = {
+                connection.emitSupervisorState(
+                    AgentSupervisorState.Connected("production-test-connection-2"),
+                )
+            },
+            secondSessionGetFailure = IllegalStateException("replacement auth protocol unavailable"),
+        )
+
+        val result = runCatching {
+            BusinessDesktopCompositionRoot.start(productionFactory(this, home, password, connection))
+        }
+        result.getOrNull()?.shutdown()
+
+        assertNotNull(result.exceptionOrNull())
+        assertEquals(2, connection.sessionGetCalls)
+        assertTrue(original.contentEquals(Files.readAllBytes(paths.desktopKeyStore)))
+        assertLegacyAliasesPresent(paths.desktopKeyStore, password)
+        password.fill('\u0000')
+    }
+
+    @Test
+    fun `auth protocol failure preserves legacy key store bytes and fails startup closed`() = runTest {
+        val home = Files.createTempDirectory("huitai-legacy-cleanup-protocol-failure")
+        val password = "desktop-secret-password".toCharArray()
+        val paths = com.wzx.huitai.desktop.runtime.BusinessDesktopRuntimePaths.create(home)
+        seedLegacyDesktopKeyStore(paths.desktopKeyStore, password)
+        val original = Files.readAllBytes(paths.desktopKeyStore)
+        val connection = AutoRespondingConnection(
+            firstSessionGetFailure = IllegalStateException("auth protocol unavailable"),
+        )
+
+        val failure = runCatching {
+            BusinessDesktopCompositionRoot.start(productionFactory(this, home, password, connection))
+        }.exceptionOrNull()
+
+        assertNotNull(failure)
+        assertTrue(original.contentEquals(Files.readAllBytes(paths.desktopKeyStore)))
+        assertLegacyAliasesPresent(paths.desktopKeyStore, password)
+        password.fill('\u0000')
+    }
+
+    @Test
+    fun `legacy cleanup failure after protocol confirmation preserves bytes and fails startup closed`() = runTest {
+        val home = Files.createTempDirectory("huitai-legacy-cleanup-failure")
+        val password = "desktop-secret-password".toCharArray()
+        val paths = com.wzx.huitai.desktop.runtime.BusinessDesktopRuntimePaths.create(home)
+        seedLegacyDesktopKeyStore(paths.desktopKeyStore, password)
+        val original = Files.readAllBytes(paths.desktopKeyStore)
+        val connection = AutoRespondingConnection()
+        val factory = productionFactory(
+            this,
+            home,
+            password,
+            connection,
+            legacyCredentialCleanup = { throw IllegalStateException("Legacy OA credential cleanup failed") },
+        )
+
+        val failure = assertFailsWith<IllegalStateException> {
+            BusinessDesktopCompositionRoot.start(factory)
+        }
+
+        assertEquals("Legacy OA credential cleanup failed", failure.message)
+        assertEquals(1, connection.sessionGetCalls)
+        assertTrue(original.contentEquals(Files.readAllBytes(paths.desktopKeyStore)))
+        assertLegacyAliasesPresent(paths.desktopKeyStore, password)
+        password.fill('\u0000')
     }
 
     private fun actionBus(): ApplicationActionBus {
@@ -721,6 +711,53 @@ class BusinessDesktopCompositionRootTest {
             clock = ActionClock(Instant::now),
             contextValidator = ActionExecutionContextValidator(),
         )
+    }
+
+    private fun productionFactory(
+        parentScope: kotlinx.coroutines.CoroutineScope,
+        home: java.nio.file.Path,
+        password: CharArray,
+        connection: AutoRespondingConnection,
+        legacyCredentialCleanup: ((JceksSecretStore) -> Unit)? = null,
+    ): ProductionBusinessDesktopCompositionFactory = ProductionBusinessDesktopCompositionFactory(
+        configuration = BusinessDesktopProductionConfiguration(
+            home = home,
+            backendJar = home.resolve("backend/babiq-server.jar"),
+            desktopSecretBootstrap = DesktopSecretBootstrap { password.copyOf() },
+        ),
+        parentScope = parentScope,
+        childLauncher = BusinessAgentChildLauncher { context ->
+            val session = DesktopSessionIdentity.forChildLaunch(context.desktopInstanceId, "http://127.0.0.1:49391")
+            BusinessAgentChildHandle(
+                identity = session,
+                sequenceTracker = ApplicationSequenceTracker(session.desktopSessionId),
+                resource = CompositionResource { },
+            )
+        },
+        connector = BusinessAgentConnector {
+            BusinessAgentConnectionHandle(connection, CompositionResource { connection.close() })
+        },
+        legacyCredentialCleanup = legacyCredentialCleanup,
+    )
+
+    private fun seedLegacyDesktopKeyStore(path: java.nio.file.Path, password: CharArray) {
+        JceksSecretStore(path, password).use { secrets ->
+            secrets.upsert(BusinessBackendKeyStorePasswordVault.ALIAS, "vault-password".toCharArray())
+            LEGACY_ALIASES.forEachIndexed { index, alias ->
+                secrets.upsert(alias, "opaque-legacy-$index".toCharArray())
+            }
+            secrets.upsert(PROVIDER_SENTINEL_ALIAS, "provider-secret".toCharArray())
+        }
+    }
+
+    private fun assertLegacyAliasesPresent(path: java.nio.file.Path, password: CharArray) {
+        JceksSecretStore(path, password).use { reopened ->
+            LEGACY_ALIASES.forEachIndexed { index, alias ->
+                assertEquals("opaque-legacy-$index", reopened.load(SecretRef.parse(alias))?.concatToString())
+            }
+            assertEquals("vault-password", reopened.load(SecretRef.parse(VAULT_SENTINEL_ALIAS))?.concatToString())
+            assertEquals("provider-secret", reopened.load(SecretRef.parse(PROVIDER_SENTINEL_ALIAS))?.concatToString())
+        }
     }
 
     private class RecordingFactory(
@@ -743,10 +780,6 @@ class BusinessDesktopCompositionRootTest {
             storage: BusinessDesktopStorageAssembly,
             child: CompositionResource,
         ): CompositionResource = resource("connection")
-
-        override suspend fun initializeIdentity(connection: CompositionResource) = enter("identity")
-        override suspend fun initializeCatalog(connection: CompositionResource) = enter("catalog")
-        override suspend fun initializeContext(connection: CompositionResource) = enter("context")
 
         override suspend fun createUi(
             storage: BusinessDesktopStorageAssembly,
@@ -771,7 +804,14 @@ class BusinessDesktopCompositionRootTest {
         }
     }
 
-    private class AutoRespondingConnection : ManagedBusinessAgentConnection {
+    private class AutoRespondingConnection(
+        private val beforeFirstSessionGetResponse: (suspend () -> Unit)? = null,
+        private val beforeSecondSessionGetResponse: (suspend () -> Unit)? = null,
+        private val firstSessionGetFailure: Throwable? = null,
+        private val secondSessionGetFailure: Throwable? = null,
+        private val sessionGetResult: String =
+            """{"status":"SIGNED_OUT","identityEpoch":0,"generation":0}""",
+    ) : ManagedBusinessAgentConnection {
         private val incomingChannel = Channel<String>(Channel.UNLIMITED)
         private var activeConnectionId: String = "production-test-connection"
         override val connectionId: String
@@ -785,9 +825,8 @@ class BusinessDesktopCompositionRootTest {
         override val supervisorState: StateFlow<AgentSupervisorState> = mutableSupervisorState
         override val hasConnected: Boolean = true
         val sent = mutableListOf<String>()
-        var contextRegistrationFailuresRemaining: Int = 0
-        var contextRegistrationEntered: CompletableDeferred<Unit>? = null
-        var contextRegistrationRelease: CompletableDeferred<Unit>? = null
+        var sessionGetCalls: Int = 0
+            private set
         var closeCount: Int = 0
             private set
 
@@ -795,18 +834,19 @@ class BusinessDesktopCompositionRootTest {
             sent += text
             val request = Json.parseToJsonElement(text).jsonObject
             val method = request["method"]?.jsonPrimitive?.content
-            if (method == "application/context/publish" && contextRegistrationFailuresRemaining > 0) {
-                contextRegistrationFailuresRemaining -= 1
-                throw IllegalStateException("context registration send failed")
-            }
-            contextRegistrationRelease?.let { release ->
-                contextRegistrationRelease = null
-                contextRegistrationEntered?.complete(Unit)
-                release.await()
-            }
             val id = request["id"]?.jsonPrimitive?.content ?: return
             val result = if (method == "provider/list") {
                 """{"providers":[{"id":"relay","displayName":"Relay","type":"OPENAI_COMPATIBLE","authMode":"api_key","baseUrl":"https://relay.example.com/v1","model":"kimi-k3","contextWindow":131072,"enabled":true,"hasApiKey":true,"active":true}]}"""
+            } else if (method == "business/auth/session/get") {
+                sessionGetCalls += 1
+                if (sessionGetCalls == 1) {
+                    firstSessionGetFailure?.let { throw it }
+                    beforeFirstSessionGetResponse?.invoke()
+                } else if (sessionGetCalls == 2) {
+                    secondSessionGetFailure?.let { throw it }
+                    beforeSecondSessionGetResponse?.invoke()
+                }
+                sessionGetResult
             } else {
                 "{}"
             }
@@ -865,5 +905,18 @@ class BusinessDesktopCompositionRootTest {
         override suspend fun shutdown() {
             mutableState.value = AgentSupervisorState.Shutdown
         }
+    }
+
+    private companion object {
+        fun readySessionResult(): String =
+            """{"status":"READY","authSessionId":"server-auth-session","identityEpoch":1,"generation":0,"platformId":"server-platform","user":{"id":"server-user","name":"Server User"},"tenant":{"id":"server-tenant","name":"Server Tenant"},"roles":["server-role"],"permissions":["demo.write","demo.submit"]}"""
+
+        val LEGACY_ALIASES = linkedSetOf(
+            "huitai.auth.tokens.v1",
+            "huitai.auth.session-metadata.v1",
+            "huitai.login.remembered.v1",
+        )
+        const val VAULT_SENTINEL_ALIAS = BusinessBackendKeyStorePasswordVault.ALIAS
+        const val PROVIDER_SENTINEL_ALIAS = "provider.deepseek.v1"
     }
 }

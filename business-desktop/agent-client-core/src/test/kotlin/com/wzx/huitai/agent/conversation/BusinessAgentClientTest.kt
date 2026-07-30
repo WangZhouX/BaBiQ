@@ -1,5 +1,7 @@
 package com.wzx.huitai.agent.conversation
 
+import com.wzx.huitai.agent.business.auth.BusinessAuthStateChangeCode
+import com.wzx.huitai.agent.business.auth.BusinessAuthStatus
 import com.wzx.huitai.agent.client.AgentConnection
 import com.wzx.huitai.agent.client.AgentConnectionState
 import com.wzx.huitai.agent.client.AgentJsonRpcClient
@@ -381,9 +383,55 @@ class BusinessAgentClientTest {
             put("identityEpoch", 7)
         })
 
-        val received = ingress.await()
+        val received = assertIs<BusinessAgentIngressEvent.Conversation>(ingress.await())
         assertEquals("auth-old", received.authSessionId)
         assertEquals(7, received.identityEpoch)
+        client.close()
+        rpc.close()
+    }
+
+    @Test
+    fun `auth state notification is typed without an identity epoch`() = runTest {
+        val connection = FakeConnection()
+        val rpc = AgentJsonRpcClient(connection = connection, scope = this)
+        val client = BusinessAgentClient(rpc, this)
+        val ingress = async { client.ingressEvents.first() }
+
+        connection.serverNotify("business/auth/state-changed", buildJsonObject {
+            put("authSessionId", "auth-session-3")
+            put("state", "SIGNED_OUT")
+            put("generation", 8)
+            put("businessCode", "BUSINESS_MEMBERSHIP_EXPIRED")
+        })
+
+        val received = assertIs<BusinessAgentIngressEvent.AuthStateChanged>(ingress.await()).change
+        assertEquals("auth-session-3", received.authSessionId)
+        assertEquals(BusinessAuthStatus.SIGNED_OUT, received.state)
+        assertEquals(8, received.generation)
+        assertEquals(BusinessAuthStateChangeCode.MEMBERSHIP_EXPIRED, received.businessCode)
+        client.close()
+        rpc.close()
+    }
+
+    @Test
+    fun `malformed auth state notification fails closed as parameter free unknown event`() = runTest {
+        val connection = FakeConnection()
+        val rpc = AgentJsonRpcClient(connection = connection, scope = this)
+        val client = BusinessAgentClient(rpc, this)
+        val ingress = async { client.ingressEvents.first() }
+
+        connection.serverNotify("business/auth/state-changed", buildJsonObject {
+            put("authSessionId", "auth-session-3")
+            put("state", "SIGNED_OUT")
+            put("generation", 8)
+            put("businessCode", "BUSINESS_FUTURE_CODE")
+            put("refreshToken", "must-not-survive")
+        })
+
+        val conversation = assertIs<BusinessAgentIngressEvent.Conversation>(ingress.await())
+        val unknown = assertIs<BusinessAgentEvent.Unknown>(conversation.event)
+        assertEquals("business/auth/state-changed", unknown.method)
+        assertFalse(unknown.toString().contains("must-not-survive"))
         client.close()
         rpc.close()
     }

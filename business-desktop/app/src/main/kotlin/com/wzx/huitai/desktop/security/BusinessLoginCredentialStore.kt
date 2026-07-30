@@ -4,46 +4,26 @@ import com.wzx.huitai.security.secret.SecretRef
 import com.wzx.huitai.security.secret.SecretStore
 import java.util.Arrays
 
+/** Account-only remembered login state. The OA password is never persisted on the desktop. */
 class RememberedBusinessLogin internal constructor(
     val account: String,
-    password: CharArray,
 ) : AutoCloseable {
-    private val password: CharArray
-    private var cleared = false
-
     init {
         require(account.isNotBlank()) { "account must not be blank" }
-        require(password.isNotEmpty()) { "password must not be empty" }
-        this.password = password.copyOf()
     }
 
-    @Synchronized
-    fun copyPassword(): CharArray {
-        check(!cleared) { "Remembered login is cleared" }
-        return password.copyOf()
-    }
+    override fun close() = Unit
 
-    @Synchronized
-    fun clear() {
-        if (cleared) return
-        Arrays.fill(password, '\u0000')
-        cleared = true
-    }
-
-    override fun close() = clear()
-
-    override fun toString(): String = "RememberedBusinessLogin(account=[REDACTED], password=[REDACTED])"
+    override fun toString(): String = "RememberedBusinessLogin(account=[REDACTED])"
 }
 
 class BusinessLoginCredentialStore internal constructor(
     private val secretStore: SecretStore,
-    private val entryRef: SecretRef,
     private val codec: VersionedJceksCodec,
 ) {
-    constructor(
-        secretStore: SecretStore,
-        entryRef: SecretRef = SecretRef.parse(DEFAULT_ALIAS),
-    ) : this(secretStore, entryRef, VersionedJceksCodec())
+    constructor(secretStore: SecretStore) : this(secretStore, VersionedJceksCodec())
+
+    private val entryRef = SecretRef.parse(DEFAULT_ALIAS)
 
     fun load(): RememberedBusinessLogin? {
         val stored = try {
@@ -52,32 +32,24 @@ class BusinessLoginCredentialStore internal constructor(
             throw LocalCredentialStoreUnavailableException()
         } ?: return null
         try {
-            val fields = codec.decode(stored, MAGIC, 2)
+            val fields = codec.decode(stored, MAGIC, 1)
             try {
-                val account = codec.decodeUtf8(fields[0])
-                val password = codec.decodeUtf8Chars(fields[1])
-                try {
-                    require(password.isNotEmpty()) { "stored password must not be empty" }
-                    return RememberedBusinessLogin(account, password)
-                } finally {
-                    Arrays.fill(password, '\u0000')
-                }
+                return RememberedBusinessLogin(codec.decodeUtf8(fields[0]))
             } finally {
                 fields.forEach { Arrays.fill(it, 0) }
             }
-        } catch (failure: VersionedJceksCodec.InvalidEntryException) {
+        } catch (_: VersionedJceksCodec.InvalidEntryException) {
             invalidateRememberedLogin()
-        } catch (failure: IllegalArgumentException) {
+        } catch (_: IllegalArgumentException) {
             invalidateRememberedLogin()
         } finally {
             Arrays.fill(stored, '\u0000')
         }
     }
 
-    fun saveOrReplace(account: String, password: CharArray) {
+    fun saveOrReplace(account: String) {
         require(account.isNotBlank()) { "account must not be blank" }
-        require(password.isNotEmpty()) { "password must not be empty" }
-        val encoded = codec.encode(MAGIC, listOf(account.toCharArray(), password.copyOf()))
+        val encoded = codec.encode(MAGIC, listOf(account.toCharArray()))
         try {
             try {
                 secretStore.upsert(entryRef.value, encoded)
@@ -110,7 +82,7 @@ class BusinessLoginCredentialStore internal constructor(
     }
 
     companion object {
-        const val DEFAULT_ALIAS = "huitai.login.remembered.v1"
+        const val DEFAULT_ALIAS = "huitai.login.account.v2"
         private const val MAGIC = 0x484c4f47
     }
 }

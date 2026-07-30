@@ -1,7 +1,9 @@
 package com.wzx.huitai.agent.client
 
+import com.wzx.huitai.agent.business.auth.BusinessAuthStateChangeCode
 import com.wzx.huitai.agent.conversation.BusinessAgentClient
 import com.wzx.huitai.agent.conversation.BusinessAgentEvent
+import com.wzx.huitai.agent.conversation.BusinessAgentIngressEvent
 import com.wzx.huitai.agent.protocol.ActionEnvelope
 import com.wzx.huitai.agent.protocol.ApplicationMethod
 import com.wzx.huitai.agent.protocol.CommonApplicationFields
@@ -46,6 +48,27 @@ class AgentJsonRpcNotificationLifecycleTest {
         val client = BusinessAgentClient(rpc, this)
         val events = async { withTimeout(500) { client.events.take(1).toList() } }
         assertEquals("future/first", assertIs<BusinessAgentEvent.Unknown>(events.await().single()).method)
+        rpc.close()
+    }
+
+    @Test
+    fun `auth state notification arriving before typed client keeps its typed payload`() = runTest {
+        val connection = NotificationConnection()
+        val rpc = AgentJsonRpcClient(connection, this, inboundCapacity = 1)
+        connection.notify("business/auth/state-changed", buildJsonObject {
+            put("authSessionId", "auth-prebuffered")
+            put("state", "SIGNED_OUT")
+            put("generation", 4)
+            put("businessCode", "BUSINESS_AUTH_EXPIRED")
+        })
+        runCurrent()
+
+        val client = BusinessAgentClient(rpc, this)
+        val ingress = withTimeout(500) { client.ingressEvents.first() }
+        val change = assertIs<BusinessAgentIngressEvent.AuthStateChanged>(ingress).change
+        assertEquals("auth-prebuffered", change.authSessionId)
+        assertEquals(4, change.generation)
+        assertEquals(BusinessAuthStateChangeCode.AUTH_EXPIRED, change.businessCode)
         rpc.close()
     }
 

@@ -11,6 +11,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assertWidthIsEqualTo
 import androidx.compose.ui.test.junit4.v2.createComposeRule
@@ -32,6 +33,9 @@ import com.wzx.huitai.agent.conversation.BusinessAttachmentDraft
 import com.wzx.huitai.agent.conversation.BusinessThreadItem
 import com.wzx.huitai.demo.model.DemoFormState
 import com.wzx.huitai.desktop.controller.BusinessProviderSettingsState
+import com.wzx.huitai.desktop.BusinessScheduleAttachmentSelection
+import com.wzx.huitai.desktop.businessScheduleDraftChangeCallback
+import com.wzx.huitai.desktop.businessWorkbenchBindingChangeCallback
 import com.wzx.huitai.desktop.auth.BusinessAccessGateState
 import com.wzx.huitai.desktop.state.BusinessAuthenticationStatus
 import com.wzx.huitai.desktop.state.BusinessConnectionStatus
@@ -42,9 +46,28 @@ import com.wzx.huitai.desktop.ui.layout.BusinessDesktopLayoutPolicy
 import com.wzx.huitai.desktop.ui.login.BusinessLoginGate
 import com.wzx.huitai.desktop.ui.login.BusinessLoginGateTags
 import com.wzx.huitai.desktop.ui.theme.HuitaiBusinessTheme
+import com.wzx.huitai.desktop.workbench.BusinessWorkbenchLoadState
+import com.wzx.huitai.desktop.workbench.BusinessWorkbenchState
+import com.wzx.huitai.desktop.workbench.BusinessScheduleFormState
+import com.wzx.huitai.desktop.workbench.BusinessScheduleFormOption
+import com.wzx.huitai.desktop.workbench.BusinessScheduleItem
+import com.wzx.huitai.desktop.workbench.BusinessScheduleRelationType
+import com.wzx.huitai.desktop.workbench.BusinessScheduleState
+import com.wzx.huitai.desktop.workbench.BusinessScheduleViewMode
+import com.wzx.huitai.desktop.workbench.BusinessAttachmentUploadState
+import com.wzx.huitai.agent.business.workbench.BusinessWorkbenchScope
+import com.wzx.huitai.agent.business.workbench.BusinessWorkbenchSection
+import com.wzx.huitai.agent.business.workbench.BusinessWorkbenchSectionStatus
+import com.wzx.huitai.agent.business.workbench.BusinessWorkbenchSnapshot
+import com.wzx.huitai.agent.business.workbench.BusinessWorkbenchTeamRole
+import com.wzx.huitai.agent.business.workbench.BusinessWorkbenchSortKind
+import kotlinx.serialization.json.Json
+import java.time.LocalDate
+import java.time.YearMonth
 import kotlin.math.abs
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -595,6 +618,320 @@ class BusinessDesktopShellTest {
             assertEquals(1, chooseCount)
             assertEquals(attachment.id, removed)
         }
+    }
+
+    @Test
+    fun `workbench shell forwards team role and sort intents`() {
+        var team: String? = null
+        var role: String? = null
+        var sort: Pair<BusinessWorkbenchSortKind, List<String>>? = null
+        val workbench = BusinessWorkbenchState(
+            loadState = BusinessWorkbenchLoadState.READY,
+            identityEpoch = 1,
+            generation = 2,
+            scope = BusinessWorkbenchScope.TEAM,
+            teamId = "team-1",
+            roles = listOf(BusinessWorkbenchTeamRole("OWNER", "负责人")),
+            shortcutOrder = listOf("one", "two"),
+            snapshot = BusinessWorkbenchSnapshot(
+                identityEpoch = 1,
+                generation = 2,
+                shortcuts = BusinessWorkbenchSection(
+                    BusinessWorkbenchSectionStatus.OK,
+                    Json.parseToJsonElement(
+                        """[
+                            {"id":"one","title":"案件","path":"/case"},
+                            {"id":"two","title":"团队","path":"/team"}
+                        ]""",
+                    ),
+                ),
+                teams = BusinessWorkbenchSection(
+                    BusinessWorkbenchSectionStatus.OK,
+                    Json.parseToJsonElement(
+                        """[{"id":"team-1","name":"一组"},{"id":"team-2","name":"二组"}]""",
+                    ),
+                ),
+            ),
+        )
+        rule.setContent {
+            HuitaiBusinessTheme {
+                BusinessDesktopShell(
+                    state = authenticatedShellState(),
+                    formState = DemoFormState(),
+                    selectedDestination = BusinessDesktopDestination.WORKBENCH,
+                    workbenchState = workbench,
+                    onWorkbenchTeamSelected = { team = it },
+                    onWorkbenchRoleSelected = { role = it },
+                    onWorkbenchSortRequested = { kind, ids -> sort = kind to ids },
+                    modifier = Modifier.shellSize(1200.dp, 900.dp),
+                )
+            }
+        }
+
+        rule.onNodeWithTag("business-workbench-team-team-2").performClick()
+        rule.onNodeWithTag("business-workbench-role-OWNER").performClick()
+        rule.onNodeWithTag("business-workbench-quick-sort-down-one").performClick()
+        rule.runOnIdle {
+            assertEquals("team-2", team)
+            assertEquals("OWNER", role)
+            assertEquals(BusinessWorkbenchSortKind.SHORTCUT to listOf("two", "one"), sort)
+        }
+    }
+
+    @Test
+    fun `shell scope team and schedule type callbacks cancel upload and clear local attachment paths`() {
+        val selection = BusinessScheduleAttachmentSelection()
+        val cancellations = mutableListOf<String>()
+        val changes = mutableListOf<String>()
+        val form = mutableStateOf(
+            BusinessScheduleFormState(
+                visible = false,
+                draft = com.wzx.huitai.desktop.workbench.BusinessScheduleDraft.validForTest().copy(
+                    scope = BusinessWorkbenchScope.TEAM,
+                    teamId = "team-1",
+                    typeId = "type-1",
+                ),
+                types = listOf(
+                    BusinessScheduleFormOption("type-1", "会议"),
+                    BusinessScheduleFormOption("type-2", "庭审"),
+                ),
+            ),
+        )
+        val oldFile = BusinessAttachmentDraft(
+            "00000000-0000-0000-0000-000000000001",
+            "A-BCDEFG",
+            "old.pdf",
+            "C:/old.pdf",
+            1,
+            "PDF",
+        )
+        fun activeOldPicker(): BusinessScheduleAttachmentSelection.Request {
+            val initial = selection.tryBegin()!!
+            assertTrue(selection.commit(initial, listOf(oldFile)))
+            return selection.tryBegin()!!
+        }
+        fun assertCleared(oldPicker: BusinessScheduleAttachmentSelection.Request) {
+            assertNull(selection.merge(oldPicker, emptyList()))
+            val next = selection.tryBegin()!!
+            assertTrue(next.currentDrafts.isEmpty())
+            selection.finish(next)
+        }
+        rule.setContent {
+            CompositionLocalProvider(LocalDensity provides Density(0.5f)) {
+                HuitaiBusinessTheme {
+                    BusinessDesktopShell(
+                    state = authenticatedShellState(),
+                    formState = DemoFormState(),
+                    selectedDestination = BusinessDesktopDestination.WORKBENCH,
+                    workbenchState = BusinessWorkbenchState(
+                        loadState = BusinessWorkbenchLoadState.READY,
+                        identityEpoch = 1,
+                        generation = 2,
+                        scope = BusinessWorkbenchScope.TEAM,
+                        teamId = "team-1",
+                        snapshot = BusinessWorkbenchSnapshot(
+                            identityEpoch = 1,
+                            generation = 2,
+                            teams = BusinessWorkbenchSection(
+                                BusinessWorkbenchSectionStatus.OK,
+                                Json.parseToJsonElement(
+                                    """[{"id":"team-1","name":"一组"},{"id":"team-2","name":"二组"}]""",
+                                ),
+                            ),
+                        ),
+                    ),
+                    scheduleFormState = form.value,
+                    onWorkbenchScopeSelected = businessWorkbenchBindingChangeCallback(
+                        selection = selection,
+                        cancelUpload = { cancellations += "scope" },
+                        onBindingChanged = { changes += "scope:$it" },
+                    ),
+                    onWorkbenchTeamSelected = businessWorkbenchBindingChangeCallback(
+                        selection = selection,
+                        cancelUpload = { cancellations += "team" },
+                        onBindingChanged = { changes += "team:$it" },
+                    ),
+                    onScheduleDraftChanged = businessScheduleDraftChangeCallback(
+                        currentDraft = { form.value.draft },
+                        selection = selection,
+                        cancelUpload = { cancellations += "type" },
+                        onDraftChanged = {
+                            changes += "type:${it.typeId}"
+                            form.value = form.value.copy(draft = it)
+                        },
+                    ),
+                        modifier = Modifier.shellSize(1400.dp, 1200.dp),
+                    )
+                }
+            }
+        }
+
+        val scopePicker = activeOldPicker()
+        rule.onNodeWithTag(com.wzx.huitai.desktop.ui.workbench.WorkbenchTags.scopeItem("PERSONAL"))
+            .performClick()
+        rule.runOnIdle { assertCleared(scopePicker) }
+
+        val teamPicker = activeOldPicker()
+        rule.onNodeWithTag("business-workbench-team-team-2").performClick()
+        rule.runOnIdle { assertCleared(teamPicker) }
+
+        rule.runOnIdle { form.value = form.value.copy(visible = true) }
+        val typePicker = activeOldPicker()
+        rule.onNodeWithTag(com.wzx.huitai.desktop.ui.workbench.ScheduleCreateTags.type("type-2"))
+            .performClick()
+        rule.runOnIdle {
+            assertCleared(typePicker)
+            assertEquals(listOf("scope", "team", "type"), cancellations)
+            assertEquals(
+                listOf(
+                    "scope:${BusinessWorkbenchScope.PERSONAL}",
+                    "team:team-2",
+                    "type:type-2",
+                ),
+                changes,
+            )
+        }
+    }
+
+    @Test
+    fun `workbench shell exposes production schedule panel and dialog callbacks`() {
+        val actions = mutableListOf<String>()
+        val form = mutableStateOf(BusinessScheduleFormState())
+        val upload = mutableStateOf(BusinessAttachmentUploadState())
+        rule.setContent {
+            CompositionLocalProvider(LocalDensity provides Density(0.5f)) {
+                HuitaiBusinessTheme {
+                    BusinessDesktopShell(
+                    state = authenticatedShellState(),
+                    formState = DemoFormState(),
+                    selectedDestination = BusinessDesktopDestination.WORKBENCH,
+                    workbenchState = BusinessWorkbenchState(
+                        loadState = BusinessWorkbenchLoadState.READY,
+                        identityEpoch = 1,
+                        generation = 2,
+                    ),
+                    scheduleState = BusinessScheduleState(
+                        identityEpoch = 1,
+                        generation = 2,
+                        visibleMonth = YearMonth.of(2026, 7),
+                        selectedDate = LocalDate.of(2026, 7, 29),
+                        scope = BusinessWorkbenchScope.TEAM,
+                        teamId = "team-1",
+                        onlyMine = true,
+                        eventDates = setOf(LocalDate.of(2026, 7, 29)),
+                        items = listOf(
+                            BusinessScheduleItem(
+                                id = "schedule-1",
+                                title = "客户会议",
+                                at = "2026-07-29 10:00:00",
+                                completed = false,
+                            ),
+                        ),
+                    ),
+                    scheduleFormState = form.value,
+                    scheduleUploadState = upload.value,
+                    onScheduleViewModeChanged = { actions += "mode:$it" },
+                    onScheduleOnlyMineChanged = { actions += "mine:$it" },
+                    onScheduleCompletionChanged = { id, completed ->
+                        actions += "complete:$id:$completed"
+                    },
+                    onScheduleCreate = {
+                        actions += "create"
+                        form.value = BusinessScheduleFormState(
+                            visible = true,
+                            draft = com.wzx.huitai.desktop.workbench.BusinessScheduleDraft.validForTest(),
+                        )
+                    },
+                    onScheduleDraftChanged = { actions += "draft:${it.title}" },
+                    onScheduleRelationTypeSelected = { actions += "relation:$it" },
+                    onScheduleChooseAttachments = {
+                        actions += "upload"
+                        upload.value = BusinessAttachmentUploadState(uploading = true, progress = 0.5f)
+                    },
+                    onScheduleCancelUpload = {
+                        actions += "cancel-upload"
+                        upload.value = BusinessAttachmentUploadState()
+                    },
+                    onScheduleSubmit = { actions += "submit" },
+                    onScheduleDismiss = { actions += "dismiss" },
+                        modifier = Modifier.shellSize(1400.dp, 1200.dp),
+                    )
+                }
+            }
+        }
+
+        rule.onNodeWithTag(com.wzx.huitai.desktop.ui.workbench.ScheduleTags.WEEK)
+            .performScrollTo()
+            .performClick()
+        rule.onNodeWithTag(com.wzx.huitai.desktop.ui.workbench.ScheduleTags.ONLY_MINE)
+            .performClick()
+        rule.onNodeWithTag(com.wzx.huitai.desktop.ui.workbench.ScheduleTags.complete("schedule-1"))
+            .performClick()
+        rule.onNodeWithTag(com.wzx.huitai.desktop.ui.workbench.ScheduleTags.CREATE)
+            .performClick()
+        rule.onNodeWithTag(com.wzx.huitai.desktop.ui.workbench.ScheduleCreateTags.TITLE)
+            .performTextReplacement("庭审准备")
+        rule.onNodeWithTag(
+            com.wzx.huitai.desktop.ui.workbench.ScheduleCreateTags.relation(
+                BusinessScheduleRelationType.CASE,
+            ),
+        ).performClick()
+        rule.onNodeWithTag(com.wzx.huitai.desktop.ui.workbench.ScheduleCreateTags.CHOOSE_ATTACHMENTS)
+            .performClick()
+        rule.onNodeWithTag(com.wzx.huitai.desktop.ui.workbench.ScheduleCreateTags.CANCEL_UPLOAD)
+            .performClick()
+        rule.onNodeWithTag(com.wzx.huitai.desktop.ui.workbench.ScheduleCreateTags.SUBMIT)
+            .performClick()
+        rule.onNodeWithTag(com.wzx.huitai.desktop.ui.workbench.ScheduleCreateTags.DISMISS)
+            .performClick()
+
+        rule.runOnIdle {
+            assertTrue("mode:${BusinessScheduleViewMode.WEEK}" in actions)
+            assertTrue("mine:false" in actions)
+            assertTrue("complete:schedule-1:true" in actions)
+            assertTrue("create" in actions)
+            assertTrue("draft:庭审准备" in actions)
+            assertTrue("relation:${BusinessScheduleRelationType.CASE}" in actions)
+            assertTrue("upload" in actions)
+            assertTrue("cancel-upload" in actions)
+            assertTrue("submit" in actions)
+            assertTrue("dismiss" in actions)
+        }
+    }
+
+    @Test
+    fun `non home workbench path renders a visible placeholder while home remains the real workbench`() {
+        val path = mutableStateOf("/case")
+        rule.setContent {
+            HuitaiBusinessTheme {
+                BusinessDesktopShell(
+                    state = authenticatedShellState(),
+                    formState = DemoFormState(),
+                    selectedDestination = BusinessDesktopDestination.WORKBENCH,
+                    selectedWorkbenchPath = path.value,
+                    workbenchState = BusinessWorkbenchState(
+                        loadState = BusinessWorkbenchLoadState.READY,
+                        identityEpoch = 1,
+                        generation = 2,
+                        navigation = listOf(
+                            com.wzx.huitai.agent.business.auth.BusinessNavigationTarget("WORKBENCH", "/", "工作台"),
+                            com.wzx.huitai.agent.business.auth.BusinessNavigationTarget("CASE", "/case", "案件管理"),
+                        ),
+                    ),
+                    modifier = Modifier.shellSize(1200.dp, 800.dp),
+                )
+            }
+        }
+
+        rule.onNodeWithTag(BusinessUiTags.PLACEHOLDER_PANEL).assertExists()
+        rule.onNodeWithText("功能占位：/case").assertExists()
+        rule.onNodeWithTag(com.wzx.huitai.desktop.ui.workbench.WorkbenchTags.NAVIGATION)
+            .assertWidthIsEqualTo(88.dp)
+        rule.onNodeWithTag(com.wzx.huitai.desktop.ui.workbench.WorkbenchTags.navItem("/case"))
+            .assertIsSelected()
+        rule.runOnIdle { path.value = "/" }
+        rule.onNodeWithTag(BusinessUiTags.PLACEHOLDER_PANEL).assertDoesNotExist()
+        rule.onNodeWithTag(com.wzx.huitai.desktop.ui.workbench.WorkbenchTags.ROOT).assertExists()
     }
 
     private fun bounds(tag: String) = rule.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot

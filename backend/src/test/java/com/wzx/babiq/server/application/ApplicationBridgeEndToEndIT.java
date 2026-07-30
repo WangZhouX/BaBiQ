@@ -81,6 +81,7 @@ class ApplicationBridgeEndToEndIT {
     static void businessRuntime(DynamicPropertyRegistry registry) {
         registry.add("babiq.business.runtime-dir", RUNTIME::toString);
         registry.add("babiq.business.session-token-file", TOKEN_FILE::toString);
+        registry.add("babiq.business.legacy-client-projections-enabled", () -> "true");
     }
 
     @LocalServerPort

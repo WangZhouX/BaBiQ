@@ -3,6 +3,7 @@ package com.wzx.babiq.server.recovery;
 import com.wzx.babiq.server.context.compaction.ContextCompactionRecoveryService;
 import com.wzx.babiq.server.application.action.ApplicationActionRecoveryService;
 import com.wzx.babiq.server.attachment.ClipboardAttachmentRetentionService;
+import com.wzx.babiq.server.business.oa.session.BusinessOaSessionRecoveryService;
 import com.wzx.babiq.server.workunit.WorkUnitService;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
@@ -25,6 +26,7 @@ public class RecoveryStartupRunner implements ApplicationRunner {
     private final ObjectProvider<WorkUnitService> workUnitService;
     private final ObjectProvider<ApplicationActionRecoveryService> actionRecoveryService;
     private final ObjectProvider<ClipboardAttachmentRetentionService> attachmentRetentionService;
+    private final ObjectProvider<BusinessOaSessionRecoveryService> oaSessionRecoveryService;
     /** 启动恢复闸门，恢复完成后才允许长期记忆等后台调度器写库。 */
     private final StartupRecoveryCoordinator startupRecoveryCoordinator;
 
@@ -40,12 +42,14 @@ public class RecoveryStartupRunner implements ApplicationRunner {
                                  ObjectProvider<WorkUnitService> workUnitService,
                                  ObjectProvider<ApplicationActionRecoveryService> actionRecoveryService,
                                  ObjectProvider<ClipboardAttachmentRetentionService> attachmentRetentionService,
+                                 ObjectProvider<BusinessOaSessionRecoveryService> oaSessionRecoveryService,
                                  StartupRecoveryCoordinator startupRecoveryCoordinator) {
         this.recoveryService = recoveryService;
         this.compactionRecoveryService = compactionRecoveryService;
         this.workUnitService = workUnitService;
         this.actionRecoveryService = actionRecoveryService;
         this.attachmentRetentionService = attachmentRetentionService;
+        this.oaSessionRecoveryService = oaSessionRecoveryService;
         this.startupRecoveryCoordinator = startupRecoveryCoordinator;
     }
 
@@ -57,10 +61,12 @@ public class RecoveryStartupRunner implements ApplicationRunner {
     @Override
     public void run(ApplicationArguments args) {
         recoveryService.recoverAbandonedState();
+        oaSessionRecoveryService.ifAvailable(BusinessOaSessionRecoveryService::recover);
         actionRecoveryService.ifAvailable(ApplicationActionRecoveryService::recoverAbandonedActions);
         compactionRecoveryService.ifAvailable(ContextCompactionRecoveryService::scan);
         workUnitService.ifAvailable(WorkUnitService::recoverAbandonedRunning);
         attachmentRetentionService.ifAvailable(ClipboardAttachmentRetentionService::cleanup);
         startupRecoveryCoordinator.markRecoveryComplete();
     }
+
 }

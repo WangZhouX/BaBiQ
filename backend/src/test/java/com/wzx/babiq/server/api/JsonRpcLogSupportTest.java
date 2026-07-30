@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -30,6 +32,91 @@ class JsonRpcLogSupportTest {
                 .contains("\"identityEpoch\":7")
                 .doesNotContain("auth-sensitive-session");
         assertThat(params.path("authSessionId").asText()).isEqualTo("auth-sensitive-session");
+    }
+
+    @Test
+    void reconnect_attach_params_should_remain_on_wire_but_use_fixed_log_summary() {
+        ObjectNode params = objectMapper.createObjectNode()
+                .put("attachHandle", "opaque-reconnect-capability")
+                .put("generation", 7);
+
+        String summary = JsonRpcLogSupport.paramsSummary(
+                "business/auth/session/attach", params);
+
+        assertThat(summary).isEqualTo("[business-auth-redacted]");
+        assertThat(params.path("attachHandle").asText())
+                .isEqualTo("opaque-reconnect-capability");
+        assertThat(params.path("generation").asInt()).isEqualTo(7);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "business/auth/session/get",
+            "business/auth/session/attach",
+            "business/auth/session/restore",
+            "business/auth/tenant-candidates",
+            "business/auth/login",
+            "business/auth/logout",
+            "business/auth/state-changed"
+    })
+    @DisplayName("业务认证方法参数整段固定脱敏")
+    void business_auth_params_should_always_use_one_fixed_summary(String method) {
+        ObjectNode params = objectMapper.createObjectNode()
+                .put("account", "account-canary@example.test")
+                .put("candidateId", "candidate-canary")
+                .put("innocentLookingField", "password-token-canary");
+
+        String summary = JsonRpcLogSupport.paramsSummary(method, params);
+
+        assertThat(summary).isEqualTo("[business-auth-redacted]");
+        assertThat(summary)
+                .doesNotContain("account-canary")
+                .doesNotContain("candidate-canary")
+                .doesNotContain("password-token-canary");
+        assertThat(params.path("account").asText()).isEqualTo("account-canary@example.test");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "business/workbench/get",
+            "business/workbench/page/get",
+            "business/workbench/sort/update",
+            "business/schedule/month/get",
+            "business/schedule/completion/set",
+            "business/schedule/create"
+    })
+    void business_workbench_and_schedule_params_use_fixed_shape_only_summary(String method) {
+        ObjectNode params = objectMapper.createObjectNode()
+                .put("day", "2026-07-29")
+                .put("title", "private-client-title")
+                .put("tokenCanary", "private-token-canary");
+
+        String summary = JsonRpcLogSupport.paramsSummary(method, params);
+
+        assertThat(summary).isEqualTo("[business-workbench-redacted]");
+        assertThat(summary).doesNotContain("2026-07-29", "private-client-title", "private-token-canary");
+    }
+
+    @Test
+    void unknown_token_like_field_names_are_masked_without_hiding_numeric_token_metrics() {
+        ObjectNode params = objectMapper.createObjectNode()
+                .put("oaToken", "oa-token-canary")
+                .put("session_token", "session-token-canary")
+                .put("tokenCanary", "unknown-token-canary")
+                .put("promptTokens", 123)
+                .put("completionTokens", "TASK17_REAL_ACCESS_TOKEN_CANARY")
+                .set("nested", objectMapper.createObjectNode()
+                        .put("total_tokens", "TASK17_NESTED_TOKEN_CANARY"));
+
+        String summary = JsonRpcLogSupport.paramsSummary(params);
+
+        assertThat(summary).contains("\"promptTokens\":123", "\"completionTokens\":\"***\"", "\"total_tokens\":\"***\"");
+        assertThat(summary).doesNotContain(
+                "oa-token-canary",
+                "session-token-canary",
+                "unknown-token-canary",
+                "TASK17_REAL_ACCESS_TOKEN_CANARY",
+                "TASK17_NESTED_TOKEN_CANARY");
     }
 
     @Test

@@ -42,6 +42,11 @@ public sealed interface JsonRpcMessage
             @JsonProperty(required = true) String method,
             Object params
     ) implements JsonRpcMessage {
+        @Override
+        public String toString() {
+            return "Request[jsonrpc=" + jsonrpc + ", id=" + id + ", method=" + method
+                    + ", params=[REDACTED]]";
+        }
     }
 
     /**

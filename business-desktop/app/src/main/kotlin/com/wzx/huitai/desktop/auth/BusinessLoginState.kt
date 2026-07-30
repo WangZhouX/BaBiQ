@@ -1,6 +1,16 @@
 package com.wzx.huitai.desktop.auth
 
-import com.wzx.huitai.integration.oa.auth.OaTenantCandidate
+/** Server-issued opaque tenant selection ticket shown by the login UI. */
+data class BusinessTenantCandidate(
+    val candidateId: String,
+    val name: String? = null,
+    val platformId: Int = 0,
+    val tenantEnterStatus: Int = 0,
+) {
+    init {
+        require(candidateId.isNotBlank()) { "candidateId must not be blank" }
+    }
+}
 
 enum class BusinessSliderState { IDLE, REQUESTED }
 
@@ -32,7 +42,7 @@ data class BusinessLoginMessage(
 )
 
 data class BusinessTenantCandidateState(
-    val candidate: OaTenantCandidate,
+    val candidate: BusinessTenantCandidate,
     val enabled: Boolean,
 )
 

@@ -23,7 +23,6 @@ include(
     ":presentation-core",
     ":application-action-core",
     ":agent-client-core",
-    ":huitai-integration-core",
     ":security-audit-core",
     ":framework-demo",
 )

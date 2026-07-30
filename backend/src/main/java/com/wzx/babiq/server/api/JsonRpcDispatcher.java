@@ -106,8 +106,8 @@ public class JsonRpcDispatcher {
             multiMethodHandler.handle(notification.method(), params, session);
             return true;
         } catch (Exception exception) {
-            log.warn("JSON-RPC notification 执行失败: method={}, handler={}",
-                    notification.method(), handler.getClass().getSimpleName(), exception);
+            log.warn("JSON-RPC notification 执行失败: method={}, handler={}, errorType={}",
+                    notification.method(), handler.getClass().getSimpleName(), exception.getClass().getSimpleName());
             return false;
         }
     }
@@ -153,16 +153,16 @@ public class JsonRpcDispatcher {
                     jsonRpcException.errorData());
         } catch (Exception exception) {
             // 未预期异常统一映射为 SERVER_ERROR，避免把 Java 栈细节泄露给桌面端协议。
-            log.error("JSON-RPC method 执行失败: requestId={}, method={}, handler={}, elapsedMs={}",
+            log.error("JSON-RPC method 执行失败: requestId={}, method={}, handler={}, elapsedMs={}, errorType={}",
                     request.id(),
                     request.method(),
                     handler.getClass().getSimpleName(),
                     JsonRpcLogSupport.elapsedMillis(startedNanos),
-                    exception);
+                    exception.getClass().getSimpleName());
             return JsonRpcMessage.ErrorResponse.of(
                     request.id(),
                     JsonRpcErrorCode.SERVER_ERROR,
-                    exception.getMessage(),
+                    "Internal server error",
                     null);
         }
     }

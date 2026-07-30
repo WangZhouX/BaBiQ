@@ -80,13 +80,14 @@ class BusinessProviderSettingsRestartIT {
         val updateSecret = "sk-restart-update-$suffix"
         val traffic = JsonRpcTrafficAudit(createSecret, updateSecret)
         val diagnostics = SecretDiagnosticAudit(createSecret, updateSecret)
+        val fakeOa = BusinessRealBackendTestHarness.FakeOaServer.start()
         var first: RunningDesktop? = null
         var second: RunningDesktop? = null
         var primaryFailure: Throwable? = null
 
         try {
             withTimeout(OVERALL_TIMEOUT_MILLIS) {
-                first = startDesktop(home, backendJar, traffic)
+                first = startDesktop(home, backendJar, traffic, fakeOa)
                 val firstRunning = requireNotNull(first)
                 assertTrue(Files.isDirectory(workspace))
                 val firstClient = firstRunning.client
@@ -155,7 +156,7 @@ class BusinessProviderSettingsRestartIT {
                 firstRunning.shutdown()
                 firstRunning.assertFullyStopped()
 
-                second = startDesktop(home, backendJar, traffic)
+                second = startDesktop(home, backendJar, traffic, fakeOa)
                 val secondRunning = requireNotNull(second)
                 assertNotEquals(firstRunning.pid, secondRunning.pid)
                 assertEquals(firstRunning.paths.root, secondRunning.paths.root)
@@ -189,6 +190,15 @@ class BusinessProviderSettingsRestartIT {
                 assertSecretAbsent(firstRunning.paths.agentKeyStore, createSecret, updateSecret)
                 assertSecretAbsent(firstRunning.paths.agentLog, createSecret, updateSecret)
                 assertSecretAbsent(firstRunning.paths.desktopLog, createSecret, updateSecret)
+                BusinessRealBackendTestHarness.assertOaSecretsAbsent(
+                    firstRunning.paths.root,
+                    firstRunning.paths.agentDatabase,
+                    firstRunning.paths.agentKeyStore,
+                    firstRunning.paths.desktopDatabase,
+                    firstRunning.paths.desktopKeyStore,
+                    firstRunning.paths.agentLog,
+                    firstRunning.paths.desktopLog,
+                )
             }
         } catch (failure: Throwable) {
             diagnostics.inspect(failure.stackTraceToString())
@@ -203,6 +213,7 @@ class BusinessProviderSettingsRestartIT {
             val cleanupFailure = withContext(NonCancellable) {
                 cleanupAndAssert(first, second)
             }
+            fakeOa.close()
             if (cleanupFailure != null) {
                 primaryFailure?.addSuppressed(cleanupFailure) ?: throw cleanupFailure
             }
@@ -216,6 +227,7 @@ class BusinessProviderSettingsRestartIT {
         home: Path,
         backendJar: Path,
         traffic: JsonRpcTrafficAudit,
+        fakeOa: BusinessRealBackendTestHarness.FakeOaServer,
     ): RunningDesktop {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val capturedSession = AtomicReference<BusinessAgentRuntimeSession>()
@@ -230,7 +242,9 @@ class BusinessProviderSettingsRestartIT {
             )
             val session = BusinessAgentProcessLauncher(
                 readinessProbe = authenticatedReadinessProbe(),
-                parentEnvironment = ::safeParentEnvironment,
+                parentEnvironment = {
+                    BusinessRealBackendTestHarness.safeParentEnvironment(fakeOa.baseUrl)
+                },
             ).launch(request)
             capturedSession.set(session)
             BusinessAgentChildHandle(
@@ -266,7 +280,6 @@ class BusinessProviderSettingsRestartIT {
                 home = home,
                 backendJar = backendJar,
                 desktopSecretBootstrap = DesktopSecretBootstrap { DESKTOP_KEYSTORE_PASSWORD.toCharArray() },
-                frameworkDemoIdentity = true,
             ),
             parentScope = scope,
             childLauncher = childLauncher,
@@ -275,6 +288,7 @@ class BusinessProviderSettingsRestartIT {
 
         return try {
             val root = withTimeout(STARTUP_TIMEOUT_MILLIS) { BusinessDesktopCompositionRoot.start(factory) }
+            BusinessRealBackendTestHarness.loginReady(root)
             val view = assertNotNull(root.runtimeView)
             RunningDesktop(
                 root = root,
@@ -364,10 +378,6 @@ class BusinessProviderSettingsRestartIT {
         },
         timeoutMillis = STARTUP_TIMEOUT_MILLIS,
     )
-
-    private fun safeParentEnvironment(): Map<String, String> = SAFE_ENVIRONMENT_KEYS.mapNotNull { key ->
-        System.getenv(key)?.takeIf(String::isNotBlank)?.let { key to it }
-    }.toMap()
 
     private fun assertProvider(
         actual: BusinessProvider,
@@ -595,15 +605,5 @@ class BusinessProviderSettingsRestartIT {
         const val ROOT_SHUTDOWN_TIMEOUT_MILLIS = 20_000L
         const val SESSION_CLOSE_TIMEOUT_MILLIS = 15_000L
         const val DESKTOP_KEYSTORE_PASSWORD = "provider-restart-desktop-secret"
-        val SAFE_ENVIRONMENT_KEYS = listOf(
-            "SystemRoot",
-            "WINDIR",
-            "TEMP",
-            "TMP",
-            "TMPDIR",
-            "LANG",
-            "LC_ALL",
-            "PATH",
-        )
     }
 }

@@ -8,6 +8,7 @@ import java.util.Set;
 public final class ApplicationProtocolValidator {
 
     public static final int MAX_ENVELOPE_BYTES = 256 * 1024;
+    public static final int MAX_WEBSOCKET_TEXT_BUFFER_BYTES = MAX_ENVELOPE_BYTES + 1;
     public static final int MAX_CATALOG_PAYLOAD_BYTES = 128 * 1024;
     public static final int MAX_CONTEXT_PAYLOAD_BYTES = 128 * 1024;
     public static final int MAX_ACTION_INPUT_BYTES = 64 * 1024;

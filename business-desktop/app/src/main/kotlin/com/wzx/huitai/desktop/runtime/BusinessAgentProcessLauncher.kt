@@ -30,7 +30,8 @@ class BusinessAgentProcessLauncher(
         var process: Process? = null
         try {
             val logIdentity = SecureRuntimeFile.prepare(request.paths.agentLog)
-            val builder = ProcessBuilder(request.command())
+            val preparedLaunch = request.prepareLaunch()
+            val builder = ProcessBuilder(preparedLaunch.command)
             when (output) {
                 BusinessAgentProcessOutput.AgentLogFile -> builder
                     .redirectErrorStream(true)
@@ -46,6 +47,7 @@ class BusinessAgentProcessLauncher(
                 parent[key]?.takeIf(String::isNotBlank)?.let { environment[key] = it }
             }
             builder.environment().putAll(request.environment())
+            preparedLaunch.verifyConfigurationUnchanged()
             process = processStarter.start(builder)
             SecureRuntimeFile.verifyUnchanged(logIdentity)
             builder.environment().remove(BusinessAgentLaunchRequest.BACKEND_KEYSTORE_PASSWORD_ENV)
@@ -88,6 +90,7 @@ class BusinessAgentProcessLauncher(
             "ONEAPI_KEY",
             "ONEAPI_MODEL",
             "ANTHROPIC_CLI_PATH",
+            "HUITAI_OA_BASE_URL",
         )
 
         val SENSITIVE_PROVIDER_ENVIRONMENT_KEYS = setOf(

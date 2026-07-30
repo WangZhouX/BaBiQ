@@ -75,12 +75,62 @@ class BusinessIdentityRegistryTest {
         assertTrue(!registry.publishReady(identity(), expectedGeneration = 0))
     }
 
-    private fun identity() = BusinessIdentity(
+    @Test
+    fun `ready publication CAS requires the exact captured registry snapshot`() {
+        val registry = BusinessIdentityRegistry()
+        registry.transitionTo(BusinessAccessGateState.RESTORING)
+        val expected = registry.snapshot.value
+
+        registry.transitionTo(BusinessAccessGateState.REGISTERING_AGENT)
+
+        assertTrue(!registry.publishReadyIfCurrent(identity(), expected))
+        assertEquals(BusinessAccessGateState.REGISTERING_AGENT, registry.snapshot.value.gate)
+        assertNull(registry.currentIdentity())
+        assertEquals(expected.generation, registry.currentGeneration())
+
+        val current = registry.snapshot.value
+        assertTrue(registry.publishReadyIfCurrent(identity(), current))
+        assertEquals(BusinessAccessGateState.READY, registry.snapshot.value.gate)
+        assertEquals(identity(), registry.currentIdentity())
+        assertEquals(current.generation, registry.currentGeneration())
+    }
+
+    @Test
+    fun `invalidation CAS rejects same generation identity replacement`() {
+        val registry = BusinessIdentityRegistry()
+        val oldIdentity = identity()
+        val replacementIdentity = identity(
+            authSessionId = "auth-2",
+            identityEpoch = 2,
+            userId = "user-2",
+        )
+        assertTrue(registry.publishReady(oldIdentity, expectedGeneration = 0))
+        val expected = registry.snapshot.value
+
+        assertTrue(registry.publishReady(replacementIdentity, expectedGeneration = expected.generation))
+
+        assertTrue(!registry.invalidateIfCurrent(expected, BusinessAccessGateState.SIGNED_OUT))
+        assertEquals(BusinessAccessGateState.READY, registry.snapshot.value.gate)
+        assertEquals(replacementIdentity, registry.currentIdentity())
+        assertEquals(expected.generation, registry.currentGeneration())
+
+        val current = registry.snapshot.value
+        assertTrue(registry.invalidateIfCurrent(current, BusinessAccessGateState.SIGNED_OUT))
+        assertEquals(BusinessAccessGateState.SIGNED_OUT, registry.snapshot.value.gate)
+        assertNull(registry.currentIdentity())
+        assertEquals(current.generation + 1, registry.currentGeneration())
+    }
+
+    private fun identity(
+        authSessionId: String = "auth-1",
+        identityEpoch: Long = 1,
+        userId: String = "user-1",
+    ) = BusinessIdentity(
         desktopInstanceId = "desktop-1",
         desktopSessionId = "session-1",
-        authSessionId = "auth-1",
-        identityEpoch = 1,
-        userId = "user-1",
+        authSessionId = authSessionId,
+        identityEpoch = identityEpoch,
+        userId = userId,
         tenantId = "tenant-1",
         platformId = "100",
         roles = setOf("lawyer"),

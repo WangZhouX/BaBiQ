@@ -12,10 +12,12 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Supplier;
 
 /** 管理业务桌面握手预留与已建立 WebSocket 的一对一绑定。 */
 @Component
@@ -149,6 +151,62 @@ public final class BusinessDesktopConnectionRegistry {
         removeExpiredPending();
         ConnectionSlot slot = slotsByDesktopSessionId.get(desktopSessionId);
         return slot == null ? Optional.empty() : Optional.ofNullable(slot.connection());
+    }
+
+    /** Returns the finalized connection bound to the concrete WebSocket session id. */
+    public synchronized Optional<TrustedDesktopConnection> findByWebSocketSessionId(String webSocketSessionId) {
+        removeExpiredPending();
+        if (webSocketSessionId == null || webSocketSessionId.isBlank()) {
+            return Optional.empty();
+        }
+        return slotsByDesktopSessionId.values().stream()
+                .map(ConnectionSlot::connection)
+                .filter(java.util.Objects::nonNull)
+                .filter(connection -> connection.webSocketSessionId().equals(webSocketSessionId))
+                .findFirst();
+    }
+
+    public synchronized boolean isFinalized(String webSocketSessionId) {
+        return findByWebSocketSessionId(webSocketSessionId).isPresent();
+    }
+
+    /** Verifies that the complete reservation/WebSocket/instance/session tuple is still finalized. */
+    public boolean isFinalized(TrustedDesktopConnection connection) {
+        synchronized (this) {
+            removeExpiredPending();
+            return matchesFinalized(connection);
+        }
+    }
+
+    /**
+     * Runs one bounded local publication while the exact finalized tuple cannot be released.
+     *
+     * <p>The operation must not perform network or database IO and must not re-enter this
+     * registry. Connection close listeners remain outside this registry's monitor.</p>
+     */
+    public <T> T withFinalized(TrustedDesktopConnection connection, Supplier<T> operation) {
+        Objects.requireNonNull(connection, "connection");
+        Objects.requireNonNull(operation, "operation");
+        synchronized (this) {
+            removeExpiredPending();
+            if (!matchesFinalized(connection)) {
+                throw new IllegalStateException("BUSINESS_SESSION_STALE");
+            }
+            return operation.get();
+        }
+    }
+
+    private boolean matchesFinalized(TrustedDesktopConnection connection) {
+        if (connection == null) {
+            return false;
+        }
+        ConnectionSlot slot = slotsByDesktopSessionId.get(connection.desktopSessionId());
+        return slot != null
+                && slot.connection() != null
+                && slot.reservationId().equals(connection.reservationId())
+                && slot.desktopInstanceId().equals(connection.desktopInstanceId())
+                && slot.desktopSessionId().equals(connection.desktopSessionId())
+                && slot.connection().equals(connection);
     }
 
     private static void requireText(String value, String name) {

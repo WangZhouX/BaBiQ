@@ -26,6 +26,20 @@ server:
 logging:
   level:
     com.wzx.babiq.server: DEBUG
+    # 这些 mapper 的参数或结果包含耐久 SecretStore 引用，禁止 SQL 值日志输出。
+    com.wzx.babiq.server.persistence.mapper.ProviderConfigMapper: "OFF"
+    com.wzx.babiq.server.persistence.mapper.OaSessionMapper: "OFF"
+    com.wzx.babiq.server.persistence.mapper.BusinessOaSecretCleanupMapper: "OFF"
+
+# Keep the OA configuration bindable for non-business test/application contexts.
+# The business-desktop profile supplies the real endpoint and private-network policy.
+huitai:
+  oa:
+    base-url: ${HUITAI_OA_BASE_URL:}
+    api-prefix: /law-api
+    platform-id: 2
+    request-timeout-ms: 30000
+    allow-private-http: false
 
 babiq:
   active-provider: dashscope-default

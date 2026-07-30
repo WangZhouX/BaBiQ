@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.wzx.babiq.server.application.auth.ApplicationIdentityRegistry;
+import com.wzx.babiq.server.application.auth.ApplicationInstallationLease;
 import com.wzx.babiq.server.application.auth.TrustedBusinessIdentity;
 import com.wzx.babiq.server.application.auth.TrustedDesktopConnection;
 import com.wzx.babiq.server.application.protocol.ApplicationCatalogMessage;
@@ -30,6 +31,7 @@ public class ApplicationCatalogRegistry {
 
     private final ApplicationIdentityRegistry identities;
     private final Map<String, CatalogSnapshot> snapshots = new HashMap<>();
+    private final Map<String, CatalogSnapshot> provisionalSnapshots = new HashMap<>();
 
     public ApplicationCatalogRegistry(ApplicationIdentityRegistry identities) {
         this.identities = Objects.requireNonNull(identities, "identities");
@@ -39,12 +41,65 @@ public class ApplicationCatalogRegistry {
     public synchronized CatalogSnapshot register(
             TrustedDesktopConnection connection,
             ApplicationCatalogMessage message) {
-        if (snapshots.containsKey(connection.webSocketSessionId())) {
+        if (snapshots.containsKey(connection.webSocketSessionId())
+                || provisionalSnapshots.containsKey(connection.webSocketSessionId())) {
             throw new IllegalStateException("Catalog is already registered for this connection");
         }
         CatalogSnapshot candidate = validateAndBuild(connection, message);
         snapshots.put(connection.webSocketSessionId(), candidate);
         return candidate;
+    }
+
+    /** Installs a server-owned catalog projection; no client identity message is trusted. */
+    public synchronized CatalogSnapshot installServer(
+            TrustedDesktopConnection connection,
+            ApplicationInstallationLease installationLease,
+            long catalogEpoch,
+            JsonNode payload) {
+        Objects.requireNonNull(connection, "connection");
+        Objects.requireNonNull(installationLease, "installationLease").requireOwner(connection);
+        if (snapshots.containsKey(connection.webSocketSessionId())
+                || provisionalSnapshots.containsKey(connection.webSocketSessionId())) {
+            throw new IllegalStateException("Catalog is already registered for this connection");
+        }
+        TrustedBusinessIdentity identity = identities.provisional(connection, installationLease)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Catalog installation lease does not match provisional identity"));
+        if (catalogEpoch <= 0) throw new IllegalArgumentException("catalogEpoch must be positive");
+        if (payload == null || !payload.isObject()) throw new IllegalArgumentException("Catalog payload must be an object");
+        byte[] bytes = payload.toString().getBytes(StandardCharsets.UTF_8);
+        ApplicationProtocolValidator.validateCatalogPayloadSize(bytes);
+        validateOptionalPayloadScope(payload, identity);
+        JsonNode filtered = filterActions(payload, identity.permissions());
+        CatalogSnapshot snapshot = new CatalogSnapshot(
+                connection, catalogEpoch, filtered, true, installationLease);
+        provisionalSnapshots.put(connection.webSocketSessionId(), snapshot);
+        return snapshot;
+    }
+
+    /** Server-internal exact lookup; public current() never exposes this snapshot. */
+    public synchronized Optional<CatalogSnapshot> provisional(
+            TrustedDesktopConnection connection,
+            ApplicationInstallationLease installationLease) {
+        Objects.requireNonNull(connection, "connection");
+        Objects.requireNonNull(installationLease, "installationLease").requireOwner(connection);
+        CatalogSnapshot snapshot = provisionalSnapshots.get(connection.webSocketSessionId());
+        return snapshot != null
+                && snapshot.connection().equals(connection)
+                && installationLease.equals(snapshot.installationLease())
+                ? Optional.of(snapshot)
+                : Optional.empty();
+    }
+
+    /** Moves only the exact provisional catalog into the public committed view. */
+    public synchronized CatalogSnapshot commitInstallation(
+            TrustedDesktopConnection connection,
+            ApplicationInstallationLease installationLease) {
+        CatalogSnapshot snapshot = provisional(connection, installationLease)
+                .orElseThrow(() -> new IllegalStateException("Catalog installation is stale"));
+        provisionalSnapshots.remove(connection.webSocketSessionId());
+        snapshots.put(connection.webSocketSessionId(), snapshot);
+        return snapshot;
     }
 
     /** 目录更新只接受严格高于当前水位的 catalog epoch。 */
@@ -74,6 +129,33 @@ public class ApplicationCatalogRegistry {
         if (current != null && current.connection().equals(connection)) {
             snapshots.remove(connection.webSocketSessionId());
         }
+        CatalogSnapshot provisional = provisionalSnapshots.get(connection.webSocketSessionId());
+        if (provisional != null && provisional.connection().equals(connection)) {
+            provisionalSnapshots.remove(connection.webSocketSessionId());
+        }
+    }
+
+    /** Clears a provisional catalog only when it still belongs to the exact installation attempt. */
+    public synchronized boolean clearInstallation(
+            TrustedDesktopConnection connection,
+            ApplicationInstallationLease installationLease) {
+        Objects.requireNonNull(connection, "connection");
+        Objects.requireNonNull(installationLease, "installationLease").requireOwner(connection);
+        CatalogSnapshot provisional = provisionalSnapshots.get(connection.webSocketSessionId());
+        if (provisional != null
+                && provisional.connection().equals(connection)
+                && installationLease.equals(provisional.installationLease())) {
+            provisionalSnapshots.remove(connection.webSocketSessionId());
+            return true;
+        }
+        CatalogSnapshot committed = snapshots.get(connection.webSocketSessionId());
+        if (committed != null
+                && committed.connection().equals(connection)
+                && installationLease.equals(committed.installationLease())) {
+            snapshots.remove(connection.webSocketSessionId());
+            return true;
+        }
+        return false;
     }
 
     private CatalogSnapshot validateAndBuild(
@@ -86,7 +168,7 @@ public class ApplicationCatalogRegistry {
         JsonNode payload = requirePayload(message);
         validateOptionalPayloadScope(payload, identity);
         JsonNode filteredPayload = filterActions(payload, identity.permissions());
-        return new CatalogSnapshot(connection, message.catalogEpoch(), filteredPayload, true);
+        return new CatalogSnapshot(connection, message.catalogEpoch(), filteredPayload, true, null);
     }
 
     private TrustedBusinessIdentity requireMatchingIdentity(
@@ -214,9 +296,22 @@ public class ApplicationCatalogRegistry {
             TrustedDesktopConnection connection,
             long catalogEpoch,
             JsonNode payload,
-            boolean untrustedData) {
+            boolean untrustedData,
+            ApplicationInstallationLease installationLease) {
         public CatalogSnapshot {
+            Objects.requireNonNull(connection, "connection");
+            if (installationLease != null) {
+                installationLease.requireOwner(connection);
+            }
             payload = payload == null ? null : payload.deepCopy();
+        }
+
+        public CatalogSnapshot(
+                TrustedDesktopConnection connection,
+                long catalogEpoch,
+                JsonNode payload,
+                boolean untrustedData) {
+            this(connection, catalogEpoch, payload, untrustedData, null);
         }
 
         @Override

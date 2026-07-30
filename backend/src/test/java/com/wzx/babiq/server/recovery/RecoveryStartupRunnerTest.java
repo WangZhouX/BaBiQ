@@ -2,6 +2,7 @@ package com.wzx.babiq.server.recovery;
 
 import com.wzx.babiq.server.application.action.ApplicationActionRecoveryService;
 import com.wzx.babiq.server.attachment.ClipboardAttachmentRetentionService;
+import com.wzx.babiq.server.business.oa.session.BusinessOaSessionRecoveryService;
 import com.wzx.babiq.server.context.compaction.ContextCompactionRecoveryService;
 import com.wzx.babiq.server.workunit.WorkUnitService;
 import org.junit.jupiter.api.Test;
@@ -21,8 +22,10 @@ import static org.mockito.Mockito.mock;
 class RecoveryStartupRunnerTest {
 
     @Test
-    void startupRunsClipboardCleanupAfterDatabaseRecoveryBeforeOpeningRecoveryGate() {
+    void startupRunsOaRecoveryAndClipboardCleanupBeforeOpeningRecoveryGate() {
         TurnRecoveryService recovery = mock(TurnRecoveryService.class);
+        BusinessOaSessionRecoveryService oaRecovery =
+                mock(BusinessOaSessionRecoveryService.class);
         ClipboardAttachmentRetentionService retention =
                 mock(ClipboardAttachmentRetentionService.class);
         StartupRecoveryCoordinator coordinator = mock(StartupRecoveryCoordinator.class);
@@ -35,12 +38,14 @@ class RecoveryStartupRunnerTest {
                 emptyProvider(),
                 emptyProvider(),
                 retentionProvider,
+                providerThatInvokes(oaRecovery),
                 coordinator);
 
         runner.run(null);
 
-        InOrder ordered = inOrder(recovery, retention, coordinator);
+        InOrder ordered = inOrder(recovery, oaRecovery, retention, coordinator);
         ordered.verify(recovery).recoverAbandonedState();
+        ordered.verify(oaRecovery).recover();
         ordered.verify(retention).cleanup();
         ordered.verify(coordinator).markRecoveryComplete();
     }

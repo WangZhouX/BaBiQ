@@ -3,6 +3,7 @@ package com.wzx.huitai.desktop.runtime
 import com.wzx.huitai.agent.client.AgentConnection
 import com.wzx.huitai.agent.client.AgentConnectionState
 import com.wzx.huitai.agent.client.KtorAgentTransport
+import com.wzx.huitai.desktop.auth.config.BusinessLegalLinksLoader
 import com.wzx.huitai.security.instance.ProcessInstanceLockException
 import com.wzx.huitai.security.secret.JceksSecretStore
 import io.ktor.client.HttpClient
@@ -72,6 +73,8 @@ class BusinessBackendDevelopmentRunner(
         var runtimeSession: BusinessAgentRuntimeSession? = null
         try {
             recoverStaleDevelopmentSession(ownership)
+            // The backend starts first in split development, so it installs the shared controlled default.
+            BusinessLegalLinksLoader(environment = emptyMap()).load(paths)
             desktopPassword = desktopSecretBootstrap()
             require(desktopPassword.isNotEmpty()) { "desktop KeyStore password must not be empty" }
             JceksSecretStore(paths.desktopKeyStore, requireNotNull(desktopPassword)).use { store ->

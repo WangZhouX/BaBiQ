@@ -12,8 +12,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.wzx.huitai.desktop.auth.config.BusinessOaConfigurationErrorCode
-import com.wzx.huitai.desktop.auth.config.BusinessOaConfigurationException
+import com.wzx.huitai.desktop.auth.config.BusinessLegalLinksConfigurationErrorCode
+import com.wzx.huitai.desktop.auth.config.BusinessLegalLinksConfigurationException
 import com.wzx.huitai.desktop.security.LocalCredentialStoreUnavailableException
 import com.wzx.huitai.security.secret.SecretStoreException
 
@@ -36,10 +36,10 @@ internal fun classifyBusinessBootstrapFailure(failure: Throwable): BusinessBoots
     val visited = hashSetOf<Throwable>()
     while (current != null && visited.add(current)) {
         when (current) {
-            is BusinessOaConfigurationException -> return when (current.code) {
-                BusinessOaConfigurationErrorCode.CONFIG_UNAVAILABLE ->
+            is BusinessLegalLinksConfigurationException -> return when (current.code) {
+                BusinessLegalLinksConfigurationErrorCode.CONFIG_UNAVAILABLE ->
                     BusinessBootstrapFailureCode.CONFIG_UNAVAILABLE
-                BusinessOaConfigurationErrorCode.CONFIG_INVALID ->
+                BusinessLegalLinksConfigurationErrorCode.CONFIG_INVALID ->
                     BusinessBootstrapFailureCode.CONFIG_INVALID
             }
             is LocalCredentialStoreUnavailableException,

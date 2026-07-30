@@ -61,6 +61,7 @@ class BusinessDesktopAuthenticatedWebSocketIT {
     static void businessProperties(DynamicPropertyRegistry registry) {
         registry.add("babiq.business.runtime-dir", RUNTIME::toString);
         registry.add("babiq.business.session-token-file", TOKEN_FILE::toString);
+        registry.add("babiq.secrets.keystore-password", () -> "business-auth-it-password");
     }
 
     @LocalServerPort
@@ -124,7 +125,7 @@ class BusinessDesktopAuthenticatedWebSocketIT {
     }
 
     @Test
-    void endpointAcceptsIdentityEnvelopeAboveTomcatDefaultWithinProtocolLimit() throws Exception {
+    void endpointAcceptsLargeClientIdentityFrameButRejectsClientOwnedIdentityProjection() throws Exception {
         String sessionId = UUID.randomUUID().toString();
         List<String> received = new CopyOnWriteArrayList<>();
         try (WebSocketSession session = connect(TOKEN, INSTANCE_ID, sessionId, received)) {
@@ -161,12 +162,10 @@ class BusinessDesktopAuthenticatedWebSocketIT {
                     assertThat(received.stream()
                             .map(this::read)
                             .anyMatch(response -> response.path("id").asInt() == 19
-                                    && response.path("result").path("authenticated").asBoolean()
-                                    && response.path("result").path("identityEpoch").asLong() == 1L))
+                                    && response.path("error").path("code").asInt() == -32601))
                             .isTrue());
             var connection = registry.findByDesktopSessionId(sessionId).orElseThrow();
-            assertThat(identities.current(connection)).get().satisfies(identity ->
-                    assertThat(identity.permissions()).hasSize(600));
+            assertThat(identities.current(connection)).isEmpty();
         }
     }
 

@@ -90,12 +90,13 @@ class BaBiQSandboxInterceptorTest {
 
         assertThat(response.toToolResponse().id()).isEqualTo("call_1");
         assertThat(response.toToolResponse().name()).isEqualTo("write_file");
+        assertThat(response.getResult()).isEqualTo("TOOL_EXECUTION_DENIED");
         assertThat(emitted).hasSize(1);
         assertThat(emitted.get(0)).isInstanceOf(FileChangeItem.class);
         FileChangeItem item = (FileChangeItem) emitted.get(0);
         assertThat(item.status()).isEqualTo("denied");
-        assertThat(item.path()).endsWith("a.txt");
-        assertThat(item.contentPreview()).contains("read-only");
+        assertThat(item.path()).isEqualTo("[REDACTED]");
+        assertThat(item.contentPreview()).isEqualTo("TOOL_EXECUTION_FAILED");
     }
 
     @Test

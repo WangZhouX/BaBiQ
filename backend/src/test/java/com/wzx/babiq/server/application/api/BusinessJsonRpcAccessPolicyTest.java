@@ -2,8 +2,10 @@ package com.wzx.babiq.server.application.api;
 
 import com.wzx.babiq.server.application.auth.ApplicationIdentityRegistry;
 import com.wzx.babiq.server.application.auth.BusinessDesktopConnectionRegistry;
+import com.wzx.babiq.server.application.auth.TrustedBusinessIdentity;
 import com.wzx.babiq.server.application.auth.TrustedDesktopConnection;
 import com.wzx.babiq.server.application.protocol.ApplicationIdentityMessage;
+import com.wzx.babiq.server.business.oa.session.BusinessOaSessionRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.util.Set;
@@ -12,6 +14,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -20,8 +23,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 class BusinessJsonRpcAccessPolicyTest {
 
     private static final Set<String> PRE_BIND = Set.of(
-            "application/identity/bind",
-            "application/identity/update",
+            "business/auth/session/get",
+            "business/auth/session/attach",
+            "business/auth/session/restore",
+            "business/auth/tenant-candidates",
+            "business/auth/login",
+            "business/auth/logout");
+
+    private static final Set<String> SAFE_LOCAL = Set.of(
             "model/providers/list",
             "settings/get",
             "sandbox/policy",
@@ -51,9 +60,20 @@ class BusinessJsonRpcAccessPolicyTest {
             "run/turn/get",
             "context/status",
             "context/snapshot/get",
-            "application/catalog/register",
-            "application/catalog/update",
-            "application/context/publish",
+            "business/workbench/get",
+            "business/workbench/navigation/get",
+            "business/workbench/home-info/get",
+            "business/workbench/page/get",
+            "business/workbench/team-roles/list",
+            "business/workbench/sort/update",
+            "business/schedule/month/get",
+            "business/schedule/day/get",
+            "business/schedule/completion/set",
+            "business/schedule/form/get",
+            "business/schedule/relation-options/get",
+            "business/schedule/service-projects/get",
+            "business/schedule/create",
+            "business/attachments/upload/prepare",
             "application/action/accepted",
             "application/action/previewed",
             "application/action/approval-required",
@@ -82,9 +102,12 @@ class BusinessJsonRpcAccessPolicyTest {
     @Test
     void preBindAllowlistIsExactAndDefaultDeny() {
         ApplicationIdentityRegistry identities = new ApplicationIdentityRegistry();
-        BusinessJsonRpcAccessPolicy policy = new BusinessJsonRpcAccessPolicy(identities);
+        BusinessDesktopConnectionRegistry connections = mock(BusinessDesktopConnectionRegistry.class);
+        when(connections.isFinalized("ws-1")).thenReturn(true);
+        BusinessJsonRpcAccessPolicy policy = new BusinessJsonRpcAccessPolicy(identities, connections);
 
         PRE_BIND.forEach(method -> assertThat(policy.isAllowed(method, "ws-1")).as(method).isTrue());
+        SAFE_LOCAL.forEach(method -> assertThat(policy.isAllowed(method, "ws-1")).as(method).isTrue());
         POST_BIND_ONLY.forEach(method -> assertThat(policy.isAllowed(method, "ws-1")).as(method).isFalse());
         ALWAYS_DENIED.forEach(method -> assertThat(policy.isAllowed(method, "ws-1")).as(method).isFalse());
         assertThat(policy.isAllowed("future/unknown", "ws-1")).isFalse();
@@ -93,11 +116,15 @@ class BusinessJsonRpcAccessPolicyTest {
     @Test
     void postBindAllowlistAddsOnlyScopedBusinessMethods() {
         ApplicationIdentityRegistry identities = new ApplicationIdentityRegistry();
-        identities.bind(connection(), authenticatedIdentity());
+        TrustedBusinessIdentity identity = identities.bind(connection(), authenticatedIdentity());
         BusinessDesktopConnectionRegistry connections = mock(BusinessDesktopConnectionRegistry.class);
-        when(connections.findByDesktopSessionId("desktop-session-1"))
+        when(connections.findByWebSocketSessionId("ws-1"))
                 .thenReturn(Optional.of(connection()));
-        BusinessJsonRpcAccessPolicy policy = new BusinessJsonRpcAccessPolicy(identities, connections);
+        when(connections.isFinalized("ws-1")).thenReturn(true);
+        BusinessOaSessionRegistry sessions = mock(BusinessOaSessionRegistry.class);
+        when(sessions.matchesCurrentReady(connection(), identity)).thenReturn(true);
+        BusinessJsonRpcAccessPolicy policy = new BusinessJsonRpcAccessPolicy(
+                identities, connections, sessions);
 
         PRE_BIND.forEach(method -> assertThat(policy.isAllowed(method, "ws-1")).as(method).isTrue());
         POST_BIND_ONLY.forEach(method -> assertThat(policy.isAllowed(method, "ws-1")).as(method).isTrue());
@@ -107,18 +134,46 @@ class BusinessJsonRpcAccessPolicyTest {
     }
 
     @Test
-    void postBindMethodsAreDeniedAfterFinalizedConnectionReleaseOrIdentityDrift() {
+    void legacyClientProjectionModeIsExplicitConnectionScopedAndStillDefaultDeny() {
         ApplicationIdentityRegistry identities = new ApplicationIdentityRegistry();
         identities.bind(connection(), authenticatedIdentity());
         BusinessDesktopConnectionRegistry connections = mock(BusinessDesktopConnectionRegistry.class);
+        when(connections.findByWebSocketSessionId("ws-1"))
+                .thenReturn(Optional.of(connection()));
+        when(connections.isFinalized("ws-1")).thenReturn(true);
+        BusinessOaSessionRegistry sessions = mock(BusinessOaSessionRegistry.class);
+        BusinessJsonRpcAccessPolicy production = new BusinessJsonRpcAccessPolicy(
+                identities, connections, sessions, false);
+        BusinessJsonRpcAccessPolicy legacyTest = new BusinessJsonRpcAccessPolicy(
+                identities, connections, sessions, true);
+
+        assertThat(production.isAllowed("application/identity/bind", "ws-1")).isFalse();
+        assertThat(production.isAllowed("thread/list", "ws-1")).isFalse();
+        assertThat(legacyTest.isAllowed("application/identity/bind", "ws-1")).isTrue();
+        assertThat(legacyTest.isAllowed("application/catalog/register", "ws-1")).isTrue();
+        assertThat(legacyTest.isAllowed("application/context/publish", "ws-1")).isTrue();
+        assertThat(legacyTest.isAllowed("thread/list", "ws-1")).isTrue();
+        assertThat(legacyTest.isAllowed("future/unknown", "ws-1")).isFalse();
+        assertThat(legacyTest.isAllowed("thread/list", "other-ws")).isFalse();
+    }
+
+    @Test
+    void postBindMethodsAreDeniedAfterFinalizedConnectionReleaseOrIdentityDrift() {
+        ApplicationIdentityRegistry identities = new ApplicationIdentityRegistry();
+        TrustedBusinessIdentity identity = identities.bind(connection(), authenticatedIdentity());
+        BusinessDesktopConnectionRegistry connections = mock(BusinessDesktopConnectionRegistry.class);
         AtomicReference<TrustedDesktopConnection> active = new AtomicReference<>(connection());
-        when(connections.findByDesktopSessionId("desktop-session-1"))
+        when(connections.findByWebSocketSessionId("ws-1"))
                 .thenAnswer(invocation -> Optional.ofNullable(active.get()));
+        when(connections.isFinalized("ws-1")).thenAnswer(invocation -> active.get() != null);
         doAnswer(invocation -> {
             active.set(null);
             return true;
         }).when(connections).release("reservation-1", "ws-1");
-        BusinessJsonRpcAccessPolicy policy = new BusinessJsonRpcAccessPolicy(identities, connections);
+        BusinessOaSessionRegistry sessions = mock(BusinessOaSessionRegistry.class);
+        when(sessions.matchesCurrentReady(connection(), identity)).thenReturn(true);
+        BusinessJsonRpcAccessPolicy policy = new BusinessJsonRpcAccessPolicy(
+                identities, connections, sessions);
 
         POST_BIND_ONLY.forEach(method -> assertThat(policy.isAllowed(method, "ws-1")).as(method).isTrue());
         connections.release("reservation-1", "ws-1");
@@ -130,6 +185,20 @@ class BusinessJsonRpcAccessPolicyTest {
     }
 
     @Test
+    void preAuthSessionGetRequiresFinalizedConnectionAndMatchingHandshakeScope() {
+        ApplicationIdentityRegistry identities = new ApplicationIdentityRegistry();
+        BusinessDesktopConnectionRegistry connections = mock(BusinessDesktopConnectionRegistry.class);
+        TrustedDesktopConnection finalized = connection();
+        when(connections.findByWebSocketSessionId("ws-1")).thenReturn(Optional.of(finalized));
+        BusinessJsonRpcAccessPolicy policy = new BusinessJsonRpcAccessPolicy(identities, connections);
+
+        assertThat(policy.isAllowed("business/auth/session/get", "ws-1")).isTrue();
+        assertThat(policy.isAllowed("business/auth/session/get", "arbitrary-ws")).isFalse();
+        when(connections.findByWebSocketSessionId("ws-1")).thenReturn(Optional.empty());
+        assertThat(policy.isAllowed("business/auth/session/get", "ws-1")).isFalse();
+    }
+
+    @Test
     void postBindMethodsAreDeniedWhileIdentityIsTransitioning() {
         AtomicReference<BusinessJsonRpcAccessPolicy> policyRef = new AtomicReference<>();
         AtomicBoolean deniedDuringCallback = new AtomicBoolean();
@@ -138,9 +207,15 @@ class BusinessJsonRpcAccessPolicyTest {
                         deniedDuringCallback.set(!policyRef.get().isAllowed("thread/list", "ws-1")));
         identities.bind(connection(), authenticatedIdentity());
         BusinessDesktopConnectionRegistry connections = mock(BusinessDesktopConnectionRegistry.class);
-        when(connections.findByDesktopSessionId("desktop-session-1"))
+        when(connections.findByWebSocketSessionId("ws-1"))
                 .thenReturn(Optional.of(connection()));
-        BusinessJsonRpcAccessPolicy policy = new BusinessJsonRpcAccessPolicy(identities, connections);
+        when(connections.isFinalized("ws-1")).thenReturn(true);
+        BusinessOaSessionRegistry sessions = mock(BusinessOaSessionRegistry.class);
+        when(sessions.matchesCurrentReady(
+                any(TrustedDesktopConnection.class), any(TrustedBusinessIdentity.class)))
+                .thenReturn(true);
+        BusinessJsonRpcAccessPolicy policy = new BusinessJsonRpcAccessPolicy(
+                identities, connections, sessions);
         policyRef.set(policy);
 
         identities.update(connection(), new ApplicationIdentityMessage(

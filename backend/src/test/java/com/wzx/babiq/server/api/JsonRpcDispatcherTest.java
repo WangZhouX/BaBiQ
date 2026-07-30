@@ -12,9 +12,13 @@ import org.springframework.web.socket.WebSocketSession;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -93,7 +97,60 @@ class JsonRpcDispatcherTest {
     }
 
     @Test
-    void unexpected_handler_exception_should_return_minus32000() {
+    void business_auth_debug_log_uses_fixed_summary_without_changing_handler_params() {
+        String accountCanary = "account-canary@example.test";
+        String candidateCanary = "candidate-canary";
+        String innocentCanary = "innocent-password-token-canary";
+        AtomicReference<JsonNode> handledParams = new AtomicReference<>();
+        JsonRpcMethodHandler handler = new JsonRpcMethodHandler() {
+            @Override
+            public String method() {
+                return "business/auth/login";
+            }
+
+            @Override
+            public Object handle(JsonNode params, WebSocketSession session) {
+                handledParams.set(params);
+                return Map.of("ok", true);
+            }
+        };
+        JsonRpcDispatcher dispatcher = new JsonRpcDispatcher(List.of(handler), objectMapper);
+        JsonRpcMessage.Request request = new JsonRpcMessage.Request(
+                "2.0",
+                42L,
+                "business/auth/login",
+                Map.of(
+                        "account", accountCanary,
+                        "candidateId", candidateCanary,
+                        "innocentLookingField", innocentCanary));
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        dispatcherLogger.addAppender(appender);
+        try {
+            dispatcherLogger.setLevel(Level.DEBUG);
+            dispatcher.dispatch(request, null);
+        } finally {
+            dispatcherLogger.setLevel(previousDispatcherLevel);
+            dispatcherLogger.detachAppender(appender);
+            appender.stop();
+        }
+
+        String logs = appender.list.stream()
+                .map(ILoggingEvent::getFormattedMessage)
+                .collect(Collectors.joining("\n"));
+        assertThat(logs)
+                .contains("business/auth/login")
+                .contains("[business-auth-redacted]")
+                .doesNotContain(accountCanary)
+                .doesNotContain(candidateCanary)
+                .doesNotContain(innocentCanary);
+        assertThat(handledParams.get().path("account").asText()).isEqualTo(accountCanary);
+        assertThat(handledParams.get().path("candidateId").asText()).isEqualTo(candidateCanary);
+        assertThat(handledParams.get().path("innocentLookingField").asText()).isEqualTo(innocentCanary);
+    }
+
+    @Test
+    void unexpected_handler_exception_should_return_fixed_message_without_exception_detail() {
         dispatcherLogger.setLevel(Level.OFF);
         JsonRpcMethodHandler handler = new JsonRpcMethodHandler() {
             @Override
@@ -103,7 +160,7 @@ class JsonRpcDispatcherTest {
 
             @Override
             public Object handle(JsonNode params, WebSocketSession session) {
-                throw new IllegalStateException("boom");
+                throw new IllegalStateException("oa-token-must-not-leak");
             }
         };
         JsonRpcDispatcher dispatcher = new JsonRpcDispatcher(List.of(handler), objectMapper);
@@ -113,6 +170,8 @@ class JsonRpcDispatcherTest {
 
         JsonRpcMessage.ErrorResponse errorResponse = (JsonRpcMessage.ErrorResponse) message;
         assertThat(errorResponse.error().code()).isEqualTo(JsonRpcErrorCode.SERVER_ERROR.code());
-        assertThat(errorResponse.error().message()).contains("boom");
+        assertThat(errorResponse.error().message())
+                .isEqualTo("Internal server error")
+                .doesNotContain("oa-token-must-not-leak");
     }
 }

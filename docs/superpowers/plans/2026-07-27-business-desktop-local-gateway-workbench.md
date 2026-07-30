@@ -4,7 +4,7 @@
 
 **Goal:** 让 Compose 只连接本地 Spring Boot，由 Spring Boot 统一持有 OA 会话并提供完整工作台 BFF，其他菜单保持占位。
 
-**Architecture:** 本地 Spring Boot 以 finalized loopback WebSocket 为第一层信任边界，以后端 OA READY session 为第二层业务边界。后端完成登录、refresh、logout、可信 identity/catalog/context 原子安装，并以最后一个 CAS 动作发布 READY；Compose 不再注册或声明可信身份，只消费稳定 JSON-RPC DTO，并在 identity epoch 变化时丢弃旧结果。
+**Architecture:** 本地 Spring Boot 以 finalized loopback WebSocket 为第一层信任边界，以后端 OA READY session 为第二层业务边界。后端完成登录、refresh、logout、可信 identity/catalog/context 原子安装，并以最后一个 CAS 动作发布 READY；每次安装带 server-owned `installationId`、owner、90 秒 TTL 和 generation CAS。Compose 不再注册或声明可信身份，只消费稳定 JSON-RPC DTO，并在 identity epoch 变化时丢弃旧结果。
 
 **Tech Stack:** Java 21、Spring Boot 3.5、RestClient、WebSocket + JSON-RPC、SQLite + MyBatis-Plus + Flyway、JCEKS、Kotlin 2.x、Compose Desktop、Ktor、本地 loopback HTTP multipart。
 
@@ -12,7 +12,14 @@
 
 早期冲突草案 `2026-07-27-business-desktop-local-gateway-design.md` 已在协议复审确认没有必须保留的独有实施材料并删除；实施只能引用上述权威设计。
 
-**Execution note:** 用户要求在 IDEA 当前仓库 `E:\huitai-work\BaBiQ` 调试，禁止再次复制到 `C:\tmp`。因此在当前 `codex/lawyer-oa-desktop` 分支实施；每次只暂存本任务文件，保留 `.run` 删除、`PackagingScriptContractTest.kt` 修改和所有 `.tmp-*` 用户现场。用户已确认会员续费支付不迁移：工作台保留会员状态和点击入口，点击显示明确占位。
+**Execution note:** 用户要求在 IDEA 当前仓库 `E:\huitai-work\BaBiQ` 调试，禁止再次复制到 `C:\tmp`。因此在当前 `codex/lawyer-oa-desktop` 分支实施；每次只暂存本任务 `Files` 清单中的明确文件，统一使用 `git commit --only -- <file...>`，禁止按目录 `git add`，保留 `PackagingScriptContractTest.kt` 修改和所有 `.tmp-*` 用户现场。当前 `.run/Business Backend.run.xml` 与 `.run/Business Frontend.run.xml` 已是用户 staged deletion，实施和最终提交必须保留删除状态，不恢复或重新暂存它们；IDEA 独立配置改为在 IDE 中临时建立并按设计传入配置文件参数。用户已确认会员续费支付不迁移：工作台保留会员状态和点击入口，点击显示明确占位。
+
+**Command working-directory contract:** 为避免跨代码块依赖当前目录，所有 Maven 命令必须先执行
+`cd E:\huitai-work\BaBiQ\backend`，所有 Gradle 命令必须先执行
+`cd E:\huitai-work\BaBiQ\business-desktop`；跨端验证代码块也必须重新使用绝对 `cd`。下文若为简洁省略
+重复的 `cd`，仍按本合同执行，不得从仓库根目录或上一个代码块的遗留目录直接运行 wrapper。
+
+**Implementation handoff snapshot (2026-07-27，历史快照；当前证据更新至 2026-07-30):** 当前分支已经落地认证网关、READY 门禁、工作台 BFF、资源代理和 Compose 工作台代码，但本计划的 checkbox 仍代表“有新鲜证据且通过验收”，不能仅因代码存在而批量勾选。fake-OA/真 WebSocket E2E、安全 canary、fresh 全量、安装包烟测、已经完成的 IDEA 未登录分离启动，以及仍受阻的桌面测试冲突/真实账号人工烟测均以本文 Task 17/18 和 `docs/superpowers/plans/2026-07-27-business-desktop-local-gateway-handoff.md` 的最新记录为准；最终 Goal 状态必须按这些未验收项判断。
 
 ---
 
@@ -90,7 +97,7 @@ request/notification 和出站 response/notification 统一按 UTF-8 bytes 校�
 - [ ] **Step 3: 运行 RED、最小实现并运行 GREEN**
 
 ```powershell
-cd backend
+cd E:\huitai-work\BaBiQ\backend
 .\mvnw.cmd "-Dtest=JsonRpcDispatcherTest,JsonRpcBidirectionalMessageTest,JsonRpcWebSocketHandlerIT,JsonRpcEnvelopeSizeBoundaryTest" test
 ```
 
@@ -120,7 +127,7 @@ git commit --only -m "fix(协议): 收紧JSON-RPC错误与报文边界" -- backe
 - [ ] **Step 2: 运行 RED**
 
 ```powershell
-cd backend
+cd E:\huitai-work\BaBiQ\backend
 .\mvnw.cmd "-Dtest=BusinessDesktopConnectionRegistryTest,BusinessDesktopConnectionResolverTest,BusinessJsonRpcAccessPolicyTest" test
 ```
 
@@ -151,8 +158,7 @@ resolver 必须匹配四元组 `reservationId/desktopInstanceId/desktopSessionId
 - [ ] **Step 6: 规格审查、质量审查、中文提交**
 
 ```powershell
-git add backend/src/main/java/com/wzx/babiq/server/application backend/src/test/java/com/wzx/babiq/server/application
-git commit -m "refactor(网关): 收紧本地连接与RPC门禁"
+git commit --only -m "refactor(网关): 收紧本地连接与RPC门禁" -- backend/src/main/java/com/wzx/babiq/server/application backend/src/test/java/com/wzx/babiq/server/application
 ```
 
 ### Task 2：OA properties、认证 gateway 与稳定错误
@@ -166,6 +172,12 @@ git commit -m "refactor(网关): 收紧本地连接与RPC门禁"
 - Create: `backend/src/main/java/com/wzx/babiq/server/business/oa/client/dto/OaAuthDtos.java`
 - Create: `backend/src/main/java/com/wzx/babiq/server/business/api/BusinessRpcErrorMapper.java`
 - Modify: `backend/src/main/resources/application-business-desktop.yml`
+- Modify: `business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/runtime/BusinessAgentLaunchRequest.kt`
+- Modify: `business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/runtime/BusinessAgentProcessLauncherTest.kt`
+- Modify: `business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/runtime/BusinessAgentBackendConfigPropagationTest.kt`
+- Test contract: IDEA temporary `Business Backend` configuration must pass
+  `SPRING_CONFIG_ADDITIONAL_LOCATION=file:$PROJECT_DIR$/business-desktop/config/business-desktop-development.properties`
+  (or the equivalent absolute `--spring.config.additional-location=file:<path>`); do not restore staged `.run` deletions.
 - Modify: `backend/src/main/java/com/wzx/babiq/server/api/JsonRpcDispatcher.java`（若 Task 0 泄密加固尚未提交）
 - Test: `backend/src/test/java/com/wzx/babiq/server/business/oa/config/BusinessOaPropertiesTest.java`
 - Test: `backend/src/test/java/com/wzx/babiq/server/business/oa/client/RestClientOaAuthenticationGatewayTest.java`
@@ -178,6 +190,7 @@ git commit -m "refactor(网关): 收紧本地连接与RPC门禁"
 - [ ] **Step 2: 运行 RED**
 
 ```powershell
+cd E:\huitai-work\BaBiQ\backend
 .\mvnw.cmd "-Dtest=BusinessOaPropertiesTest,RestClientOaAuthenticationGatewayTest,BusinessRpcErrorMapperTest" test
 ```
 
@@ -195,6 +208,14 @@ void logout(char[] accessToken);
 
 远端异常转换为固定 domain exception，禁止携带 HTTP body 进入 message。
 
+同时让内置 Agent child command 显式传入
+`--spring.config.additional-location=file:<paths.desktopConfiguration>`（规范化绝对路径）；该参数由
+受控 runtime path 生成，不能来自 OA 配置值或工作目录。IDEA 分离启动后端时使用同一个仓库内
+`business-desktop/config/business-desktop-development.properties`，通过临时 Run Configuration 的环境变量
+`SPRING_CONFIG_ADDITIONAL_LOCATION=file:$PROJECT_DIR$/business-desktop/config/business-desktop-development.properties`
+或等价 JVM/application 参数传递。缺失、不可读或不在受控路径的文件必须 fail-closed；测试须断言 child
+command、IDEA 参数和错误路径。
+
 - [ ] **Step 4: generic dispatcher fallback 保持固定 `Internal server error`**
 
 为现有 dispatcher 增加回归测试，禁止 `exception.getMessage()` 进入 JSON-RPC。
@@ -202,9 +223,9 @@ void logout(char[] accessToken);
 - [ ] **Step 5: GREEN、敏感日志断言与提交**
 
 ```powershell
+cd E:\huitai-work\BaBiQ\backend
 .\mvnw.cmd "-Dtest=BusinessOaPropertiesTest,RestClientOaAuthenticationGatewayTest,BusinessRpcErrorMapperTest,JsonRpcDispatcherTest" test
-git add backend/src/main/java/com/wzx/babiq/server/business backend/src/main/java/com/wzx/babiq/server/api/JsonRpcDispatcher.java backend/src/main/resources/application-business-desktop.yml backend/src/test/java/com/wzx/babiq/server
-git commit -m "feat(网关): 建立后端OA认证适配层"
+git commit --only -m "feat(网关): 建立后端OA认证适配层" -- <Task2 Files中的明确文件列表>
 ```
 
 ### Task 3：JCEKS 凭据与 SQLite 非敏感会话索引
@@ -232,6 +253,7 @@ git commit -m "feat(网关): 建立后端OA认证适配层"
 - [ ] **Step 2: 运行 RED**
 
 ```powershell
+cd E:\huitai-work\BaBiQ\backend
 .\mvnw.cmd "-Dtest=OaSessionCredentialStoreTest,OaSessionPersistenceServiceTest,SQLiteMigrationIT,SchemaCommentsCoverageTest" test
 ```
 
@@ -246,9 +268,9 @@ git commit -m "feat(网关): 建立后端OA认证适配层"
 - [ ] **Step 5: GREEN、schema 扫描与提交**
 
 ```powershell
+cd E:\huitai-work\BaBiQ\backend
 .\mvnw.cmd "-Dtest=OaSessionCredentialStoreTest,OaSessionPersistenceServiceTest,SQLiteMigrationIT,SchemaCommentsCoverageTest" test
-git add backend/src/main/resources/db/migration backend/src/main/java/com/wzx/babiq/server/persistence backend/src/main/java/com/wzx/babiq/server/business/oa/session backend/src/main/java/com/wzx/babiq/server/settings backend/src/test/java/com/wzx/babiq/server
-git commit -m "feat(网关): 持久化OA桌面会话索引"
+git commit --only -m "feat(网关): 持久化OA桌面会话索引" -- <Task3 Files中的明确文件列表>
 ```
 
 ### Task 4：后端会话状态机、READY lease、refresh 与请求执行器
@@ -274,6 +296,7 @@ git commit -m "feat(网关): 持久化OA桌面会话索引"
 - [ ] **Step 2: 运行 RED**
 
 ```powershell
+cd E:\huitai-work\BaBiQ\backend
 .\mvnw.cmd "-Dtest=BusinessOaSessionRegistryTest,OaTokenRefreshCoordinatorTest,OaAuthenticatedRequestExecutorTest,ApplicationBridgeLifecycleCoordinatorTest,BusinessJsonRpcAccessPolicyTest" test
 ```
 
@@ -294,9 +317,9 @@ void revokeBeforeCleanup(TrustedDesktopConnection connection, RevocationReason r
 - [ ] **Step 5: GREEN 与提交**
 
 ```powershell
+cd E:\huitai-work\BaBiQ\backend
 .\mvnw.cmd "-Dtest=BusinessOaSessionRegistryTest,OaTokenRefreshCoordinatorTest,OaAuthenticatedRequestExecutorTest,ApplicationBridgeLifecycleCoordinatorTest,BusinessJsonRpcAccessPolicyTest" test
-git add backend/src/main/java/com/wzx/babiq/server/business/oa/session backend/src/main/java/com/wzx/babiq/server/application backend/src/test/java/com/wzx/babiq/server
-git commit -m "feat(网关): 建立OA会话代次与刷新门禁"
+git commit --only -m "feat(网关): 建立OA会话代次与刷新门禁" -- <Task4 Files中的明确文件列表>
 ```
 
 ### Task 5：服务端可信身份安装与认证 JSON-RPC
@@ -308,8 +331,8 @@ git commit -m "feat(网关): 建立OA会话代次与刷新门禁"
 - Create: `backend/src/main/java/com/wzx/babiq/server/business/api/BusinessAuthProtocolHandler.java`
 - Create: `backend/src/main/java/com/wzx/babiq/server/business/api/dto/BusinessAuthDtos.java`
 - Modify: `backend/src/main/java/com/wzx/babiq/server/application/auth/ApplicationIdentityRegistry.java`
-- Modify: `backend/src/main/java/com/wzx/babiq/server/application/ApplicationCatalogRegistry.java`
-- Modify: `backend/src/main/java/com/wzx/babiq/server/application/ApplicationPageContextRegistry.java`
+- Modify: `backend/src/main/java/com/wzx/babiq/server/application/catalog/ApplicationCatalogRegistry.java`
+- Modify: `backend/src/main/java/com/wzx/babiq/server/application/catalog/ApplicationPageContextRegistry.java`
 - Modify: `backend/src/main/java/com/wzx/babiq/server/application/api/ApplicationIdentityProtocolHandler.java`
 - Modify: `backend/src/main/java/com/wzx/babiq/server/application/api/ApplicationCatalogProtocolHandler.java`
 - Test: `backend/src/test/java/com/wzx/babiq/server/business/identity/BusinessOaReadyInstallerTest.java`
@@ -324,6 +347,7 @@ git commit -m "feat(网关): 建立OA会话代次与刷新门禁"
 - [ ] **Step 2: 运行 RED**
 
 ```powershell
+cd E:\huitai-work\BaBiQ\backend
 .\mvnw.cmd "-Dtest=BusinessOaReadyInstallerTest,BusinessAuthProtocolHandlerTest,ApplicationIdentityRegistryServerInstallTest,ApplicationIdentityCatalogHandlersTest,BusinessJsonRpcAccessPolicyTest" test
 ```
 
@@ -342,9 +366,9 @@ API 接受服务端 domain projection，不接受客户端 `ApplicationIdentityM
 - [ ] **Step 6: GREEN、真实 WebSocket IT 与提交**
 
 ```powershell
+cd E:\huitai-work\BaBiQ\backend
 .\mvnw.cmd "-Dtest=BusinessOaReadyInstallerTest,BusinessAuthProtocolHandlerTest,ApplicationIdentityRegistryServerInstallTest,ApplicationIdentityCatalogHandlersTest,BusinessJsonRpcAccessPolicyTest,ApplicationBridgeEndToEndIT" test
-git add backend/src/main/java/com/wzx/babiq/server/business backend/src/main/java/com/wzx/babiq/server/application backend/src/main/resources/application-business-desktop.yml backend/src/test/java/com/wzx/babiq/server
-git commit -m "feat(网关): 由后端安装可信OA身份"
+git commit --only -m "feat(网关): 由后端安装可信OA身份" -- <Task5 Files中的明确文件列表>
 ```
 
 ### Task 6：旧 JCEKS 定点清理与 native 启动恢复
@@ -365,9 +389,9 @@ git commit -m "feat(网关): 由后端安装可信OA身份"
 - [ ] **Step 2: 运行双端 RED**
 
 ```powershell
-cd backend
+cd E:\huitai-work\BaBiQ\backend
 .\mvnw.cmd "-Dtest=BusinessOaSessionStartupRecoveryTest" test
-cd ..\business-desktop
+cd E:\huitai-work\BaBiQ\business-desktop
 .\gradlew.bat :app:test --tests "*LegacyOaCredentialAliasCleanupTest" --no-daemon --max-workers=1 --no-parallel
 ```
 
@@ -378,8 +402,7 @@ cd ..\business-desktop
 - [ ] **Step 4: GREEN、别名安全扫描与提交**
 
 ```powershell
-git add backend/src/main/java/com/wzx/babiq/server/business/oa/session backend/src/test/java/com/wzx/babiq/server/business/oa/session business-desktop/security-audit-core/src/main/kotlin/com/wzx/huitai/security/secret/JceksSecretStore.kt business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/security business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/runtime/BusinessBackendKeyStorePasswordVault.kt business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/security
-git commit -m "fix(登录): 原子清理旧OA凭据别名"
+git commit --only -m "fix(登录): 原子清理旧OA凭据别名" -- <Task6 Files中的明确文件列表>
 ```
 
 ---
@@ -405,6 +428,7 @@ git commit -m "fix(登录): 原子清理旧OA凭据别名"
 - [ ] **Step 2: RED**
 
 ```powershell
+cd E:\huitai-work\BaBiQ\backend
 .\mvnw.cmd "-Dtest=RestClientOaWorkbenchGatewayTest,BusinessWorkbenchMapperTest" test
 ```
 
@@ -415,9 +439,9 @@ OA DTO 只在 adapter 包内；Compose DTO 不含 `CommonResult/tableName/traceI
 - [ ] **Step 4: GREEN 与提交**
 
 ```powershell
+cd E:\huitai-work\BaBiQ\backend
 .\mvnw.cmd "-Dtest=RestClientOaWorkbenchGatewayTest,BusinessWorkbenchMapperTest" test
-git add backend/src/main/java/com/wzx/babiq/server/business/oa/client backend/src/main/java/com/wzx/babiq/server/business/api/dto backend/src/main/java/com/wzx/babiq/server/business/workbench backend/src/test/java/com/wzx/babiq/server/business
-git commit -m "feat(工作台): 建立稳定OA适配合同"
+git commit --only -m "feat(工作台): 建立稳定OA适配合同" -- <Task7 Files中的明确文件列表>
 ```
 
 ### Task 8：工作台聚合快照与读方法
@@ -431,11 +455,12 @@ git commit -m "feat(工作台): 建立稳定OA适配合同"
 
 - [ ] **Step 1: 写聚合与 lease 失败测试**
 
-`business/workbench/get` 聚合公告、快捷入口、统计、首个 enabled 列表、用户卡、团队、当月/当日日程；`business/workbench/navigation/get` 从可信 permission/menu projection 独立返回 allowlisted 导航。非核心分区失败进入 `issues`，核心身份失败整体失败；返回前 epoch 变化则 `BUSINESS_AUTH_STALE`。
+`business/workbench/get` 聚合公告、快捷入口、统计、首个 enabled 列表、用户卡、团队、当月/当日日程；`business/workbench/navigation/get` 从可信 permission/menu projection 独立返回 allowlisted 导航。非核心分区失败进入 `issues`，核心身份失败整体失败；返回前 epoch 变化则使用既有 `BUSINESS_SESSION_STALE`。
 
 - [ ] **Step 2: RED**
 
 ```powershell
+cd E:\huitai-work\BaBiQ\backend
 .\mvnw.cmd "-Dtest=BusinessWorkbenchServiceTest,BusinessWorkbenchProtocolHandlerTest" test
 ```
 
@@ -450,9 +475,9 @@ git commit -m "feat(工作台): 建立稳定OA适配合同"
 - [ ] **Step 5: GREEN 与提交**
 
 ```powershell
+cd E:\huitai-work\BaBiQ\backend
 .\mvnw.cmd "-Dtest=BusinessWorkbenchServiceTest,BusinessWorkbenchProtocolHandlerTest,BusinessJsonRpcAccessPolicyTest" test
-git add backend/src/main/java/com/wzx/babiq/server/business/workbench backend/src/main/java/com/wzx/babiq/server/business/api backend/src/test/java/com/wzx/babiq/server/business
-git commit -m "feat(工作台): 聚合桌面首屏快照"
+git commit --only -m "feat(工作台): 聚合桌面首屏快照" -- <Task8 Files中的明确文件列表>
 ```
 
 ### Task 9：团队数据范围与四类分页
@@ -480,9 +505,9 @@ git commit -m "feat(工作台): 聚合桌面首屏快照"
 - [ ] **Step 4: GREEN 与提交**
 
 ```powershell
+cd E:\huitai-work\BaBiQ\backend
 .\mvnw.cmd "-Dtest=BusinessDataScopeValidatorTest,BusinessWorkbenchPagesTest,BusinessWorkbenchProtocolHandlerTest" test
-git add backend/src/main/java/com/wzx/babiq/server/business backend/src/test/java/com/wzx/babiq/server/business
-git commit -m "feat(工作台): 收紧团队范围与业务分页"
+git commit --only -m "feat(工作台): 收紧团队范围与业务分页" -- <Task9 Files中的明确文件列表>
 ```
 
 ### Task 10：排序、日程读写、关联选项和附件代理
@@ -492,6 +517,14 @@ git commit -m "feat(工作台): 收紧团队范围与业务分页"
 - Create: `backend/src/main/java/com/wzx/babiq/server/business/workbench/BusinessScheduleService.java`
 - Create: `backend/src/main/java/com/wzx/babiq/server/business/upload/BusinessAttachmentTicketService.java`
 - Create: `backend/src/main/java/com/wzx/babiq/server/business/upload/BusinessAttachmentUploadController.java`
+- Create: `backend/src/main/java/com/wzx/babiq/server/business/upload/BusinessResourceHandleRegistry.java`
+- Create: `backend/src/main/java/com/wzx/babiq/server/business/upload/BusinessResourceProxyController.java`
+- Create: `backend/src/main/java/com/wzx/babiq/server/business/upload/BusinessAttachmentRecoveryService.java`
+- Create: next unused migration for durable upload ticket/batch/resource-handle state (confirm version first)
+- Create: `backend/src/main/java/com/wzx/babiq/server/persistence/entity/BusinessAttachmentTicketEntity.java`
+- Create: `backend/src/main/java/com/wzx/babiq/server/persistence/entity/BusinessAttachmentBatchEntity.java`
+- Create: `backend/src/main/java/com/wzx/babiq/server/persistence/entity/BusinessResourceHandleEntity.java`
+- Create: corresponding MyBatis mappers/repositories and schema-comment coverage
 - Create: `backend/src/main/java/com/wzx/babiq/server/business/upload/BusinessLoopbackHttpSecurityFilter.java`
 - Create: `backend/src/main/java/com/wzx/babiq/server/business/upload/BusinessUploadExceptionHandler.java`
 - Modify: `backend/src/main/java/com/wzx/babiq/server/business/api/BusinessWorkbenchProtocolHandler.java`
@@ -499,35 +532,42 @@ git commit -m "feat(工作台): 收紧团队范围与业务分页"
 - Test: `backend/src/test/java/com/wzx/babiq/server/business/workbench/BusinessWorkbenchMutationTest.java`
 - Test: `backend/src/test/java/com/wzx/babiq/server/business/upload/BusinessAttachmentTicketServiceTest.java`
 - Test: `backend/src/test/java/com/wzx/babiq/server/business/upload/BusinessAttachmentUploadIT.java`
+- Test: `backend/src/test/java/com/wzx/babiq/server/business/upload/BusinessAttachmentRecoveryIT.java`
+- Test: `backend/src/test/java/com/wzx/babiq/server/business/upload/BusinessResourceProxyIT.java`
 
-- [ ] **Step 1: 写排序和日程权限 RED**
+- [x] **Step 1: 写排序和日程权限 RED**
 
 排序拒绝重复、缺失、多余 ID 和 stale revision；普通成员不能指派他人；负责人只能指派有效成员；服务项目 recordId 必须先在授权 options 中；日程 create 携带幂等键但不自动重放。
 
-- [ ] **Step 2: 写附件票据 RED**
+- [x] **Step 2: 写附件票据 RED**
 
-覆盖 60s TTL、Origin/CSRF/loopback/Host/Bearer/finalized WS/READY 校验、connection/OA session/generation/tenant/`SCHEDULE_CREATE` operation/父资源授权绑定、退出吊销、owner-only 临时路径清理、类型/实际大小/hash/数量限制、ticket 不在 query、返回 `attachmentBatchId` 而非 fileId。锁定 CAS 状态 `PREPARED -> UPLOADING -> READY -> CONSUMED` 与 `FAILED/REVOKED/OUTCOME_UNKNOWN`；并发领取只有一个成功，partial upload 永不 READY。
+覆盖 60s TTL、Origin/CSRF/loopback/Host/Bearer/finalized WS/READY 校验、connection/OA session/generation/tenant/`SCHEDULE_CREATE` operation/父资源授权绑定、退出吊销、owner-only 临时路径清理、类型/实际大小/hash/数量限制、ticket 不在 query、返回 `attachmentBatchId` 而非 fileId。ticket 与 batch 分开锁定 CAS：`ISSUED -> CLAIMED -> IN_FLIGHT -> SUCCEEDED|REJECTED|OUTCOME_UNKNOWN|EXPIRED|REVOKED`，`READY -> CONSUMING -> CONSUMED|FAILED|OUTCOME_UNKNOWN|REVOKED`；并发领取只有一个成功，partial upload 永不 READY，崩溃/断链不自动重放。ticket、batch 和 resource handle 必须落入同一受注释的 SQLite migration；启动 recovery 将 `IN_FLIGHT/CONSUMING` 收束为 `OUTCOME_UNKNOWN/REVOKED`，清理临时文件和过期 handle，不能在重启后自动上传/创建。
 
-- [ ] **Step 3: 运行 RED**
+- [x] **Step 3: 运行 RED**
 
 ```powershell
+cd E:\huitai-work\BaBiQ\backend
 .\mvnw.cmd "-Dtest=BusinessScheduleServiceTest,BusinessWorkbenchMutationTest,BusinessAttachmentTicketServiceTest,BusinessAttachmentUploadIT" test
 ```
 
-- [ ] **Step 4: 实现 schedule/form/options/create 和 finished/set**
+- [x] **Step 4: 实现 schedule/form/options/create 和 `business/schedule/completion/set`**
 
 month/day 使用稳定日期格式；完成/激活为显式目标状态。服务端二次校验团队与关联项；写响应返回新 revision。
 
-- [ ] **Step 5: 实现 loopback multipart streaming**
+资源代理必须同时实现 `GET /business/resources/{opaqueHandle}`：handle 仅由可信 OA 响应注册，绑定
+instance/session/READY generation/tenant/过期时间，logout、detach 超时和 generation 变化立即撤销；
+只返回固定 MIME/长度且禁止缓存，未知、跨 lease、过期或撤销统一 `BUSINESS_RESOURCE_UNAVAILABLE`。
 
-HTTP controller 只绑定 loopback并经过专用 Origin/CSRF filter；先流式写入 owner-only 临时文件并完成真实 size/hash/MIME 校验，再固定 storage name 上传 OA。HTTP 错误/日志只含固定 businessCode/correlationId/计数；远端文件 URL、fileIds、ticket、文件名/路径/SHA/OA body 不返回或记录。schedule/create 对 `attachmentBatchId` 做同 operation/父授权/generation 的单次 CAS 消费。
+- [x] **Step 5: 实现 loopback multipart streaming**
+
+HTTP controller 只绑定 loopback并经过专用 Origin/CSRF filter：只接受规范化 loopback、精确 Host/Origin、Authorization Bearer header 和 `X-Business-Upload-Ticket`，拒绝缺失/通配 Origin、Cookie/query 凭据、OPTIONS 与代理转发头；先流式写入 owner-only、禁止 symlink/reparse 的临时文件并完成真实 size/hash/MIME 校验，再固定 storage name 上传 OA。HTTP 错误/日志只含固定 businessCode/correlationId/计数，Advice 禁止默认 error body；远端文件 URL、fileIds、ticket、文件名/路径/SHA/OA body 不返回或记录。schedule/create 对 `attachmentBatchId` 做同 operation/父授权/form revision/generation 的单次 CAS 消费。
 
 - [ ] **Step 6: GREEN 与提交**
 
 ```powershell
+cd E:\huitai-work\BaBiQ\backend
 .\mvnw.cmd "-Dtest=BusinessScheduleServiceTest,BusinessWorkbenchMutationTest,BusinessAttachmentTicketServiceTest,BusinessAttachmentUploadIT,BusinessJsonRpcAccessPolicyTest" test
-git add backend/src/main/java/com/wzx/babiq/server/business backend/src/test/java/com/wzx/babiq/server/business
-git commit -m "feat(工作台): 接通日程写链与附件代理"
+git commit --only -m "feat(工作台): 接通日程写链与附件代理" -- <Task10 Files中的明确文件列表>
 ```
 
 ---
@@ -565,8 +605,7 @@ cd business-desktop
 - [ ] **Step 4: GREEN 与提交**
 
 ```powershell
-git add business-desktop/agent-client-core/src/main business-desktop/agent-client-core/src/test
-git commit -m "feat(桌面协议): 接入本地认证与工作台RPC"
+git commit --only -m "feat(桌面协议): 接入本地认证与工作台RPC" -- <Task11 Files中的明确文件列表>
 ```
 
 ### Task 12：登录控制器切换和 Compose OA 权威移除
@@ -613,9 +652,9 @@ Kotlin `BusinessIdentityRegistry` 只镜像 server READY revision/epoch；不再
 - [ ] **Step 5: GREEN 与提交**
 
 ```powershell
+cd E:\huitai-work\BaBiQ\business-desktop
 .\gradlew.bat :app:test --tests "*BusinessLoginControllerTest" --tests "*BusinessAuthenticationLifecycleIT" --tests "*BusinessDesktopCompositionRootTest" --tests "*ComposeOaDirectAccessForbiddenTest" --no-daemon --max-workers=1 --no-parallel
-git add business-desktop/app/src/main business-desktop/app/src/test
-git commit -m "refactor(登录): 切换到后端OA会话权威"
+git commit --only -m "refactor(登录): 切换到后端OA会话权威" -- <Task12 Files中的明确文件列表>
 ```
 
 ### Task 13：工作台状态、控制器与主布局
@@ -651,8 +690,7 @@ UI 组件只消费稳定 DTO；不要在 composable 中直接发 RPC。Agent 助
 
 ```powershell
 .\gradlew.bat :app:test --tests "*BusinessWorkbenchReducerTest" --tests "*BusinessWorkbenchControllerTest" --tests "*BusinessWorkbenchScreenTest" --tests "*BusinessDesktopShellTest" --no-daemon --max-workers=1 --no-parallel
-git add business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/workbench business-desktop/app/src/main/kotlin/com/wzx/huitai/desktop/ui business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop
-git commit -m "feat(工作台): 落地翔鸟律智桌面布局"
+git commit --only -m "feat(工作台): 落地翔鸟律智桌面布局" -- <Task13 Files中的明确文件列表>
 ```
 
 ### Task 14：工作台八组件、分页、排序与数据范围交互
@@ -670,11 +708,11 @@ git commit -m "feat(工作台): 落地翔鸟律智桌面布局"
 - Test: `business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/ui/workbench/BusinessListCardTest.kt`
 - Test: `business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/workbench/BusinessWorkbenchInteractionTest.kt`
 
-- [ ] **Step 1: 写交互 RED**
+- [x] **Step 1: 写交互 RED**
 
 快捷入口 10 个/页循环；安全 URL 才打开；第一个 enabled 统计自动选中；切 card/scope/team/role 重置页码；团队或角色失效安全回退；只有案件行打开详情占位；排序失败回滚。
 
-- [ ] **Step 2: 实现组件与 controller intents**
+- [x] **Step 2: 实现组件与 controller intents**
 
 四类列表共享分页壳，但每类保留真实字段。网络失败必须显示明确 retry 状态，不再静默伪装为空数据。
 
@@ -682,8 +720,7 @@ git commit -m "feat(工作台): 落地翔鸟律智桌面布局"
 
 ```powershell
 .\gradlew.bat :app:test --tests "*QuickEntranceCardTest" --tests "*DataStatisticsCardTest" --tests "*BusinessListCardTest" --tests "*BusinessWorkbenchInteractionTest" --no-daemon --max-workers=1 --no-parallel
-git add business-desktop/app/src/main business-desktop/app/src/test
-git commit -m "feat(工作台): 接通统计分页与团队范围"
+git commit --only -m "feat(工作台): 接通统计分页与团队范围" -- <Task14 Files中的明确文件列表>
 ```
 
 ### Task 15：日程面板、新增表单、附件和视觉资源
@@ -701,19 +738,19 @@ git commit -m "feat(工作台): 接通统计分页与团队范围"
 - Test: `business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/workbench/BusinessAttachmentUploadClientTest.kt`
 - Test: `business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/ui/workbench/WorkbenchResourceTest.kt`
 
-- [ ] **Step 1: 写日历与乐观更新 RED**
+- [x] **Step 1: 写日历与乐观更新 RED**
 
 覆盖年月/今日/前后月、一周/整月、日期事件点、TEAM onlyMine、完成与取消完成、失败回滚、epoch 变化丢弃。
 
-- [ ] **Step 2: 写表单和附件 RED**
+- [x] **Step 2: 写表单和附件 RED**
 
 标题、类型、指派、优先级、日期时间/全天、描述、多提醒、自定义提醒、重复、客户/案件/拜访/服务项目关联、附件；普通成员指派限制；ticket header/TTL/进度/取消。
 
-- [ ] **Step 3: 迁移实际可达位图并校验 hash**
+- [x] **Step 3: 迁移实际可达位图并校验 hash**
 
 从 `E:\huitai-work\huitai-law-oa` 复制工作台实际使用资源；使用现有品牌资源测试模式固定 SHA-256。图标优先使用 Compose vector；不能复制 CSS class 名。
 
-- [ ] **Step 4: 实现日程和上传 UI**
+- [x] **Step 4: 实现日程和上传 UI**
 
 非幂等 create/upload 不自动重放；退出或 epoch 变化取消上传并清 `attachmentBatchId`、ticket 和本地上传状态。
 
@@ -721,8 +758,7 @@ git commit -m "feat(工作台): 接通统计分页与团队范围"
 
 ```powershell
 .\gradlew.bat :app:test --tests "*SchedulePanelTest" --tests "*ScheduleCreateDialogTest" --tests "*BusinessScheduleControllerTest" --tests "*BusinessAttachmentUploadClientTest" --tests "*WorkbenchResourceTest" --no-daemon --max-workers=1 --no-parallel
-git add business-desktop/app/src/main business-desktop/app/src/test
-git commit -m "feat(工作台): 完整迁移日程与附件交互"
+git commit --only -m "feat(工作台): 完整迁移日程与附件交互" -- <Task15 Files中的明确文件列表>
 ```
 
 ---
@@ -744,17 +780,34 @@ git commit -m "feat(工作台): 完整迁移日程与附件交互"
 - Test: `business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/security/ComposeOaDirectAccessForbiddenTest.kt`
 - Test: `business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/architecture/ModuleStructureTest.kt`
 
-- [ ] **Step 1: 写 source-contract RED**
+Task 16 的删除顺序以实际引用为准：先完成 Task 12 的 RPC orchestrator 和 Task 15 的 BFF/resource
+消费，再运行 `rg` 确认以下生产引用全部为零，最后才删除旧实现：
+
+- `BusinessDesktopCompositionRoot.kt` 中的 `OaAuthenticationGatewayFactory`、`OaAuthenticationGatewayBundle`、
+  `AuthSessionManager`、`TokenRefreshCoordinator`、`HuitaiHttpClient`、`ReadyAuthenticatedHttpGate` 和
+  `ReadyAuthenticatedHuitaiClient` 构造链。
+- `BusinessAuthenticationOrchestrator.kt`、`OaTokenRefreshAdapter.kt`、`ReadyAuthenticated*.kt`、
+  `JceksAuthCredentialPersistence.kt`、`BusinessAuthSessionMetadataStore.kt` 和
+  `BusinessAuthRevocationMarkerStore.kt` 的生产引用；对应旧测试必须迁移到 RPC client/BFF fake 后再删除。
+- `huitai-integration-core` 的 `oa/auth/*`、`http/HuitaiHttpClient.kt`、`auth/TokenRefreshCoordinator.kt`；
+  仅当 `websocket/*`、`permission/*`、`tenant/*`、`identity/*` 也确认无生产引用时才删除，保留仍被 Agent
+  或测试所需的通用模块，不用目录级机械删除。
+
+删除完成的合同测试必须扫描 `business-desktop/**/src/main`，允许本地 desktop Bearer 与 JSON-RPC 代码，
+但禁止 OA URL、OA token、远程 Authorization/tenant header 和 Ktor OA gateway。
+
+- [x] **Step 1: 写 source-contract RED**
 
 Compose main 源码不得出现远程 OA base URL、OA accessToken/refreshToken、Ktor OA gateway、远程 WS，或向远端 OA 注入 `Authorization`/`tenant-id` 的代码。不得误禁本地 WebSocket/loopback HTTP 使用的 desktop Bearer 连接认证；唯一 legacy 例外是 Task 6 受测试约束的三个 alias 常量。
 
-- [ ] **Step 2: 删除不可达代码和配置**
+- [x] **Step 2: 删除不可达代码和配置**
 
 OA base URL 只进入后端 business profile；前端 development properties 不再包含 OA 地址。若 `huitai-integration-core` 仍有与 OA 无关能力，只删除 auth/http 子包，不机械删除模块。
 
 - [ ] **Step 3: 运行模块和全桌面 GREEN**
 
 ```powershell
+cd E:\huitai-work\BaBiQ\business-desktop
 .\gradlew.bat :app:test --tests "*ComposeOaDirectAccessForbiddenTest" --tests "*ModuleStructureTest" --no-daemon --max-workers=1 --no-parallel
 .\gradlew.bat test --no-daemon --max-workers=1 --no-parallel
 ```
@@ -762,8 +815,7 @@ OA base URL 只进入后端 business profile；前端 development properties 不
 - [ ] **Step 4: 中文提交**
 
 ```powershell
-git add business-desktop
-git commit -m "refactor(桌面): 移除远程OA直连权威"
+git commit --only -m "refactor(桌面): 移除远程OA直连权威" -- business-desktop/huitai-integration-core/src/main business-desktop/huitai-integration-core/src/test business-desktop/app/src/main business-desktop/app/src/test business-desktop/app/build.gradle.kts business-desktop/config/business-desktop-development.properties
 ```
 
 ### Task 17：fake OA 端到端、重连与敏感数据审计
@@ -778,20 +830,20 @@ git commit -m "refactor(桌面): 移除远程OA直连权威"
 - Create: `business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/integration/BusinessWorkbenchLifecycleIT.kt`
 - Create: `business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/integration/BusinessAuthenticationReconnectIT.kt`
 
-- [ ] **Step 1: 写真实 local WS + fake OA E2E**
+- [x] **Step 1: 写真实 local WS + fake OA E2E**
 
 覆盖未 finalize 拒绝、候选、登录、权限安装、READY、完整工作台、401 singleflight、写不重放、退出、切身份、断开后 `session/get -> session/attach`、独立 startup restore、旧响应丢弃、auth/membership/network 三类错误。
 
-- [ ] **Step 2: 写敏感数据 canary 审计**
+- [x] **Step 2: 写敏感数据 canary 审计**
 
 将唯一 password/token canary 注入 fake OA。password 允许且只能在受控 `business/auth/login` 请求 frame 出现 1 次，在 response/notification/日志/SQLite/JCEKS/context/items/tools/exceptions/HTTP/temp/report 中 0 次。OA Token 在桌面/RPC/HTTP 响应/日志/SQLite/context/items/tools/exceptions/report 中 0 次；受控 backend→OA Authorization 与 backend JCEKS 是预期 secret boundary。另扫描 multipart 临时目录、DTO `toString()`、ticket、文件名/路径/SHA、旧/reserved/staged/orphan alias 与 OA 错误正文。
 
-- [ ] **Step 3: 运行后端和桌面 E2E**
+- [x] **Step 3: 运行后端和桌面 E2E**
 
 ```powershell
-cd backend
+cd E:\huitai-work\BaBiQ\backend
 .\mvnw.cmd "-Dtest=BusinessOaAuthenticatedWebSocketIT,BusinessOaReconnectIT,BusinessWorkbenchEndToEndIT,BusinessOaSecretLeakAuditTest" test
-cd ..\business-desktop
+cd E:\huitai-work\BaBiQ\business-desktop
 .\gradlew.bat :app:test --tests "*BusinessAuthenticationLifecycleIT" --tests "*BusinessWorkbenchLifecycleIT" --tests "*BusinessAuthenticationReconnectIT" --no-daemon --max-workers=1 --no-parallel
 ```
 
@@ -802,8 +854,7 @@ cd ..\business-desktop
 - [ ] **Step 5: 中文提交**
 
 ```powershell
-git add backend/src/test business-desktop/app/src/test
-git commit -m "test(网关): 覆盖OA会话与工作台全链路"
+git commit --only -m "test(网关): 覆盖OA会话与工作台全链路" -- <Task17 Files中的明确文件列表>
 ```
 
 ### Task 18：全量验证、IDEA 分离烟测、文档和最终提交
@@ -813,33 +864,72 @@ git commit -m "test(网关): 覆盖OA会话与工作台全链路"
 - Modify: `docs/superpowers/specs/2026-07-27-business-desktop-local-gateway-workbench-design.md`
 - Modify: `docs/superpowers/plans/2026-07-27-business-desktop-local-gateway-workbench.md`
 - Create: `docs/superpowers/plans/2026-07-27-business-desktop-local-gateway-handoff.md`
-- Preserve user changes: `.run/Business Backend.run.xml`, `.run/Business Frontend.run.xml`, `business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/smoke/PackagingScriptContractTest.kt`, `.tmp-*`
+- Preserve user changes: existing staged deletions of `.run/Business Backend.run.xml` and `.run/Business Frontend.run.xml` (do not restore), the modification to `business-desktop/app/src/test/kotlin/com/wzx/huitai/desktop/smoke/PackagingScriptContractTest.kt`, and all `.tmp-*` directories (do not stage).
 
-- [ ] **Step 1: fresh 后端全量**
+- [x] **Step 1: fresh 后端全量**
 
 ```powershell
-cd backend
+cd E:\huitai-work\BaBiQ\backend
 .\mvnw.cmd clean verify
 ```
 
 Expected: exit 0，Surefire/Failsafe 0 failure/0 error。
 
+2026-07-29 新鲜证据：固定 Java 21、离线、本地 Maven 仓库、串行执行，并为 business
+profile 注入仅限本次测试进程的非默认 KeyStore password；原始 Maven exit 0。Surefire
+241 suites / 1463 tests / 0 failure / 0 error / 3 skipped；Failsafe 36 suites /
+161 tests / 0 failure / 0 error。
+
 - [ ] **Step 2: fresh 桌面端全量**
 
 ```powershell
-cd ..\business-desktop
+cd E:\huitai-work\BaBiQ\business-desktop
 .\gradlew.bat test --rerun-tasks --no-daemon --max-workers=1 --no-parallel --no-build-cache "-Pkotlin.incremental=false" "-Pkotlin.compiler.execution.strategy=in-process" --console=plain
 ```
 
 Expected: `BUILD SUCCESSFUL`，0 failed。
 
-- [ ] **Step 3: IDEA 前后端分离烟测**
+2026-07-29 最终新鲜证据：按离线、E 盘缓存、单 worker、禁并行、禁 build cache、
+`--continue`、强制 rerun 执行。六个模块共 133 suites / 1024 tests，其中
+1022 通过、2 failure、0 error；唯一失败
+来自用户必须保留的 `PackagingScriptContractTest.kt` 直接读取同时必须保留 staged
+deletion 的 `.run/Business Backend.run.xml` 与 `.run/Business Frontend.run.xml`。
+未恢复 `.run`、未改用户测试，因此本 Step 仍未勾选。
+
+2026-07-29 最终认证竞态与安装包审查修复后再次 fresh 验证通过：
+31 个 task 全部重新执行，
+重新生成 app image、MSI 和 EXE 后，从 MSI
+行政提取的真实 Compose launcher 先完成 signed-out/login-gate/品牌/loopback
+WebSocket/单次 token 删除烟测；随后使用提取包自带 runtime、classpath 与 bundled
+Spring Boot，对 loopback fake OA 完成正式密码编码、登录、READY、六区工作台、
+导航 allowlist 和助手 controller 烟测。两段运行均验证进程清理，并对桌面 KeyStore
+密码、OA access/refresh canary 扫描临时目录、日志、SQLite、JCEKS 和报告，0 明文命中。
+最终 MSI 为 235,487,951 bytes，SHA-256
+`972092EAB1733058A89CC9D193570DDCBB3A96A22985BC54713037F1D95BF3CF`；
+EXE 为 236,080,640 bytes，SHA-256
+`101524221D3F1F1B2C241BA0F031F76C9349A9981F7A73DA30A0A7255CD23795`。
+
+独立质量审查发现的 smoke 分区状态、环境恢复、canary 后 finally 删除、精确双 MD5、
+未知路由 fail-closed 与 exited-root descendant cleanup 均已按 RED/GREEN 修复；
+相关 focused 10 tests 全绿，最终复审为 Critical 0 / Important 0 / Minor 0。
+
+- [x] **Step 3: IDEA 前后端分离烟测（未登录启动边界）**
 
 使用当前仓库的独立 Run Configuration，不复制到 C 盘。验证：后端日志单独可见；未登录显示登录页且业务 RPC fail closed；登录后默认进入工作台；工作台真实数据、四类分页、数据范围、排序、日程、新增/附件；其他菜单占位；关闭前端不等于远端 logout；显式 logout 回登录页。
+
+2026-07-30：在当前仓库以两个独立 Run 标签启动 `Business Backend` 和 `Business Frontend`；后端就绪于
+`ws://127.0.0.1:49391/ws/agent`，两者日志独立。桌面窗口“翔鸟律智桌面端”显示登录门禁，未登录时不暴露工作台。
+结束后 PID `34976`、`576`、`7128` 已退出且 49391 已关闭，`.tmp-business-desktop-idea-runtime` 保留。
+本步骤仅验收分离启动和未登录门禁；登录后的真实 OA 数据/写操作仍由 Step 4 验收。
 
 - [ ] **Step 4: 真实账号与同时登录烟测**
 
 用用户提供或当前可用的真实账号验证正确密码、Web 与 Desktop 同时在线、refresh、重启 restore、断网恢复、logout 不退出 Web。不得自动破解滑块；如果账号或环境不可用，交接文档必须明确列为未验收，Goal 保持 active。
+
+2026-07-30：`HUITAI_OA_USERNAME`、`HUITAI_OA_PASSWORD`、`HUITAI_OA_BASE_URL`、
+`HUITAI_OA_TENANT_ID`、`HUITAI_OA_CAPTCHA_VERIFICATION`、`HUITAI_OA_CLIENT_ID` 和
+`HUITAI_OA_CLIENT_SECRET` 均不存在；没有可安全自动使用的真实 OA 账号输入渠道。本 Step 未验收，
+不得伪造通过。
 
 - [ ] **Step 5: 安全与工作区审计**
 
@@ -851,7 +941,15 @@ rg -n "accessToken|refreshToken|Authorization|tenant-id|192\.168\.1\.20:48080" b
 
 另扫描 runtime/log/SQLite/RPC canary，确认 OA secret 0 matches；确认用户 `.tmp-*` 与现有脏改动未暂存。
 
-- [ ] **Step 6: 更新计划、handoff 和验收证据**
+2026-07-29：`git diff --check` 与 `git diff --cached --check` 均 exit 0；source scan
+只命中本地 loopback desktop Bearer、禁止字段黑名单和无关的本地 operation token。
+后端与 fresh 安装包的 runtime/log/SQLite/RPC/temp/report canary 均通过。`.run`
+staged deletion、`PackagingScriptContractTest.kt` 和全部 `.tmp-*` 均保留。旧 target
+的跨 SID ACL 现场已整体保留到 `tmp/backend-stale-target-acl-20260729`，其中八个
+旧测试目录仍不可由当前进程读取，因此无法声称“整个工作区每个历史字节”已完成扫描，
+本 Step 保持未勾选。
+
+- [x] **Step 6: 更新计划、handoff 和验收证据**
 
 逐项标记本计划 checkbox，记录每条命令、测试数、exit code、烟测环境和明确未验收项。
 

@@ -9,7 +9,10 @@ import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.OutputStream
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
+import java.nio.file.StandardOpenOption
+import java.nio.file.attribute.BasicFileAttributes
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
 import kotlin.test.Test
@@ -83,6 +86,8 @@ class BusinessAgentProcessLauncherTest {
                     "ONEAPI_KEY" to "provider-bootstrap-secret",
                     "ONEAPI_MODEL" to "manual-model",
                     "ANTHROPIC_CLI_PATH" to "C:\\Tools\\ant.exe",
+                    "HUITAI_OA_BASE_URL" to "http://192.168.1.20:48080",
+                    "SPRING_CONFIG_ADDITIONAL_LOCATION" to "file:E:\\outside\\application.properties",
                     "API_TOKEN" to "must-not-leak",
                     "DATABASE_PASSWORD" to "must-not-leak",
                     "HUITAI_DESKTOP_KEYSTORE_PASSWORD" to "must-not-leak",
@@ -100,10 +105,109 @@ class BusinessAgentProcessLauncherTest {
         assertEquals("provider-bootstrap-secret", capturedEnvironment["ONEAPI_KEY"])
         assertEquals("manual-model", capturedEnvironment["ONEAPI_MODEL"])
         assertEquals("C:\\Tools\\ant.exe", capturedEnvironment["ANTHROPIC_CLI_PATH"])
+        assertEquals("http://192.168.1.20:48080", capturedEnvironment["HUITAI_OA_BASE_URL"])
         assertEquals(BACKEND_PASSWORD, capturedEnvironment[BusinessAgentLaunchRequest.BACKEND_KEYSTORE_PASSWORD_ENV])
+        assertFalse("SPRING_CONFIG_ADDITIONAL_LOCATION" in capturedEnvironment)
         assertFalse("API_TOKEN" in capturedEnvironment)
         assertFalse("DATABASE_PASSWORD" in capturedEnvironment)
         assertFalse("HUITAI_DESKTOP_KEYSTORE_PASSWORD" in capturedEnvironment)
+    }
+
+    @Test
+    fun `launcher rejects configuration leaf replacement after command preparation before process start`() = runTest {
+        val fixture = fixture(port = 43127)
+        var processStarts = 0
+        val launcher = BusinessAgentProcessLauncher(
+            processStarter = {
+                processStarts += 1
+                FakeProcess()
+            },
+            readinessProbe = successfulReadinessProbe(fixture.paths),
+            parentEnvironment = {
+                Files.delete(fixture.paths.desktopConfiguration)
+                Files.writeString(fixture.paths.desktopConfiguration, REPLACEMENT_LEGAL_CONFIGURATION)
+                emptyMap()
+            },
+        )
+
+        val failure = assertFailsWith<IllegalStateException> { launcher.launch(fixture.request) }
+
+        assertEquals(CONFIGURATION_UNAVAILABLE, failure.message)
+        assertEquals(0, processStarts)
+        assertFalse(Files.exists(fixture.paths.agentSessionToken))
+    }
+
+    @Test
+    fun `launcher rejects same leaf configuration overwrite after command preparation`() = runTest {
+        val fixture = fixture(port = 43128)
+        val originalModifiedTime = Files.getLastModifiedTime(fixture.paths.desktopConfiguration)
+        var processStarts = 0
+        val launcher = BusinessAgentProcessLauncher(
+            processStarter = {
+                processStarts += 1
+                FakeProcess()
+            },
+            readinessProbe = successfulReadinessProbe(fixture.paths),
+            parentEnvironment = {
+                Files.writeString(
+                    fixture.paths.desktopConfiguration,
+                    REPLACEMENT_LEGAL_CONFIGURATION,
+                    StandardOpenOption.TRUNCATE_EXISTING,
+                    StandardOpenOption.WRITE,
+                )
+                Files.setLastModifiedTime(fixture.paths.desktopConfiguration, originalModifiedTime)
+                emptyMap()
+            },
+        )
+
+        val failure = assertFailsWith<IllegalStateException> { launcher.launch(fixture.request) }
+
+        assertEquals(CONFIGURATION_UNAVAILABLE, failure.message)
+        assertEquals(0, processStarts)
+        assertFalse(Files.exists(fixture.paths.agentSessionToken))
+    }
+
+    @Test
+    fun `launcher rejects same size configuration rewrite with restored metadata before process start`() = runTest {
+        val fixture = fixture(port = 43129)
+        val before = Files.readAttributes(
+            fixture.paths.desktopConfiguration,
+            BasicFileAttributes::class.java,
+            LinkOption.NOFOLLOW_LINKS,
+        )
+        var processStarts = 0
+        val launcher = BusinessAgentProcessLauncher(
+            processStarter = {
+                processStarts += 1
+                FakeProcess()
+            },
+            readinessProbe = successfulReadinessProbe(fixture.paths),
+            parentEnvironment = {
+                Files.writeString(
+                    fixture.paths.desktopConfiguration,
+                    SAME_SIZE_REPLACEMENT_LEGAL_CONFIGURATION,
+                    StandardOpenOption.TRUNCATE_EXISTING,
+                    StandardOpenOption.WRITE,
+                )
+                Files.setLastModifiedTime(fixture.paths.desktopConfiguration, before.lastModifiedTime())
+                val after = Files.readAttributes(
+                    fixture.paths.desktopConfiguration,
+                    BasicFileAttributes::class.java,
+                    LinkOption.NOFOLLOW_LINKS,
+                )
+                assertEquals(before.fileKey(), after.fileKey())
+                assertEquals(before.creationTime(), after.creationTime())
+                assertEquals(before.size(), after.size())
+                assertEquals(before.lastModifiedTime(), after.lastModifiedTime())
+                emptyMap()
+            },
+        )
+
+        val failure = assertFailsWith<IllegalStateException> { launcher.launch(fixture.request) }
+
+        assertEquals(CONFIGURATION_UNAVAILABLE, failure.message)
+        assertEquals(0, processStarts)
+        assertFalse(Files.exists(fixture.paths.agentSessionToken))
     }
 
     @Test
@@ -141,6 +245,7 @@ class BusinessAgentProcessLauncherTest {
     @Test
     fun `request allocates one dynamic loopback port used by command and websocket url`() {
         val paths = BusinessDesktopRuntimePaths.create(Files.createTempDirectory("huitai-dynamic-port"))
+        writeDesktopConfiguration(paths)
         var allocations = 0
         val request = BusinessAgentLaunchRequest.create(
             paths = paths,
@@ -248,6 +353,7 @@ class BusinessAgentProcessLauncherTest {
     @Test
     fun `successful launch keeps one child identity across reconnect and restart creates a fresh boundary`() = runTest {
         val paths = BusinessDesktopRuntimePaths.create(Files.createTempDirectory("huitai-launch"))
+        writeDesktopConfiguration(paths)
         val requests = mutableListOf<BusinessAgentLaunchRequest>()
         val processes = ArrayDeque(listOf(FakeProcess(), FakeProcess()))
         val launcher = BusinessAgentProcessLauncher(
@@ -395,6 +501,7 @@ class BusinessAgentProcessLauncherTest {
 
     private fun fixture(port: Int): Fixture {
         val paths = BusinessDesktopRuntimePaths.create(Files.createTempDirectory("huitai-launch-request"))
+        writeDesktopConfiguration(paths)
         val javaExecutable = Path.of("C:/runtime/bin/java.exe")
         val backendJar = paths.root.resolve("backend/babiq-server.jar")
         val request = BusinessAgentLaunchRequest.create(
@@ -407,6 +514,23 @@ class BusinessAgentProcessLauncherTest {
         )
         return Fixture(paths, javaExecutable, backendJar, request)
     }
+
+    private fun writeDesktopConfiguration(paths: BusinessDesktopRuntimePaths) {
+        Files.writeString(
+            paths.desktopConfiguration,
+            "business.legal.service-agreement-url=https://example.test/agreement.html\n" +
+                "business.legal.privacy-policy-url=https://example.test/privacy.html\n",
+        )
+    }
+
+    private fun successfulReadinessProbe(paths: BusinessDesktopRuntimePaths) =
+        BusinessAgentReadinessProbe(
+            authenticator = AuthenticatedWebSocketProbe {
+                Files.deleteIfExists(paths.agentSessionToken)
+                true
+            },
+            retryDelayMillis = { },
+        )
 
     private data class Fixture(
         val paths: BusinessDesktopRuntimePaths,
@@ -474,5 +598,13 @@ class BusinessAgentProcessLauncherTest {
 
     private companion object {
         const val BACKEND_PASSWORD = "backend-password-secret"
+        const val CONFIGURATION_UNAVAILABLE = "business backend configuration is unavailable"
+        const val REPLACEMENT_LEGAL_CONFIGURATION =
+            "business.legal.service-agreement-url=https://replacement.example.test/agreement.html\n" +
+                "business.legal.privacy-policy-url=https://replacement.example.test/privacy.html\n" +
+                "business.legal.replacement-padding=content-changed-before-process-start\n"
+        const val SAME_SIZE_REPLACEMENT_LEGAL_CONFIGURATION =
+            "business.legal.service-agreement-url=https://changed.test/agreement.html\n" +
+                "business.legal.privacy-policy-url=https://changed.test/privacy.html\n"
     }
 }

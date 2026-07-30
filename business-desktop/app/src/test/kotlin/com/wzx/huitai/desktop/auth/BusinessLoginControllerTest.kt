@@ -1,7 +1,6 @@
 package com.wzx.huitai.desktop.auth
 
 import com.wzx.huitai.desktop.security.LocalCredentialStoreUnavailableException
-import com.wzx.huitai.integration.oa.auth.OaTenantCandidate
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -68,7 +67,7 @@ class BusinessLoginControllerTest {
         controller.completeSlider(true)
 
         assertEquals(listOf("find", "authenticate:tenant-1"), authentication.calls)
-        assertEquals(listOf("lawyer@example.com" to "password8"), remembered.saved)
+        assertEquals(listOf("lawyer@example.com"), remembered.savedAccounts)
         assertEquals("", controller.state.value.password)
         assertEquals(BusinessAccessGateState.READY, authentication.gate.value)
         assertNull(controller.state.value.error)
@@ -134,11 +133,11 @@ class BusinessLoginControllerTest {
 
     @Test
     fun `initialize restores remembered form invalid entry becomes warning and remember off clears entry`() = runTest {
-        val remembered = FakeRememberedLoginPort(loaded = RememberedLoginValue("saved@example.com", "saved123".toCharArray()))
+        val remembered = FakeRememberedLoginPort(loaded = RememberedLoginValue("saved@example.com"))
         val controller = BusinessLoginController(FakeAuthenticationOperations(), remembered)
         controller.initialize()
         assertEquals("saved@example.com", controller.state.value.account)
-        assertEquals("saved123", controller.state.value.password)
+        assertEquals("", controller.state.value.password)
         assertTrue(controller.state.value.remember)
 
         controller.updateRemember(false)
@@ -202,20 +201,15 @@ class BusinessLoginControllerTest {
         assertFalse(controller.state.value.submitting)
         assertTrue(controller.state.value.agreementAccepted)
         assertTrue(controller.state.value.remember)
-        assertTrue(remembered.saved.isEmpty())
+        assertTrue(remembered.savedAccounts.isEmpty())
         assertEquals(0, remembered.clearCount)
     }
 
     @Test
-    fun `remembered login value close is idempotent and rejects later password copies`() {
-        val source = "password8".toCharArray()
-        val remembered = RememberedLoginValue("lawyer@example.com", source)
-        source.fill('x')
+    fun `remembered login value contains only the account`() {
+        val remembered = RememberedLoginValue("lawyer@example.com")
         remembered.close()
-        remembered.close()
-
-        val failure = assertFailsWith<IllegalStateException> { remembered.copyPassword() }
-        assertFalse(failure.toString().contains("password8"))
+        assertFalse(remembered.toString().contains("lawyer@example.com"))
     }
 
     @Test
@@ -232,7 +226,7 @@ class BusinessLoginControllerTest {
         assertEquals(1, authentication.localCredentialStoreUnavailableCount)
         assertEquals(BusinessAccessGateState.SIGNED_OUT, authentication.gate.value)
         assertEquals(BusinessLoginErrorCode.LOCAL_KEYSTORE_UNAVAILABLE, controller.state.value.error?.code)
-        assertTrue(remembered.saved.isEmpty())
+        assertTrue(remembered.savedAccounts.isEmpty())
     }
 
     @Test
@@ -287,16 +281,15 @@ class BusinessLoginControllerTest {
         it.updateAgreement(true)
     }
 
-    private fun candidate(tenantId: String, enterStatus: Int = 0) = OaTenantCandidate(
-        userId = "user-1",
-        tenantId = tenantId,
+    private fun candidate(tenantId: String, enterStatus: Int = 0) = BusinessTenantCandidate(
+        candidateId = tenantId,
+        name = tenantId,
         platformId = 100,
-        tenantName = tenantId,
         tenantEnterStatus = enterStatus,
     )
 
     private class FakeAuthenticationOperations(
-        var candidates: List<OaTenantCandidate> = emptyList(),
+        var candidates: List<BusinessTenantCandidate> = emptyList(),
     ) : BusinessAuthenticationOperations {
         override val gate = kotlinx.coroutines.flow.MutableStateFlow(BusinessAccessGateState.SIGNED_OUT)
         val calls = mutableListOf<String>()
@@ -311,7 +304,7 @@ class BusinessLoginControllerTest {
         val localCredentialFailures = mutableListOf<BusinessLoginErrorCode>()
         val localCredentialStoreUnavailableCount: Int get() = localCredentialFailures.size
 
-        override suspend fun findTenantCandidates(account: String): List<OaTenantCandidate> {
+        override suspend fun findTenantCandidates(account: String): List<BusinessTenantCandidate> {
             calls += "find"
             val count = concurrent.incrementAndGet()
             maxConcurrent.updateAndGet { maxOf(it, count) }
@@ -335,9 +328,9 @@ class BusinessLoginControllerTest {
             gate.value = BusinessAccessGateState.SIGNED_OUT
         }
 
-        override suspend fun authenticate(account: String, password: CharArray, candidate: OaTenantCandidate) {
+        override suspend fun authenticate(account: String, password: CharArray, candidate: BusinessTenantCandidate) {
             try {
-                calls += "authenticate:${candidate.tenantId}"
+                calls += "authenticate:${candidate.candidateId}"
                 authenticateStarted?.complete(Unit)
                 try {
                     authenticateRelease?.await()
@@ -365,7 +358,7 @@ class BusinessLoginControllerTest {
         var clearFailureAt: Int? = null,
         var genericClearFailure: Boolean = false,
     ) : BusinessRememberedLoginPort {
-        val saved = mutableListOf<Pair<String, String>>()
+        val savedAccounts = mutableListOf<String>()
         var clearCount = 0
 
         override fun load(): RememberedLoginValue? {
@@ -373,9 +366,9 @@ class BusinessLoginControllerTest {
             return loaded
         }
 
-        override fun saveOrReplace(account: String, password: CharArray) {
+        override fun saveOrReplace(account: String) {
             saveFailure?.let { throw it }
-            saved += account to password.concatToString()
+            savedAccounts += account
         }
 
         override fun clear() {

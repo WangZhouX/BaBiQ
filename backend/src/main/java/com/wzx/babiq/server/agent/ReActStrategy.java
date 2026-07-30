@@ -228,7 +228,7 @@ public class ReActStrategy {
                 .tools(callbacks)
                 .toolContext(toolContext)
                 .streamingInterceptors(streamingTokenUsageInterceptor)
-                .interceptors(sandboxInterceptor, toolObservationInterceptor, spotlightingInterceptor, evictionInterceptor)
+                .interceptors(toolObservationInterceptor, sandboxInterceptor, spotlightingInterceptor, evictionInterceptor)
                 .saver(memorySaver);
         if (effectivePolicy.approvalPolicy() == ApprovalPolicy.NEVER) {
             builder.hooks(limitHook, resumeJumpCleanupHook, tokenUsageHook);

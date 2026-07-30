@@ -32,6 +32,10 @@ import java.util.Set;
 @Component
 public final class BaBiQSandboxInterceptor extends ToolInterceptor {
 
+    private static final String REDACTED_PATH = "[REDACTED]";
+    private static final String TOOL_EXECUTION_DENIED = "TOOL_EXECUTION_DENIED";
+    private static final String TOOL_EXECUTION_FAILED = "TOOL_EXECUTION_FAILED";
+
     /** ReActStrategy 放入 toolContext 的本轮 cwd key。 */
     public static final String CONTEXT_CWD = "babiq.cwd";
 
@@ -86,12 +90,17 @@ public final class BaBiQSandboxInterceptor extends ToolInterceptor {
     public ToolCallResponse interceptToolCall(ToolCallRequest request, ToolCallHandler handler) {
         String rejection = checkOrReject(request.getToolName(), request.getArguments(), request.getContext());
         if (rejection != null) {
-            emitDeniedFileChangeIfNeeded(request, rejection);
+            emitDeniedFileChangeIfNeeded(request);
             // 2026-05-25 修复记录：SAA 的静态工厂方法参数顺序是 toolCallId、toolName、错误内容。
             // 如果按“工具名、调用 id”的直觉顺序传参，最终生成的 ToolResponseMessage 会把
             // tool_call_id 写成工具名，DeepSeek/OpenAI 兼容接口会认为 assistant.tool_calls
             // 没有匹配的 tool 响应，从而在审批恢复后返回 400 Bad Request。
-            return ToolCallResponse.error(request.getToolCallId(), request.getToolName(), rejection);
+            return new ToolCallResponse(
+                    TOOL_EXECUTION_DENIED,
+                    request.getToolName(),
+                    request.getToolCallId(),
+                    "error",
+                    java.util.Map.of("error", true, "errorMessage", TOOL_EXECUTION_DENIED));
         }
         return handler.call(request);
     }
@@ -210,7 +219,7 @@ public final class BaBiQSandboxInterceptor extends ToolInterceptor {
      * <p>这条回写是为了满足 P1-3a 的可见性要求：拒绝不是只回一个 ToolCallResponse.error，
      * 还要让前端能在 item 流里看到具体拒绝结果。</p>
      */
-    private void emitDeniedFileChangeIfNeeded(ToolCallRequest request, String rejection) {
+    private void emitDeniedFileChangeIfNeeded(ToolCallRequest request) {
         if (!"write_file".equals(request.getToolName())) {
             return;
         }
@@ -222,11 +231,13 @@ public final class BaBiQSandboxInterceptor extends ToolInterceptor {
         if (path == null || path.isBlank()) {
             return;
         }
-        FileChangeItem denied = conversationService.emitFileChange("write", path, "denied", rejection);
+        FileChangeItem denied = conversationService.emitFileChange(
+                "write", REDACTED_PATH, "denied", TOOL_EXECUTION_FAILED);
         try {
             emitter.emitFileChange(denied);
         } catch (Exception exception) {
-            log.warn("发送 denied fileChange 失败,toolCallId={},path={}", request.getToolCallId(), path, exception);
+            log.warn("发送 denied fileChange 失败，已保留固定拒绝结果: toolCallId={}, toolName={}, failureType={}",
+                    request.getToolCallId(), request.getToolName(), exception.getClass().getSimpleName());
         }
     }
 

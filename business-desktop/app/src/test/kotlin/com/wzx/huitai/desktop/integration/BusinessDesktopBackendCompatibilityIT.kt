@@ -15,6 +15,7 @@ import com.wzx.huitai.desktop.app.BusinessDesktopProductionConfiguration
 import com.wzx.huitai.desktop.app.CompositionResource
 import com.wzx.huitai.desktop.app.DesktopSecretBootstrap
 import com.wzx.huitai.desktop.app.ProductionBusinessDesktopCompositionFactory
+import com.wzx.huitai.desktop.auth.BusinessAccessGateState
 import com.wzx.huitai.desktop.logging.DesktopLoggingBootstrap
 import com.wzx.huitai.desktop.runtime.AuthenticatedWebSocketProbe
 import com.wzx.huitai.desktop.runtime.BusinessAgentLaunchRequest
@@ -56,6 +57,7 @@ class BusinessDesktopBackendCompatibilityIT {
             .normalize()
         assertTrue(Files.isRegularFile(backendJar), "backend jar must be built before compatibility IT")
 
+        val fakeOa = BusinessRealBackendTestHarness.FakeOaServer.start()
         val home = Files.createTempDirectory("business-desktop-backend-compatibility-it")
         val workspace = Files.createDirectories(home.resolve("workspace"))
         val testScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -73,6 +75,9 @@ class BusinessDesktopBackendCompatibilityIT {
             )
             val session = BusinessAgentProcessLauncher(
                 readinessProbe = authenticatedReadinessProbe(),
+                parentEnvironment = {
+                    BusinessRealBackendTestHarness.safeParentEnvironment(fakeOa.baseUrl)
+                },
             ).launch(request)
             capturedSession.set(session)
             BusinessAgentChildHandle(
@@ -111,7 +116,6 @@ class BusinessDesktopBackendCompatibilityIT {
                 home = home,
                 backendJar = backendJar,
                 desktopSecretBootstrap = DesktopSecretBootstrap { "compatibility-secret".toCharArray() },
-                frameworkDemoIdentity = true,
             ),
             parentScope = testScope,
             childLauncher = childLauncher,
@@ -122,6 +126,7 @@ class BusinessDesktopBackendCompatibilityIT {
         var childPid: Long? = null
         try {
             root = BusinessDesktopCompositionRoot.start(factory)
+            BusinessRealBackendTestHarness.loginReady(root)
             val session = requireNotNull(capturedSession.get())
             val paths = requireNotNull(capturedPaths.get())
             val managed = requireNotNull(capturedConnection.get())
@@ -161,6 +166,11 @@ class BusinessDesktopBackendCompatibilityIT {
                         managed.connectionId != oldConnectionId
                 }
             }
+            withTimeout(COMPATIBILITY_TIMEOUT) {
+                view.production.authenticationGate.first { gate ->
+                    gate == BusinessAccessGateState.READY
+                }
+            }
             assertNotEquals(oldConnectionId, managed.connectionId)
             val secondThread = view.production.businessAgentClient.createThread(workspace.toString())
             assertNotEquals(firstThread.id, secondThread.id)
@@ -168,11 +178,22 @@ class BusinessDesktopBackendCompatibilityIT {
         } finally {
             withContext(NonCancellable) { root?.shutdown() }
             testScope.cancel()
+            fakeOa.close()
             DesktopLoggingBootstrap.resetForTests()
         }
 
         assertFalse(requireNotNull(capturedSession.get()).isAlive)
         assertFalse(ProcessHandle.of(requireNotNull(childPid)).map { it.isAlive }.orElse(false))
+        val auditedPaths = requireNotNull(capturedPaths.get())
+        BusinessRealBackendTestHarness.assertOaSecretsAbsent(
+            auditedPaths.root,
+            auditedPaths.agentDatabase,
+            auditedPaths.agentKeyStore,
+            auditedPaths.desktopDatabase,
+            auditedPaths.desktopKeyStore,
+            auditedPaths.agentLog,
+            auditedPaths.desktopLog,
+        )
     }
 
     private fun authenticatedReadinessProbe() = BusinessAgentReadinessProbe(

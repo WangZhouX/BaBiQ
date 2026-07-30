@@ -12,6 +12,10 @@ import com.wzx.babiq.server.application.auth.TrustedDesktopConnection;
 import com.wzx.babiq.server.application.catalog.ApplicationCatalogRegistry;
 import com.wzx.babiq.server.application.catalog.ApplicationPageContextRegistry;
 import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
+import com.wzx.babiq.server.business.oa.session.BusinessOaSessionRegistry;
+import com.wzx.babiq.server.business.oa.session.BusinessOaAttachHandleRegistry;
+import com.wzx.babiq.server.business.oa.session.ReadyOaSessionLease;
+import com.wzx.babiq.server.business.upload.BusinessBinaryLeaseLifecycle;
 import com.wzx.babiq.server.conversation.ConversationService;
 import jakarta.annotation.PostConstruct;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -40,7 +44,11 @@ public final class ApplicationBridgeLifecycleCoordinator
     private final ConversationService conversations;
     private final PendingApprovals approvals;
     private final AgentLoop agentLoop;
+    private final BusinessOaSessionRegistry oaSessions;
+    private final BusinessOaAttachHandleRegistry attachHandles;
+    private final BusinessBinaryLeaseLifecycle binaryLeaseLifecycle;
 
+    /** Compatibility constructor retained for focused unit tests that do not exercise the business OA gate. */
     public ApplicationBridgeLifecycleCoordinator(
             ApplicationOutboundRequestTracker outboundRequests,
             BusinessDesktopConnectionRegistry connections,
@@ -51,6 +59,55 @@ public final class ApplicationBridgeLifecycleCoordinator
             ConversationService conversations,
             PendingApprovals approvals,
             AgentLoop agentLoop) {
+        this(outboundRequests, connections, identities, catalogs, contexts, actions, conversations, approvals,
+                agentLoop, null, null, null);
+    }
+
+    public ApplicationBridgeLifecycleCoordinator(
+            ApplicationOutboundRequestTracker outboundRequests,
+            BusinessDesktopConnectionRegistry connections,
+            ApplicationIdentityRegistry identities,
+            ApplicationCatalogRegistry catalogs,
+            ApplicationPageContextRegistry contexts,
+            PendingApplicationActions actions,
+            ConversationService conversations,
+            PendingApprovals approvals,
+            AgentLoop agentLoop,
+            BusinessOaSessionRegistry oaSessions) {
+        this(outboundRequests, connections, identities, catalogs, contexts, actions, conversations, approvals,
+                agentLoop, oaSessions, null, null);
+    }
+
+    public ApplicationBridgeLifecycleCoordinator(
+            ApplicationOutboundRequestTracker outboundRequests,
+            BusinessDesktopConnectionRegistry connections,
+            ApplicationIdentityRegistry identities,
+            ApplicationCatalogRegistry catalogs,
+            ApplicationPageContextRegistry contexts,
+            PendingApplicationActions actions,
+            ConversationService conversations,
+            PendingApprovals approvals,
+            AgentLoop agentLoop,
+            BusinessOaSessionRegistry oaSessions,
+            BusinessOaAttachHandleRegistry attachHandles) {
+        this(outboundRequests, connections, identities, catalogs, contexts, actions, conversations, approvals,
+                agentLoop, oaSessions, attachHandles, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public ApplicationBridgeLifecycleCoordinator(
+            ApplicationOutboundRequestTracker outboundRequests,
+            BusinessDesktopConnectionRegistry connections,
+            ApplicationIdentityRegistry identities,
+            ApplicationCatalogRegistry catalogs,
+            ApplicationPageContextRegistry contexts,
+            PendingApplicationActions actions,
+            ConversationService conversations,
+            PendingApprovals approvals,
+            AgentLoop agentLoop,
+            BusinessOaSessionRegistry oaSessions,
+            BusinessOaAttachHandleRegistry attachHandles,
+            BusinessBinaryLeaseLifecycle binaryLeaseLifecycle) {
         this.outboundRequests = outboundRequests;
         this.connections = connections;
         this.identities = identities;
@@ -60,6 +117,9 @@ public final class ApplicationBridgeLifecycleCoordinator
         this.conversations = conversations;
         this.approvals = approvals;
         this.agentLoop = agentLoop;
+        this.oaSessions = oaSessions;
+        this.attachHandles = attachHandles;
+        this.binaryLeaseLifecycle = binaryLeaseLifecycle;
     }
 
     @PostConstruct
@@ -69,14 +129,32 @@ public final class ApplicationBridgeLifecycleCoordinator
     }
 
     public void onConnectionClosed(TrustedDesktopConnection connection, String reason) {
+        java.util.Optional<TrustedBusinessIdentity> installedIdentity = identities.current(connection);
+        ReadyOaSessionLease binaryLease = currentReady(
+                connection, installedIdentity == null ? null : installedIdentity.orElse(null));
         synchronized (connection) {
             runConnectionCleanup("outbound requests", () ->
                     outboundRequests.closePending(connection.webSocketSessionId(), new IOException(reason)));
             runConnectionCleanup("page context", () -> contexts.clear(connection));
             runConnectionCleanup("catalog", () -> catalogs.clear(connection));
+            if (attachHandles != null) {
+                runConnectionCleanup("OA attach handles", () -> attachHandles.revoke(connection));
+            }
+            if (oaSessions != null) {
+                runConnectionCleanup("OA session", () ->
+                        oaSessions.detachBeforeCredentialCleanup(connection));
+            }
+            if (binaryLeaseLifecycle != null && binaryLease != null) {
+                runConnectionCleanup("binary lease", () ->
+                        binaryLeaseLifecycle.revoke(connection, binaryLease));
+            }
             runConnectionCleanup("identity", () -> identities.clear(connection));
             runConnectionCleanup("pending actions", () ->
                     actions.onConnectionClosed(connection.webSocketSessionId(), reason));
+        }
+        if (oaSessions != null) {
+            runConnectionCleanup("OA credential cleanup",
+                    oaSessions::drainPendingCredentialCleanup);
         }
     }
 
@@ -86,6 +164,10 @@ public final class ApplicationBridgeLifecycleCoordinator
             TrustedBusinessIdentity newIdentity) {
         if (oldIdentity == null) {
             return;
+        }
+        ReadyOaSessionLease binaryLease = currentReady(connection, oldIdentity);
+        if (binaryLeaseLifecycle != null && binaryLease != null) {
+            runCleanup("binary lease", () -> binaryLeaseLifecycle.revoke(connection, binaryLease));
         }
         BusinessIdentityScope oldScope = scope(oldIdentity);
         java.util.List<String> affectedThreads = java.util.List.of();
@@ -133,5 +215,20 @@ public final class ApplicationBridgeLifecycleCoordinator
                 identity.reservationId(), identity.webSocketSessionId(),
                 identity.desktopInstanceId(), identity.desktopSessionId(), identity.authSessionId(),
                 identity.identityEpoch(), identity.userId(), identity.tenantId(), identity.platformId());
+    }
+
+    private ReadyOaSessionLease currentReady(
+            TrustedDesktopConnection connection,
+            TrustedBusinessIdentity identity) {
+        if (oaSessions == null || identity == null) {
+            return null;
+        }
+        try {
+            return oaSessions.currentReady(connection, identity).orElse(null);
+        } catch (RuntimeException failure) {
+            log.warn("Business binary lease capture failed: reasonType={}",
+                    failure.getClass().getSimpleName());
+            return null;
+        }
     }
 }

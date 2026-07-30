@@ -2,6 +2,8 @@ package com.wzx.huitai.desktop.runtime
 
 import com.wzx.huitai.agent.client.AgentConnectRequest
 import com.wzx.huitai.agent.client.DesktopSessionIdentity
+import com.wzx.huitai.desktop.auth.config.BusinessLegalLinksConfigurationErrorCode
+import com.wzx.huitai.desktop.auth.config.BusinessLegalLinksConfigurationException
 import com.wzx.huitai.security.secret.JceksSecretStore
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -10,7 +12,10 @@ import java.io.OutputStream
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
+import java.nio.file.attribute.AclFileAttributeView
+import java.nio.file.attribute.BasicFileAttributes
 import java.util.concurrent.TimeUnit
 import java.util.UUID
 import kotlin.test.Test
@@ -22,6 +27,90 @@ import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
 
 class BusinessBackendDevelopmentRunnerTest {
+    @Test
+    fun `fresh standalone backend installs controlled legal configuration before child command`() = runTest {
+        val fixture = fixture("huitai-fresh-backend-configuration")
+        val process = FakeProcess()
+        var command = emptyList<String>()
+        assertFalse(Files.exists(fixture.paths.desktopConfiguration, LinkOption.NOFOLLOW_LINKS))
+        val runner = fixture.runner(
+            process = process,
+            existingSessionProbe = AuthenticatedWebSocketProbe { false },
+            portAvailabilityProbe = BusinessBackendPortAvailabilityProbe { true },
+            onRequest = { request -> command = request.command() },
+        )
+
+        val handle = runner.start()
+        try {
+            val configuration = fixture.paths.desktopConfiguration.toAbsolutePath().normalize()
+            assertTrue(Files.isRegularFile(configuration, LinkOption.NOFOLLOW_LINKS))
+            assertFalse(Files.isSymbolicLink(configuration))
+            assertEquals(BUNDLED_LEGAL_CONFIGURATION, Files.readString(configuration))
+            assertEquals(
+                listOf("--spring.config.additional-location=file:$configuration"),
+                command.filter { it.startsWith("--spring.config.additional-location=") },
+            )
+        } finally {
+            handle.close()
+        }
+    }
+
+    @Test
+    fun `standalone backend preserves an existing controlled legal configuration and permissions`() = runTest {
+        val fixture = fixture("huitai-existing-backend-configuration")
+        Files.writeString(fixture.paths.desktopConfiguration, CUSTOM_LEGAL_CONFIGURATION)
+        val before = Files.readAttributes(
+            fixture.paths.desktopConfiguration,
+            BasicFileAttributes::class.java,
+            LinkOption.NOFOLLOW_LINKS,
+        )
+        val beforeAcl = acl(fixture.paths.desktopConfiguration)
+        val beforePosixPermissions = posixPermissions(fixture.paths.desktopConfiguration)
+        val runner = fixture.runner(
+            existingSessionProbe = AuthenticatedWebSocketProbe { false },
+            portAvailabilityProbe = BusinessBackendPortAvailabilityProbe { true },
+            onRequest = { request -> request.command() },
+        )
+
+        val handle = runner.start()
+        try {
+            val after = Files.readAttributes(
+                fixture.paths.desktopConfiguration,
+                BasicFileAttributes::class.java,
+                LinkOption.NOFOLLOW_LINKS,
+            )
+            assertEquals(CUSTOM_LEGAL_CONFIGURATION, Files.readString(fixture.paths.desktopConfiguration))
+            assertEquals(before.fileKey(), after.fileKey())
+            assertEquals(before.creationTime(), after.creationTime())
+            assertEquals(before.lastModifiedTime(), after.lastModifiedTime())
+            assertEquals(beforeAcl, acl(fixture.paths.desktopConfiguration))
+            assertEquals(beforePosixPermissions, posixPermissions(fixture.paths.desktopConfiguration))
+        } finally {
+            handle.close()
+        }
+    }
+
+    @Test
+    fun `standalone backend rejects unknown controlled properties before child request creation`() = runTest {
+        val fixture = fixture("huitai-invalid-backend-configuration")
+        Files.writeString(
+            fixture.paths.desktopConfiguration,
+            CUSTOM_LEGAL_CONFIGURATION + "spring.config.import=file:C:/outside/application.properties\n",
+        )
+        var childRequestCreated = false
+        val runner = fixture.runner(
+            existingSessionProbe = AuthenticatedWebSocketProbe { false },
+            portAvailabilityProbe = BusinessBackendPortAvailabilityProbe { true },
+            onRequest = { childRequestCreated = true },
+        )
+
+        val failure = assertFailsWith<BusinessLegalLinksConfigurationException> { runner.start() }
+
+        assertEquals(BusinessLegalLinksConfigurationErrorCode.CONFIG_INVALID, failure.code)
+        assertFalse(childRequestCreated)
+        assertFalse(Files.exists(fixture.paths.agentSessionToken, LinkOption.NOFOLLOW_LINKS))
+    }
+
     @Test
     fun `standalone backend reuses desktop vault secret and publishes frontend session`() = runTest {
         val home = Files.createTempDirectory("huitai-standalone-backend")
@@ -242,7 +331,7 @@ class BusinessBackendDevelopmentRunnerTest {
         url = "ws://127.0.0.1:49391/ws/agent",
         identity = DesktopSessionIdentity.forChildLaunch(
             desktopInstanceId = UUID.randomUUID().toString(),
-            localOrigin = "http://127.0.0.1",
+            localOrigin = "http://127.0.0.1:49391",
         ),
     )
 
@@ -274,6 +363,7 @@ class BusinessBackendDevelopmentRunnerTest {
             existingSessionProbe: AuthenticatedWebSocketProbe,
             portAvailabilityProbe: BusinessBackendPortAvailabilityProbe,
             onLaunch: () -> Unit = {},
+            onRequest: (BusinessAgentLaunchRequest) -> Unit = {},
         ): BusinessBackendDevelopmentRunner = BusinessBackendDevelopmentRunner(
             home = home,
             backendJar = backendJar,
@@ -281,6 +371,7 @@ class BusinessBackendDevelopmentRunnerTest {
             desktopSecretBootstrap = { desktopPassword.copyOf() },
             sessionLauncher = { request ->
                 onLaunch()
+                onRequest(request)
                 Files.deleteIfExists(paths.agentSessionToken)
                 BusinessAgentRuntimeSession(process, request)
             },
@@ -288,6 +379,14 @@ class BusinessBackendDevelopmentRunnerTest {
             portAvailabilityProbe = portAvailabilityProbe,
         )
     }
+
+    private fun acl(path: Path) =
+        Files.getFileAttributeView(path, AclFileAttributeView::class.java, LinkOption.NOFOLLOW_LINKS)
+            ?.acl
+            ?.toList()
+
+    private fun posixPermissions(path: Path) =
+        runCatching { Files.getPosixFilePermissions(path, LinkOption.NOFOLLOW_LINKS) }.getOrNull()
 
     private class FakeProcess : Process() {
         private var alive = true
@@ -308,5 +407,14 @@ class BusinessBackendDevelopmentRunnerTest {
             return this
         }
         override fun isAlive(): Boolean = alive
+    }
+
+    private companion object {
+        const val BUNDLED_LEGAL_CONFIGURATION =
+            "business.legal.service-agreement-url=https://huitaikeji.cn/agreement.html\n" +
+                "business.legal.privacy-policy-url=https://huitaikeji.cn/privacy.html\n"
+        const val CUSTOM_LEGAL_CONFIGURATION =
+            "business.legal.service-agreement-url=https://example.test/custom-agreement.html\n" +
+                "business.legal.privacy-policy-url=https://example.test/custom-privacy.html\n"
     }
 }

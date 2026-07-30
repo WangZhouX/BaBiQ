@@ -8,7 +8,7 @@ import java.time.Instant;
  * <p>SQLite 没有真正的 Instant 类型，BaBiQ 统一把时间保存为 ISO-8601 字符串。这个工具把转换集中起来，
  * 避免每个 repository 都手写 null 判断和 `Instant.parse`。</p>
  */
-final class PersistenceTime {
+public final class PersistenceTime {
 
     private PersistenceTime() {
     }
@@ -19,7 +19,7 @@ final class PersistenceTime {
      * @param instant 业务层时间，可为空
      * @return ISO-8601 字符串；输入为空时返回 null
      */
-    static String write(Instant instant) {
+    public static String write(Instant instant) {
         return instant == null ? null : instant.toString();
     }
 
@@ -29,7 +29,7 @@ final class PersistenceTime {
      * @param value 数据库中的时间字符串，可为空
      * @return Instant；输入为空或空白时返回 null
      */
-    static Instant read(String value) {
+    public static Instant read(String value) {
         return value == null || value.isBlank() ? null : Instant.parse(value);
     }
 }

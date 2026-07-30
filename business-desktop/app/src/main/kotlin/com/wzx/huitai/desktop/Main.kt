@@ -42,20 +42,35 @@ import com.wzx.huitai.desktop.smoke.PackagedSmokeProbe
 import com.wzx.huitai.desktop.smoke.PackagedSmokeCompositionCoordinator
 import com.wzx.huitai.desktop.smoke.PackagedSmokeWindowCompositionEffect
 import com.wzx.huitai.desktop.smoke.PackagedSmokeUiCompositionSignals
+import com.wzx.huitai.desktop.workbench.currentAttachmentParent
+import com.wzx.huitai.desktop.workbench.BusinessAttachmentUploadState
+import com.wzx.huitai.desktop.workbench.BusinessScheduleFormState
+import com.wzx.huitai.desktop.workbench.BusinessScheduleState
+import com.wzx.huitai.desktop.workbench.BusinessScheduleAttachmentRequestToken
 import com.wzx.huitai.agent.protocol.ApplicationProtocol
+import com.wzx.huitai.agent.business.workbench.BusinessAttachmentPrepareRequest
+import com.wzx.huitai.agent.conversation.BusinessAttachmentDraft
 import com.wzx.huitai.presentation.form.FormPatch
 import java.util.UUID
+import java.nio.file.Path
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
+
+private val BUSINESS_WORKBENCH_LOCAL_PATHS = setOf(
+    "/", "/lawoa", "/bpm", "/approval", "/case", "/administration", "/management",
+    "/customer", "/cost", "/consultant", "/lawyer-admin", "/tools", "/team",
+)
 
 /**
  * 业务桌面可执行入口：先完成 lock/storage/child/authenticated connection，再创建 Compose window。
@@ -139,12 +154,18 @@ fun main() {
                 val providerSettingsState by view.production.providerSettingsController.state.collectAsState()
                 val gate by view.production.authenticationGate.collectAsState()
                 val loginState by view.production.loginController.state.collectAsState()
-                var selectedDestination by remember { mutableStateOf(BusinessDesktopDestination.DATA_ENTRY) }
+                var selectedDestination by remember { mutableStateOf(BusinessDesktopDestination.WORKBENCH) }
+                var selectedWorkbenchPath by remember { mutableStateOf("/") }
+                val workbenchState by view.production.workbenchController.state.collectAsState()
+                val scheduleState by view.production.scheduleController.state.collectAsState()
+                val scheduleFormState by view.production.scheduleController.formState.collectAsState()
+                val scheduleUploadState by view.production.attachmentUploadClient.state.collectAsState()
                 val composerIdentityScope = desktopState.identity?.toComposerIdentityScope()
                 var composerSession by remember(composerIdentityScope) {
                     mutableStateOf(BusinessComposerSessionState(composerIdentityScope))
                 }
                 var composerSubmitting by remember { mutableStateOf(false) }
+                val scheduleAttachmentSelection = remember { BusinessScheduleAttachmentSelection() }
                 val activeComposerSession = composerSession
                 val composerDraft = activeComposerSession.draft
                 val composerAttachmentError = activeComposerSession.attachmentError
@@ -164,11 +185,56 @@ fun main() {
                     BusinessClipboardPasteCoordinator(view.production.clipboardImageAttachmentStore::hasImage)
                 }
                 var previousGate by remember { mutableStateOf(gate) }
+                var activeScheduleIdentityEpoch by remember { mutableStateOf<Long?>(null) }
+                val scheduleUiIdentity = projectBusinessScheduleUiIdentity(
+                    activeIdentityEpoch = activeScheduleIdentityEpoch,
+                    nextIdentityEpoch = desktopState.identity?.identityEpoch
+                        ?.takeIf { gate == BusinessAccessGateState.READY },
+                    scheduleState = scheduleState,
+                    formState = scheduleFormState,
+                    uploadState = scheduleUploadState.copy(
+                        uploading = scheduleUploadState.uploading ||
+                            scheduleAttachmentSelection.picking,
+                    ),
+                )
                 LaunchedEffect(gate) {
                     if (previousGate == BusinessAccessGateState.READY && gate != BusinessAccessGateState.READY) {
                         view.production.loginController.clearSensitiveInput()
                     }
                     previousGate = gate
+                }
+                LaunchedEffect(gate, desktopState.identity?.identityEpoch) {
+                    if (gate == BusinessAccessGateState.READY) {
+                        desktopState.identity?.identityEpoch?.let { epoch ->
+                            activeScheduleIdentityEpoch = transitionBusinessScheduleIdentity(
+                                previousIdentityEpoch = activeScheduleIdentityEpoch,
+                                nextIdentityEpoch = epoch,
+                                cancelUpload = view.production.attachmentUploadClient::cancel,
+                                clearSchedule = view.production.scheduleController::clear,
+                                clearLocalAttachments = scheduleAttachmentSelection::clear,
+                            )
+                            loadBusinessWorkbenchAndSchedule(
+                                identityEpoch = epoch,
+                                loadWorkbench = view.production.workbenchController::load,
+                                loadPage = view.production.workbenchController::loadPage,
+                                currentWorkbenchState = { view.production.workbenchController.state.value },
+                                attachSchedule = view.production.scheduleController::attach,
+                                loadSchedule = { view.production.scheduleController.load() },
+                            )
+                        }
+                    } else {
+                        view.production.workbenchController.clear()
+                        clearBusinessScheduleSession(
+                            cancelUpload = view.production.attachmentUploadClient::cancel,
+                            clearSchedule = view.production.scheduleController::clear,
+                            clearLocalAttachments = scheduleAttachmentSelection::clear,
+                        )
+                        activeScheduleIdentityEpoch = null
+                        if (gate != BusinessAccessGateState.READY) {
+                            selectedDestination = BusinessDesktopDestination.WORKBENCH
+                            selectedWorkbenchPath = "/"
+                        }
+                    }
                 }
 
                 HuitaiBusinessTheme {
@@ -215,15 +281,288 @@ fun main() {
                             BusinessDesktopShell(
                                 state = desktopState,
                                 formState = formState,
+                                workbenchState = workbenchState,
+                                scheduleState = scheduleUiIdentity.scheduleState,
+                                scheduleFormState = scheduleUiIdentity.formState,
+                                scheduleUploadState = scheduleUiIdentity.uploadState,
                                 providerSettingsState = providerSettingsState,
                                 selectedDestination = selectedDestination,
+                                selectedWorkbenchPath = selectedWorkbenchPath,
                                 composerText = composerDraft.text,
                                 composerAttachments = composerDraft.attachments,
                                 attachmentError = composerAttachmentError?.let { "${it.code}: ${it.message}" },
                                 composerSubmitting = composerSubmitting,
                                 agentPanelExpanded = assistantExpanded,
                                 requestedAssistantWidth = requestedAssistantWidth,
-                                onDestinationSelected = { selectedDestination = it },
+                                onDestinationSelected = {
+                                    selectedDestination = it
+                                    if (it == BusinessDesktopDestination.WORKBENCH) selectedWorkbenchPath = "/"
+                                },
+                                onWorkbenchRefresh = {
+                                    uiScope.launch {
+                                        desktopState.identity?.identityEpoch?.let { epoch ->
+                                            loadBusinessWorkbenchAndSchedule(
+                                                identityEpoch = epoch,
+                                                loadWorkbench = view.production.workbenchController::load,
+                                                loadPage = view.production.workbenchController::loadPage,
+                                                currentWorkbenchState = {
+                                                    view.production.workbenchController.state.value
+                                                },
+                                                attachSchedule = view.production.scheduleController::attach,
+                                                loadSchedule = { view.production.scheduleController.load() },
+                                            )
+                                        }
+                                    }
+                                },
+                                onWorkbenchNavigationSelected = { path ->
+                                    if (path in BUSINESS_WORKBENCH_LOCAL_PATHS) {
+                                        selectedDestination = BusinessDesktopDestination.WORKBENCH
+                                        selectedWorkbenchPath = path
+                                    }
+                                },
+                                onWorkbenchQuickEntrance = { path ->
+                                    if (path in BUSINESS_WORKBENCH_LOCAL_PATHS) {
+                                        selectedDestination = BusinessDesktopDestination.WORKBENCH
+                                        selectedWorkbenchPath = path
+                                    }
+                                },
+                                onWorkbenchStatisticSelected = { index ->
+                                    uiScope.launch { view.production.workbenchController.changeStatistic(index) }
+                                },
+                                onWorkbenchKindSelected = { kind ->
+                                    uiScope.launch { view.production.workbenchController.changeKind(kind) }
+                                },
+                                onWorkbenchScopeSelected = businessWorkbenchBindingChangeCallback(
+                                    selection = scheduleAttachmentSelection,
+                                    cancelUpload = view.production.attachmentUploadClient::cancel,
+                                    onBindingChanged = { scope ->
+                                        uiScope.launch {
+                                            view.production.workbenchController.changeScope(scope)
+                                            desktopState.identity?.identityEpoch?.let { epoch ->
+                                                reloadBusinessScheduleFromWorkbench(
+                                                    identityEpoch = epoch,
+                                                    currentWorkbenchState = {
+                                                        view.production.workbenchController.state.value
+                                                    },
+                                                    attachSchedule =
+                                                        view.production.scheduleController::attach,
+                                                    loadSchedule = {
+                                                        view.production.scheduleController.load()
+                                                    },
+                                                )
+                                            }
+                                        }
+                                    },
+                                ),
+                                onWorkbenchTeamSelected = businessWorkbenchBindingChangeCallback(
+                                    selection = scheduleAttachmentSelection,
+                                    cancelUpload = view.production.attachmentUploadClient::cancel,
+                                    onBindingChanged = { teamId ->
+                                        uiScope.launch {
+                                            view.production.workbenchController.changeTeam(teamId)
+                                            desktopState.identity?.identityEpoch?.let { epoch ->
+                                                reloadBusinessScheduleFromWorkbench(
+                                                    identityEpoch = epoch,
+                                                    currentWorkbenchState = {
+                                                        view.production.workbenchController.state.value
+                                                    },
+                                                    attachSchedule =
+                                                        view.production.scheduleController::attach,
+                                                    loadSchedule = {
+                                                        view.production.scheduleController.load()
+                                                    },
+                                                )
+                                            }
+                                        }
+                                    },
+                                ),
+                                onWorkbenchRoleSelected = { roleCode ->
+                                    uiScope.launch { view.production.workbenchController.changeRole(roleCode) }
+                                },
+                                onWorkbenchSortRequested = { kind, ids ->
+                                    uiScope.launch { view.production.workbenchController.updateSort(kind, ids) }
+                                },
+                                onWorkbenchRetryPage = {
+                                    uiScope.launch { view.production.workbenchController.loadPage() }
+                                },
+                                onWorkbenchPreviousPage = {
+                                    view.production.workbenchController.previousPage()
+                                    uiScope.launch { view.production.workbenchController.loadPage() }
+                                },
+                                onWorkbenchNextPage = {
+                                    view.production.workbenchController.nextPage()
+                                    uiScope.launch { view.production.workbenchController.loadPage() }
+                                },
+                                onWorkbenchCaseSelected = {
+                                    selectedDestination = BusinessDesktopDestination.WORKBENCH
+                                    selectedWorkbenchPath = "/case"
+                                },
+                                onSchedulePrevious = {
+                                    uiScope.launch { view.production.scheduleController.previous() }
+                                },
+                                onScheduleNext = {
+                                    uiScope.launch { view.production.scheduleController.next() }
+                                },
+                                onScheduleToday = {
+                                    uiScope.launch { view.production.scheduleController.today() }
+                                },
+                                onScheduleViewModeChanged = {
+                                    uiScope.launch { view.production.scheduleController.setViewMode(it) }
+                                },
+                                onScheduleOnlyMineChanged = {
+                                    uiScope.launch { view.production.scheduleController.setOnlyMine(it) }
+                                },
+                                onScheduleDateSelected = {
+                                    uiScope.launch { view.production.scheduleController.selectDate(it) }
+                                },
+                                onScheduleCompletionChanged = { id, completed ->
+                                    uiScope.launch {
+                                        view.production.scheduleController.setCompleted(id, completed)
+                                    }
+                                },
+                                onScheduleCreate = {
+                                    scheduleAttachmentSelection.clear()
+                                    uiScope.launch { view.production.scheduleController.openCreate() }
+                                },
+                                onScheduleDraftChanged = businessScheduleDraftChangeCallback(
+                                    currentDraft = {
+                                        view.production.scheduleController.formState.value.draft
+                                    },
+                                    selection = scheduleAttachmentSelection,
+                                    cancelUpload = view.production.attachmentUploadClient::cancel,
+                                    onDraftChanged = view.production.scheduleController::updateDraft,
+                                ),
+                                onScheduleRelationTypeSelected = { type ->
+                                    scheduleAttachmentSelection.invalidate(
+                                        view.production.attachmentUploadClient::cancel,
+                                    )
+                                    uiScope.launch {
+                                        view.production.scheduleController.loadRelationOptions(type)
+                                    }
+                                },
+                                onScheduleRelationOptionSelected = { type, option ->
+                                    scheduleAttachmentSelection.invalidate(
+                                        view.production.attachmentUploadClient::cancel,
+                                    )
+                                    uiScope.launch {
+                                        view.production.scheduleController.selectRelationOption(type, option)
+                                    }
+                                },
+                                onScheduleLoadRelationOptions = {
+                                    scheduleFormState.selectedRelationType?.let { type ->
+                                        scheduleAttachmentSelection.invalidate(
+                                            view.production.attachmentUploadClient::cancel,
+                                        )
+                                        uiScope.launch {
+                                            view.production.scheduleController.loadRelationOptions(type)
+                                        }
+                                    }
+                                },
+                                onScheduleChooseAttachments = {
+                                    uiScope.launch {
+                                        val selectionRequest =
+                                            scheduleAttachmentSelection.tryBegin() ?: return@launch
+                                        var uploadRequest: BusinessScheduleAttachmentRequestToken? = null
+                                        try {
+                                            val additions = view.production.scheduleAttachmentPicker.choose(
+                                                currentDrafts = selectionRequest.currentDrafts,
+                                            )
+                                            if (additions.isEmpty()) return@launch
+                                            val all = scheduleAttachmentSelection.merge(
+                                                selectionRequest,
+                                                additions,
+                                            ) ?: return@launch
+                                            val draft =
+                                                view.production.scheduleController.formState.value.draft
+                                            val parent = draft.currentAttachmentParent()
+                                            if (parent == null) {
+                                                view.production.scheduleController.setFormError(
+                                                    "请先选择一个关联事项",
+                                                )
+                                                return@launch
+                                            }
+                                            uploadRequest =
+                                                view.production.scheduleController.beginAttachmentUpload()
+                                            val receipt = view.production.attachmentUploadClient.upload(
+                                                BusinessAttachmentPrepareRequest(
+                                                    operation = "SCHEDULE_CREATE",
+                                                    clientOperationId = draft.clientOperationId,
+                                                    scope = draft.scope,
+                                                    teamId = draft.teamId,
+                                                    typeId = draft.typeId,
+                                                    parentRelationType = parent.relationType,
+                                                    parentResourceId = parent.id,
+                                                    parentRecordId = parent.parentId,
+                                                    formRevision = view.production.scheduleController.formState.value.revision,
+                                                ),
+                                                all.map { Path.of(it.localPath) },
+                                            )
+                                            val committed =
+                                                view.production.scheduleController.completeAttachmentUpload(
+                                                    requireNotNull(uploadRequest),
+                                                    all.map { it.name },
+                                                    attachmentBatchId = receipt.attachmentBatchId,
+                                                    attachmentParentResourceId = parent.id,
+                                                    attachmentParentRelationType = parent.relationType,
+                                                )
+                                            if (committed) {
+                                                scheduleAttachmentSelection.commit(selectionRequest, all)
+                                            }
+                                        } catch (cancelled: CancellationException) {
+                                            throw cancelled
+                                        } catch (failure: Throwable) {
+                                            uploadRequest?.let { request ->
+                                                view.production.scheduleController.failAttachmentUpload(
+                                                    request,
+                                                    failure.message ?: "附件上传失败",
+                                                )
+                                            }
+                                        } finally {
+                                            scheduleAttachmentSelection.finish(selectionRequest)
+                                        }
+                                    }
+                                },
+                                onScheduleRemoveAttachment = {
+                                    view.production.attachmentUploadClient.cancel()
+                                    scheduleAttachmentSelection.clear()
+                                    view.production.scheduleController.discardAttachments()
+                                    view.production.scheduleController.updateDraft(
+                                        scheduleFormState.draft.copy(
+                                            attachmentBatchId = null,
+                                            attachmentParentResourceId = null,
+                                            attachmentParentRelationType = null,
+                                        ),
+                                    )
+                                },
+                                onScheduleCancelUpload = {
+                                    view.production.attachmentUploadClient.cancel()
+                                    scheduleAttachmentSelection.clear()
+                                    view.production.scheduleController.discardAttachments()
+                                    view.production.scheduleController.updateDraft(
+                                        scheduleFormState.draft.copy(
+                                            attachmentBatchId = null,
+                                            attachmentParentResourceId = null,
+                                            attachmentParentRelationType = null,
+                                        ),
+                                    )
+                                },
+                                onScheduleSubmit = {
+                                    if (!scheduleUploadState.uploading &&
+                                        !scheduleAttachmentSelection.picking
+                                    ) {
+                                        uiScope.launch {
+                                            view.production.scheduleController.submit()
+                                            if (!view.production.scheduleController.formState.value.visible) {
+                                                scheduleAttachmentSelection.clear()
+                                            }
+                                        }
+                                    }
+                                },
+                                onScheduleDismiss = {
+                                    view.production.attachmentUploadClient.cancel()
+                                    scheduleAttachmentSelection.clear()
+                                    view.production.scheduleController.dismissCreate()
+                                },
                                 onAgentPanelExpandedChange = { assistantExpanded = it },
                                 onRequestedAssistantWidthChange = { requestedAssistantWidth = it },
                                 onFieldEdited = { fieldId, value ->

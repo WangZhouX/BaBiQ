@@ -2,6 +2,7 @@ package com.wzx.babiq.server.application.action;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wzx.babiq.server.api.JsonRpcMessage;
+import com.wzx.babiq.server.application.protocol.ApplicationProtocolValidator;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.TextMessage;
@@ -47,6 +48,7 @@ public final class ApplicationOutboundJsonRpcClient {
         JsonRpcMessage.Request request = new JsonRpcMessage.Request("2.0", requestId, method, params);
         try {
             String payload = objectMapper.writeValueAsString(request);
+            ApplicationProtocolValidator.validateEnvelopeSize(payload.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             synchronized (session) {
                 session.sendMessage(new TextMessage(payload));
             }
@@ -79,5 +81,29 @@ public final class ApplicationOutboundJsonRpcClient {
                     new IllegalStateException("business desktop WebSocket session is unavailable"));
         }
         return request(session, method, params, timeout);
+    }
+
+    /** Sends a server-initiated JSON-RPC notification to one registered desktop session. */
+    public void sendNotification(String sessionId, String method, Object params) {
+        if (sessionId == null || sessionId.isBlank()) {
+            throw new IllegalArgumentException("sessionId must not be blank");
+        }
+        if (method == null || method.isBlank()) {
+            throw new IllegalArgumentException("method must not be blank");
+        }
+        WebSocketSession session = sessions.get(sessionId);
+        if (session == null) {
+            throw new IllegalStateException("business desktop WebSocket session is unavailable");
+        }
+        try {
+            String payload = objectMapper.writeValueAsString(JsonRpcMessage.Notification.of(method, params));
+            ApplicationProtocolValidator.validateEnvelopeSize(
+                    payload.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            synchronized (session) {
+                session.sendMessage(new TextMessage(payload));
+            }
+        } catch (IOException | RuntimeException exception) {
+            throw new IllegalStateException("Cannot send outbound application notification", exception);
+        }
     }
 }

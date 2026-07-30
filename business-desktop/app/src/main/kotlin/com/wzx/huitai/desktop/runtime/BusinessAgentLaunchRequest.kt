@@ -2,6 +2,7 @@ package com.wzx.huitai.desktop.runtime
 
 import com.wzx.huitai.agent.client.AgentConnectRequest
 import com.wzx.huitai.agent.client.DesktopSessionIdentity
+import com.wzx.huitai.security.path.SecureRuntimeFile
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -55,25 +56,59 @@ class BusinessAgentLaunchRequest private constructor(
         require(password.isNotEmpty()) { "backend KeyStore password must not be empty" }
     }
 
+    internal class PreparedLaunch internal constructor(
+        val command: List<String>,
+        private val configurationIdentity: SecureRuntimeFile.ContentIdentity,
+    ) {
+        fun verifyConfigurationUnchanged() {
+            try {
+                SecureRuntimeFile.verifyContentUnchanged(configurationIdentity)
+            } catch (_: Exception) {
+                configurationUnavailable()
+            }
+        }
+    }
+
     /** 生成 ProcessBuilder 参数数组，绝不拼成 shell 字符串。 */
-    fun command(): List<String> = listOf(
-        javaExecutable.toString(),
-        "--enable-native-access=ALL-UNNAMED",
-        "-jar",
-        backendJar.toString(),
-        "--spring.profiles.active=business-desktop",
-        "--server.address=127.0.0.1",
-        "--server.port=$port",
-        "--babiq.business.runtime-dir=${paths.agentRoot}",
-        "--babiq.persistence.database-path=${paths.agentDatabase}",
-        "--babiq.secrets.keystore-path=${paths.agentKeyStore}",
-        "--logging.file.name=${paths.agentLog}",
-        "--babiq.memory.long-term.root-dir=${paths.agentMemoryRoot}",
-        "--babiq.team.root-dir=${paths.agentTeamRoot}",
-        "--babiq.business.backend-lock-path=${paths.agentInstanceLock}",
-        "--babiq.business.session-token-file=${paths.agentSessionToken}",
-        "--babiq.business.attachment-clipboard-root=${paths.agentClipboardAttachmentRoot}",
-    )
+    fun command(): List<String> = prepareLaunch().command
+
+    internal fun prepareLaunch(): PreparedLaunch {
+        val configurationIdentity = controlledDesktopConfiguration()
+        return PreparedLaunch(
+            command = listOf(
+                javaExecutable.toString(),
+                "--enable-native-access=ALL-UNNAMED",
+                "-jar",
+                backendJar.toString(),
+                "--spring.profiles.active=business-desktop",
+                "--spring.config.additional-location=file:${configurationIdentity.path}",
+                "--server.address=127.0.0.1",
+                "--server.port=$port",
+                "--babiq.ws.allowed-origins=${identity.localOrigin}",
+                "--babiq.business.runtime-dir=${paths.agentRoot}",
+                "--babiq.persistence.database-path=${paths.agentDatabase}",
+                "--babiq.secrets.keystore-path=${paths.agentKeyStore}",
+                "--logging.file.name=${paths.agentLog}",
+                "--babiq.memory.long-term.root-dir=${paths.agentMemoryRoot}",
+                "--babiq.team.root-dir=${paths.agentTeamRoot}",
+                "--babiq.business.backend-lock-path=${paths.agentInstanceLock}",
+                "--babiq.business.session-token-file=${paths.agentSessionToken}",
+                "--babiq.business.attachment-clipboard-root=${paths.agentClipboardAttachmentRoot}",
+            ),
+            configurationIdentity = configurationIdentity,
+        )
+    }
+
+    private fun controlledDesktopConfiguration(): SecureRuntimeFile.ContentIdentity {
+        val controlledRoot = paths.desktopRoot.toAbsolutePath().normalize()
+        val configuration = paths.desktopConfiguration.toAbsolutePath().normalize()
+        if (!configuration.startsWith(controlledRoot)) configurationUnavailable()
+        return try {
+            SecureRuntimeFile.captureContent(configuration)
+        } catch (_: Exception) {
+            configurationUnavailable()
+        }
+    }
 
     /** 只在实际启动前短暂产生环境字符串；调用方不得记录返回值。 */
     fun environment(): Map<String, String> {
@@ -94,6 +129,7 @@ class BusinessAgentLaunchRequest private constructor(
 
     companion object {
         const val BACKEND_KEYSTORE_PASSWORD_ENV = "BABIQ_SECRETS_KEYSTORE_PASSWORD"
+        private const val CONFIGURATION_UNAVAILABLE = "business backend configuration is unavailable"
 
         /** 为每个调用创建全新的 desktopSessionId、token 和动态 loopback 端口。 */
         fun create(
@@ -107,7 +143,11 @@ class BusinessAgentLaunchRequest private constructor(
         ): BusinessAgentLaunchRequest {
             val selectedPort = port ?: loopbackPortAllocator.allocate()
             require(selectedPort in 1..65535) { "server port must be a non-zero TCP port" }
-            val tokenFile = DesktopSessionTokenFile.create(paths.agentSessionToken, desktopInstanceId)
+            val tokenFile = DesktopSessionTokenFile.create(
+                paths.agentSessionToken,
+                desktopInstanceId,
+                localOrigin = "http://127.0.0.1:$selectedPort",
+            )
             return try {
                 BusinessAgentLaunchRequest(
                     paths = paths,
@@ -125,5 +165,8 @@ class BusinessAgentLaunchRequest private constructor(
 
         private fun executableName(): String =
             if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) "java.exe" else "java"
+
+        private fun configurationUnavailable(): Nothing =
+            throw IllegalStateException(CONFIGURATION_UNAVAILABLE)
     }
 }
