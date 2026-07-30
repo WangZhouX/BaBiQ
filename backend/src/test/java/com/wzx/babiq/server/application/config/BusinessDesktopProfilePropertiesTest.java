@@ -69,6 +69,25 @@ class BusinessDesktopProfilePropertiesTest {
     }
 
     @Test
+    void directDevelopmentProfileProvidesTheIdeaLoopbackPort() {
+        new ApplicationContextRunner()
+                .withInitializer(new ConfigDataApplicationContextInitializer())
+                .withUserConfiguration(PropertyBindingConfiguration.class)
+                .withPropertyValues(
+                        "spring.profiles.active=business-desktop,direct-development",
+                        "babiq.business.runtime-dir=" + runtimeDir)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context.getEnvironment().getProperty("server.address"))
+                            .isEqualTo("127.0.0.1");
+                    assertThat(context.getEnvironment().getProperty("server.port", Integer.class))
+                            .isEqualTo(49_391);
+                    assertThat(context.getEnvironment().getProperty("babiq.ws.allowed-origins"))
+                            .isEqualTo("http://127.0.0.1:49391");
+                });
+    }
+
+    @Test
     void runtimePathsCreateAndExposeTheControlledClipboardDirectory() {
         runWithRuntime().run(context -> {
             assertThat(context).hasNotFailed();

@@ -17,7 +17,8 @@ class DirectIdeaRunConfigurationContractTest {
         assertFalse(backend.contains("runBusinessBackendDevelopment"))
         assertTrue(backend.contains("HUITAI_BUSINESS_DIRECT_DEVELOPMENT"))
         assertTrue(backend.contains("HUITAI_OA_BASE_URL"))
-        assertTrue(backend.contains("--server.port=49391"))
+        assertTrue(backend.contains("--spring.profiles.active=business-desktop,direct-development"))
+        assertFalse(backend.contains("--server.port=49391"))
 
         assertTrue(frontend.contains("com.wzx.huitai.desktop.MainKt"))
         assertFalse(frontend.contains("runBusinessFrontendDevelopment"))

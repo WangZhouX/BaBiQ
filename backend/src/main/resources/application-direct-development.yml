@@ -1,0 +1,23 @@
+server:
+  address: 127.0.0.1
+  port: 49391
+
+babiq:
+  business:
+    runtime-dir: ${HUITAI_BUSINESS_RUNTIME_DIR:${user.dir}/.tmp-business-desktop-direct/.huitai-agent-desktop/agent}
+    database-path: ${babiq.business.runtime-dir}/data/babiq-business.db
+    key-store-path: ${babiq.business.runtime-dir}/secrets/business-agent.jceks
+    log-path: ${babiq.business.runtime-dir}/logs/backend.log
+    memory-root: ${babiq.business.runtime-dir}/memory
+    team-root: ${babiq.business.runtime-dir}/teams
+    backend-lock-path: ${babiq.business.runtime-dir}/instance.lock
+    session-token-file: ${babiq.business.runtime-dir}/session-token
+    attachment-clipboard-root: ${babiq.business.runtime-dir}/attachments/clipboard
+    server-address: 127.0.0.1
+    allowed-origins: http://127.0.0.1:49391
+  persistence:
+    database-path: ${babiq.business.runtime-dir}/data/babiq-business.db
+  secrets:
+    keystore-path: ${babiq.business.runtime-dir}/secrets/business-agent.jceks
+  ws:
+    allowed-origins: http://127.0.0.1:49391

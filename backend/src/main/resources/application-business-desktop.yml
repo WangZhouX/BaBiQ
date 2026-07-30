@@ -1,6 +1,6 @@
 server:
-  address: 127.0.0.1
-  port: 0
+  address: ${HUITAI_BUSINESS_SERVER_ADDRESS:127.0.0.1}
+  port: ${HUITAI_BUSINESS_BACKEND_PORT:0}
 
 logging:
   file:

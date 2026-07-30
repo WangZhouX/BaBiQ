@@ -1,10 +1,10 @@
 <component name="ProjectRunConfigurationManager">
   <configuration default="false" name="Business Backend Direct" type="SpringBootApplicationConfigurationType" factoryName="Spring Boot">
+    <module name="babiq-server" />
     <option name="SPRING_BOOT_MAIN_CLASS" value="com.wzx.babiq.server.BaBiQApplication" />
-    <option name="PROGRAM_PARAMETERS" value="--spring.profiles.active=business-desktop --server.address=127.0.0.1 --server.port=49391 --babiq.business.runtime-dir=$PROJECT_DIR$/.tmp-business-desktop-direct/.huitai-agent-desktop/agent --babiq.persistence.database-path=$PROJECT_DIR$/.tmp-business-desktop-direct/.huitai-agent-desktop/agent/data/babiq-business.db --babiq.secrets.keystore-path=$PROJECT_DIR$/.tmp-business-desktop-direct/.huitai-agent-desktop/agent/secrets/business-agent.jceks --babiq.business.session-token-file=$PROJECT_DIR$/.tmp-business-desktop-direct/.huitai-agent-desktop/agent/session-token --babiq.ws.allowed-origins=http://127.0.0.1:49391" />
+    <option name="PROGRAM_PARAMETERS" value="--spring.profiles.active=business-desktop,direct-development" />
     <envs>
       <env name="HUITAI_BUSINESS_DIRECT_DEVELOPMENT" value="1" />
-      <env name="HUITAI_BUSINESS_BACKEND_PORT" value="49391" />
       <env name="HUITAI_BUSINESS_RUNTIME_DIR" value="$PROJECT_DIR$/.tmp-business-desktop-direct/.huitai-agent-desktop/agent" />
       <env name="HUITAI_OA_BASE_URL" value="http://192.168.1.20:48080" />
     </envs>
