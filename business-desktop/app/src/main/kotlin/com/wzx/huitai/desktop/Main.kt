@@ -867,7 +867,9 @@ private fun openBusinessBootstrapFailureWindow(code: BusinessBootstrapFailureCod
 internal fun resolveBusinessAgentLaunchMode(
     environment: Map<String, String>,
 ): BusinessAgentLaunchMode =
-    if (environment["HUITAI_DESKTOP_EXTERNAL_BACKEND"] == "1") {
+    if (environment["HUITAI_DESKTOP_EXTERNAL_BACKEND"] == "1" ||
+        environment["HUITAI_BUSINESS_DIRECT_DEVELOPMENT"] == "1"
+    ) {
         BusinessAgentLaunchMode.ExternalDevelopment
     } else {
         BusinessAgentLaunchMode.Embedded

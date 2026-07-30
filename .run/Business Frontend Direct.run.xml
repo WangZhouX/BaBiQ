@@ -1,0 +1,13 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Business Frontend Direct" type="Application" factoryName="Application">
+    <option name="MAIN_CLASS_NAME" value="com.wzx.huitai.desktop.MainKt" />
+    <module name="huitai-business-desktop.app.main" />
+    <envs>
+      <env name="HUITAI_DESKTOP_EXTERNAL_BACKEND" value="1" />
+      <env name="HUITAI_BUSINESS_DIRECT_DEVELOPMENT" value="1" />
+      <env name="HUITAI_DESKTOP_HOME" value="$PROJECT_DIR$/.tmp-business-desktop-direct" />
+      <env name="HUITAI_DESKTOP_CONFIG_FILE" value="$PROJECT_DIR$/business-desktop/config/business-desktop-development.properties" />
+    </envs>
+    <method v="2" />
+  </configuration>
+</component>

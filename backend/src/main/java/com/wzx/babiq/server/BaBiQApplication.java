@@ -1,5 +1,6 @@
 package com.wzx.babiq.server;
 
+import com.wzx.babiq.server.application.auth.BusinessDirectDevelopmentSessionBootstrap;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
@@ -22,7 +23,20 @@ public class BaBiQApplication {
      * @param args JVM 启动参数
      */
     public static void main(String[] args) {
-        SpringApplication.run(BaBiQApplication.class, args);
+        BusinessDirectDevelopmentSessionBootstrap.PreparedSession directSession =
+                BusinessDirectDevelopmentSessionBootstrap.prepareIfRequested(args, System.getenv());
+        if (directSession != null) {
+            Runtime.getRuntime().addShutdownHook(new Thread(directSession::close,
+                    "business-direct-development-session-cleanup"));
+        }
+        try {
+            SpringApplication.run(BaBiQApplication.class, args);
+        } catch (RuntimeException | Error failure) {
+            if (directSession != null) {
+                directSession.close();
+            }
+            throw failure;
+        }
     }
 
 }

@@ -13,6 +13,12 @@ class BusinessDesktopLaunchModeTest {
                 mapOf("HUITAI_DESKTOP_EXTERNAL_BACKEND" to "1"),
             ),
         )
+        assertEquals(
+            BusinessAgentLaunchMode.ExternalDevelopment,
+            resolveBusinessAgentLaunchMode(
+                mapOf("HUITAI_BUSINESS_DIRECT_DEVELOPMENT" to "1"),
+            ),
+        )
         assertEquals(BusinessAgentLaunchMode.Embedded, resolveBusinessAgentLaunchMode(emptyMap()))
     }
 }

@@ -276,15 +276,40 @@ class EnvironmentDesktopSecretBootstrap(
     private val environment: () -> Map<String, String> = System::getenv,
 ) : DesktopSecretBootstrap {
     override fun load(): CharArray {
-        val value = environment()[ENV_NAME]
-        if (value.isNullOrBlank()) throw LocalCredentialStoreUnavailableException()
-        return value.toCharArray()
+        val variables = environment()
+        variables[ENV_NAME]
+            ?.takeIf(String::isNotBlank)
+            ?.let { return it.toCharArray() }
+        if (variables[DIRECT_DEVELOPMENT_ENV] == "1") {
+            val home = variables["HUITAI_DESKTOP_HOME"]
+                ?.takeIf(String::isNotBlank)
+                ?.let(Path::of)
+                ?: Path.of(System.getProperty("user.home"))
+            val passwordFile = home
+                .toAbsolutePath()
+                .normalize()
+                .resolve(".huitai-agent-desktop/agent/backend-keystore-password")
+            return runCatching {
+                Files.readString(passwordFile, Charsets.US_ASCII)
+                    .trim()
+                    .takeIf(String::isNotBlank)
+                    ?.toCharArray()
+                    ?: throw LocalCredentialStoreUnavailableException()
+            }.getOrElse { failure ->
+                if (failure is LocalCredentialStoreUnavailableException) {
+                    throw failure
+                }
+                throw LocalCredentialStoreUnavailableException()
+            }
+        }
+        throw LocalCredentialStoreUnavailableException()
     }
 
     override fun toString(): String = "EnvironmentDesktopSecretBootstrap(value=[REDACTED])"
 
     companion object {
         const val ENV_NAME = "HUITAI_DESKTOP_KEYSTORE_PASSWORD"
+        const val DIRECT_DEVELOPMENT_ENV = "HUITAI_BUSINESS_DIRECT_DEVELOPMENT"
     }
 }
 
