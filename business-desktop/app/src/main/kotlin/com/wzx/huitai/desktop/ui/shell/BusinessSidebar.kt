@@ -70,6 +70,7 @@ fun BusinessSidebar(
             items = workbenchItems,
             selectedPath = selectedWorkbenchPath,
             onSelected = onWorkbenchSelected,
+            onSettingsSelected = { onSelected(BusinessDesktopDestination.SETTINGS) },
             modifier = modifier,
         )
         return
@@ -112,6 +113,7 @@ private fun WorkbenchSidebar(
     items: List<BusinessNavigationTarget>,
     selectedPath: String,
     onSelected: (String) -> Unit,
+    onSettingsSelected: () -> Unit,
     modifier: Modifier,
 ) {
     val visible = items.ifEmpty {
@@ -143,6 +145,26 @@ private fun WorkbenchSidebar(
                     onSelected = onSelected,
                 )
             }
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = "模型设置",
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                fontWeight = FontWeight.Normal,
+                color = BusinessWorkbenchVisualSpec.textSecondary,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(2.dp))
+                    .selectable(
+                        selected = false,
+                        onClick = onSettingsSelected,
+                        role = Role.Tab,
+                    )
+                    .semantics { contentDescription = "模型设置" }
+                    .testTag(BusinessSidebarTags.SETTINGS)
+                    .padding(vertical = 10.dp),
+            )
         }
     }
 }

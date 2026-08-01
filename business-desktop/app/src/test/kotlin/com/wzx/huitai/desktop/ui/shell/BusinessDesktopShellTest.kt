@@ -112,6 +112,27 @@ class BusinessDesktopShellTest {
     }
 
     @Test
+    fun `workbench keeps a separate model settings entry outside OA navigation`() {
+        val selected = mutableStateOf(BusinessDesktopDestination.WORKBENCH)
+        rule.setContent {
+            HuitaiBusinessTheme {
+                BusinessDesktopShell(
+                    state = authenticatedShellState(),
+                    formState = DemoFormState(),
+                    providerSettingsState = BusinessProviderSettingsState(operationsEnabled = true),
+                    selectedDestination = selected.value,
+                    onDestinationSelected = { selected.value = it },
+                    modifier = Modifier.shellSize(1024.dp, 700.dp),
+                )
+            }
+        }
+
+        rule.onNodeWithContentDescription("模型设置").assertExists().performClick()
+        rule.onNodeWithTag("provider-settings-panel").assertExists()
+        rule.runOnIdle { assertEquals(BusinessDesktopDestination.SETTINGS, selected.value) }
+    }
+
+    @Test
     fun `workbench uses the shell sidebar as the only OA navigation`() {
         rule.setContent {
             HuitaiBusinessTheme {
