@@ -30,6 +30,7 @@ class BusinessToolAllowlistIT {
     private static final Path RUNTIME = Path.of(
             "target", "business-tool-allowlist-it-" + UUID.randomUUID()).toAbsolutePath().normalize();
     private static final Path TOKEN_FILE = RUNTIME.resolve("session-token");
+    private static final Path KEYSTORE_FILE = RUNTIME.resolve("secrets.jceks");
 
     static {
         try {
@@ -44,6 +45,8 @@ class BusinessToolAllowlistIT {
     static void businessRuntime(DynamicPropertyRegistry registry) {
         registry.add("babiq.business.runtime-dir", RUNTIME::toString);
         registry.add("babiq.business.session-token-file", TOKEN_FILE::toString);
+        registry.add("babiq.secrets.keystore-path", KEYSTORE_FILE::toString);
+        registry.add("babiq.secrets.keystore-password", () -> "business-tool-allowlist-password");
     }
 
     @Autowired
@@ -56,7 +59,7 @@ class BusinessToolAllowlistIT {
     private BusinessAgentModePolicy policy;
 
     @Test
-    void springContextExposesExactlyTheTwoTrustedBusinessToolsDespiteAHostileCapabilityPlan() {
+    void springContextExposesExactlyTheFourTrustedBusinessToolsDespiteAHostileCapabilityPlan() {
         assertThat(policy.businessMode()).isTrue();
         assertThat(tools.names()).contains("read_file", "write_file", "exec_shell",
                 "orchestrate_flow", "coordinate_team", "explorer");
@@ -72,10 +75,18 @@ class BusinessToolAllowlistIT {
                 .map(callback -> callback.getToolDefinition().name())
                 .toList();
 
-        assertThat(visible).containsExactly("application_action", "update_plan");
+        assertThat(visible).containsExactly(
+                "application_action",
+                "business_workbench_read",
+                "business_schedule_mutate",
+                "update_plan");
         assertThat(visible).doesNotContain("read_file", "write_file", "exec_shell", "mcp.crm.search",
                 "skill.case", "orchestrate_flow", "coordinate_team", "work_unit_manage", "explorer");
-        ToolCallback[] trusted = tools.requiredLocalCallbacksForNames(List.of("application_action", "update_plan"));
+        ToolCallback[] trusted = tools.requiredLocalCallbacksForNames(List.of(
+                "application_action",
+                "business_workbench_read",
+                "business_schedule_mutate",
+                "update_plan"));
         assertThat(strategy.currentToolCallbacks(hostile)).containsExactly(trusted);
     }
 
@@ -90,5 +101,8 @@ class BusinessToolAllowlistIT {
 
         assertThat(always).doesNotContain("application_action");
         assertThat(onRequest).doesNotContain("application_action");
+        assertThat(always).contains("business_workbench_read", "business_schedule_mutate");
+        assertThat(onRequest).contains("business_schedule_mutate")
+                .doesNotContain("business_workbench_read");
     }
 }

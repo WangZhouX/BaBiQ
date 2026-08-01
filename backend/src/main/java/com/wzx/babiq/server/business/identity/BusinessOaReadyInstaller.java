@@ -2,6 +2,7 @@ package com.wzx.babiq.server.business.identity;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.wzx.babiq.server.application.auth.ApplicationIdentityRegistry;
 import com.wzx.babiq.server.application.auth.ApplicationInstallationLease;
 import com.wzx.babiq.server.application.auth.TrustedDesktopConnection;
@@ -71,10 +72,9 @@ public final class BusinessOaReadyInstaller {
                     userId, tenantId, platformId,
                     java.util.Set.copyOf(permissions.roles()), java.util.Set.copyOf(permissions.permissions()),
                     menuPaths(permissions.menus()));
-            ObjectNode catalog = JSON.createObjectNode();
-            catalog.putObject("actions");
+            ObjectNode catalog = workbenchCatalog();
             catalogs.installServer(connection, installationLease, 1, catalog);
-            ObjectNode context = JSON.createObjectNode();
+            ObjectNode context = workbenchContext(epoch, menuPaths(permissions.menus()), catalog.path("actions"));
             contexts.installServer(connection, installationLease, 1, 1, context);
             OaSessionRecord ready = persistence.activate(staged.authSessionId(), staged.generation(),
                     staged.installationId(), connection, userId, tenantId, platformId);
@@ -154,6 +154,112 @@ public final class BusinessOaReadyInstaller {
         Set<String> paths = new LinkedHashSet<>();
         collectMenuPaths(menus, paths);
         return Set.copyOf(paths);
+    }
+
+    private static ObjectNode workbenchCatalog() {
+        ObjectNode actions = JSON.createObjectNode();
+        actions.set("business_workbench_read", action(
+                "business_workbench_read",
+                "读取工作台",
+                "通过当前 READY 身份查询工作台、列表、日程和选项。",
+                "read_only",
+                "view"));
+        actions.set("business_schedule_mutate", action(
+                "business_schedule_mutate",
+                "修改工作台日程",
+                "通过当前 READY 身份完成日程状态、排序或创建。",
+                "high_risk",
+                "operation"));
+        return JSON.createObjectNode().set("actions", actions);
+    }
+
+    private static ObjectNode action(
+            String id,
+            String title,
+            String description,
+            String risk,
+            String discriminator) {
+        ObjectNode action = JSON.createObjectNode()
+                .put("id", id)
+                .put("version", 1)
+                .put("enabled", true)
+                .put("title", title)
+                .put("description", description)
+                .put("risk", risk)
+                .put("authorization", "current_ready_oa_identity");
+        // OA does not expose stable workbench permission codes here. READY identity and BFF data-scope
+        // validation remain the authoritative authorization boundary instead of inventing local codes.
+        action.putArray("requiredPermissions");
+        ObjectNode schema = action.putObject("inputSchema")
+                .put("type", "object")
+                .put("additionalProperties", false);
+        ObjectNode request = schema.putObject("properties")
+                .putObject("request")
+                .put("type", "object")
+                .put("additionalProperties", false);
+        request.putObject("properties").putObject(discriminator).put("type", "string");
+        request.putArray("required").add(discriminator);
+        schema.putArray("required").add("request");
+        return action;
+    }
+
+    private static ObjectNode workbenchContext(
+            long identityEpoch,
+            Set<String> grantedNavigation,
+            com.fasterxml.jackson.databind.JsonNode actions) {
+        ObjectNode context = JSON.createObjectNode()
+                .put("pageId", "business.workbench")
+                .put("pageTitle", "工作台")
+                .put("route", "/")
+                .put("contextRevision", 1)
+                .put("identityEpoch", identityEpoch)
+                .put("selectedScope", "PERSONAL")
+                .put("selectedKind", "CASE");
+        ArrayNode navigation = context.putArray("navigation");
+        addNavigation(navigation, "/", "工作台");
+        for (String path : List.of(
+                "/case", "/customer", "/lawoa", "/bpm", "/approval", "/administration",
+                "/management", "/cost", "/consultant", "/lawyer-admin", "/tools", "/team")) {
+            if (grantedNavigation.contains(path)) {
+                addNavigation(navigation, path, navigationTitle(path));
+            }
+        }
+        context.putArray("sections")
+                .add("notices")
+                .add("shortcuts")
+                .add("summary")
+                .add("profile")
+                .add("teams")
+                .add("schedule");
+        ArrayNode available = context.putArray("availableActions");
+        actions.fields().forEachRemaining(entry -> available.addObject()
+                .put("id", entry.getKey())
+                .put("enabled", true)
+                .put("title", entry.getValue().path("title").asText())
+                .put("description", entry.getValue().path("description").asText()));
+        return context;
+    }
+
+    private static void addNavigation(ArrayNode navigation, String path, String title) {
+        navigation.addObject().put("path", path).put("title", title);
+    }
+
+    private static String navigationTitle(String path) {
+        return switch (path) {
+            case "/case" -> "案件管理";
+            case "/customer" -> "客户管理";
+            case "/lawoa" -> "律所业务";
+            case "/bpm" -> "流程审批";
+            case "/approval" -> "审批中心";
+            case "/administration" -> "行政管理";
+            case "/management" -> "经营管理";
+            case "/cost" -> "费用管理";
+            case "/consultant" -> "顾问服务";
+            case "/lawyer-admin" -> "律师管理";
+            case "/tools" -> "工具中心";
+            case "/team" -> "团队管理";
+            default -> path;
+        };
     }
 
     private static void collectMenuPaths(Object value, Set<String> paths) {

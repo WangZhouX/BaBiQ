@@ -87,6 +87,8 @@ class SystemPromptSecurityRuleTest {
     void business_prompt_should_require_application_action_and_terminal_confirmation() {
         assertThat(SystemPromptSecurityRule.BUSINESS_PROMPT)
                 .contains("application_action")
+                .contains("business_workbench_read")
+                .contains("business_schedule_mutate")
                 .contains("不能声称已直接修改桌面界面")
                 .contains("等待桌面端返回终态")
                 .contains("business_application")

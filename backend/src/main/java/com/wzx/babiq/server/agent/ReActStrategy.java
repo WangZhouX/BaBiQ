@@ -559,6 +559,7 @@ public class ReActStrategy {
         names.add("write_file");
         names.add("exec_shell");
         names.add("apply_patch");
+        names.add("business_schedule_mutate");
         names.add("orchestrate_flow");
         names.add("coordinate_team");
         for (String toolName : toolRegistry.names()) {
@@ -587,6 +588,9 @@ public class ReActStrategy {
         }
         if ("apply_patch".equals(toolName)) {
             return "应用补丁需要确认";
+        }
+        if ("business_schedule_mutate".equals(toolName)) {
+            return "修改工作台日程需要确认";
         }
         if ("orchestrate_flow".equals(toolName)) {
             return "运行多 Agent 流程需要先确认节点、工具和写入范围";

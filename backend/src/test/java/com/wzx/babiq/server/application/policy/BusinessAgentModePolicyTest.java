@@ -10,13 +10,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 class BusinessAgentModePolicyTest {
 
     @Test
-    void business_mode_exposes_only_application_action_and_update_plan() {
+    void business_mode_exposes_workbench_agent_capabilities_and_update_plan() {
         BusinessAgentModePolicy policy = new BusinessAgentModePolicy(true);
 
         assertThat(policy.modelVisibleToolNames(List.of(
                 "read_file", "application_action", "application_action", "mcp.crm.search",
-                "explorer", "orchestrate_flow", "coordinate_team", "work_unit_manage")))
-                .containsExactly("application_action", "update_plan");
+                "explorer", "orchestrate_flow", "coordinate_team", "work_unit_manage",
+                "business_workbench_read", "business_schedule_mutate")))
+                .containsExactly(
+                        "application_action",
+                        "business_workbench_read",
+                        "business_schedule_mutate",
+                        "update_plan");
     }
 
     @Test

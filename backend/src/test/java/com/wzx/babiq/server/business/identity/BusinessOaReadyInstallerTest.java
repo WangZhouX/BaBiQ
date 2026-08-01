@@ -1,6 +1,7 @@
 package com.wzx.babiq.server.business.identity;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.wzx.babiq.server.application.api.BusinessJsonRpcAccessPolicy;
 import com.wzx.babiq.server.application.auth.ApplicationInstallationLease;
 import com.wzx.babiq.server.application.auth.ApplicationIdentityRegistry;
@@ -9,6 +10,9 @@ import com.wzx.babiq.server.application.auth.TrustedDesktopConnection;
 import com.wzx.babiq.server.application.catalog.ApplicationCatalogRegistry;
 import com.wzx.babiq.server.application.catalog.ApplicationPageContextRegistry;
 import com.wzx.babiq.server.application.config.BusinessDesktopModeProperties;
+import com.wzx.babiq.server.application.context.ApplicationContextModelContributor;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScope;
+import com.wzx.babiq.server.application.scope.BusinessIdentityScopeService;
 import com.wzx.babiq.server.business.oa.client.dto.OaAuthDtos;
 import com.wzx.babiq.server.business.oa.session.*;
 import org.junit.jupiter.api.Test;
@@ -22,9 +26,12 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -164,6 +171,56 @@ class BusinessOaReadyInstallerTest {
         assertThat(catalogs.current(connection)).isPresent();
         assertThat(contexts.current(connection)).isPresent();
         assertThat(identities.current(connection).orElseThrow().userId()).isEqualTo("user-1");
+        assertThat(catalogs.current(connection).orElseThrow().payload().path("actions").isObject()).isTrue();
+        assertThat(catalogs.current(connection).orElseThrow().payload().path("actions").fieldNames())
+                .toIterable()
+                .containsExactly(
+                        "business_workbench_read",
+                        "business_schedule_mutate");
+        JsonNode readAction = catalogs.current(connection).orElseThrow().payload()
+                .path("actions").path("business_workbench_read");
+        assertThat(readAction.path("version").asInt()).isEqualTo(1);
+        assertThat(readAction.path("risk").asText()).isEqualTo("read_only");
+        assertThat(readAction.path("requiredPermissions").isArray()).isTrue();
+        assertThat(readAction.path("requiredPermissions")).isEmpty();
+        assertThat(readAction.path("inputSchema").path("type").asText()).isEqualTo("object");
+        JsonNode mutationAction = catalogs.current(connection).orElseThrow().payload()
+                .path("actions").path("business_schedule_mutate");
+        assertThat(mutationAction.path("version").asInt()).isEqualTo(1);
+        assertThat(mutationAction.path("risk").asText()).isEqualTo("high_risk");
+        assertThat(mutationAction.path("requiredPermissions").isArray()).isTrue();
+        assertThat(mutationAction.path("requiredPermissions")).isEmpty();
+        assertThat(mutationAction.path("inputSchema").path("type").asText()).isEqualTo("object");
+        assertThat(contexts.current(connection).orElseThrow().payload().path("pageId").asText())
+                .isEqualTo("business.workbench");
+        assertThat(contexts.current(connection).orElseThrow().payload().path("contextRevision").asLong())
+                .isPositive();
+        assertThat(contexts.current(connection).orElseThrow().payload().path("identityEpoch").asLong())
+                .isEqualTo(lease.generation());
+        JsonNode navigation = contexts.current(connection).orElseThrow().payload().path("navigation");
+        assertThat(navigation.isArray()).isTrue();
+        assertThat(navigation.findValuesAsText("path")).contains("/");
+        assertThat(contexts.current(connection).orElseThrow().payload().path("sections").isArray()).isTrue();
+        assertThat(contexts.current(connection).orElseThrow().payload().toString())
+                .doesNotContain("access-token", "refresh-token", "password", "remoteUrl");
+
+        var identity = identities.current(connection).orElseThrow();
+        BusinessIdentityScope scope = BusinessIdentityScope.scoped(
+                identity.desktopInstanceId(), identity.desktopSessionId(), identity.authSessionId(),
+                identity.identityEpoch(), identity.userId(), identity.tenantId(), identity.platformId());
+        BusinessIdentityScopeService scopes = mock(BusinessIdentityScopeService.class);
+        stubActiveScope(scopes, scope, connection, identity);
+        String agentContext = new ApplicationContextModelContributor(
+                scopes, catalogs, contexts, new ObjectMapper()).contribute(scope).getFirst();
+        assertThat(agentContext)
+                .contains(
+                        "<untrusted-data source=\"business_application\">",
+                        "business.workbench",
+                        "business_workbench_read",
+                        "business_schedule_mutate",
+                        "工作台",
+                        "</untrusted-data>")
+                .doesNotContain("access-token", "refresh-token", "password", "remoteUrl", "auth-1", "tenant-1");
 
         ApplicationInstallationLease installation = identities.installationLease(connection).orElseThrow();
         assertThat(installation.installationId()).isEqualTo(staged.installationId());
@@ -439,6 +496,20 @@ class BusinessOaReadyInstallerTest {
         return new OaAuthDtos.OaPermissionSnapshot(
                 List.of("framework:read"), List.of("lawyer"),
                 "user-1", "Lawyer", List.of());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void stubActiveScope(
+            BusinessIdentityScopeService scopes,
+            BusinessIdentityScope scope,
+            TrustedDesktopConnection connection,
+            com.wzx.babiq.server.application.auth.TrustedBusinessIdentity identity) {
+        when(scopes.withActiveConnectionScope(eq(scope), any())).thenAnswer(invocation -> {
+            Function<BusinessIdentityScopeService.ActiveBusinessIdentity, Object> reader =
+                    invocation.getArgument(1);
+            return Optional.ofNullable(reader.apply(
+                    new BusinessIdentityScopeService.ActiveBusinessIdentity(connection, identity)));
+        });
     }
 
     private static void await(CountDownLatch latch, String barrier) {

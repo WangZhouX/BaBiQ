@@ -47,6 +47,32 @@ import static org.mockito.Mockito.verify;
 class ToolObservationInterceptorTest {
 
     @Test
+    void businessAgentToolPersistenceRedactsArgumentsAndSuccessfulResults() {
+        ToolCallPersistenceService persistence = mock(ToolCallPersistenceService.class);
+        ToolObservationInterceptor interceptor = new ToolObservationInterceptor(new BaBiQMetrics(), persistence);
+        TurnObservationContext context = TurnObservationContext.start(
+                "thr_business", "turn_business", "provider", "model");
+        ToolCallRequest request = ToolCallRequest.builder()
+                .toolName("business_schedule_mutate")
+                .toolCallId("call_business")
+                .arguments("{\"request\":{\"title\":\"private-client-title\"}}")
+                .context(Map.of(TurnObservationContext.METADATA_KEY, context))
+                .build();
+
+        interceptor.interceptToolCall(request, ignored -> ToolCallResponse.of(
+                "call_business", "business_schedule_mutate",
+                "{\"ok\":true,\"data\":{\"title\":\"private-client-title\"}}"));
+
+        verify(persistence).recordStarted(
+                eq("call_business"), eq("thr_business"), eq("turn_business"),
+                eq("business_schedule_mutate"), eq("{\"arguments\":\"[REDACTED]\"}"),
+                any(), any(), any(), any(), any());
+        verify(persistence).recordFinished(
+                eq("turn_business"), eq("call_business"), eq("completed"),
+                eq("{\"result\":\"[REDACTED]\"}"), isNull(), any());
+    }
+
+    @Test
     void applicationActionPersistenceStoresOnlySafeMetadataAndNeverRawInput() {
         ToolCallPersistenceService persistence = mock(ToolCallPersistenceService.class);
         ToolObservationInterceptor interceptor = new ToolObservationInterceptor(new BaBiQMetrics(), persistence);

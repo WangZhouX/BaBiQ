@@ -50,11 +50,13 @@ class CapabilityExposurePlannerTest {
     }
 
     @Test
-    @DisplayName("业务模式忽略已注册能力和搜索提升并固定只暴露两个安全工具")
+    @DisplayName("业务模式忽略已注册能力和搜索提升并固定暴露受控工作台工具")
     void business_mode_should_use_the_fixed_model_tool_allowlist() {
         InMemoryCapabilityRepository repository = new InMemoryCapabilityRepository();
         repository.upsert(capability("local.read_file", "read_file", CapabilityExposureMode.VISIBLE, true));
         repository.upsert(capability("local.application_action", "application_action", CapabilityExposureMode.DISABLED, false));
+        repository.upsert(capability("local.business_workbench_read", "business_workbench_read", CapabilityExposureMode.VISIBLE, true));
+        repository.upsert(capability("local.business_schedule_mutate", "business_schedule_mutate", CapabilityExposureMode.VISIBLE, true));
         repository.upsert(capability("local.update_plan", "update_plan", CapabilityExposureMode.VISIBLE, true));
         repository.upsert(capability("mcp.crm.search", "mcp.crm.search", CapabilityExposureMode.DEFERRED, true));
         repository.upsert(capability("skill.tdd", "tdd", CapabilityExposureMode.DEFERRED, true));
@@ -64,8 +66,16 @@ class CapabilityExposurePlannerTest {
 
         CapabilityExposurePlan plan = planner.plan("thr_business", "turn_business");
 
-        assertThat(plan.visibleToolNames()).containsExactly("application_action", "update_plan");
-        assertThat(plan.visibleCapabilityIds()).containsExactly("local.application_action", "local.update_plan");
+        assertThat(plan.visibleToolNames()).containsExactly(
+                "application_action",
+                "business_workbench_read",
+                "business_schedule_mutate",
+                "update_plan");
+        assertThat(plan.visibleCapabilityIds()).containsExactly(
+                "local.application_action",
+                "local.business_workbench_read",
+                "local.business_schedule_mutate",
+                "local.update_plan");
         assertThat(plan.reason()).isEqualTo("business_fixed_allowlist");
     }
 

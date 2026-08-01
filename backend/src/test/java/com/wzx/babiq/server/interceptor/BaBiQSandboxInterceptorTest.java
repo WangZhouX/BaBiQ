@@ -30,6 +30,21 @@ import static org.mockito.Mockito.mock;
  */
 class BaBiQSandboxInterceptorTest {
 
+    @Test
+    void businessScheduleMutationIsRejectedByReadOnlyAndNeedsNoFilesystemPathOtherwise() {
+        BaBiQSandboxInterceptor interceptor = newInterceptor(SandboxMode.WORKSPACE_WRITE);
+
+        assertThat(interceptor.checkOrReject(
+                "business_schedule_mutate", "{}",
+                Map.of(BaBiQSandboxInterceptor.CONTEXT_SANDBOX_MODE, SandboxMode.READ_ONLY)))
+                .contains("read-only");
+        assertThat(interceptor.checkOrReject(
+                "business_schedule_mutate", "{}",
+                Map.of(BaBiQSandboxInterceptor.CONTEXT_SANDBOX_MODE, SandboxMode.WORKSPACE_WRITE)))
+                .isNull();
+        assertThat(interceptor.shouldEnforceSandbox("business_workbench_read")).isFalse();
+    }
+
     private final List<ThreadItem> emitted = new ArrayList<>();
 
     @BeforeEach

@@ -89,16 +89,36 @@ class ReActStrategyTest {
     @Test
     void always_policy_should_request_approval_for_every_visible_tool() {
         ToolRegistry registry = mock(ToolRegistry.class);
-        when(registry.names()).thenReturn(List.of("read_file", "write_file", "exec_shell", "update_plan", "application_action", "orchestrate_flow", "coordinate_team", "mcp.filesystem.read_text_file"));
+        when(registry.names()).thenReturn(List.of(
+                "read_file", "write_file", "exec_shell", "update_plan", "application_action",
+                "business_workbench_read", "business_schedule_mutate",
+                "orchestrate_flow", "coordinate_team", "mcp.filesystem.read_text_file"));
         ReActStrategy strategy = newStrategy(registry);
 
         assertThat(strategy.approvalToolNamesFor(ApprovalPolicy.ALWAYS))
-                .containsExactly("read_file", "write_file", "exec_shell", "orchestrate_flow", "coordinate_team", "mcp.filesystem.read_text_file");
+                .containsExactly(
+                        "read_file", "write_file", "exec_shell",
+                        "business_workbench_read", "business_schedule_mutate",
+                        "orchestrate_flow", "coordinate_team", "mcp.filesystem.read_text_file");
         assertThat(strategy.approvalToolNamesFor(ApprovalPolicy.ON_REQUEST))
-                .containsExactly("write_file", "exec_shell", "apply_patch", "orchestrate_flow", "coordinate_team", "mcp.filesystem.read_text_file");
+                .containsExactly(
+                        "write_file", "exec_shell", "apply_patch",
+                        "business_schedule_mutate",
+                        "orchestrate_flow", "coordinate_team", "mcp.filesystem.read_text_file");
         assertThat(strategy.approvalToolNamesFor(ApprovalPolicy.NEVER)).isEmpty();
         assertThat(strategy.approvalToolNamesFor(ApprovalPolicy.ALWAYS)).doesNotContain("application_action");
         assertThat(strategy.approvalToolNamesFor(ApprovalPolicy.ON_REQUEST)).doesNotContain("application_action");
+    }
+
+    @Test
+    void business_schedule_mutation_uses_a_business_specific_approval_description() throws Exception {
+        ReActStrategy strategy = newStrategy(mock(ToolRegistry.class));
+        var method = ReActStrategy.class.getDeclaredMethod(
+                "approvalDescription", String.class, ApprovalPolicy.class);
+        method.setAccessible(true);
+
+        assertThat(method.invoke(strategy, "business_schedule_mutate", ApprovalPolicy.ON_REQUEST))
+                .isEqualTo("修改工作台日程需要确认");
     }
 
     @Test
@@ -112,7 +132,11 @@ class ReActStrategyTest {
                 List.of("local.read_file", "local.application_action", "local.update_plan", "mcp.crm.search"),
                 List.of("read_file", "application_action", "update_plan", "mcp.crm.search"),
                 List.of(), List.of(), "forged")))
-                .containsExactly("application_action", "update_plan");
+                .containsExactly(
+                        "application_action",
+                        "business_workbench_read",
+                        "business_schedule_mutate",
+                        "update_plan");
     }
 
     @Test
@@ -137,12 +161,18 @@ class ReActStrategyTest {
     void business_mode_uses_only_registry_verified_trusted_callbacks() {
         ToolRegistry registry = mock(ToolRegistry.class);
         ToolCallback action = mock(ToolCallback.class);
+        ToolCallback workbench = mock(ToolCallback.class);
+        ToolCallback schedule = mock(ToolCallback.class);
         ToolCallback plan = mock(ToolCallback.class);
-        when(registry.requiredLocalCallbacksForNames(List.of("application_action", "update_plan")))
-                .thenReturn(new ToolCallback[]{action, plan});
+        when(registry.requiredLocalCallbacksForNames(List.of(
+                "application_action",
+                "business_workbench_read",
+                "business_schedule_mutate",
+                "update_plan")))
+                .thenReturn(new ToolCallback[]{action, workbench, schedule, plan});
 
         assertThat(newStrategy(registry, new BusinessAgentModePolicy(true)).currentToolCallbacks(null))
-                .containsExactly(action, plan);
+                .containsExactly(action, workbench, schedule, plan);
     }
 
     /**

@@ -11,7 +11,11 @@ import java.util.List;
 @Component
 public final class BusinessAgentModePolicy {
 
-    private static final List<String> BUSINESS_MODEL_TOOLS = List.of("application_action", "update_plan");
+    private static final List<String> BUSINESS_MODEL_TOOLS = List.of(
+            "application_action",
+            "business_workbench_read",
+            "business_schedule_mutate",
+            "update_plan");
 
     private final boolean businessMode;
 

@@ -195,7 +195,9 @@ public class ToolObservationInterceptor extends ToolInterceptor {
             return;
         }
         String status = response.isError() ? deniedOrFailed(response.getResult()) : "completed";
-        String resultPreview = response.isError() ? null : response.getResult();
+        String resultPreview = response.isError()
+                ? null
+                : persistentResultPreview(request, response);
         String errorMessage = response.isError() ? TOOL_EXECUTION_FAILED : null;
         try {
             toolCallPersistenceService.recordFinished(
@@ -206,6 +208,16 @@ public class ToolObservationInterceptor extends ToolInterceptor {
             log.warn("工具调用完成记录持久化失败，已保留工具真实响应: toolCallId={}, status={}, failureType={}",
                     request.getToolCallId(), status, failureType(exception));
         }
+    }
+
+    private String persistentResultPreview(
+            ToolCallRequest request,
+            ToolCallResponse response) {
+        if ("business_workbench_read".equals(request.getToolName())
+                || "business_schedule_mutate".equals(request.getToolName())) {
+            return "{\"result\":\"[REDACTED]\"}";
+        }
+        return response.getResult();
     }
 
     /** The raw error body is used only for in-memory status classification above this boundary. */

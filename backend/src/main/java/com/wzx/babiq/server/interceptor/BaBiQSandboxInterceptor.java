@@ -52,7 +52,8 @@ public final class BaBiQSandboxInterceptor extends ToolInterceptor {
     /** 解析工具调用入参，提取 path/cwd 等需要做沙箱校验的字段。 */
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     /** 会改变本地文件系统或执行命令的工具集合，只有这些工具需要写权限审批/沙箱。 */
-    private static final Set<String> WRITE_TOOLS = Set.of("write_file", "exec_shell", "apply_patch");
+    private static final Set<String> WRITE_TOOLS = Set.of(
+            "write_file", "exec_shell", "apply_patch", "business_schedule_mutate");
 
     /** agent-loop.sandbox 配置，决定当前是 workspace-only 还是更宽的本地访问模式。 */
     private final AgentLoopProperties properties;
@@ -132,6 +133,9 @@ public final class BaBiQSandboxInterceptor extends ToolInterceptor {
             return "Sandbox is read-only, " + toolName + " rejected";
         }
         if (mode == SandboxMode.DANGER_FULL_ACCESS) {
+            return null;
+        }
+        if ("business_schedule_mutate".equals(toolName)) {
             return null;
         }
         String path = pathToCheck(toolName, arguments, context);
