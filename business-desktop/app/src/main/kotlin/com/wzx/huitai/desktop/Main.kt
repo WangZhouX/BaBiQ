@@ -161,6 +161,7 @@ fun main() {
                 val scheduleFormState by view.production.scheduleController.formState.collectAsState()
                 val scheduleUploadState by view.production.attachmentUploadClient.state.collectAsState()
                 val composerIdentityScope = desktopState.identity?.toComposerIdentityScope()
+                var selectedModelId by remember(composerIdentityScope) { mutableStateOf<String?>(null) }
                 var composerSession by remember(composerIdentityScope) {
                     mutableStateOf(BusinessComposerSessionState(composerIdentityScope))
                 }
@@ -768,7 +769,9 @@ fun main() {
                                 },
                                 onProviderSelected = { providerId, modelId ->
                                     uiScope.launch {
-                                        view.production.conversationController.selectProvider(providerId, modelId)
+                                        val selection = view.production.conversationController
+                                            .selectProvider(providerId, modelId)
+                                        selectedModelId = selection.modelId
                                     }
                                 },
                                 onReconnect = {

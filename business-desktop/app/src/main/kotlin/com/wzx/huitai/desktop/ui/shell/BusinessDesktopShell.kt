@@ -141,6 +141,21 @@ fun BusinessDesktopShell(
     modifier: Modifier = Modifier,
 ) {
     SideEffect(onShellComposed)
+    // The settings controller is the first source populated after login. Keep the
+    // assistant usable while the conversation projection catches up.
+    val assistantState = if (state.providers.isNotEmpty()) {
+        state
+    } else if (providerSettingsState.providers.isNotEmpty()) {
+        state.copy(
+            providers = providerSettingsState.providers,
+            activeProviderId = state.activeProviderId
+                ?.takeIf { providerId -> providerSettingsState.providers.any { it.id == providerId } }
+                ?: providerSettingsState.providers.firstOrNull { it.active }?.id
+                ?: providerSettingsState.providers.firstOrNull()?.id,
+        )
+    } else {
+        state
+    }
     var expansionMessage by remember { mutableStateOf<String?>(null) }
     var resizeAccumulator by remember { mutableStateOf(requestedAssistantWidth) }
     LaunchedEffect(requestedAssistantWidth) {
@@ -261,7 +276,7 @@ fun BusinessDesktopShell(
                                     .testTag(BusinessUiTags.DIVIDER_SLOT),
                             )
                             AgentPanelForShell(
-                                state = state,
+                                state = assistantState,
                                 formState = formState,
                                 selectedModelId = selectedModelId,
                                 composerText = composerText,

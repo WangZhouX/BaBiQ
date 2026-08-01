@@ -5,6 +5,8 @@ import com.wzx.huitai.agent.conversation.BusinessPlanStep
 import com.wzx.huitai.agent.conversation.BusinessThreadItem
 import com.wzx.huitai.agent.conversation.BusinessThread
 import com.wzx.huitai.agent.conversation.BusinessTurn
+import com.wzx.huitai.agent.conversation.BusinessProvider
+import com.wzx.huitai.agent.conversation.BusinessProviderModel
 import com.wzx.huitai.presentation.context.PageContextSnapshot
 import com.wzx.huitai.presentation.context.PageMode
 import com.wzx.huitai.presentation.context.ValidationSummary
@@ -16,6 +18,29 @@ import kotlinx.serialization.json.JsonPrimitive
 
 class BusinessDesktopReducerTest {
     private val reducer = BusinessDesktopReducer()
+
+    @Test
+    fun `provider refresh establishes the active provider for the assistant selector`() {
+        val providers = listOf(
+            BusinessProvider(
+                id = "relay",
+                displayName = "我的中转（OneAPI）",
+                models = listOf(BusinessProviderModel("gpt-4o", "gpt-4o", active = true)),
+                authMode = "api_key",
+                hasApiKey = true,
+                active = true,
+                model = "gpt-4o",
+            ),
+        )
+
+        val state = reducer.reduce(
+            BusinessDesktopState(),
+            BusinessDesktopEvent.ProvidersChanged(providers),
+        )
+
+        assertEquals(providers, state.providers)
+        assertEquals("relay", state.activeProviderId)
+    }
 
     @Test
     fun `initial state is disconnected and page suggestions chat plan actions summary and errors reduce immutably`() {

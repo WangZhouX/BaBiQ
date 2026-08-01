@@ -30,6 +30,8 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.wzx.huitai.agent.conversation.BusinessAttachmentDraft
+import com.wzx.huitai.agent.conversation.BusinessProvider
+import com.wzx.huitai.agent.conversation.BusinessProviderModel
 import com.wzx.huitai.agent.conversation.BusinessThreadItem
 import com.wzx.huitai.demo.model.DemoFormState
 import com.wzx.huitai.desktop.controller.BusinessProviderSettingsState
@@ -76,6 +78,38 @@ import org.junit.Test
 class BusinessDesktopShellTest {
     @get:Rule
     val rule = createComposeRule()
+
+    @Test
+    fun `workbench assistant shows provider settings selection when desktop projection is empty`() {
+        val providers = listOf(
+            BusinessProvider(
+                id = "one-api",
+                displayName = "我的中转（OneAPI）",
+                models = listOf(BusinessProviderModel("gpt-4o", "gpt-4o", active = true)),
+                authMode = "api_key",
+                hasApiKey = true,
+                active = true,
+                type = "OPENAI_COMPATIBLE",
+                baseUrl = "https://relay.example.com/v1",
+                model = "gpt-4o",
+            ),
+        )
+        rule.setContent {
+            HuitaiBusinessTheme {
+                BusinessDesktopShell(
+                    state = authenticatedShellState(),
+                    formState = DemoFormState(),
+                    providerSettingsState = BusinessProviderSettingsState(providers = providers),
+                    selectedDestination = BusinessDesktopDestination.WORKBENCH,
+                    agentPanelExpanded = true,
+                    modifier = Modifier.shellSize(1400.dp),
+                )
+            }
+        }
+
+        rule.onNodeWithText("我的中转（OneAPI）").assertExists()
+        rule.onNodeWithText("gpt-4o").assertExists()
+    }
 
     @Test
     fun `workbench uses the shell sidebar as the only OA navigation`() {

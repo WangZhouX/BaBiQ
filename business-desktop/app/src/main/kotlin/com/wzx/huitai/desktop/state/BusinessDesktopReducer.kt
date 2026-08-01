@@ -49,7 +49,15 @@ class BusinessDesktopReducer {
             suggestions = event.suggestions.associateBy(BusinessFieldSuggestion::fieldId),
         )
         is BusinessDesktopEvent.AgentEventReceived -> reduceAgentEvent(state, event.event)
-        is BusinessDesktopEvent.ProvidersChanged -> state.copy(providers = event.providers.toList())
+        is BusinessDesktopEvent.ProvidersChanged -> {
+            val providers = event.providers.toList()
+            state.copy(
+                providers = providers,
+                activeProviderId = providers.firstOrNull { it.active }?.id
+                    ?: state.activeProviderId?.takeIf { id -> providers.any { it.id == id } }
+                    ?: providers.firstOrNull()?.id,
+            )
+        }
         is BusinessDesktopEvent.ProviderSelected -> state.copy(activeProviderId = event.selection.providerId)
         is BusinessDesktopEvent.ThreadChanged -> newThread(state, event.thread)
         is BusinessDesktopEvent.TurnRequested -> turnRequested(state, event.turn)
